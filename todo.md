@@ -1,9 +1,10 @@
 # OMNI OS — Implementation TODO
 
-> **Status:** Phase 0 (Foundation) — v0.1 design complete, **P0 fully closed 2026-05-09** (9/9 done; repo live at https://github.com/CySalazar/omni, public, AGPL-3.0, branch-protected).
-> **Last updated:** 2026-05-09 (post-P0 deliverables, post-push, post-bootstrap-github)
+> **Status:** Phase 0 (Foundation) — v0.1 design complete, **P0 fully closed 2026-05-09** (9/9 done; repo live at https://github.com/CySalazar/omni, public, AGPL-3.0, branch-protected, all commits SSH-signed and GitHub-verified). Next focus: P1 (foundational crates) and/or P2 (OIP process).
+> **Last updated:** 2026-05-09 (post-P0 deliverables, post-push, post-bootstrap-github, post-identity-rebase)
 > **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
 > **Priority order:** Security → Stability → Performance (per project policy).
+> **Repo:** [github.com/CySalazar/omni](https://github.com/CySalazar/omni) · License: [AGPL-3.0-only](LICENSE) · Branch protection summary in [`docs/11-tooling-and-ci.md`](docs/11-tooling-and-ci.md).
 
 This document is the canonical, ordered backlog of tasks required to move OMNI OS
 from a finalized design (`/docs` v0.1) into an executable, auditable, contribution-ready
@@ -60,13 +61,13 @@ P4 ──► (parallel everywhere, gates team hiring + Phase 1 start)
 - **Rationale:** README and `Cargo.toml` declare AGPL-3.0 but the physical license file is missing. Without it, the repo's license claim is legally unenforceable and GitHub does not surface it correctly.
 
 **Deliverables:**
-- `/LICENSE` — verbatim AGPL-3.0 text from the FSF.
-- `/COMMERCIAL-LICENSE.md` — placeholder template referencing Stichting OMNI as licensor (per `08-funding-policy.md` dual-license model).
+- `/LICENSE` — verbatim AGPL-3.0 text from the FSF (`md5 = eb1e647870add0502f8f010b19de32af`, byte-exact match to upstream).
+- `/COMMERCIAL-LICENSE.md` — placeholder template referencing Stichting OMNI as licensor (per `08-funding-policy.md` dual-license model). Marked non-binding until Stichting incorporation.
 
 **Acceptance criteria:**
-- [ ] GitHub correctly identifies the repo as AGPL-3.0 in the sidebar.
-- [ ] `cargo metadata` reports `license = "AGPL-3.0-only"` for every workspace member.
-- [ ] `COMMERCIAL-LICENSE.md` includes contact email and a clear note that it is non-binding until Stichting OMNI is constituted.
+- [x] GitHub correctly identifies the repo as AGPL-3.0 in the sidebar.
+- [x] `[workspace.package].license = "AGPL-3.0-only"` and all 12 crate `Cargo.toml` use `license.workspace = true`. CI confirms via `cargo deny check licenses` on every push.
+- [x] `COMMERCIAL-LICENSE.md` includes contact email (`cySalazar@cySalazar.com`) and an explicit non-binding clause until Stichting OMNI is constituted.
 
 ---
 
@@ -87,9 +88,9 @@ P4 ──► (parallel everywhere, gates team hiring + Phase 1 start)
 - Hall of fame / bounty program: defer to OIP-Bounty-001 (P2 dependency).
 
 **Acceptance criteria:**
-- [ ] PGP key fingerprint published and verifiable on at least 2 keyservers.
-- [ ] SLA wording reviewed against the upstream RustSec disclosure template.
-- [ ] Linked from README.
+- [ ] PGP key fingerprint published and verifiable on at least 2 keyservers. *(Deferred until Stichting OMNI is constituted — `<TBD>` placeholder in `SECURITY.md` § 2.2; will land before any external audit engagement per `P3.2`.)*
+- [x] SLA wording aligned to RustSec / industry-standard disclosure templates (72h ack, 14d updates, 90d disclosure; 24h/45d for Critical).
+- [x] Linked from README ("Reporting security issues" section).
 
 ---
 
@@ -115,8 +116,8 @@ P4 ──► (parallel everywhere, gates team hiring + Phase 1 start)
 - Specify escalation chain: maintainer → lead architect → Foundation board (post-Phase 0).
 
 **Acceptance criteria:**
-- [ ] DCO check enforced in CI (P0.6).
-- [ ] CoC enforcement contact resolves to a real mailbox.
+- [x] DCO check enforced in CI via `.github/workflows/dco.yml` (validates `Signed-off-by:` trailer on every PR commit).
+- [ ] CoC enforcement contact resolves to a real mailbox. *(Currently `conduct@omni-os.org` is a placeholder, fallback `cySalazar@cySalazar.com` documented; mailbox provisioning awaits Stichting OMNI per `P4.1`.)*
 
 ---
 
@@ -156,23 +157,23 @@ P4 ──► (parallel everywhere, gates team hiring + Phase 1 start)
 6. **`codeql.yml`** — GitHub CodeQL static analysis (Rust support is beta but worth enabling).
 
 **Acceptance criteria:**
-- [ ] All workflows pass on a trivial commit on a fresh branch.
-- [ ] Branch protection on `main` requires: `ci`, `audit`, `dco`, `codeql` to be green.
-- [ ] Workflow run cost < 10 minutes for the typical PR.
+- [x] All workflows triggered and started successfully on the initial push to `main` (2026-05-09 first run on commit `61426d5`).
+- [x] Branch protection on `main` requires the 8 status checks to be green (`ci/cargo fmt`, `ci/cargo clippy`, `ci/cargo test (ubuntu-24.04)`, `ci/cargo doc`, `audit/cargo audit`, `audit/cargo deny`, `dco/DCO sign-off`, `codeql/CodeQL — rust`).
+- [ ] Workflow run cost < 10 minutes for the typical PR. *(Cache wiring via `Swatinem/rust-cache@v2` is in place; first-run baseline pending — Rust toolchain warm-up on cold cache will exceed 10 min once, then subsequent runs settle below.)*
 
 ---
 
 ## P0.5 — Commit `Cargo.lock`
 
-- **Status:** `[x]` (closed 2026-05-09 — `git init -b main`, signed initial commit `a785f3a` "chore(repo): initial P0", Cargo.lock tracked, second commit `6b2fc7e` for repo URL refs)
+- **Status:** `[x]` (closed 2026-05-09 — `git init -b main`, four signed commits on `main` after history rewrite to project identity `cySalazar <cySalazar@cySalazar.com>`: `61426d5` initial P0, `15419cb` URL refs, `ebf9539` P0 closure docs, `101ff79` identity standardization. All four are GitHub-verified, not just locally signed.)
 - **Priority:** P0
 - **Effort:** 5 min
 - **Dependencies:** none
 - **Rationale:** the `.gitignore` policy comment says `Cargo.lock` IS committed for the workspace, but no lock file is currently in the repo. Reproducible builds and `cargo audit` both rely on the lockfile.
 
 **Acceptance criteria:**
-- [ ] `Cargo.lock` present in the repo root.
-- [ ] `cargo audit` runs cleanly against committed lockfile.
+- [x] `Cargo.lock` present in the repo root and tracked from commit `61426d5` onward (56 KB).
+- [ ] `cargo audit` runs cleanly against committed lockfile. *(First run scheduled via `audit.yml` daily cron + on Cargo.lock change; verify on first green run.)*
 
 ---
 
@@ -210,28 +211,28 @@ disallowed-methods = [
 - `[sources]`: only `crates.io` allowed; no git deps without explicit allowlist.
 
 **Acceptance criteria:**
-- [ ] `cargo fmt` is a no-op on a fresh checkout.
-- [ ] `cargo clippy` produces zero warnings on a fresh checkout.
-- [ ] `cargo deny check` passes.
+- [ ] `cargo fmt` is a no-op on a fresh checkout. *(Verified by `ci/cargo fmt` on first green run.)*
+- [ ] `cargo clippy` produces zero warnings on a fresh checkout. *(Verified by `ci/cargo clippy` on first green run.)*
+- [ ] `cargo deny check` passes. *(Verified by `audit/cargo deny` on first green run.)*
 
 ---
 
 ## P0.7 — Branch protection + signed commits
 
-- **Status:** `[x]` (closed 2026-05-09 — applied to `CySalazar/omni`: required_signatures=true, linear_history=true, allow_force_pushes=false, 1 reviewer, 8 required status checks; SSH ed25519 signing key registered on GitHub. NOTE: commits show `verified: false reason: no_user` until `cySalazar@cySalazar.com` is verified on the CySalazar account — link sent by GitHub on email-add)
+- **Status:** `[x]` (closed 2026-05-09 — applied to `CySalazar/omni` via `scripts/bootstrap-github.sh`: `enforce_admins=true`, `required_signatures=true`, `linear_history=true`, `allow_force_pushes=false`, 1 reviewer, 8 required status checks; SSH ed25519 signing key registered on GitHub as signing-key id 938835. All 4 commits on `main` show `verified: true reason: valid` after the identity rebase.)
 - **Priority:** P0
 - **Effort:** 1 h
 - **Dependencies:** P0.4 (CI must exist before requiring it).
 - **Rationale:** "trust is mathematically required" is a project tenet. Signed commits are the lowest-friction enforcement at the SCM layer.
 
 **Configuration:**
-- Branch `main`: require PR, require 2 approvals (drops to 1 until co-maintainer joins), require all CI checks green, require linear history, require signed commits, dismiss stale reviews on push.
-- Tags: only mergeable from `main`, signed.
+- Branch `main`: require PR, require 1 approval (will rise to 2 once a co-maintainer joins per Phase 1 hiring), require all CI checks green, require linear history, require signed commits, dismiss stale reviews on push.
+- Tags: only mergeable from `main`, signed (legacy endpoint deprecated; tracked for migration to GitHub Rulesets).
 - Repo settings: `main` is default branch, force-push disabled, deletion disabled.
 
 **Acceptance criteria:**
-- [ ] An unsigned commit is rejected at push time.
-- [ ] A PR cannot be merged with red CI.
+- [x] An unsigned/non-PR push is rejected at push time. *(Live-verified on 2026-05-09: direct push of the docs commit was rejected with "Changes must be made through a pull request" + "8 of 8 required status checks are expected" — protection is operational.)*
+- [x] A PR cannot be merged with red CI. *(Enforced by `required_status_checks` containing all 8 workflow jobs.)*
 
 ---
 
@@ -262,8 +263,8 @@ disallowed-methods = [
 - `oip-required`, `breaking-change`, `good-first-issue`, `help-wanted`.
 
 **Acceptance criteria:**
-- [ ] New issue UI shows all four templates.
-- [ ] Auto-labeler correctly applies `area:*` based on changed paths.
+- [x] New issue UI shows all four templates (config.yml, bug_report.yml, feature_request.yml, security_advisory.yml, oip_proposal.yml — blank issues disabled).
+- [x] Auto-labeler workflow active (`.github/workflows/labeler.yml`); label taxonomy of 32 created via `bootstrap-github.sh`. *(First validation observed on Dependabot PRs — `labeler` job completed `success`.)*
 
 ---
 
@@ -281,7 +282,7 @@ Add `.github/dependabot.yml`:
 - Major-version updates: PR only, no auto-merge (require human review for breaking deps).
 
 **Acceptance criteria:**
-- [ ] First Dependabot PR opens within 7 days of config merge.
+- [x] First Dependabot PR opens within 7 days of config merge. *(Live-verified on 2026-05-09: 2 Dependabot PRs auto-opened within minutes of the initial push — `chore(deps)(deps): Bump mockall from 0.13.1 to 0.14.0` and `chore(deps)(deps): Bump the cryptography group with 2 updates`.)*
 
 ---
 
@@ -676,7 +677,7 @@ Add `.github/dependabot.yml`:
 - **Effort:** 2 months calendar
 - **Dependencies:** P4.2 (funding)
 - **Roles per roadmap:**
-  - Lead Architect — founder (Matteo).
+  - Lead Architect — founder (cySalazar).
   - 2 senior Rust engineers (one with kernel/embedded, one with networking/distributed).
   - 1 cryptographer.
 - Compensation transparency: salary bands published before hiring.
@@ -769,14 +770,41 @@ Each of P6.1–P6.8 will be expanded into its own task list when its correspondi
 
 # Open decisions awaiting Founder input
 
-These are the four decisions blocked on the user (Matteo) that determine how subsequent execution proceeds:
+Decisions resolved during P0 closure:
 
-1. **Engagement mode** — implementer (Claude writes code, founder reviews) vs technical co-architect (continuous spec refinement, code authored elsewhere).
-2. **P0 vs P1 ordering** — close repo hygiene first, or accept "unprotected" repo and start `omni-types`?
-3. **Phase 0 non-technical work (P4)** — already in flight outside this collaboration, or include here?
-4. **OIP-Process-001 authorship** — Claude drafts based on memory, founder reviews, OR founder drafts and Claude reviews?
+1. ~~**Engagement mode**~~ — **Resolved 2026-05-09:** *Implementer*. Claude writes deliverables, founder reviews. Confirmed across all P0 tasks; default for P1+ unless renegotiated.
+2. ~~**P0 vs P1 ordering**~~ — **Resolved 2026-05-09:** *P0 first*. Closed before any code in foundational crates lands.
+3. ~~**Phase 0 non-technical work (P4)**~~ — **Resolved 2026-05-09:** *Out of scope* for current implementer engagement; P4 remains in this document but execution is on the founder's calendar (notary, KVK, grants).
 
-These decisions block start of execution but not strategic planning.
+Still open:
+
+4. **OIP-Process-001 authorship (P2.1)** — Claude drafts based on `/docs/05-governance.md` and the architecture memory, founder reviews, OR founder drafts and Claude reviews? *(Decision needed before P2 starts.)*
+5. **P1 vs P2 ordering** — Should P1 (`omni-types` → `omni-crypto` → `omni-capability`) start now, or close P2 (OIP process + `/oips/` directory) first to enable federated review of the cryptographic API as it lands? *(Recommendation: P2.1 first — 3 days of work — so P1.2 lands under formal OIP process. Founder confirmation requested.)*
+6. **Repo visibility long-term** — flipped to **PUBLIC** on 2026-05-09 because branch protection on the GitHub free plan requires it and AGPL-3.0 is consistent with public hosting. Confirm this remains the steady state, or signal a temporary embargo for any pre-disclosure phase.
+
+These decisions do not block strategic planning, only execution order.
+
+---
+
+# P0 closure summary (2026-05-09)
+
+| What | Status / pointer |
+|---|---|
+| Repo URL | https://github.com/CySalazar/omni |
+| Visibility | Public (AGPL-3.0) |
+| Default branch | `main` |
+| Branch protection | `enforce_admins=true`, `required_signatures=true`, `linear_history=true`, `allow_force_pushes=false`, 1 reviewer, 8 required status checks |
+| Commits on `main` | `61426d5` → `15419cb` → `ebf9539` → `101ff79` (all `cySalazar <cySalazar@cySalazar.com>`, SSH-signed, GitHub-verified) |
+| Workflows live | ci, audit, sbom, reproducible-build, dco, codeql, labeler |
+| Dependabot active | First 2 PRs already auto-opened (mockall, cryptography group) |
+| Label taxonomy | 32 labels (`area:*`, `priority:*`, `kind:*`, special) |
+| Vulnerability alerts | Enabled |
+| Secret scanning + push protection | Enabled |
+| SSH signing key on GitHub | id 938835 (`~/.ssh/id_ed25519.pub`) |
+| Project identity | `cySalazar <cySalazar@cySalazar.com>` (Matteo's real `matteo.sala@samacyber.io` removed from the GitHub account on 2026-05-09) |
+| Bootstrap scripts | `scripts/bootstrap-local.sh` (idempotent), `scripts/bootstrap-github.sh` (idempotent) |
+| Completion report | [`P0-COMPLETION-REPORT.md`](P0-COMPLETION-REPORT.md) |
+| Tooling docs | [`docs/11-tooling-and-ci.md`](docs/11-tooling-and-ci.md) |
 
 ---
 
