@@ -172,11 +172,11 @@ cat <<EOF
 Local bootstrap complete.
 
 Next steps:
-  1. Create the GitHub repo (e.g. via 'gh repo create omni-os/omni-os --public --source=. --remote=origin --push').
+  1. Create the GitHub repo (e.g. via 'gh repo create CySalazar/omni --public --source=. --remote=origin --push').
 
   2. Apply branch protection and labels from a terminal where 'gh' is
      authenticated:
-       ./scripts/bootstrap-github.sh omni-os/omni-os
+       ./scripts/bootstrap-github.sh CySalazar/omni
 
   3. Verify protection: try pushing an unsigned commit to a test branch —
      it should be rejected.
