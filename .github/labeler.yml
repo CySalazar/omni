@@ -1,0 +1,114 @@
+# =============================================================================
+# OMNI OS — Auto-labeler config
+# =============================================================================
+# Used by the `actions/labeler` workflow (.github/workflows/labeler.yml).
+# Maps changed file paths to GitHub labels so PRs are categorized
+# automatically. Authors can still add labels manually for taxonomies the
+# auto-labeler doesn't cover (priority, kind).
+#
+# Reference: https://github.com/actions/labeler
+# =============================================================================
+
+# --- Area labels (1-of-N, by changed paths) -------------------------------
+
+"area:kernel":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/omni-kernel/**"
+
+"area:crypto":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/omni-crypto/**"
+
+"area:capability":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/omni-capability/**"
+
+"area:tee":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/omni-tee/**"
+
+"area:hal":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/omni-hal/**"
+
+"area:runtime":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/omni-runtime/**"
+
+"area:mesh":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/omni-mesh/**"
+
+"area:tokenization":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/omni-tokenization/**"
+
+"area:sdk":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/omni-sdk/**"
+
+"area:agent":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/omni-agent/**"
+
+"area:shell":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/omni-shell/**"
+
+"area:types":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/omni-types/**"
+
+"area:docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "README.md"
+          - "CONTRIBUTING.md"
+          - "CODE_OF_CONDUCT.md"
+          - "SECURITY.md"
+          - "COMMERCIAL-LICENSE.md"
+
+"area:ci":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - "rustfmt.toml"
+          - "clippy.toml"
+          - "deny.toml"
+          - "rust-toolchain.toml"
+
+"area:oip":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "oips/**"
+
+# --- Special labels --------------------------------------------------------
+
+"breaking-change":
+  - any:
+      - head-branch:
+          - '.*!.*'
+      - title:
+          - '^[a-z]+(\(.+\))?!:'
+
+"oip-required":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "oips/**"
+          - "docs/protocol/**"
+          - "docs/03-mesh-protocol.md"
+          - "docs/04-security-model.md"
+          - "docs/05-governance.md"

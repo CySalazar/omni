@@ -1,0 +1,199 @@
+# =============================================================================
+# OMNI OS — Workspace Cargo.toml
+# =============================================================================
+# Root manifest for the OMNI OS Rust workspace.
+#
+# This workspace organizes OMNI OS into a set of cooperating crates following
+# the architecture described in /docs/02-architecture.md.
+#
+# Layering (bottom to top):
+#   - Foundational (no_std-capable):  omni-types, omni-crypto, omni-capability,
+#                                     omni-tee
+#   - Kernel:                         omni-kernel
+#   - Hardware Abstraction:           omni-hal
+#   - System services:                omni-runtime, omni-mesh, omni-tokenization
+#   - User-facing:                    omni-sdk, omni-agent, omni-shell
+#
+# All crates inherit shared metadata via [workspace.package] and shared
+# dependency versions via [workspace.dependencies] to keep the workspace
+# coherent across the 25-year horizon described in /docs/01-vision.md.
+# =============================================================================
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/omni-types",
+    "crates/omni-crypto",
+    "crates/omni-capability",
+    "crates/omni-tee",
+    "crates/omni-kernel",
+    "crates/omni-hal",
+    "crates/omni-runtime",
+    "crates/omni-mesh",
+    "crates/omni-tokenization",
+    "crates/omni-sdk",
+    "crates/omni-agent",
+    "crates/omni-shell",
+]
+
+# -----------------------------------------------------------------------------
+# Shared package metadata
+# -----------------------------------------------------------------------------
+# All crates inherit these fields. They can be referenced via
+# `field.workspace = true` inside each crate's Cargo.toml.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Stichting OMNI <hello@omni-os.org>"]
+license = "AGPL-3.0-only"
+repository = "https://github.com/omni-os/omni-os"
+homepage = "https://omni-os.org"
+documentation = "https://docs.omni-os.org"
+readme = "README.md"
+keywords = ["operating-system", "ai", "privacy", "decentralized", "mesh"]
+categories = ["os", "embedded", "cryptography"]
+
+# -----------------------------------------------------------------------------
+# Shared dependencies (versions pinned at workspace level)
+# -----------------------------------------------------------------------------
+# Sub-crates depend on these via `dep.workspace = true` to ensure consistent
+# versions across the workspace. Rationale per crate is documented in
+# /docs/09-tech-specifications.md.
+[workspace.dependencies]
+# --- Internal crates (path-based, version-tracked) ---
+omni-types        = { path = "crates/omni-types",        version = "0.1.0" }
+omni-crypto       = { path = "crates/omni-crypto",       version = "0.1.0" }
+omni-capability   = { path = "crates/omni-capability",   version = "0.1.0" }
+omni-tee          = { path = "crates/omni-tee",          version = "0.1.0" }
+omni-hal          = { path = "crates/omni-hal",          version = "0.1.0" }
+omni-runtime      = { path = "crates/omni-runtime",      version = "0.1.0" }
+omni-mesh         = { path = "crates/omni-mesh",         version = "0.1.0" }
+omni-tokenization = { path = "crates/omni-tokenization", version = "0.1.0" }
+omni-sdk          = { path = "crates/omni-sdk",          version = "0.1.0" }
+omni-agent        = { path = "crates/omni-agent",        version = "0.1.0" }
+
+# --- Async runtime ---
+tokio        = { version = "1.40", features = ["full"] }
+async-trait  = "0.1"
+futures      = "0.3"
+
+# --- Serialization ---
+serde       = { version = "1.0", features = ["derive"] }
+serde_json  = "1.0"
+bincode     = "2.0"
+
+# --- Cryptography (subset — see /docs/09-tech-specifications.md) ---
+ring               = "0.17"
+ed25519-dalek      = "2.1"
+x25519-dalek       = "2.0"
+chacha20poly1305   = "0.10"
+sha2               = "0.10"
+sha3               = "0.10"
+blake3             = "1.5"
+argon2             = "0.5"
+
+# --- Networking (mesh protocol) ---
+quinn = "0.11"
+snow  = "0.9"
+
+# --- Observability ---
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# --- Error handling ---
+# thiserror v2 chosen to align with the version pulled by upstream crates
+# (quinn, tokio ecosystem), eliminating duplicate-dependency warnings.
+thiserror = "2.0"
+anyhow    = "1.0"
+
+# --- Testing utilities ---
+proptest = "1.5"
+mockall  = "0.13"
+
+# -----------------------------------------------------------------------------
+# Build profiles
+# -----------------------------------------------------------------------------
+# Profiles reflect OMNI OS priorities: Security > Stability > Performance.
+
+# Release: maximum optimization, abort on panic, stripped symbols.
+# Rationale: smaller attack surface, predictable failure mode (no unwinding
+# state in security-critical code), smaller binary size.
+[profile.release]
+opt-level       = 3
+lto             = "fat"
+codegen-units   = 1
+debug           = false
+panic           = "abort"
+strip           = "symbols"
+overflow-checks = true   # Keep overflow checks even in release for security.
+
+# Dev: fast builds, overflow checks, debug info.
+[profile.dev]
+opt-level       = 0
+debug           = true
+overflow-checks = true
+
+# Bench: like release but with debug info for profiling.
+[profile.bench]
+inherits = "release"
+debug    = true
+strip    = "none"
+
+# Test: optimization-friendly while keeping debug info.
+[profile.test]
+opt-level       = 1
+debug           = true
+overflow-checks = true
+
+# -----------------------------------------------------------------------------
+# Workspace-wide lints
+# -----------------------------------------------------------------------------
+# Strict lints enforce OMNI OS priorities in code. Sub-crates inherit these
+# via `lints.workspace = true` in their Cargo.toml.
+
+[workspace.lints.rust]
+# --- Memory safety ---
+# Any unsafe code requires explicit justification in PR review.
+unsafe_code = "warn"
+
+# --- Correctness ---
+unreachable_pub  = "warn"
+unused_must_use  = "deny"
+
+# --- Documentation ---
+# Every public item must be documented. Critical for a 25-year project.
+missing_docs = "warn"
+
+# --- Future compatibility ---
+future_incompatible      = { level = "warn", priority = -1 }
+rust_2024_compatibility  = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+# Clippy lint groups — strictness from low priority to high.
+pedantic = { level = "warn", priority = -1 }
+nursery  = { level = "warn", priority = -1 }
+cargo    = { level = "warn", priority = -1 }
+
+# Specific lints critical for systems and security code.
+unwrap_used       = "warn"
+expect_used       = "warn"
+panic             = "warn"
+todo              = "warn"   # Tracks explicit `todo!()` for inventory.
+unimplemented     = "warn"   # Tracks explicit `unimplemented!()`.
+indexing_slicing  = "warn"
+integer_division  = "warn"
+float_arithmetic  = "warn"
+
+# Allow some pedantic lints that are noisy in practice without security value.
+module_name_repetitions = "allow"
+must_use_candidate      = "allow"
+
+# Transitive-dependency version conflicts come from upstream crates (Windows
+# target shims, etc.) and cannot be fixed at this workspace's level. We
+# accept these and revisit when a single-version policy becomes feasible.
+multiple_crate_versions = "allow"
+
+# Placeholder tests in scaffold crates trigger this; not actionable at v0.1.
+# Re-enable selectively per-crate when implementations land.
+missing_const_for_fn = "allow"

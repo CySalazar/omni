@@ -1,0 +1,59 @@
+# =============================================================================
+# OMNI OS — DCO sign-off check
+# =============================================================================
+# Every commit on a PR must include a `Signed-off-by:` trailer matching
+# the author. See CONTRIBUTING.md § 3.
+# =============================================================================
+
+name: dco
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  dco-check:
+    name: DCO sign-off
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for the comparison range.
+
+      - name: Verify Signed-off-by on every commit
+        run: |
+          set -eu
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          MISSING=0
+
+          # Iterate every commit in the PR range.
+          for sha in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            AUTHOR=$(git log -1 --format='%an <%ae>' "$sha")
+            BODY=$(git log -1 --format='%B' "$sha")
+
+            # Match `Signed-off-by: <name> <email>` exactly.
+            if ! echo "$BODY" | grep -qE "^Signed-off-by: .+ <.+@.+>$"; then
+              echo "::error::Commit $sha is missing a Signed-off-by trailer."
+              echo "    author: $AUTHOR"
+              MISSING=$((MISSING + 1))
+              continue
+            fi
+
+            # Optional: enforce that at least one Signed-off-by matches the author.
+            # Skip strict author matching for now — DCO accepts sign-off by any
+            # contributor in the chain (re-submitters, mentors, etc.).
+          done
+
+          if [ "$MISSING" -gt 0 ]; then
+            echo "::error::$MISSING commit(s) missing Signed-off-by. See CONTRIBUTING.md § 3."
+            echo "Fix with: git rebase --signoff $BASE"
+            exit 1
+          fi
+
+          echo "All commits in this PR are DCO-signed."

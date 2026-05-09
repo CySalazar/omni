@@ -1,0 +1,124 @@
+# =============================================================================
+# OMNI OS — Core CI workflow
+# =============================================================================
+# Runs on every push and PR. Hard blockers for merge.
+# Target wall-clock for the full job: < 10 minutes (per todo.md P0.4).
+# =============================================================================
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# One run per ref; cancel in-progress runs of the same ref when a new push
+# arrives. PRs and pushes get separate concurrency groups to avoid one
+# canceling the other.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_BACKTRACE: short
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # fmt — formatting must be a no-op on a fresh checkout.
+  # ---------------------------------------------------------------------------
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rust toolchain (pinned via rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
+
+  # ---------------------------------------------------------------------------
+  # clippy — zero warnings on the workspace.
+  # ---------------------------------------------------------------------------
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ---------------------------------------------------------------------------
+  # test — unit + integration tests on the initial target only.
+  # Targets per /docs/07-hardware-requirements.md: x86_64-unknown-linux-gnu.
+  # Cross-compilation matrix expands when omni-tee gains AMD/ARM backends.
+  # ---------------------------------------------------------------------------
+  test:
+    name: cargo test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test --workspace --all-features
+        run: cargo test --workspace --all-features
+
+  # ---------------------------------------------------------------------------
+  # doc — link check + warnings-as-errors so docs don't rot silently.
+  # ---------------------------------------------------------------------------
+  doc:
+    name: cargo doc
+    runs-on: ubuntu-24.04
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo doc --workspace --no-deps
+        run: cargo doc --workspace --no-deps
+
+  # ---------------------------------------------------------------------------
+  # tbd-guard — fail if the merge target contains TBD/TODO placeholders that
+  # were intentionally allowed in P0 docs but should never reach `main` after
+  # Stichting incorporation. Today, this only WARNS so we can ship the P0
+  # placeholder set; flip to `exit 1` after Stichting OMNI is registered.
+  # ---------------------------------------------------------------------------
+  tbd-guard:
+    name: TBD placeholder guard
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: "Scan diff for newly introduced <TBD: ...> markers"
+        run: |
+          set -eu
+          # Only flag NEW TBD lines (added in this PR), not pre-existing ones.
+          # `git diff --diff-filter=AM` shows added/modified lines.
+          ADDED_TBD=$(git diff --diff-filter=AM origin/${{ github.base_ref }}...HEAD -- ':(exclude)*.lock' \
+            | grep -E '^\+' \
+            | grep -E '<TBD:[^>]+>' \
+            || true)
+          if [ -n "$ADDED_TBD" ]; then
+            echo "::warning::This PR introduces new <TBD: ...> placeholders:"
+            echo "$ADDED_TBD"
+            echo "::warning::Acceptable during P0 setup; not after Stichting incorporation."
+          fi

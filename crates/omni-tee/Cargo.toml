@@ -1,0 +1,35 @@
+# =============================================================================
+# omni-tee — Trusted Execution Environment abstractions
+# =============================================================================
+# Vendor-neutral TEE traits with implementations for Intel TDX and AMD
+# SEV-SNP. Provides remote attestation generation and verification, sealed
+# key provisioning, and confidential workload execution.
+# =============================================================================
+
+[package]
+name             = "omni-tee"
+description      = "TEE attestation abstractions for OMNI OS — Intel TDX, AMD SEV-SNP, vendor-neutral traits."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[lints]
+workspace = true
+
+[dependencies]
+omni-types  = { workspace = true }
+omni-crypto = { workspace = true }
+async-trait = { workspace = true }
+serde       = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+
+[dev-dependencies]
+mockall = { workspace = true }

@@ -1,0 +1,33 @@
+# =============================================================================
+# omni-capability — Capability tokens for OMNI OS
+# =============================================================================
+# Macaroons-style attenuable, time-bounded, TEE-bound capability tokens.
+# Used by every system action that crosses a trust boundary. See
+# /docs/04-security-model.md § "Capability-based access control".
+# =============================================================================
+
+[package]
+name             = "omni-capability"
+description      = "Capability tokens for OMNI OS — Macaroons-style attenuable tokens with TEE binding."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[lints]
+workspace = true
+
+[dependencies]
+omni-types  = { workspace = true }
+omni-crypto = { workspace = true }
+serde       = { workspace = true }
+thiserror   = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

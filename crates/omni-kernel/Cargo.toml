@@ -1,0 +1,37 @@
+# =============================================================================
+# omni-kernel — OMNI OS microkernel
+# =============================================================================
+# The Rust microkernel: memory management, scheduling, IPC primitives, and
+# capability-based security. The kernel TCB is intentionally small;
+# everything that can run in user space (drivers, filesystems, networking,
+# AI runtime) does.
+#
+# In Phase 1 this crate becomes a `no_std` bare-metal binary with a custom
+# bootloader integration. For v0.1 it is a placeholder library scaffold so
+# the workspace compiles end-to-end.
+# =============================================================================
+
+[package]
+name             = "omni-kernel"
+description      = "OMNI OS microkernel — capability-based, message-passing, written in Rust."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[lints]
+workspace = true
+
+[dependencies]
+omni-types      = { workspace = true }
+omni-capability = { workspace = true }
+omni-tee        = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

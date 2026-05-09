@@ -1,0 +1,42 @@
+# =============================================================================
+# omni-mesh — Federated mesh protocol implementation
+# =============================================================================
+# Implements the OMNI OS federated mesh: Kademlia DHT discovery, QUIC+Noise
+# transport with mutual TEE attestation, MoE expert routing, compute credit
+# accounting, reputation system, and compliance proof envelope handling.
+# See /docs/03-mesh-protocol.md for the protocol specification.
+# =============================================================================
+
+[package]
+name             = "omni-mesh"
+description      = "Federated mesh protocol implementation for OMNI OS — DHT, QUIC+Noise, MoE routing, credits."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[lints]
+workspace = true
+
+[dependencies]
+omni-types      = { workspace = true }
+omni-crypto     = { workspace = true }
+omni-capability = { workspace = true }
+omni-tee        = { workspace = true }
+quinn           = { workspace = true }
+snow            = { workspace = true }
+tokio           = { workspace = true }
+async-trait     = { workspace = true }
+serde           = { workspace = true }
+tracing         = { workspace = true }
+thiserror       = { workspace = true }
+
+[dev-dependencies]
+mockall  = { workspace = true }
+proptest = { workspace = true }

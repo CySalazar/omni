@@ -1,0 +1,90 @@
+# =============================================================================
+# OMNI OS — SBOM + provenance workflow
+# =============================================================================
+# Generates a CycloneDX SBOM and an SLSA provenance attestation on every
+# tagged release. SBOMs are attached to the GitHub release; provenance is
+# emitted via GitHub's official action.
+# Target maturity: SLSA Level 3 (per todo.md P0.4 sbom.yml).
+# =============================================================================
+
+name: sbom
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write          # Required to attach assets to releases.
+  id-token: write          # Required for SLSA provenance via OIDC.
+  attestations: write      # Required for `actions/attest-build-provenance`.
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # CycloneDX SBOM generation
+  # ---------------------------------------------------------------------------
+  cyclonedx:
+    name: Generate CycloneDX SBOM
+    runs-on: ubuntu-24.04
+    outputs:
+      sbom_path: ${{ steps.export.outputs.sbom_path }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-cyclonedx
+        run: cargo install --locked cargo-cyclonedx
+
+      - name: Generate SBOM (workspace, all features)
+        run: |
+          cargo cyclonedx \
+            --format json \
+            --all-features \
+            --override-filename omni-os-sbom
+
+      - name: Locate SBOM
+        id: export
+        run: |
+          # cargo-cyclonedx emits per-crate files; we pick the workspace one.
+          SBOM_PATH=$(find . -name "omni-os-sbom*.json" -path "*/target/*" -prune -o -name "omni-os-sbom*.json" -print | head -1)
+          if [ -z "$SBOM_PATH" ]; then
+            # Fallback to any *.cdx.json the tool emits.
+            SBOM_PATH=$(find . -name "*.cdx.json" -not -path "./target/*" | head -1)
+          fi
+          echo "sbom_path=$SBOM_PATH" >> "$GITHUB_OUTPUT"
+          ls -la "$SBOM_PATH"
+
+      - name: Upload SBOM as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: omni-os-sbom
+          path: ${{ steps.export.outputs.sbom_path }}
+          retention-days: 90
+
+      - name: Attach SBOM to GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.export.outputs.sbom_path }}
+
+  # ---------------------------------------------------------------------------
+  # SLSA build provenance
+  # ---------------------------------------------------------------------------
+  provenance:
+    name: SLSA build provenance
+    needs: cyclonedx
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download SBOM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: omni-os-sbom
+          path: artifacts/
+
+      - name: Generate provenance attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: artifacts/*.json

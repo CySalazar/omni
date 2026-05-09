@@ -1,0 +1,108 @@
+name: OIP proposal (substantive change)
+description: Open an OIP (OMNI Improvement Proposal) — for protocol, API, or governance changes.
+title: "[OIP-DRAFT] <one-line summary>"
+labels:
+  - "kind:feature"
+  - "oip-required"
+  - "needs-triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        OIPs (OMNI Improvement Proposals) are the formal process for any
+        substantive change to OMNI OS. See `OIP-Process-001` (in `/oips/`)
+        for the full procedure.
+        Use this template to **draft** an OIP. The maintainers will
+        assign a number and a Standards Track type during triage, after
+        which you'll move the content into `/oips/oip-NNNN-<slug>.md`
+        in a PR.
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: OIP type
+      description: Self-classify; the editors will confirm in triage.
+      options:
+        - "Standards Track — protocol or API changes affecting compatibility"
+        - "Process — changes to how we work"
+        - "Informational — guidance documents"
+        - "Meta — OIPs about the OIP process"
+    validations:
+      required: true
+
+  - type: textarea
+    id: abstract
+    attributes:
+      label: Abstract
+      description: 1–2 paragraphs — what is being proposed, in plain language.
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why is this needed now? What concrete problem does it solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: specification
+    attributes:
+      label: Specification
+      description: |
+        The technical specification. Be precise enough that two implementers
+        produce interoperable code. Include data layouts, state machines,
+        error cases.
+    validations:
+      required: true
+
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Rationale
+      description: Why this design? What alternatives did you consider, and why were they rejected?
+    validations:
+      required: true
+
+  - type: textarea
+    id: backwards_compat
+    attributes:
+      label: Backwards compatibility
+      description: Does this break existing users? If yes, what's the migration story?
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security considerations
+      description: |
+        Threat model implications. New attack surface? Affected invariants?
+        TEE / capability / attestation impact?
+    validations:
+      required: true
+
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy considerations
+      description: PII handling? New data flows that could leak metadata? Tokenization impact?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reference_implementation
+    attributes:
+      label: Reference implementation (optional pre-acceptance)
+      description: Link to a draft branch or PR if you have one. Not required to open the OIP.
+
+  - type: checkboxes
+    id: meta
+    attributes:
+      label: Confirmations
+      options:
+        - label: I have read `CONTRIBUTING.md` and `OIP-Process-001`.
+          required: true
+        - label: I will move this content into `/oips/oip-NNNN-<slug>.md` once a number is assigned.
+          required: true

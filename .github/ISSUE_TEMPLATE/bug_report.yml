@@ -1,0 +1,110 @@
+name: Bug report
+description: Report a defect in OMNI OS code, docs, or tooling.
+title: "[bug] <one-line summary>"
+labels:
+  - "kind:bug"
+  - "needs-triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. **If this is a
+        security vulnerability, stop here** and follow [SECURITY.md](../SECURITY.md)
+        instead — public reports of security bugs help attackers, not us.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Which crate or area is affected?
+      options:
+        - "kernel (omni-kernel)"
+        - "crypto (omni-crypto)"
+        - "capability (omni-capability)"
+        - "tee (omni-tee)"
+        - "hal (omni-hal)"
+        - "runtime (omni-runtime)"
+        - "mesh (omni-mesh)"
+        - "tokenization (omni-tokenization)"
+        - "sdk (omni-sdk)"
+        - "agent (omni-agent)"
+        - "shell (omni-shell)"
+        - "types (omni-types)"
+        - "docs"
+        - "ci / tooling"
+        - "other"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: |
+        Crate version (e.g., 0.1.0) or full git SHA. `cargo pkgid <crate>`
+        prints the version; `git rev-parse HEAD` prints the SHA.
+      placeholder: "0.1.0 or abc1234"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Rust version, hardware (CPU/TEE), anything relevant.
+      placeholder: "Ubuntu 24.04, rustc 1.85, Intel Xeon 4th gen w/ TDX"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Minimal, deterministic steps. Include code snippets in fenced blocks.
+      value: |
+        1. ...
+        2. ...
+        3. ...
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: |
+        Paste error messages, panics, or relevant tracing output here.
+        Wrap long content in `<details>` so the issue stays scannable.
+      render: text
+
+  - type: checkboxes
+    id: security_check
+    attributes:
+      label: Security check
+      description: Confirm this is not a security vulnerability.
+      options:
+        - label: I have read SECURITY.md and confirm this is NOT a security vulnerability requiring private disclosure.
+          required: true
+
+  - type: checkboxes
+    id: coc_check
+    attributes:
+      label: Code of Conduct
+      options:
+        - label: I agree to follow this project's Code of Conduct.
+          required: true

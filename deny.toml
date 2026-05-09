@@ -1,0 +1,146 @@
+# =============================================================================
+# OMNI OS — cargo-deny configuration
+# =============================================================================
+# Supply-chain hardening: this file is the canonical policy for what may
+# enter our dependency graph. CI runs `cargo deny check` on every push and
+# daily on schedule. Any change here MUST go through PR review.
+#
+# References:
+#   - https://embarkstudios.github.io/cargo-deny/
+#   - /docs/04-security-model.md § Supply-chain
+#   - todo.md P0.6
+# =============================================================================
+
+# --- Schema version --------------------------------------------------------
+# Pin the cargo-deny config schema. Bumping this is a deliberate choice.
+[graph]
+all-features      = true
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# =============================================================================
+# Advisories — RustSec database
+# =============================================================================
+# Policy: any known vulnerability fails the build. No grace period.
+# Unmaintained / yanked crates trigger warnings to surface tech debt early
+# without blocking unrelated work.
+[advisories]
+db-path  = "~/.cargo/advisory-db"
+db-urls  = ["https://github.com/rustsec/advisory-db"]
+
+# When a crate has multiple advisories, treat the highest severity as the gate.
+version = 2
+yanked  = "deny"
+
+# Specific advisories may be temporarily allowed via `ignore`. Each entry
+# REQUIRES a tracking issue and a sunset date in the comment.
+ignore = [
+  # Example shape (none active at v0.1):
+  # { id = "RUSTSEC-2024-XXXX", reason = "Mitigated at runtime; tracking #NNN; revisit by 2026-09-30" },
+]
+
+# =============================================================================
+# Licenses — what is allowed in the dependency graph
+# =============================================================================
+# OMNI OS is AGPL-3.0-only. Inbound licenses must be AGPL-compatible AND
+# acceptable to downstream commercial licensees (see COMMERCIAL-LICENSE.md).
+# Force conscious inclusion: anything not on the allow list is denied.
+[licenses]
+version = 2
+
+# Confidence threshold for SPDX detection. 0.93 is the cargo-deny default;
+# we keep it strict because license drift is a security concern.
+confidence-threshold = 0.93
+
+# Allowed inbound licenses. Adding to this list requires explicit board
+# approval (post-Stichting) or BDFL approval (during the 5-year window).
+allow = [
+  "AGPL-3.0",
+  "AGPL-3.0-only",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",          # Boost Software License — permissive
+  "ISC",
+  "Unicode-DFS-2016", # required by the unicode-ident crate
+  "Unicode-3.0",      # newer SPDX form for the same family
+  "Zlib",
+  "CC0-1.0",          # Public-domain-equivalent
+  "MPL-2.0",          # File-level copyleft, AGPL-compatible
+]
+
+# Crates with explicit licensing exceptions or hand-vetted clarifications.
+# Each entry MUST cite the rationale and the auditor.
+exceptions = [
+  # Example (none active at v0.1):
+  # { allow = ["OpenSSL"], crate = "ring", reason = "ring uses an OpenSSL-derived license but is functionally permissive; vetted by <auditor> on YYYY-MM-DD" },
+]
+
+# We do NOT vendor copylefted code under terms incompatible with AGPL.
+# Anything matching the patterns below is rejected.
+# (cargo-deny denies by default what's not in `allow`; this section is documentation.)
+
+# =============================================================================
+# Bans — specific crates we refuse to depend on
+# =============================================================================
+[bans]
+# Wildcard policy: warn on duplicate versions (transitive) so we surface them
+# but don't block. Single-version enforcement returns post-1.0.
+multiple-versions          = "warn"
+wildcards                  = "deny"   # Never allow `version = "*"` in deps.
+highlight                  = "all"
+workspace-default-features = "allow"
+external-default-features  = "allow"
+
+# Crates we refuse outright. Each entry MUST have a written reason.
+deny = [
+  { name = "openssl-sys",
+    reason = "Force rustls + ring; OpenSSL has historically been the worst supply-chain actor in our space and adds a C-toolchain attack surface incompatible with the OMNI OS threat model." },
+
+  { name = "openssl",
+    reason = "Same as openssl-sys." },
+
+  { name = "native-tls",
+    reason = "Pulls platform-specific TLS stacks (SChannel / SecureTransport / OpenSSL). OMNI OS uses rustls everywhere for deterministic, audited behavior." },
+
+  { name = "md5",
+    reason = "Cryptographically broken. If MD5 is needed for a non-security checksum (e.g., legacy interop), justify in PR and use the `md-5` crate (RustCrypto, audited) with a #[cfg] gate." },
+
+  { name = "sha1",
+    reason = "Cryptographically weak for security purposes. Same exception path as md5 if non-security use is required." },
+
+  { name = "rand",
+    reason = "Use `rand_core` + an explicit, auditable RNG (OsRng for OS entropy, ChaCha20Rng for deterministic). Top-level `rand` re-exports too much surface and changes defaults across versions." },
+
+  { name = "time",
+    reason = "Historic CVE-2020-26235 lineage and ergonomic footguns. Use `chrono` (with `clock` feature audited) or `jiff` once it lands stable." },
+]
+
+# Skip duplicates of these crates (transitive dupes we tolerate while
+# upstream consolidates). Re-evaluate at every minor bump.
+skip = []
+
+skip-tree = []
+
+# =============================================================================
+# Sources — where we are willing to fetch crates from
+# =============================================================================
+# Default: only crates.io. Git deps are an explicit allowlist because they
+# bypass the registry's audit hooks (yank, advisory propagation).
+[sources]
+unknown-registry = "deny"
+unknown-git      = "deny"
+
+allow-registry = [
+  "https://github.com/rust-lang/crates.io-index",
+]
+
+# Git allowlist — empty by policy. Adding an entry requires:
+#   1. Documented rationale (why the crate isn't on crates.io)
+#   2. Pinned `rev = "<full sha>"` (no branch / tag references)
+#   3. Sunset date (when do we expect to migrate to the registered version?)
+allow-git = []

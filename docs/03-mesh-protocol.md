@@ -1,0 +1,173 @@
+# Mesh Protocol
+
+**Status:** Draft v0.1
+
+## Overview
+
+The OMNI OS mesh is a peer-to-peer network of OMNI OS instances that collectively perform AI inference (and, in v2, training) on behalf of their users. Privacy is enforced by cryptographic protocol design — not by node policy. A non-compliant node cannot produce valid network traffic; honest nodes reject malformed messages automatically.
+
+This document specifies the protocol layers, from discovery to payload semantics.
+
+## Design constraints
+
+The protocol is designed to satisfy the following non-negotiable constraints:
+
+1. **No central authority required at runtime.** Discovery, routing, authentication, and verification all proceed without a single point of trust.
+2. **PII never appears in cleartext on the network.** Mandatory tokenization + TEE-only decryption envelopes.
+3. **Every payload carries a compliance proof.** Honest nodes reject payloads without valid proofs.
+4. **Forks are interoperable if protocol-compliant.** No vendor-specific extensions break the mesh.
+5. **Hardware-rooted trust.** TEE attestation is required to participate.
+
+## Protocol layers
+
+### Discovery (Kademlia DHT)
+
+Nodes discover peers via a Kademlia-based Distributed Hash Table.
+
+- **Bootstrap**: handled by seed nodes operated by Stichting OMNI in years 1–5; gradually decentralized via long-running well-reputed nodes.
+- **Node ID**: derived from the TEE attestation report (deterministic but unforgeable).
+- **Routing table**: standard Kademlia k-buckets, augmented with reputation and latency metadata.
+- **Refresh**: periodic peer lookups to maintain table freshness.
+
+### Transport (QUIC + Noise Protocol Framework)
+
+All peer-to-peer connections use QUIC for transport, with the Noise Protocol Framework for cryptographic handshake.
+
+QUIC is chosen for:
+
+- Low-latency multiplexed streams (multiple concurrent inferences over one connection)
+- Built-in encryption (no separate TLS layer required)
+- 0-RTT resumption for repeat connections
+- Connection migration support (mobile devices changing networks)
+- Better behavior on lossy networks than TCP
+
+Noise pattern: `Noise_XX_25519_ChaChaPoly_BLAKE2s` for mutual authentication. Mutual: both endpoints authenticate each other's TEE attestation.
+
+### Attestation (mandatory before any payload exchange)
+
+Before any non-handshake traffic, both endpoints exchange remote attestation reports from their TEEs. The attestation report proves:
+
+- The node runs a signed, unmodified OMNI OS binary.
+- The hardware is genuine and unmodified.
+- The TEE measurements match a known-good state.
+
+Attestation reports are verified using the TEE vendor's attestation chain (Intel TDX Quote Verification, AMD SEV-SNP attestation, etc.).
+
+Failed attestation → connection terminated. No fallback to software-only attestation. This is the hard hardware requirement.
+
+### Routing
+
+Each node maintains a routing table indexing peers by:
+
+- Latency (measured continuously via QUIC RTT)
+- Reputation score (locally computed)
+- Capability declarations (which experts/models the peer hosts)
+- Geographic locality (optional, for jurisdiction-aware routing)
+
+For each inference request, the local node selects a path optimizing for `latency × cost × (1 / reputation)`.
+
+For sensitive workloads, optional onion routing through 3 hops is supported. Each hop sees only the previous and next hop, not the origin or the payload contents.
+
+### Privacy primitives (mandatory at the protocol level)
+
+Every payload on the mesh MUST:
+
+1. **Be wrapped in a TEE-only decryption envelope.** The session key is sealed against the destination TEE's attestation. Only that specific TEE can decrypt.
+
+2. **Contain a compliance proof.** A cryptographic proof (zk-SNARK for complex predicates, signature for simple predicates) demonstrating:
+   - PII has been tokenized at the originating node.
+   - The payload schema conforms to the protocol's encrypted-data-type definitions.
+   - The session is bound to the attested TEE on the receiver.
+
+3. **Use format-preserving encryption for routing metadata.** Even a peer node cannot tell what kind of inference is happening from headers alone.
+
+A message lacking any of these three is rejected by every honest relay. Because relays revalidate, a malicious node cannot strip proofs and forward — the next honest hop will reject.
+
+### Compute credits
+
+A simple tit-for-tat ledger tracks compute contributed and consumed per node.
+
+- Implemented as a signed, append-only log replicated via gossip protocol.
+- Not a blockchain. Not a tradeable currency.
+- Designed for v1 simplicity; can be replaced by a more sophisticated scheme via OIP if needed.
+- Anti-Sybil: credits accrue to attested TEE identities, not to bare network identities.
+
+Credit semantics:
+
+- 1 credit = 1 unit of standard compute work (TBD in detail; likely tied to FLOPs delivered or token output).
+- Earn credits by serving inference; spend credits by requesting inference.
+- Initial allocation: each newly-attested node receives a small starting balance to bootstrap participation.
+
+### Reputation
+
+Reputation is computed deterministically from observable signals:
+
+- Uptime (rolling window)
+- Successful inference completions (verified via redundancy checks)
+- Consistency with peers (Byzantine detection: same input produces same output across redundant peers)
+- Time in the network (sybil-resistance via age)
+
+Reputation is **local**: each node computes its own view. Aggregate views are gossiped but never authoritative. This prevents reputation-system capture.
+
+### Inference verification
+
+For inference workloads where output integrity matters:
+
+- Redundant execution on 2–3 independent peers
+- Outputs compared bit-by-bit (deterministic quantization required)
+- Disagreement triggers a "fourth-judge" run; majority wins
+- Persistent disagreement is logged against the offending peer's reputation
+
+For low-stakes workloads, single execution may be allowed by user policy.
+
+## Workload distribution
+
+### Personal Cluster (Tier 1)
+
+- **Topology**: full mesh on LAN, no DHT needed.
+- **Discovery**: mDNS.
+- **Authentication**: shared secret bootstrapped at first device pairing, plus TEE attestation.
+- **Workload split**: pipeline parallelism by default; tensor parallelism for very latency-sensitive tasks (only on LAN).
+- **Models**: up to ~70B parameters across aggregated devices.
+
+### Federated Mesh (Tier 2)
+
+- **Topology**: Kademlia DHT.
+- **Workload split**: expert parallelism (MoE).
+- **Per-token routing**: only the 2 active experts per token need to be queried; other experts unaffected.
+- **Latency**: dominated by network RTT × number of layers; suitable for async, long-form workloads.
+- **Models**: 100B+ parameters distributed across hundreds of nodes.
+
+## Wire format (v1 outline)
+
+Messages on the mesh use a binary frame format:
+
+```
++---------------------------------------------------+
+| Frame header (FPE-encrypted routing metadata)     |
++---------------------------------------------------+
+| Compliance proof envelope                         |
++---------------------------------------------------+
+| TEE-sealed payload                                |
++---------------------------------------------------+
+| HMAC over previous fields                         |
++---------------------------------------------------+
+```
+
+Detailed wire format will be specified in OIP-001 prior to v1 release.
+
+## Open problems (to be resolved before v1)
+
+- **Anti-Sybil under TEE attestation**: how to prevent datacenter clones from gaming the system? Approach under consideration: rate-limit attestations per platform fingerprint + economic friction via compute credit bootstrapping.
+- **MoE expert distribution policy**: who hosts which experts? Approach under consideration: voluntary advertisement + reputation-weighted assignment + redundant hosting for popular experts.
+- **Cold start latency**: first-request latency when peers must be discovered. Approach: warm pool of pre-connected peers per node.
+- **Bandwidth caps**: residential ISP-imposed caps interact poorly with mesh. Approach: scheduled-only mode (overnight) for residential nodes, cap honoring per user policy.
+- **Quantum-resistant migration**: Noise + QUIC use classical crypto. Approach: PQ KEM hybridization (Kyber) by v1, full migration roadmap to 2030.
+
+These will be addressed in OIPs (OMNI Improvement Proposals) before v1 release.
+
+## Compatibility and forking
+
+A fork of OMNI OS that implements this protocol exactly is fully interoperable. Forks that modify the protocol form a separate mesh — they cannot poison the main mesh because honest nodes reject non-conforming traffic.
+
+This is the structural guarantee against project capture: any captured Foundation can be forked, and the fork can rejoin the same mesh on the same protocol terms.

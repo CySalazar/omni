@@ -1,0 +1,50 @@
+name: Security advisory (DO NOT USE for new vulnerabilities)
+description: This template exists to redirect users — do NOT report vulnerabilities here.
+title: "[security] - REDIRECT - "
+labels:
+  - "kind:security"
+  - "do-not-use"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        # ⚠️ STOP
+
+        **Do not use this template to report a vulnerability.**
+
+        Public disclosure of a 0-day in a GitHub issue tells attackers
+        the same thing it tells the maintainers — except attackers
+        don't need to triage. That harms users, including you.
+
+        ## Use the responsible-disclosure channel instead
+
+        Read [`SECURITY.md`](../SECURITY.md) and email the team at
+        `security@omni-os.org` with PGP encryption.
+
+        - SLA: 72 h acknowledgement, 90 day fix-or-publish.
+        - Safe harbor for good-faith research.
+        - Hall of fame credit on disclosure.
+
+        ## When IS it appropriate to file an issue under this template?
+
+        Only after a vulnerability has been disclosed publicly (post-fix)
+        and you want to track follow-up work that requires public
+        coordination. In that case, the issue should reference the
+        already-published advisory.
+
+  - type: input
+    id: published_advisory
+    attributes:
+      label: Public advisory URL
+      description: Link to the already-published security advisory this issue tracks.
+      placeholder: "https://github.com/omni-os/omni-os/security/advisories/GHSA-xxxx"
+    validations:
+      required: true
+
+  - type: textarea
+    id: followup
+    attributes:
+      label: Public follow-up work
+      description: What public coordination is needed? Documentation update? Test backport? Migration guide?
+    validations:
+      required: true
