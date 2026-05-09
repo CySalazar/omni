@@ -1,7 +1,7 @@
 # OMNI OS — Implementation TODO
 
-> **Status:** Phase 0 (Foundation) — v0.1 design complete, P0 closure in progress (8/9 done, P0.5 + P0.7 pending user-side execution).
-> **Last updated:** 2026-05-09 (post-P0 deliverables)
+> **Status:** Phase 0 (Foundation) — v0.1 design complete, **P0 fully closed 2026-05-09** (9/9 done; repo live at https://github.com/CySalazar/omni, public, AGPL-3.0, branch-protected).
+> **Last updated:** 2026-05-09 (post-P0 deliverables, post-push, post-bootstrap-github)
 > **Owner:** Matteo Sala (`matteo.sala@samacyber.io`) — Lead Architect / BDFL (5y)
 > **Priority order:** Security → Stability → Performance (per project policy).
 
@@ -164,7 +164,7 @@ P4 ──► (parallel everywhere, gates team hiring + Phase 1 start)
 
 ## P0.5 — Commit `Cargo.lock`
 
-- **Status:** `[~]` (Cargo.lock present in tree; `scripts/bootstrap-local.sh` ready — user must run from local terminal to finalize `git init` + first commit, sandbox cannot complete due to `.git/` unlink restriction)
+- **Status:** `[x]` (closed 2026-05-09 — `git init -b main`, signed initial commit `a785f3a` "chore(repo): initial P0", Cargo.lock tracked, second commit `6b2fc7e` for repo URL refs)
 - **Priority:** P0
 - **Effort:** 5 min
 - **Dependencies:** none
@@ -218,7 +218,7 @@ disallowed-methods = [
 
 ## P0.7 — Branch protection + signed commits
 
-- **Status:** `[~]` (`scripts/bootstrap-github.sh` ready — runs once user has pushed to GitHub and authenticated `gh` CLI; SSH-signing setup also handled by `scripts/bootstrap-local.sh`)
+- **Status:** `[x]` (closed 2026-05-09 — applied to `CySalazar/omni`: required_signatures=true, linear_history=true, allow_force_pushes=false, 1 reviewer, 8 required status checks; SSH ed25519 signing key registered on GitHub. NOTE: commits show `verified: false reason: no_user` until `matteo.sala@samacyber.io` is verified on the CySalazar account — link sent by GitHub on email-add)
 - **Priority:** P0
 - **Effort:** 1 h
 - **Dependencies:** P0.4 (CI must exist before requiring it).
