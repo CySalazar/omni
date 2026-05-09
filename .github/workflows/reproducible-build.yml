@@ -52,7 +52,7 @@ jobs:
             | xargs -I{} sh -c 'sha256sum "$1" >> hashes/build-${{ matrix.runner }}.sha256' _ {}
           cat hashes/build-${{ matrix.runner }}.sha256 || echo "(no artifacts)"
       - name: Upload hash list
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hashes-${{ matrix.runner }}
           path: hashes/build-${{ matrix.runner }}.sha256
