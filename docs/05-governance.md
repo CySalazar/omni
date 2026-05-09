@@ -59,7 +59,7 @@ OIP states: `Draft` → `Review` → `Last Call` → `Final` / `Rejected` / `Wit
 
 #### Founder role (years 1–5)
 
-For the first 5 years, the project founder (Matteo Sala) holds:
+For the first 5 years, the project founder (cySalazar) holds:
 
 - **Lead Architect** title with technical leadership responsibility.
 - **Soft veto** on protocol breaking changes: the founder can *block* a proposal but cannot *impose* one.
@@ -83,7 +83,7 @@ A legal entity sustains operations: codebase maintenance, seed node operation (i
 #### Structure
 
 - Board of 5 trustees, 3-year rotating mandates.
-- Founder (Matteo Sala) on board for years 1–5 by initial appointment.
+- Founder (cySalazar) on board for years 1–5 by initial appointment.
 - ≥1 trustee resident in the Netherlands (regulatory practical requirement).
 - Director (executive) for day-to-day operations; reports to the board.
 

@@ -320,7 +320,7 @@ contribute" assertion of the DCO covers this — read it).
 - **Public discussion:** GitHub Discussions (when enabled).
 - **Synchronous:** none yet (no Slack / Discord / Matrix). We will adopt
   Element / Matrix once the project size justifies a moderation budget.
-- **Founder:** `matteo.sala@samacyber.io` for time-sensitive matters that
+- **Founder:** `cySalazar@cySalazar.com` for time-sensitive matters that
   don't fit a public issue.
 
 ---

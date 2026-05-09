@@ -97,7 +97,7 @@ Violation of these clauses voids the commercial license retroactively.
 
 Until Stichting OMNI is operational:
 
-- **Contact:** `matteo.sala@samacyber.io` (project founder, acting in
+- **Contact:** `cySalazar@cySalazar.com` (project founder, acting in
   personal capacity — no binding offer can be made)
 - **Subject line prefix:** `[OMNI OS — Commercial License Inquiry]`
 - **Required information:**

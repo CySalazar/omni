@@ -16,7 +16,7 @@
 | Status              | Count | Tasks                                |
 |---------------------|-------|---------------------------------------|
 | ✅ **Done**          | 9     | P0.1, P0.2, P0.3, P0.4, P0.5, P0.6, P0.7, P0.8, P0.9 |
-| 🟡 **Pending downstream** | 1 | Email verification of `matteo.sala@samacyber.io` on CySalazar account (link sent by GitHub) |
+| 🟡 **Pending downstream** | 1 | Email verification of `cySalazar@cySalazar.com` on CySalazar account (link sent by GitHub) |
 | ⚠️ **Blocked**        | 0     | —                                     |
 
 ### Live-executed via AppleScript (post-initial-report)
@@ -47,7 +47,7 @@ and executed the following deltas, in order:
    alerts, secret scanning + push protection.
 10. **Registered the SSH ed25519 key as a GitHub *signing key***
     (id 938835).
-11. **Added `matteo.sala@samacyber.io`** as a secondary email on the
+11. **Added `cySalazar@cySalazar.com`** as a secondary email on the
     CySalazar account. **Pending user-side action:** click the
     verification link in the email GitHub sent. Until verified,
     GitHub reports `verified: false reason: no_user` on signed commits
@@ -70,7 +70,7 @@ and executed the following deltas, in order:
 
 | Criterion                                                                 | Status | Evidence                                                                 |
 |----------------------------------------------------------------------------|--------|---------------------------------------------------------------------------|
-| Reporting channel published                                                | ✅      | `security@omni-os.org` (placeholder) + fallback `matteo.sala@samacyber.io` |
+| Reporting channel published                                                | ✅      | `security@omni-os.org` (placeholder) + fallback `cySalazar@cySalazar.com` |
 | Scope, SLA, severity, safe harbor present                                  | ✅      | All sections complete; CVSSv4-aligned severity                              |
 | PGP fingerprint published and verifiable on 2 keyservers                   | 🟡     | Marked `<TBD: PGP key generation pending Stichting incorporation>` — will land before any external audit engagement (per `todo.md` P3.2 dependency) |
 | Linked from README                                                         | ✅      | Updated README "Reporting security issues" section                          |
@@ -87,7 +87,7 @@ and executed the following deltas, in order:
 | Test policy documented                                                     | ✅      | `CONTRIBUTING.md` § 8                                                       |
 | OIP filing procedure referenced                                            | ✅      | `CONTRIBUTING.md` § 9 (full procedure pending OIP-Process-001 / `todo.md` P2.1) |
 | Contributor Covenant v2.1 verbatim                                         | ✅      | Downloaded from `contributor-covenant.org`                                  |
-| CoC enforcement contact specified                                          | ✅      | `conduct@omni-os.org` placeholder + `matteo.sala@samacyber.io` fallback     |
+| CoC enforcement contact specified                                          | ✅      | `conduct@omni-os.org` placeholder + `cySalazar@cySalazar.com` fallback     |
 | Escalation chain documented                                                | ✅      | Maintainer → Lead Architect → Foundation board                              |
 | DCO check enforced in CI                                                   | ✅      | `.github/workflows/dco.yml`                                                 |
 
@@ -270,7 +270,7 @@ Dependabot Updates that auto-opened immediately (cargo + github_actions).
 ## User-side action remaining
 
 **Click the verification link in the email GitHub sent to
-`matteo.sala@samacyber.io`** (delivered when the AI added that email
+`cySalazar@cySalazar.com`** (delivered when the AI added that email
 to the CySalazar account). Without this click:
 
 - ✅ Commits are still cryptographically signed and the signature is

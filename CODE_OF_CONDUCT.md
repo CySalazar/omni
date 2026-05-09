@@ -41,7 +41,7 @@ Instances of abusive, harassing, or otherwise unacceptable behavior may be repor
 
 > **Placeholder note:** the `conduct@omni-os.org` mailbox is provisional
 > until Stichting OMNI is incorporated. Until then, reports are forwarded
-> to and handled by the project founder at `matteo.sala@samacyber.io`.
+> to and handled by the project founder at `cySalazar@cySalazar.com`.
 > Use that address as a fallback if the `@omni-os.org` route bounces.
 
 All complaints will be reviewed and investigated promptly and fairly.
@@ -56,7 +56,7 @@ governance model (see `/docs/05-governance.md`):
 
 1. **Maintainer** receiving the report investigates and applies the
    appropriate Community Impact consequence (Section: Enforcement Guidelines).
-2. **Lead Architect** (founder, currently Matteo Sala) reviews on appeal,
+2. **Lead Architect** (founder, currently cySalazar) reviews on appeal,
    or if the maintainer is conflicted out, or if the incident requires
    project-level visibility.
 3. **Foundation board** (Stichting OMNI's 5 trustees, post-incorporation)

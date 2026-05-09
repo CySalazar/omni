@@ -68,7 +68,7 @@ Commercial licensing is available through Stichting OMNI for use cases incompati
 
 ## Reporting security issues
 
-**Do not open public issues for security vulnerabilities.** Follow the procedure in [`SECURITY.md`](./SECURITY.md) — encrypted reports to `security@omni-os.org` (PGP fingerprint published once Stichting OMNI is constituted; fall back to `matteo.sala@samacyber.io` until then).
+**Do not open public issues for security vulnerabilities.** Follow the procedure in [`SECURITY.md`](./SECURITY.md) — encrypted reports to `security@omni-os.org` (PGP fingerprint published once Stichting OMNI is constituted; fall back to `cySalazar@cySalazar.com` until then).
 
 ## Contributing
 
@@ -87,7 +87,7 @@ CI enforces all of the above on every PR. See [Tooling & CI](./docs/11-tooling-a
 
 ## Contact
 
-- Project lead: Matteo Sala — `matteo.sala@samacyber.io`
+- Project lead: cySalazar — `cySalazar@cySalazar.com`
 
 ---
 

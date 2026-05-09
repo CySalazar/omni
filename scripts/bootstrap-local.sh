@@ -16,8 +16,8 @@
 #   ./scripts/bootstrap-local.sh
 #
 # Optional environment variables:
-#   GIT_USER_NAME    — overrides `git config user.name` (default: Matteo Sala)
-#   GIT_USER_EMAIL   — overrides `git config user.email` (default: matteo.sala@samacyber.io)
+#   GIT_USER_NAME    — overrides `git config user.name` (default: cySalazar)
+#   GIT_USER_EMAIL   — overrides `git config user.email` (default: cySalazar@cySalazar.com)
 #   SIGNING_KEY      — SSH public key path for signed commits (default: ~/.ssh/id_ed25519.pub)
 #
 # References:
@@ -48,8 +48,8 @@ require_tool git
 # -----------------------------------------------------------------------------
 # Configuration (overridable via env)
 # -----------------------------------------------------------------------------
-GIT_USER_NAME="${GIT_USER_NAME:-Matteo Sala}"
-GIT_USER_EMAIL="${GIT_USER_EMAIL:-matteo.sala@samacyber.io}"
+GIT_USER_NAME="${GIT_USER_NAME:-cySalazar}"
+GIT_USER_EMAIL="${GIT_USER_EMAIL:-cySalazar@cySalazar.com}"
 SIGNING_KEY="${SIGNING_KEY:-${HOME}/.ssh/id_ed25519.pub}"
 
 echo "==> Bootstrapping OMNI OS repository"

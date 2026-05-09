@@ -62,7 +62,7 @@ upstream instead:
 - **Email:** `security@omni-os.org`
   - This mailbox is **placeholder** until Stichting OMNI is incorporated.
     Until then, reports are forwarded to and handled by the project founder
-    at `matteo.sala@samacyber.io`. Use that address as a fallback if the
+    at `cySalazar@cySalazar.com`. Use that address as a fallback if the
     `@omni-os.org` route bounces.
 - **Subject line:** `[OMNI OS Security] <one-line summary>`
 - **Encryption:** PGP encryption is **strongly preferred** for any report

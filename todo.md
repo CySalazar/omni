@@ -2,7 +2,7 @@
 
 > **Status:** Phase 0 (Foundation) — v0.1 design complete, **P0 fully closed 2026-05-09** (9/9 done; repo live at https://github.com/CySalazar/omni, public, AGPL-3.0, branch-protected).
 > **Last updated:** 2026-05-09 (post-P0 deliverables, post-push, post-bootstrap-github)
-> **Owner:** Matteo Sala (`matteo.sala@samacyber.io`) — Lead Architect / BDFL (5y)
+> **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
 > **Priority order:** Security → Stability → Performance (per project policy).
 
 This document is the canonical, ordered backlog of tasks required to move OMNI OS
@@ -72,7 +72,7 @@ P4 ──► (parallel everywhere, gates team hiring + Phase 1 start)
 
 ## P0.2 — Add `SECURITY.md` (responsible disclosure policy)
 
-- **Status:** `[x]` (closed 2026-05-09 — PGP fingerprint TBD until Stichting OMNI is constituted, fallback contact `matteo.sala@samacyber.io` documented)
+- **Status:** `[x]` (closed 2026-05-09 — PGP fingerprint TBD until Stichting OMNI is constituted, fallback contact `cySalazar@cySalazar.com` documented)
 - **Priority:** P0 / Critical
 - **Effort:** 2 h
 - **Dependencies:** none
@@ -218,7 +218,7 @@ disallowed-methods = [
 
 ## P0.7 — Branch protection + signed commits
 
-- **Status:** `[x]` (closed 2026-05-09 — applied to `CySalazar/omni`: required_signatures=true, linear_history=true, allow_force_pushes=false, 1 reviewer, 8 required status checks; SSH ed25519 signing key registered on GitHub. NOTE: commits show `verified: false reason: no_user` until `matteo.sala@samacyber.io` is verified on the CySalazar account — link sent by GitHub on email-add)
+- **Status:** `[x]` (closed 2026-05-09 — applied to `CySalazar/omni`: required_signatures=true, linear_history=true, allow_force_pushes=false, 1 reviewer, 8 required status checks; SSH ed25519 signing key registered on GitHub. NOTE: commits show `verified: false reason: no_user` until `cySalazar@cySalazar.com` is verified on the CySalazar account — link sent by GitHub on email-add)
 - **Priority:** P0
 - **Effort:** 1 h
 - **Dependencies:** P0.4 (CI must exist before requiring it).
