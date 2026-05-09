@@ -37,7 +37,7 @@ jobs:
       CARGO_PROFILE_RELEASE_STRIP: "symbols"
       SOURCE_DATE_EPOCH: ${{ github.event.head_commit.timestamp || '1700000000' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo build --release --workspace
         run: cargo build --release --workspace
