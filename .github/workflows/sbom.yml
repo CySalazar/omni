@@ -79,7 +79,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Download SBOM artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: omni-os-sbom
           path: artifacts/
