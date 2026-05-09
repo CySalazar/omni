@@ -1,0 +1,100 @@
+# =============================================================================
+# OMNI OS — Dependabot configuration
+# =============================================================================
+# Weekly checks against the cargo registry. Security updates are grouped
+# and prioritized. Patch updates auto-approve on green CI; minor / major
+# updates always require human review (breaking deps must not auto-merge).
+#
+# Reference: https://docs.github.com/code-security/dependabot
+# =============================================================================
+
+version: 2
+
+updates:
+  # ---------------------------------------------------------------------------
+  # Cargo workspace dependencies
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Amsterdam"
+    open-pull-requests-limit: 10
+    labels:
+      - "kind:chore"
+      - "area:ci"
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    rebase-strategy: "auto"
+
+    # Group security updates so we patch the whole class at once.
+    groups:
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
+      patch-updates:
+        applies-to: version-updates
+        update-types:
+          - "patch"
+      cryptography:
+        applies-to: version-updates
+        patterns:
+          - "ed25519-dalek"
+          - "x25519-dalek"
+          - "chacha20poly1305"
+          - "ring"
+          - "sha2"
+          - "sha3"
+          - "blake3"
+          - "argon2"
+          - "rustls*"
+          - "snow"
+
+    # Major-version bumps for these crates ALWAYS require a manual PR with
+    # human review (no auto-approve, no auto-merge). Listed because they
+    # are security- or stability-critical to the project.
+    ignore:
+      - dependency-name: "ed25519-dalek"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "x25519-dalek"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "chacha20poly1305"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "ring"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "tokio"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "quinn"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "snow"
+        update-types: ["version-update:semver-major"]
+      # Major bumps will surface as Dependabot security advisories instead,
+      # which we triage manually.
+
+  # ---------------------------------------------------------------------------
+  # GitHub Actions
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "kind:chore"
+      - "area:ci"
+      - "dependencies"
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "patch"
+          - "minor"

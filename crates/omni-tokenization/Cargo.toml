@@ -1,0 +1,36 @@
+# =============================================================================
+# omni-tokenization — PII tokenization service
+# =============================================================================
+# Local NER classifier + per-user deterministic token vault, running inside
+# an attested TEE. Replaces PII with deterministic tokens before any
+# inference workload leaves the user's TEE.
+# =============================================================================
+
+[package]
+name             = "omni-tokenization"
+description      = "PII tokenization service for OMNI OS — local NER + per-user token vault inside TEE."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[lints]
+workspace = true
+
+[dependencies]
+omni-types  = { workspace = true }
+omni-crypto = { workspace = true }
+omni-tee    = { workspace = true }
+tokio       = { workspace = true }
+serde       = { workspace = true }
+tracing     = { workspace = true }
+thiserror   = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

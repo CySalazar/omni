@@ -1,0 +1,28 @@
+# =============================================================================
+# OMNI OS — Issue template chooser config
+# =============================================================================
+# This file controls the "New issue" page on GitHub. Free-form issues are
+# disabled to ensure every report uses one of our structured templates.
+# =============================================================================
+
+blank_issues_enabled: false
+
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/omni-os/omni-os/blob/main/SECURITY.md
+    about: |
+      Do NOT open a public issue for security vulnerabilities. Follow
+      SECURITY.md for the responsible-disclosure procedure.
+
+  - name: Question / discussion
+    url: https://github.com/omni-os/omni-os/discussions
+    about: |
+      Use GitHub Discussions for design questions, "how do I" questions,
+      and brainstorming. Issues are for actionable bug reports and
+      feature requests.
+
+  - name: Code of Conduct concern
+    url: https://github.com/omni-os/omni-os/blob/main/CODE_OF_CONDUCT.md
+    about: |
+      Conduct concerns are handled out-of-band via the channels listed
+      in CODE_OF_CONDUCT.md, never as public issues.

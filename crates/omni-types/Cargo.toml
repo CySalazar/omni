@@ -1,0 +1,32 @@
+# =============================================================================
+# omni-types — Shared core types for OMNI OS
+# =============================================================================
+# Foundational crate containing types used across the entire workspace:
+# encrypted-by-default data types, identifiers, error taxonomy, common
+# abstractions. Designed to be `no_std`-compatible (with `alloc`) once the
+# kernel scaffolding stabilizes.
+# =============================================================================
+
+[package]
+name             = "omni-types"
+description      = "Shared core types for OMNI OS — encrypted-by-default types, identifiers, common abstractions."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde     = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

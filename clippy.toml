@@ -1,0 +1,91 @@
+# =============================================================================
+# OMNI OS — Clippy configuration
+# =============================================================================
+# Clippy lint *groups* (pedantic/nursery/cargo) are configured in the workspace
+# Cargo.toml under [workspace.lints.clippy]. This file holds *option-level*
+# tuning for individual lints — thresholds, allowlists, disallowed APIs.
+#
+# References:
+#   - https://doc.rust-lang.org/clippy/configuration.html
+#   - workspace Cargo.toml — [workspace.lints.clippy]
+# =============================================================================
+
+# --- MSRV (Minimum Supported Rust Version) -------------------------------
+# Must match `rust-version` in [workspace.package] of the root Cargo.toml.
+# Clippy uses MSRV to gate lints that suggest features unavailable on the
+# pinned compiler.
+msrv = "1.85"
+
+# --- API stability ---------------------------------------------------------
+# Pre-1.0: breaking exported API is allowed. Once we ship 1.0 (per
+# /docs/06-roadmap.md, no earlier than Phase 4), flip this to `true` and
+# combine with semver-checks in CI.
+avoid-breaking-exported-api = false
+
+# --- Cognitive complexity threshold ---------------------------------------
+# Default 25 is too permissive for security-critical code. We tighten to 20
+# and review case-by-case via `#[allow(clippy::cognitive_complexity)]` with
+# a written justification in the PR.
+cognitive-complexity-threshold = 20
+
+# --- Function arity --------------------------------------------------------
+# Functions with > 7 params usually want a struct. Same caveat: explicit
+# `#[allow]` plus rationale in PR for exceptions.
+too-many-arguments-threshold = 7
+
+# --- Function size ---------------------------------------------------------
+# Lines per function (excluding doc comments). 100 is the soft cap.
+too-many-lines-threshold = 100
+
+# --- Type complexity -------------------------------------------------------
+# Default 250 is fine for most code; tighten incrementally as we refactor.
+type-complexity-threshold = 250
+
+# --- Disallowed methods ----------------------------------------------------
+# Force conscious use of audit-relevant APIs. Each entry MUST include a
+# `reason` so reviewers don't need to re-derive the rationale.
+disallowed-methods = [
+  { path = "std::env::var",
+    reason = "Use a config crate (figment / config) so env reads are auditable, typed, and testable. Direct std::env::var bypasses the audit trail." },
+
+  { path = "std::env::var_os",
+    reason = "Same rationale as std::env::var — see config crate guidance." },
+
+  { path = "std::process::exit",
+    reason = "Exit only at the binary entrypoint after graceful shutdown. Library code must return Result and let the caller decide." },
+
+  { path = "std::time::SystemTime::now",
+    reason = "OMNI OS time must come from a monotonic, attestable clock service (omni-runtime). Wall-clock NOW is non-deterministic and TEE-unsafe." },
+
+  { path = "std::sync::Mutex::new",
+    reason = "Prefer parking_lot::Mutex (no PoisonError) or async lock (tokio::sync::Mutex) where the call site is async. Std Mutex has poison semantics that complicate audits." },
+]
+
+# --- Disallowed types ------------------------------------------------------
+disallowed-types = [
+  { path = "std::sync::RwLock",
+    reason = "Same rationale as std::sync::Mutex — prefer parking_lot or async equivalents." },
+]
+
+# --- Disallowed macros -----------------------------------------------------
+disallowed-macros = [
+  { path = "std::println",
+    reason = "Use the `tracing` crate. `println!` bypasses log levels, formatting policy, and the eventual structured-log pipeline." },
+
+  { path = "std::eprintln",
+    reason = "Use `tracing::error!` or `tracing::warn!` with structured fields." },
+
+  { path = "std::dbg",
+    reason = "`dbg!` is debug noise that has no place in committed code. Use `tracing::debug!` for intentional debugging output." },
+]
+
+# --- Allowed identifier prefixes / suffixes -------------------------------
+# Suppresses clippy::module_name_repetitions for these prefixes that are
+# unavoidable across the workspace.
+allowed-prefixes = ["Omni", "omni"]
+
+# --- Documentation enforcement --------------------------------------------
+# Every public item must have a doc comment (also enforced via
+# `missing_docs = "warn"` in workspace lints). This setting tightens
+# the check on private items where it materially aids review.
+doc-valid-idents = ["OMNI", "TEE", "TDX", "SEV-SNP", "AGPL", "AEAD", "HKDF", "BLAKE3", "SHA-256", "SHA3-256", "Ed25519", "X25519", "ChaCha20-Poly1305", "Argon2", "Argon2id", "P2P", "FF1", "FF3-1", "STARK", "SNARK", "MoE", "OIP"]

@@ -1,0 +1,40 @@
+# =============================================================================
+# omni-runtime — AI Runtime Service
+# =============================================================================
+# Privileged user-space service exposing AI as a system primitive. Manages
+# model lifecycle, inference scheduling, capability validation, and tier
+# routing across local / personal cluster / federated mesh / cloud.
+# =============================================================================
+
+[package]
+name             = "omni-runtime"
+description      = "AI Runtime Service for OMNI OS — model lifecycle, inference scheduling, tier routing."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[lints]
+workspace = true
+
+[dependencies]
+omni-types      = { workspace = true }
+omni-crypto     = { workspace = true }
+omni-capability = { workspace = true }
+omni-tee        = { workspace = true }
+omni-hal        = { workspace = true }
+tokio           = { workspace = true }
+async-trait     = { workspace = true }
+serde           = { workspace = true }
+tracing         = { workspace = true }
+thiserror       = { workspace = true }
+
+[dev-dependencies]
+mockall  = { workspace = true }
+proptest = { workspace = true }

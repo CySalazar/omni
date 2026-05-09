@@ -1,0 +1,31 @@
+# =============================================================================
+# omni-hal — Hardware Abstraction Layer
+# =============================================================================
+# Uniform traits for tensor accelerators, networking, storage, and TEEs.
+# Userspace services target HAL traits; concrete backends are loaded at
+# runtime per available hardware.
+# =============================================================================
+
+[package]
+name             = "omni-hal"
+description      = "Hardware Abstraction Layer for OMNI OS — Tensor, Network, Storage, and TEE traits."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[lints]
+workspace = true
+
+[dependencies]
+omni-types  = { workspace = true }
+omni-tee    = { workspace = true }
+async-trait = { workspace = true }
+tracing     = { workspace = true }
+thiserror   = { workspace = true }

@@ -1,0 +1,96 @@
+# =============================================================================
+# OMNI OS — .gitignore
+# Excludes build artifacts, IDE files, secrets, and project-specific files
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Rust build artifacts
+# -----------------------------------------------------------------------------
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock policy:
+# - We DO commit Cargo.lock for the workspace (binary project)
+# - Library crates published independently may need different rules
+# Cargo.lock
+
+# -----------------------------------------------------------------------------
+# IDE and editor files
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.iml
+
+# -----------------------------------------------------------------------------
+# Environment and secrets — NEVER commit
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+private/
+credentials/
+
+# -----------------------------------------------------------------------------
+# Project-specific exclusions (per OMNI OS policy)
+# -----------------------------------------------------------------------------
+# Claude Code working memory — explicitly excluded
+CLAUDE.md
+.claude/
+
+# Local model weights (large binary files, distributed separately)
+*.safetensors
+*.gguf
+*.bin
+*.pt
+*.onnx
+models/local/
+models/cache/
+
+# -----------------------------------------------------------------------------
+# Logs and runtime data
+# -----------------------------------------------------------------------------
+*.log
+logs/
+tmp/
+.cache/
+node_modules/
+
+# -----------------------------------------------------------------------------
+# Test outputs and coverage
+# -----------------------------------------------------------------------------
+coverage/
+*.profraw
+*.profdata
+tarpaulin-report.html
+cobertura.xml
+
+# -----------------------------------------------------------------------------
+# Documentation build outputs
+# -----------------------------------------------------------------------------
+book/
+docs/_build/
+docs/api/
+
+# -----------------------------------------------------------------------------
+# OS-specific
+# -----------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+desktop.ini

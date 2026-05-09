@@ -1,0 +1,82 @@
+# =============================================================================
+# OMNI OS — Supply-chain audit workflow
+# =============================================================================
+# Runs:
+#   - on every Cargo.lock change
+#   - daily at 06:00 UTC (catch advisories published since last commit)
+#   - on demand via workflow_dispatch
+# =============================================================================
+
+name: audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**/Cargo.toml"
+      - "deny.toml"
+      - ".github/workflows/audit.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**/Cargo.toml"
+      - "deny.toml"
+  schedule:
+    # Daily at 06:00 UTC.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Required to open advisory issues automatically (when scheduled run finds something).
+  issues: write
+
+concurrency:
+  group: audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false  # Audits should not cancel each other.
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # cargo-audit — RustSec advisory database
+  # ---------------------------------------------------------------------------
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+      - name: Run cargo audit
+        run: cargo audit --deny warnings
+
+  # ---------------------------------------------------------------------------
+  # cargo-deny — license / ban / source enforcement (deny.toml)
+  # ---------------------------------------------------------------------------
+  cargo-deny:
+    name: cargo deny
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # Run all four checks: advisories, bans, licenses, sources.
+          command: check
+          arguments: --all-features
+
+  # ---------------------------------------------------------------------------
+  # cargo-vet (post-Phase 0) — supply-chain vetting trail
+  # ---------------------------------------------------------------------------
+  # cargo-vet:
+  #   name: cargo vet
+  #   runs-on: ubuntu-24.04
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - run: cargo install --locked cargo-vet
+  #     - run: cargo vet --locked
+  # Enable when supply-chain.toml is initialized (post-P1 cryptographer review).

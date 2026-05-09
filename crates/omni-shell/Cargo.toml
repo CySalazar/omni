@@ -1,0 +1,33 @@
+# =============================================================================
+# omni-shell — System shell for OMNI OS
+# =============================================================================
+# Initial CLI for OMNI OS interaction. v1 ships a traditional command-line
+# shell; the long-term vision is an intent-based shell where natural
+# language is the primary interface (e.g., "show me files modified
+# yesterday by Marco" lowered into a plan that the user previews and
+# approves before execution).
+# =============================================================================
+
+[package]
+name             = "omni-shell"
+description      = "System shell for OMNI OS — initial CLI; intent-based shell follows."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[lints]
+workspace = true
+
+[dependencies]
+omni-sdk  = { workspace = true }
+tokio     = { workspace = true }
+tracing   = { workspace = true }
+thiserror = { workspace = true }
+anyhow    = { workspace = true }

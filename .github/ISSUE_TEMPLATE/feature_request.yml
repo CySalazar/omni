@@ -1,0 +1,79 @@
+name: Feature request
+description: Propose a new feature or enhancement for OMNI OS.
+title: "[feat] <one-line summary>"
+labels:
+  - "kind:feature"
+  - "needs-triage"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **If this proposal is substantive — new protocol field, breaking
+        > API, new TEE backend, new cryptographic scheme, governance
+        > change, or any change that affects compatibility — please file
+        > an [OIP proposal](?template=oip_proposal.yml) instead.**
+        >
+        > See `CONTRIBUTING.md` § 9 for what counts as "substantive".
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - "kernel"
+        - "crypto"
+        - "capability"
+        - "tee"
+        - "hal"
+        - "runtime"
+        - "mesh"
+        - "tokenization"
+        - "sdk"
+        - "agent"
+        - "shell"
+        - "types"
+        - "docs"
+        - "ci / tooling"
+        - "other"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is the user-facing or developer-facing problem? Avoid jumping to a solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: "Sketch a solution. Be concrete: what changes, where, why."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: "What else did you consider? Why is the proposed solution better?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Compatibility / security impact
+      description: |
+        Does this break existing APIs? Affect attestation? Touch the
+        capability system? If unsure, say so — triage will confirm.
+
+  - type: checkboxes
+    id: oip_check
+    attributes:
+      label: OIP gate
+      options:
+        - label: I have read `CONTRIBUTING.md` § 9 and confirm this proposal does NOT require an OIP, OR I have already filed the corresponding OIP.
+          required: true

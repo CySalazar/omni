@@ -1,0 +1,89 @@
+# =============================================================================
+# OMNI OS — Reproducible-build verification
+# =============================================================================
+# On every release tag, two parallel runners on the same pinned Ubuntu image
+# build the workspace and compare artifact hashes byte-for-byte. If hashes
+# diverge, the release is failed.
+#
+# Reference: rust-toolchain.toml rationale — "deterministic builds".
+# =============================================================================
+
+name: reproducible-build
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.runner }})
+    runs-on: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: A
+            image: ubuntu-24.04
+          - runner: B
+            image: ubuntu-24.04
+    env:
+      # Reproducibility-friendly cargo flags.
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      CARGO_PROFILE_RELEASE_STRIP: "symbols"
+      SOURCE_DATE_EPOCH: ${{ github.event.head_commit.timestamp || '1700000000' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo build --release --workspace
+        run: cargo build --release --workspace
+      - name: Hash all release artifacts
+        id: hash
+        run: |
+          set -eu
+          mkdir -p hashes
+          # Hash any binary or rlib produced by the workspace.
+          find target/release -maxdepth 1 -type f \( -executable -o -name "*.rlib" -o -name "*.a" \) \
+            | sort \
+            | xargs -I{} sh -c 'sha256sum "$1" >> hashes/build-${{ matrix.runner }}.sha256' _ {}
+          cat hashes/build-${{ matrix.runner }}.sha256 || echo "(no artifacts)"
+      - name: Upload hash list
+        uses: actions/upload-artifact@v4
+        with:
+          name: hashes-${{ matrix.runner }}
+          path: hashes/build-${{ matrix.runner }}.sha256
+          retention-days: 30
+
+  compare:
+    name: compare hashes
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hashes-A
+          path: ./hashes-A
+      - uses: actions/download-artifact@v4
+        with:
+          name: hashes-B
+          path: ./hashes-B
+      - name: Diff
+        run: |
+          set -eu
+          A=./hashes-A/build-A.sha256
+          B=./hashes-B/build-B.sha256
+          echo "=== Runner A ==="
+          cat "$A" || true
+          echo "=== Runner B ==="
+          cat "$B" || true
+          # Compare just the hashes, ignoring file path differences.
+          # Both runners use the same checkout path, so paths should match.
+          if ! diff -u <(awk '{print $1}' "$A" | sort) <(awk '{print $1}' "$B" | sort); then
+            echo "::error::Reproducible-build hashes diverge between runners A and B."
+            exit 1
+          fi
+          echo "Reproducible-build check passed: artifact hashes match."

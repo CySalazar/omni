@@ -1,0 +1,32 @@
+# =============================================================================
+# omni-sdk — Application SDK for OMNI OS
+# =============================================================================
+# High-level Rust API for OMNI OS applications. Wraps lower-level system
+# services (runtime, capabilities, encrypted types) in an ergonomic
+# developer-facing API.
+# =============================================================================
+
+[package]
+name             = "omni-sdk"
+description      = "Application SDK for OMNI OS — high-level API for AI invocation, agents, encrypted data."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[lints]
+workspace = true
+
+[dependencies]
+omni-types      = { workspace = true }
+omni-capability = { workspace = true }
+omni-runtime    = { workspace = true }
+async-trait     = { workspace = true }
+tracing         = { workspace = true }
+thiserror       = { workspace = true }

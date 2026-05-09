@@ -1,0 +1,143 @@
+# Funding Policy
+
+**Status:** Draft v0.1
+
+## Principles
+
+OMNI OS funding must satisfy four principles:
+
+1. **Mission-aligned**: from sources sharing the privacy-first, anti-capture mission.
+2. **Independent of regulators**: never from entities with legal regulatory power over the project's domain (privacy, AI, telecommunications).
+3. **Transparent**: publicly disclosed in annual audited reports.
+4. **Diversified**: no single source > 30% of operating budget after year 2.
+
+These principles narrow available funding paths significantly. The trade-off is intentional: it is mission-coherent and reduces the risk of capture by funders, even at the cost of slower growth.
+
+## Excluded sources
+
+The Foundation will NOT accept funding from:
+
+- **Governments**, government agencies, or government-funded programs disbursing direct grants.
+- **Government-aligned investment funds** (sovereign wealth funds, state-controlled VCs).
+- **Entities with legal regulatory authority** over privacy, AI, or telecommunications (this excludes most large media platforms, telcos, and cloud hyperscalers headquartered in jurisdictions where they are also regulators-by-influence).
+- **Surveillance vendors** or surveillance-adjacent companies (defined by the public Surveillance Industry Index and similar databases).
+- **Entities under active investigation** for material privacy violations, fraud, or sanctions.
+- **Anonymous or untraceable funding streams** (KYC required for all donors above a small threshold).
+
+This excludes commonly-used routes such as Horizon Europe direct grants, US Naval Research Laboratory, Open Technology Fund, and similar government-funded programs. The trade-off is intentional.
+
+## Borderline sources (case-by-case board decision)
+
+Sources where the principle of independence may or may not be violated, depending on specifics:
+
+- **NLnet Foundation grants**: NLnet is a private nonprofit, but channels EU NGI (Next Generation Internet) funds upstream. The Foundation will evaluate per-grant whether the operational independence is sufficient.
+- **University research grants**: depends on the university's funding sources and whether grant terms preserve independence.
+- **Aligned-mission corporate sponsorship from companies in regulated industries**: case-by-case based on the specific entity's regulatory exposure to OMNI OS.
+
+Borderline decisions are documented publicly with rationale.
+
+## Accepted sources
+
+### Tier 1 — Mission-aligned private nonprofits
+
+Foundations and grant-makers without governmental control:
+
+- Open Philanthropy
+- Sloan Foundation
+- Mozilla Open Source Support (MOSS)
+- Internet Society / ISOC
+- Comparable nonprofits with explicit privacy / digital-rights missions
+
+### Tier 2 — Aligned corporate sponsorship
+
+Companies with values aligned to the OMNI OS mission and without regulatory power over the project:
+
+- **Privacy-focused service providers**: Proton AG, Tutanota, Mullvad, Element / New Vector, Threema.
+- **Privacy-focused hardware vendors**: System76, Framework, Purism, Nitrokey, Solokeys.
+- **Aligned ecosystem players** (case-by-case): companies whose business model does not conflict with OMNI OS goals.
+
+Excluded: FAANG, telcos, banks, cloud hyperscalers, advertising networks. Their participation as customers (commercial license buyers) is allowed; their participation as funders is not.
+
+### Tier 3 — Community
+
+- **Individual donations** (deductible if Foundation has ANBI status).
+- **GitHub Sponsors, OpenCollective, Patreon**: recurring contributions.
+- **Crowdfunding** for specific milestones (e.g., security audits, hardware bring-up).
+
+### Tier 4 — Self-sustaining (post-adoption)
+
+After significant adoption, the project becomes partially self-funding:
+
+- **Mesh fee**: a small percentage of compute credits flows to a public development fund, allocated transparently per OIP-approved budget.
+- **Commercial license fees** (dual-licensing — see below).
+- **Hardware certification fees** from vendors seeking the OMNI OS Certified mark.
+
+## Dual licensing
+
+Source code is released under AGPL-3.0 by default. Stichting OMNI may grant commercial licenses to organizations that:
+
+- Wish to deploy OMNI OS in contexts incompatible with AGPL obligations.
+- Pay license fees to the Foundation, contributing to development.
+
+Commercial licensing is administered transparently. License fees are reported as a budget line in annual financial statements. The pricing structure is published.
+
+Commercial licensees gain:
+- Right to deploy OMNI OS in proprietary products without AGPL obligations.
+- Optional commercial support contracts.
+
+Commercial licensees do NOT gain:
+- Influence over protocol direction (governance is layer 2, independent of funding).
+- Special access to user data (cryptographic guarantees apply equally).
+- Preferential treatment in OIP processes.
+
+## Funding allocation
+
+Annual budget is approved by the board after public OIP discussion. Allocation categories:
+
+- **Engineering** (development, security audits): largest line.
+- **Infrastructure** (seed nodes, CI/CD, hosting).
+- **Legal and compliance** (counsel, audits, regulatory work).
+- **Community programs** (events, documentation, translations, contributor stipends).
+- **Reserve fund** (≥ 6 months operating runway).
+
+Compensation:
+- Board members: nominal stipend + expenses (the Foundation is not a vehicle for board enrichment).
+- Director and engineering staff: market-competitive salaries.
+- All compensation disclosed in annual reports.
+
+## Annual transparency report
+
+Published yearly, including:
+
+- Total revenue, broken down by source.
+- Total expenditure, broken down by category.
+- Board composition and compensation.
+- Director and senior staff compensation.
+- Major commitments and contingent liabilities.
+- Independent audit results.
+- OIP-approved budget for next fiscal year.
+
+The Foundation commits to engaging an independent auditor of recognized standing.
+
+## Donor relationships
+
+- Donors are thanked and acknowledged (publicly with consent, otherwise privately).
+- Donors do NOT gain influence over protocol or governance.
+- Donor preferences may be considered for programmatic priorities (e.g., a donor funding "documentation translation" can earmark for that), but never for protocol changes.
+- Conflicts of interest involving board members and donors are disclosed and recused.
+
+## Conflict-of-interest policy
+
+- Board members disclose all material affiliations annually.
+- Trustees recuse themselves from decisions involving organizations they are affiliated with.
+- All conflicts and recusals are published in board meeting summaries.
+
+## Funding emergency procedures
+
+If funding shortfalls threaten the project:
+
+1. Board declares a funding emergency publicly.
+2. Reserve fund is drawn upon to maintain critical operations (security maintenance, infrastructure).
+3. Engineering scope is reduced; non-critical phases are paused.
+4. Public appeal for community funding launched.
+5. If emergency persists > 6 months, Foundation enters formal review per stop-condition criteria in [roadmap](./06-roadmap.md).
