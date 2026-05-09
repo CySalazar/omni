@@ -74,7 +74,7 @@ omni-sdk          = { path = "crates/omni-sdk",          version = "0.1.0" }
 omni-agent        = { path = "crates/omni-agent",        version = "0.1.0" }
 
 # --- Async runtime ---
-tokio        = { version = "1.40", features = ["full"] }
+tokio        = { version = "1.52", features = ["full"] }
 async-trait  = "0.1"
 futures      = "0.3"
 
