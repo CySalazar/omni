@@ -109,7 +109,7 @@ anyhow    = "1.0"
 
 # --- Testing utilities ---
 proptest = "1.5"
-mockall  = "0.13"
+mockall  = "0.14"
 
 # -----------------------------------------------------------------------------
 # Build profiles
