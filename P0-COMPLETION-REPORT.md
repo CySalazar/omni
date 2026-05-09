@@ -216,15 +216,15 @@ todo.md             Header status updated; P0.1..P0.9 status icons updated:
 
 2. **Push to GitHub** (1 min):
    ```bash
-   gh repo create omni-os/omni-os --public --source=. --remote=origin --push
+   gh repo create CySalazar/omni --public --source=. --remote=origin --push
    # OR if the repo already exists on GitHub:
-   git remote add origin git@github.com:omni-os/omni-os.git
+   git remote add origin git@github.com:CySalazar/omni.git
    git push -u origin main
    ```
 
 3. **Close P0.7 — branch protection + labels** (3 min):
    ```bash
-   ./scripts/bootstrap-github.sh omni-os/omni-os
+   ./scripts/bootstrap-github.sh CySalazar/omni
    ```
    Idempotent. Applies branch protection on `main`, tag protection,
    creates the full label taxonomy, enables vulnerability alerts and

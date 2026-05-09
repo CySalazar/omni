@@ -23,7 +23,7 @@
 #   ./scripts/bootstrap-github.sh <owner>/<repo>
 #
 # Example:
-#   ./scripts/bootstrap-github.sh omni-os/omni-os
+#   ./scripts/bootstrap-github.sh CySalazar/omni
 #
 # References:
 #   - todo.md P0.7 (branch protection + signed commits)
@@ -37,7 +37,7 @@ set -euo pipefail
 # -----------------------------------------------------------------------------
 if [[ $# -ne 1 ]]; then
   echo "Usage: $0 <owner>/<repo>" >&2
-  echo "Example: $0 omni-os/omni-os" >&2
+  echo "Example: $0 CySalazar/omni" >&2
   exit 64  # EX_USAGE
 fi
 
@@ -254,6 +254,6 @@ Next steps for the human:
   2. Verify the protection took effect by attempting an unsigned push to a
      test branch — it should be rejected.
 
-  3. Consider enabling Discussions categories: Q&A, Ideas, OIP-staging.
+  3. Consider enabling Discussions categories — Q-and-A, Ideas, OIP-staging.
 ===============================================================================
 EOF

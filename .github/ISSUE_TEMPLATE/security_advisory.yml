@@ -37,7 +37,7 @@ body:
     attributes:
       label: Public advisory URL
       description: Link to the already-published security advisory this issue tracks.
-      placeholder: "https://github.com/omni-os/omni-os/security/advisories/GHSA-xxxx"
+      placeholder: "https://github.com/CySalazar/omni/security/advisories/GHSA-xxxx"
     validations:
       required: true
 
