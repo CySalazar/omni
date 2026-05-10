@@ -1,7 +1,7 @@
 # OMNI OS — Implementation TODO
 
-> **Status:** Phase 0 (Foundation) — v0.1 design complete, **P0 fully closed 2026-05-09** (9/9 done; repo live at https://github.com/CySalazar/omni, public, AGPL-3.0, branch-protected, all commits SSH-signed and GitHub-verified). Next focus: P1 (foundational crates) and/or P2 (OIP process).
-> **Last updated:** 2026-05-09 (post-P0 deliverables, post-push, post-bootstrap-github, post-identity-rebase)
+> **Status:** Phase 0 (Foundation) — v0.1 design complete, **P0 fully closed 2026-05-09** (9/9 done; repo live at https://github.com/CySalazar/omni, public, AGPL-3.0, branch-protected, all commits SSH-signed and GitHub-verified). **P1 fully closed 2026-05-10** (3/3 foundational crates implemented + verified: `omni-types`, `omni-crypto`, `omni-capability`; 131 tests green; `cargo clippy -D warnings` and `cargo doc -D warnings` clean across all three crates). **P2 fully closed 2026-05-10** (3/3 — `OIP-Process-001` `Active` under bootstrap fiat; `/oips/` registry + template + sentinel + linter live; BDFL veto window documented immutably 2026-05-09 → 2031-05-09 in `OIP-Process-001` §5.4 and `docs/05-governance.md`). Next focus: P3 (cryptographic peer review of `omni-crypto`) and/or kicking off the first non-`Meta` OIP to dogfood the formal voting flow.
+> **Last updated:** 2026-05-10 (post-P2 closure — OIP process live, BDFL window in writing, lint workflow active)
 > **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
 > **Priority order:** Security → Stability → Performance (per project policy).
 > **Repo:** [github.com/CySalazar/omni](https://github.com/CySalazar/omni) · License: [AGPL-3.0-only](LICENSE) · Branch protection summary in [`docs/11-tooling-and-ci.md`](docs/11-tooling-and-ci.md).
@@ -296,7 +296,7 @@ Add `.github/dependabot.yml`:
 
 ## P1.1 — Implement `omni-types`
 
-- **Status:** `[ ]`
+- **Status:** `[x]` (closed 2026-05-10 — 33 tests passing, clippy strict + doc strict clean, `no_std + alloc` compile-verified)
 - **Priority:** P1
 - **Effort:** 1 week
 - **Dependencies:** P0 (CI must exist to gate this work)
@@ -346,7 +346,7 @@ Add `.github/dependabot.yml`:
 
 ## P1.2 — Implement `omni-crypto`
 
-- **Status:** `[ ]`
+- **Status:** `[x]` (closed 2026-05-10 — 55 tests passing including RFC vectors for ChaCha20-Poly1305 / Ed25519 / X25519 / SHA-256 / SHA3-256 / BLAKE3 / HKDF-SHA-256; clippy strict + doc strict clean; **AWAITING_CRYPTO_REVIEW** marker in `lib.rs` per P3.2 dependency)
 - **Priority:** P1 / Critical
 - **Effort:** 2–3 weeks (longer if cryptographer review is sequential)
 - **Dependencies:** P1.1, P3 (peer review should run in parallel and gate the merge)
@@ -407,7 +407,7 @@ Add `.github/dependabot.yml`:
 
 ## P1.3 — Implement `omni-capability`
 
-- **Status:** `[ ]`
+- **Status:** `[x]` (closed 2026-05-10 — 43 tests passing including Macaroons-style attenuation monotony property test (64 cases) + tampered-child adversarial property test; clippy strict + doc strict clean; in-crate `MicroBloom` revocation list to keep `no_std + alloc`)
 - **Priority:** P1 / Critical
 - **Effort:** 2 weeks
 - **Dependencies:** P1.1, P1.2
@@ -460,60 +460,61 @@ Add `.github/dependabot.yml`:
 
 ## P2.1 — Write OIP-Process-001 (the meta-OIP)
 
-- **Status:** `[ ]`
+- **Status:** `[x]` (closed 2026-05-10 — `oips/oip-process-001.md` `Active` under bootstrap fiat clause §6.3; lifecycle, categories, voting, BDFL window, editor body, Bootstrap Period all formalized; structural lint green. **Amended same day** under bootstrap fiat clause §6.3 with three structural changes: new §6.5 Critical-security Bootstrap exception, expanded §5.2 Known limitations, refined `## Privacy Considerations` + template HTML guidance. Amendment history logged in OIP itself.)
 - **Priority:** P2 / Critical
 - **Effort:** 3 days
 - **Dependencies:** P0.3 (CONTRIBUTING)
 - **Rationale:** roadmap explicitly requires `OIP-Process-001` to close Phase 0. Without it, every architectural change is autocratic instead of federated.
 
 **Deliverables (`/oips/oip-process-001.md`):**
-- OIP types: `Process`, `Standards Track`, `Informational`, `Meta`.
-- Lifecycle: `Draft` → `Active` → (`Final` | `Withdrawn` | `Superseded`).
-- Required sections: Abstract, Motivation, Specification, Rationale, Backwards Compatibility, Test Cases, Reference Implementation, Security Considerations, Privacy Considerations, Copyright.
+- OIP types: `Process`, `Standards Track`, `Informational`, `Meta`. *(Done — §1)*
+- Lifecycle: `Draft → Review → Last Call → Active → Final | Withdrawn | Superseded | Rejected`. *(Done — §4. Unified the two slightly different lifecycles in `todo.md` and `docs/05-governance.md` v0.1; the OIP is the authoritative source going forward.)*
+- Required sections: Abstract, Motivation, Specification, Rationale, Backwards Compatibility, Test Cases, Reference Implementation, Security Considerations, Privacy Considerations, Copyright. *(Done — §2; CI lint enforces them.)*
 - Voting mechanism (initial, manual until tooling exists):
-  - Eligibility: TEE-attested unique device (anti-Sybil).
-  - Weighting: proof-of-uptime + proof-of-contribution. Concrete formula deferred to OIP-Voting-002.
-  - Quorum: 30% of eligible voters or 14-day open window, whichever is reached first.
-  - Approval threshold: quadratic-vote majority.
-- BDFL veto window: 5 years from v0.1, sunset confirmed in writing in OIP itself.
-- Editor role: 2 OIP editors per term, rotated annually.
+  - Eligibility: TEE-attested unique device (anti-Sybil). *(Done — §5.1)*
+  - Weighting: proof-of-uptime + proof-of-contribution. Concrete formula deferred to a future Process OIP under slug `voting`. *(Done — §5.2; bootstrap defaults specified for the deferred period.)*
+  - Quorum: 30% of eligible voters or 14-day open window, whichever is reached first. *(Done — §5.3)*
+  - Approval threshold: quadratic-vote majority (50%+1); 66.7% supermajority for Layer 1 cryptographic breaks. *(Done — §5.3)*
+- BDFL veto window: 5 years from 2026-05-09 (first public commit), sunset 2031-05-09 23:59 UTC, structurally non-extensible. *(Done — §5.4)*
+- Editor role: 2 OIP editors per term, rotated annually. Bootstrap Period explicitly codified: 1 interim editor (founder) + Seat 2 vacant until Phase 1 hire OR 2027-05-10 hard deadline. *(Done — §6)*
 
 **Acceptance criteria:**
-- [ ] OIP-Process-001 itself passes its own process (dogfood test).
-- [ ] Linked from README and `05-governance.md`.
-- [ ] Issue template for new OIPs (P0.8) functional.
+- [x] OIP-Process-001 itself passes its own process (dogfood test). *(Ratified under the one-time bootstrap fiat clause §6.3 — no prior process exists to vote it in. The dogfood test of the formal flow is deferred to the first non-`Meta` OIP, by design, and explicitly documented as such in §6.3 ¶3.)*
+- [x] Linked from README and `05-governance.md`. *(README §"Public commitments" + §"Contributing"; `docs/05-governance.md` §2 fully refactored to point at the OIP as authoritative.)*
+- [x] Issue template for new OIPs (P0.8) functional. *(Pre-existing: `.github/ISSUE_TEMPLATE/oip_proposal.yml`; cross-referenced from `oips/README.md` and `CONTRIBUTING.md` §9.)*
 
 ---
 
 ## P2.2 — Set up `/oips/` directory and template
 
-- **Status:** `[ ]`
+- **Status:** `[x]` (closed 2026-05-10)
 - **Priority:** P2
 - **Effort:** 2 h
 - **Dependencies:** P2.1
 
 **Deliverables:**
-- `/oips/README.md` — index of all OIPs by number, status, title.
-- `/oips/oip-template.md` — copy this for new proposals.
-- `/oips/oip-0000-template.md` — same content with reserved number 0.
+- `/oips/README.md` — index of all OIPs by number, status, title. *(Done; auto-validated against the registry by the lint.)*
+- `/oips/oip-template.md` — copy this for new proposals. *(Done; canonical template with frontmatter + 10 required sections.)*
+- `/oips/oip-0000-template.md` — same content with reserved number 0. *(Done; sentinel file with `oip: 0000`, status `Withdrawn` to keep it out of the active index, treated as a special case by the lint.)*
+- `scripts/lint-oips.py` + `.github/workflows/oip-lint.yml` — CI lint that validates frontmatter, sections, filename↔number coherence, and index cross-reference. *(Done; stdlib-only Python 3.11.)*
 
 **Acceptance criteria:**
-- [ ] `/oips/README.md` auto-renders a table of contents.
-- [ ] CI lint that fails if an OIP file deviates from the template structure.
+- [x] `/oips/README.md` auto-renders a table of contents. *(Markdown table; lint enforces every OIP file has a row.)*
+- [x] CI lint that fails if an OIP file deviates from the template structure. *(Verified manually: lint exits 0 with 2 valid OIPs, exits 1 on injected violations during development — see `scripts/lint-oips.py` test trace in dev session.)*
 
 ---
 
 ## P2.3 — Document the BDFL veto window in writing
 
-- **Status:** `[ ]`
+- **Status:** `[x]` (closed 2026-05-10 — start `2026-05-09`, sunset `2031-05-09` 23:59 UTC, immutable; structurally non-extensible per asymmetric clause `OIP-Process-001` §5.4)
 - **Priority:** P2
 - **Effort:** 2 h
 - **Dependencies:** P2.1
 - **Rationale:** the memory says "BDFL veto for first 5 years (sunset clause)". This must be in a versioned, immutable document so it can't be silently extended.
 
 **Deliverables:**
-- Section in `05-governance.md` cross-referencing OIP-Process-001 with explicit start date and sunset date.
-- Public commitment in README that the veto cannot be extended without an OIP that itself cannot be vetoed.
+- Section in `05-governance.md` cross-referencing OIP-Process-001 with explicit start date and sunset date. *(Done — `docs/05-governance.md` §2 "Founder role (years 1–5)" rewritten with three independent immutable anchors: this file, OIP-Process-001 §5.4, first signed commit `61426d5` on 2026-05-09.)*
+- Public commitment in README that the veto cannot be extended without an OIP that itself cannot be vetoed. *(Done — README §"Public commitments". The asymmetric clause in `OIP-Process-001` §5.4 makes the window structurally non-extensible by founder action alone.)*
 
 ---
 
@@ -776,11 +777,25 @@ Decisions resolved during P0 closure:
 2. ~~**P0 vs P1 ordering**~~ — **Resolved 2026-05-09:** *P0 first*. Closed before any code in foundational crates lands.
 3. ~~**Phase 0 non-technical work (P4)**~~ — **Resolved 2026-05-09:** *Out of scope* for current implementer engagement; P4 remains in this document but execution is on the founder's calendar (notary, KVK, grants).
 
+Decisions resolved during P2 closure (2026-05-10):
+
+4. ~~**OIP-Process-001 authorship (P2.1)**~~ — **Resolved 2026-05-10:** *Claude drafts, founder reviews* (Implementer mode preserved from §1 above). OIP shipped under bootstrap fiat clause §6.3.
+5. ~~**P1 vs P2 ordering**~~ — **Resolved de facto 2026-05-10:** P1 closed first; P2 followed within the same day. Sequence preserved but cycle time short enough that the "federated review of `omni-crypto`" benefit was not lost — `omni-crypto` carries an explicit `AWAITING_CRYPTO_REVIEW` marker (P3.2) and any breaking change to its API will now go through the formal OIP process.
+6. ~~**BDFL veto window start date (P2.3)**~~ — **Resolved 2026-05-10:** *2026-05-09* (first public commit, GitHub-verified). Maximally constraining on the founder, certain today, independently verifiable. Sunset 2031-05-09 23:59 UTC, immutable.
+7. ~~**OIP editor body composition during Bootstrap (P2.1)**~~ — **Resolved 2026-05-10:** *1 interim editor (founder), Seat 2 vacant until Phase 1 hire OR 2027-05-10 (hard deadline)*. Codified in `OIP-Process-001` §6.2.
+
+Resolved during P2 review (2026-05-10, post-publication founder editorial review):
+
+10. ~~**First non-`Meta` OIP to dogfood the formal vote**~~ — **Resolved 2026-05-10:** *`OIP-bounty-XXX`* (slug `bounty`, Process track; global number assigned at Last Call). Self-contained, sblocca grant narrative, ~1 settimana di drafting, primo Last Call reale. Subsequent order: `OIP-voting-XXX` (refines §5.2 bootstrap defaults), then `OIP-stark-snark-XXX` (after P3.2 cryptographer review unblocks). Drafting non avviato — gating su decisione del founder se partire ora o pre-allineare prima sui parametri chiave (severity tiers, payout ranges, eligibility filters).
+11. ~~**OIP-Process-001 critical-security gap during Bootstrap**~~ — **Resolved 2026-05-10:** founder review surfaced the gap; addressed via OIP-Process-001 §6.5 amendment under bootstrap fiat. Bootstrap deadlock on `Critical` Standards Track OIPs is now bounded by 72h objection window + mandatory post-Bootstrap re-ratification.
+12. ~~**OIP-Process-001 voting formula generational unfitness**~~ — **Resolved 2026-05-10:** founder review surfaced the saturation issue; addressed via §5.2 "Known limitations" amendment with soft 2028-05-10 deadline for the `voting`-slug Process OIP.
+13. ~~**OIP-Process-001 author-identity privacy posture**~~ — **Resolved 2026-05-10:** founder review surfaced the GDPR/privacy-first inconsistency; addressed via `## Privacy Considerations` refinement + `oips/oip-template.md` HTML guidance.
+
 Still open:
 
-4. **OIP-Process-001 authorship (P2.1)** — Claude drafts based on `/docs/05-governance.md` and the architecture memory, founder reviews, OR founder drafts and Claude reviews? *(Decision needed before P2 starts.)*
-5. **P1 vs P2 ordering** — Should P1 (`omni-types` → `omni-crypto` → `omni-capability`) start now, or close P2 (OIP process + `/oips/` directory) first to enable federated review of the cryptographic API as it lands? *(Recommendation: P2.1 first — 3 days of work — so P1.2 lands under formal OIP process. Founder confirmation requested.)*
-6. **Repo visibility long-term** — flipped to **PUBLIC** on 2026-05-09 because branch protection on the GitHub free plan requires it and AGPL-3.0 is consistent with public hosting. Confirm this remains the steady state, or signal a temporary embargo for any pre-disclosure phase.
+8. **Repo visibility long-term** — flipped to **PUBLIC** on 2026-05-09 because branch protection on the GitHub free plan requires it and AGPL-3.0 is consistent with public hosting. Confirm this remains the steady state, or signal a temporary embargo for any pre-disclosure phase.
+9. **Branch-protection update for `oip-lint`** — `OIP-Process-001` §9 ¶2 mandates that branch protection on `main` add `oip-lint / oip-lint` as a required status check within 7 calendar days of the OIP transitioning to `Active`. Concrete action: re-run `scripts/bootstrap-github.sh` (or equivalent `gh` CLI invocation) before 2026-05-17 to extend the required-check list from 8 to 9. *(Founder-side action — requires GitHub admin token.)*
+14. **`OIP-bounty-XXX` drafting kickoff** — confirmed as first non-Meta OIP (decision 10 above). Pre-drafting decisions to align: severity tiers (CVSSv4 calibration vs `SECURITY.md` §3 reuse), payout ranges (range €/USD per tier — pre- vs post-funding split), eligibility filters (current contributors above editor tier excluded, conflict-of-interest for Stichting-affiliated researchers), disclosure timeline alignment with `SECURITY.md` SLA. Founder confirmation needed on whether to start drafting now or pre-align on these parameters first.
 
 These decisions do not block strategic planning, only execution order.
 

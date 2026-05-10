@@ -2,65 +2,73 @@
 //!
 //! Capability tokens for OMNI OS.
 //!
-//! Implements Macaroons-style cryptographic tokens that grant a specific
-//! actor the right to perform a specific action on a specific resource,
-//! for a bounded period of time. Capabilities replace traditional Unix
-//! permissions for AI workloads, where agents may compose actions across
-//! many resources.
+//! Implements Macaroons-style cryptographic tokens that grant a
+//! specific subject the right to perform a specific action on a
+//! specific resource, for a bounded time window. Capabilities replace
+//! traditional Unix permissions for AI workloads, where agents may
+//! compose actions across many resources without re-authenticating
+//! per call.
 //!
-//! ## Status
+//! ## Wire format
 //!
-//! Draft v0.1 — scaffold only. Implementation arrives in Phase 1 per
-//! [`/docs/06-roadmap.md`](../../../docs/06-roadmap.md).
+//! Tokens are canonically encoded with `bincode` v2 in
+//! fixed-int / no-trailing-data mode, then signed with `Ed25519`
+//! ([`omni_crypto::signing`]). The pre-image of the signature is the
+//! canonical encoding of the token's payload (every field except the
+//! signature itself). Wire format details live in
+//! `/docs/03-mesh-protocol.md` § "Capability tokens".
 //!
-//! ## Design rationale
+//! ## Trust model
 //!
-//! - **Attenuable delegation**: a parent capability can produce a child
-//!   capability with strictly more restrictive scope (Macaroons-style).
-//!   This enables agent composition without privilege escalation.
-//! - **Short TTL** (minutes by default): combined with a revocation list,
-//!   allows fast revocation without long-lived state.
-//! - **TEE-bound**: a capability is valid only when invoked from inside
-//!   the TEE whose attestation the capability was minted against.
-//! - **Master keys in TPM/Secure Enclave**: signing keys never leave the
-//!   hardware root of trust.
+//! A capability is valid iff:
 //!
-//! See [`/docs/04-security-model.md`](../../../docs/04-security-model.md)
-//! § "Capability-based access control".
+//! 1. The signature verifies under the issuer's public key.
+//! 2. The current time is within `[not_before, not_after)`.
+//! 3. The token is not in the revocation list ([`revocation`]).
+//! 4. The TEE attestation of the calling node matches the
+//!    `subject` `NodeId`.
+//! 5. Every caveat applied along the attenuation chain holds (each
+//!    [`attenuation::CaveatPredicate`] returns `true` for the
+//!    requested action and resource).
+//!
+//! Items 1–3 are enforced in this crate. Item 4 is enforced via the
+//! [`tee`] trait (placeholder; concrete `TeeBackend` impls land in
+//! `omni-tee` per P5 in `/todo.md`). Item 5 is enforced by
+//! [`attenuation::verify_chain_link`] together with the per-caveat
+//! evaluator implementations the consumer registers.
 //!
 //! ## Modules
 //!
-//! - [`token`] — the capability token data structure and signing.
-//! - [`scope`] — scope predicates (action × resource × time).
-//! - [`attenuation`] — Macaroons-style derivation of attenuated tokens.
-//! - [`revocation`] — revocation list management.
+//! - [`token`]       — token data structure, signing, verification.
+//! - [`scope`]       — typed action × resource × time vocabulary.
+//! - [`attenuation`] — Macaroons-style derivation of child tokens.
+//! - [`revocation`]  — in-memory revocation list with bloom filter.
+//! - [`tee`]         — trait surface for TEE attestation binding (P5).
 
 #![doc(html_root_url = "https://docs.omni-os.org/omni-capability")]
+#![no_std]
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
+// See `omni-types/src/lib.rs` for the rationale.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unnecessary_wraps,
+        clippy::indexing_slicing,
+    )
+)]
 
-/// The capability token data structure and signing routines.
-pub mod token {
-    // TODO(phase-1): define `CapabilityToken`, signing, verification.
-}
+extern crate alloc;
 
-/// Scope predicates: action × resource × time bounds.
-pub mod scope {
-    // TODO(phase-1): scope grammar and matching.
-}
+pub mod attenuation;
+pub mod revocation;
+pub mod scope;
+pub mod tee;
+pub mod token;
 
-/// Macaroons-style derivation of attenuated tokens.
-pub mod attenuation {
-    // TODO(phase-1): derivation rules with strict monotonic restriction.
-}
-
-/// Revocation list management.
-pub mod revocation {
-    // TODO(phase-1): revocation list with short-TTL design.
-}
-
-#[cfg(test)]
-mod tests {
-    /// Placeholder test asserting the crate compiles.
-    #[test]
-    fn placeholder() {}
-}
+// Re-export the most-used items at the crate root for ergonomic imports.
+pub use crate::scope::{Action, Caveat, Resource, Scope, TimeWindow};
+pub use crate::token::{CapabilityToken, TokenPayload};

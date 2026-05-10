@@ -23,11 +23,21 @@ readme.workspace       = true
 [lints]
 workspace = true
 
+# -----------------------------------------------------------------------------
+# Dependencies
+# -----------------------------------------------------------------------------
+# Token canonical encoding uses `bincode` v2 strict-mode (no varints, no
+# trailing data), which is byte-deterministic and therefore safe to feed
+# into a signature pre-image. The bloom filter used by the revocation
+# list is implemented in-crate (see `revocation.rs`) so we avoid pulling
+# in `std`-only crates such as `bloomfilter`.
 [dependencies]
 omni-types  = { workspace = true }
 omni-crypto = { workspace = true }
 serde       = { workspace = true }
+bincode     = { workspace = true }
 thiserror   = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+hex      = { workspace = true }

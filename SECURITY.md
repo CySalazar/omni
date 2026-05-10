@@ -204,8 +204,11 @@ We will not embargo a fix to favor a specific commercial licensee
 
 ## 7. Hall of fame & bounty
 
-A formal bounty program will be defined by **OIP-Bounty-001** once the
-OIP process is operational (`todo.md` P2). Until then:
+A formal bounty program will be defined by a future Process OIP under the slug `bounty`
+(placeholder name `OIP-Bounty-XXX`; the actual global number is assigned at filing per
+[`OIP-Process-001` §8](./oips/oip-process-001.md)). The OIP process is `Active` since
+2026-05-10; the bounty OIP is gated on Stichting OMNI funding (`todo.md` P4) so the program can
+disburse rewards. Until then:
 
 - **Hall of fame:** researchers who report valid issues are credited in
   the advisory and, with consent, in `CONTRIBUTORS.md` under "Security

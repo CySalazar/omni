@@ -43,36 +43,59 @@ How the protocol evolves. Modeled after IETF RFCs, Bitcoin BIPs, and Ethereum EI
 
 #### OIP process
 
-1. **Proposal**: anyone can publish an OMNI Improvement Proposal (OIP) on the public OIP repository.
-2. **Discussion**: public discussion via mailing list / forum (open, archived).
-3. **Reference implementation**: required for any non-trivial proposal.
-4. **Vote**: weighted by **proof-of-uptime + proof-of-contribution**, anti-Sybil via TEE attestation (1 unique device = 1 vote), quadratic voting to reduce concentration of power.
-5. **Activation**: the new behavior runs in parallel with the old; activation triggers when ≥75% of active nodes have run the implementation for 30 consecutive days. Old behavior is deprecated when usage drops below a threshold.
+The procedural detail of the OIP process — categories, lifecycle, voting, eligibility, editor
+body, BDFL veto, Bootstrap Period — is the subject of [`OIP-Process-001`](../oips/oip-process-001.md)
+(`Active` since 2026-05-10 under the bootstrap fiat clause defined in that OIP §6.3). This
+section provides a high-level overview; **`OIP-Process-001` is authoritative on every detail**
+and supersedes any earlier sketch in this document.
 
-OIP categories:
+High-level summary:
 
-- **Standards Track** — protocol changes
-- **Process** — governance changes
-- **Informational** — guidelines, best practices, advisories
+1. **Proposal**: anyone files an OIP on the public OIP repository ([`/oips/`](../oips/README.md)) using the canonical template.
+2. **Discussion**: public discussion on GitHub Discussions and the linked PR (open, archived).
+3. **Reference implementation**: required for `Standards Track` OIPs; not required for `Process`/`Informational`/`Meta`.
+4. **Vote**: weighted by **proof-of-uptime + proof-of-contribution**, anti-Sybil via TEE attestation (1 unique device = 1 vote), quadratic voting to reduce concentration of power. Quorum 30% of eligible weighted vote OR 14-day window, whichever first; 50%+1 quadratic majority for approval; 66.7% supermajority for OIPs that break Layer 1 cryptographic guarantees. See `OIP-Process-001` §5 for the formula.
+5. **Activation**: for `Standards Track`, the new behavior runs in parallel with the old; the OIP transitions from `Active` to `Final` when ≥75% of attested active nodes have run the implementation for ≥30 consecutive days, with no unresolved Critical-severity finding. Old behavior is deprecated when usage drops below a threshold.
 
-OIP states: `Draft` → `Review` → `Last Call` → `Final` / `Rejected` / `Withdrawn`.
+OIP categories: **Standards Track** (protocol), **Process** (governance), **Informational** (guidelines), **Meta** (OIPs governing the OIP process itself).
+
+OIP lifecycle: `Draft → Review → Last Call → Active → Final | Withdrawn | Superseded | Rejected`.
 
 #### Founder role (years 1–5)
 
-For the first 5 years, the project founder (cySalazar) holds:
+For the **5-year window from 2026-05-09 to 2031-05-09 (immutable sunset, 23:59 UTC)**, the
+project founder (cySalazar) holds:
 
 - **Lead Architect** title with technical leadership responsibility.
-- **Soft veto** on protocol breaking changes: the founder can *block* a proposal but cannot *impose* one.
+- **Soft veto** on `Standards Track` OIPs that break Layer 1 protocol guarantees: the founder
+  can *block* a proposal but cannot *impose* one. The veto cannot be applied to `Process`,
+  `Informational`, or `Meta` OIPs, and it cannot be applied to a `Meta` OIP that narrows the
+  founder's own authority (asymmetric clause). The veto is therefore **structurally
+  non-extensible** by founder action alone.
 
-The veto sunsets at year 5 by Stichting bylaws. This is a codified, non-discretionary expiry.
+The 5-year anchor is **2026-05-09**, the date the public repository
+`github.com/CySalazar/omni` opened with the founder identity GitHub-verified. This date is
+recorded immutably in:
 
-#### After year 5
+- This document (versioned under `main`, signed commits).
+- [`OIP-Process-001` §5.4](../oips/oip-process-001.md) (also versioned, ratified under bootstrap fiat).
+- The first commit on `main` (`61426d5`, 2026-05-09, signed) — providing on-chain (well, on-Git) verifiable provenance.
 
-Founder retains an advisory role (no veto). All protocol decisions are made by the OIP process.
+The veto sunsets at 2031-05-09 by both `OIP-Process-001` and Stichting bylaws (once the
+Stichting is constituted per [`08-funding-policy.md`](08-funding-policy.md) and the roadmap's
+Phase 0 closure). Each veto exercise MUST be logged in
+[`docs/audits/bdfl-veto-log.md`](audits/bdfl-veto-log.md) with the OIP number, date, and
+written rationale (or the file is created the first time a veto is exercised).
 
-#### After year 10
+#### After year 5 (post-2031-05-09)
 
-Full transition to community-elected technical board. Trustees of Stichting OMNI are no longer founder-appointed; they are elected via the OIP process.
+Founder retains an **advisory role** with no veto. All protocol decisions are made by the OIP
+process described in `OIP-Process-001`.
+
+#### After year 10 (post-2036-05-09)
+
+Full transition to community-elected technical board. Trustees of Stichting OMNI are no longer
+founder-appointed; they are elected via the OIP process.
 
 ### Layer 3 — Operational (legal entity)
 
@@ -146,9 +169,24 @@ For ethical or legal disputes:
 
 ## Open governance questions
 
-- **Founder succession plan if Matteo steps down in years 1–5**: bylaws specify board elects an interim Lead Architect from active maintainers, confirmed by OIP. Specific procedure to be detailed in Foundation bylaws.
-- **Trustee selection for years 4+**: process for transitioning from founder-appointed to community-elected trustees.
-- **Legal jurisdiction handling**: when laws of NL conflict with mission (e.g., hypothetical EU mandate to insert backdoors), explicit Foundation policy of public refusal + relocation if necessary.
-- **Specific OIP voting threshold formulas**: quadratic voting parameters, quorum requirements, super-majority thresholds for protocol breaking changes.
+Resolved by [`OIP-Process-001`](../oips/oip-process-001.md) on 2026-05-10:
 
-These will be addressed in OIP-Process-001 and Foundation bylaws prior to v1 release.
+- ~~**Specific OIP voting threshold formulas**~~ — quadratic-vote weight formula bootstrapped in
+  `OIP-Process-001` §5.2 with a tunable, deferred Process OIP for the production-grade formula.
+  Quorum (§5.3) and supermajority for Layer 1 changes (§5.3) are fixed.
+- ~~**BDFL veto window dates**~~ — start `2026-05-09`, sunset `2031-05-09` (immutable),
+  documented in three independent places: this file, `OIP-Process-001` §5.4, and the first
+  commit on `main` (`61426d5`).
+- ~~**OIP categories and lifecycle**~~ — formalized in `OIP-Process-001` §1 and §4.
+
+Still open, pending Foundation bylaws (see [`08-funding-policy.md`](08-funding-policy.md) and
+roadmap Phase 0 closure for `P4.1`):
+
+- **Founder succession plan if cySalazar steps down in years 1–5**: bylaws specify board elects
+  an interim Lead Architect from active maintainers, confirmed by OIP. Specific procedure to
+  be detailed in Foundation bylaws.
+- **Trustee selection for years 4+**: process for transitioning from founder-appointed to
+  community-elected trustees.
+- **Legal jurisdiction handling**: when laws of NL conflict with mission (e.g., hypothetical
+  EU mandate to insert backdoors), explicit Foundation policy of public refusal + relocation
+  if necessary.

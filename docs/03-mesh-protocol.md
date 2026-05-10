@@ -156,6 +156,70 @@ Messages on the mesh use a binary frame format:
 
 Detailed wire format will be specified in OIP-001 prior to v1 release.
 
+### Capability tokens (Macaroons-style)
+
+Authority to perform a mesh action is carried by a `CapabilityToken` minted by the resource owner and verified by every relay. Tokens are defined in `crates/omni-capability` (closed P1.3 — 2026-05-10).
+
+#### Pre-image layout
+
+The signed pre-image is the canonical encoding of `TokenPayload`:
+
+```
+TokenPayload {
+    id:      [u8; 16]      // CapabilityId (UUIDv4 layout)
+    subject: [u8; 32]      // NodeId (BLAKE3 hash of TEE attestation quote)
+    issuer:  [u8; 32]      // Ed25519 verifying key (compressed Edwards point)
+    parent:  Option<[u8; 16]>  // None for root tokens, else parent CapabilityId
+    scope:   Scope         // see below
+}
+```
+
+`Scope` is encoded as the tuple `(action, resource, window, caveats)`:
+
+```
+Scope {
+    action:   Action       // enum discriminant (Read | Write | Append | Execute |
+                           //                    Delete | Connect | Listen |
+                           //                    ModelInfer | ModelLoad |
+                           //                    AgentSpawn | AgentSend)
+    resource: Resource     // enum discriminant + payload (Any | Filesystem(String) |
+                           //                              Network(String) | Model(ModelId) |
+                           //                              Agent(AgentId) | Node(NodeId))
+    window:   TimeWindow   // { not_before: u64, not_after: u64 } — Unix seconds
+    caveats:  Vec<Caveat>  // length-prefixed sequence of attenuation caveats
+}
+```
+
+`Caveat` variants are `ExpiresAt(u64)`, `NotBefore(u64)`, `BoundToNode(NodeId)`, `BoundToSession([u8; 16])`, and `Custom { tag: String, payload: Vec<u8> }`.
+
+#### Encoding
+
+* Encoder: `bincode` 2.0 with `bincode::config::standard()` — little-endian, length-prefixed `Vec` and `String`, no length limit, no trailing data tolerated on decode.
+* Field order: textual order in the struct definitions above. **Do NOT reorder fields without bumping the wire-protocol major version.**
+* `Option`: 1-byte discriminant (`0x00` = `None`, `0x01` = `Some`) followed by the payload.
+* Enum variants: 1-byte (or varint-extended) discriminant in source-declaration order.
+* All integer types are little-endian.
+
+This canonicalisation guarantees byte-identical pre-images across implementations and platforms — the security-critical invariant for `Ed25519` signature verification.
+
+#### Signature
+
+* Algorithm: `Ed25519` per RFC 8032. Verification uses `ed25519-dalek::VerifyingKey::verify_strict`, which rejects non-canonical R / A points (defends against malleability and small-subgroup attacks).
+* Pre-image: the canonical encoding above.
+* Signature length: 64 bytes (R || s).
+
+#### Validation procedure
+
+A relay or end-node validates a token by checking, in order:
+
+1. **Signature** — `verify_strict` against the embedded `issuer` public key.
+2. **Revocation** — token's `id` is not in the local `RevocationList`.
+3. **Time window** — current monotonic clock time `now` satisfies `not_before ≤ now < not_after`.
+4. **TEE binding** — the calling node's attestation derives a `NodeId` equal to the token's `subject`.
+5. **Caveats** — every `Caveat` evaluates to `true` against the current request context. (`Custom` caveats are dispatched by `tag` to a `CaveatPredicate` impl registered by the consumer.)
+
+For attenuated tokens, the validator additionally walks the parent chain and asserts at each step that the child scope is a subset of the parent scope (`omni_capability::attenuation::verify_chain_link`).
+
 ## Open problems (to be resolved before v1)
 
 - **Anti-Sybil under TEE attestation**: how to prevent datacenter clones from gaming the system? Approach under consideration: rate-limit attestations per platform fingerprint + economic friction via compute credit bootstrapping.

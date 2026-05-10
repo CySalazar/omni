@@ -1,10 +1,23 @@
 # Architecture Overview
 
-**Status:** Draft v0.1
+**Status:** Draft v0.1.1 — foundational layer implemented (P1, 2026-05-10).
 
 ## Executive summary
 
 OMNI OS is structured in concentric layers, from a custom Rust microkernel up to the application layer. AI is a first-class kernel concept, not a userspace addition. Computation can happen entirely on the local device, distributed across the user's own devices on a personal LAN cluster, federated across the global P2P mesh, or — as a last resort — sent to commercial cloud providers.
+
+## Implementation status
+
+| Layer | Crates | State (2026-05-10) |
+|---|---|---|
+| Foundational | `omni-types`, `omni-crypto`, `omni-capability` | **Implemented** (P1 closed). 131 unit tests + 7 integration tests + 4 trybuild compile-fail tests, all green. `no_std + alloc`. `omni-crypto` carries the `AWAITING_CRYPTO_REVIEW` marker pending P3.2. |
+| TEE root of trust | `omni-tee` | Trait surface (`omni_capability::tee::AttestationSource`) declared in P1; concrete backends (Intel TDX, AMD SEV-SNP) land in P5. |
+| Microkernel | `omni-kernel` | Stub. Bare-metal `no_std + no_main` transition is Phase 1 (P6). |
+| Hardware Abstraction | `omni-hal` | Stub. P5–P6. |
+| System services | `omni-runtime`, `omni-mesh`, `omni-tokenization` | Stubs. Phase 2+. The `omni-tokenization` crate is the only one authorised to enable `omni-types`'s `_tokenization_provider` feature flag (the construction gate for `EncryptedString` and friends). |
+| User-facing | `omni-sdk`, `omni-agent`, `omni-shell` | Stubs. Phase 2+. |
+
+See [`/todo.md`](../todo.md) for the active backlog and [`/CHANGELOG.md`](../CHANGELOG.md) for the per-release record.
 
 ## High-level system layers
 
