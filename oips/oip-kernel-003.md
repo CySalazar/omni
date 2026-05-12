@@ -1,16 +1,18 @@
 ---
-oip: Kernel-003
+oip: 3
 title: UEFI Bootloader Selection and Kernel `no_std` Transition Plan
+track: Standards Track
 status: Draft
-category: Standards Track
-type: Process
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-10
+updated: 2026-05-12
 requires:
   - OIP-Process-001
-supersedes: []
+supersedes: ~
+superseded-by: ~
 discussion: https://github.com/CySalazar/omni/discussions (TBD link)
+license: CC0-1.0
 ---
 
 # OIP-Kernel-003 — UEFI Bootloader Selection and Kernel `no_std` Transition Plan
@@ -162,11 +164,11 @@ vs-Limine. The TEE-required hardware baseline obsoletes BIOS, and the
 pure-Rust path obsoletes Limine for v1.0 — both decisions reduce risk
 rather than chase optimisation.
 
-## Backwards compatibility
+## Backwards Compatibility
 
 Not applicable: there is no pre-existing kernel boot path.
 
-## Test cases
+## Test Cases
 
 1. **QEMU smoke test.** `cargo run -p kernel-runner` (where
    `kernel-runner` is the K4 deliverable) boots the kernel under
@@ -176,7 +178,7 @@ Not applicable: there is no pre-existing kernel boot path.
 3. **Memory-map parsing.** Unit test on a synthetic `BootInfo` confirms
    the free-list builder produces the expected regions.
 
-## Reference implementation
+## Reference Implementation
 
 Landed in this commit:
 
@@ -192,7 +194,7 @@ To land before activation:
 - Panic handler implementation.
 - Bump allocator implementation.
 
-## Security considerations
+## Security Considerations
 
 - **Boot supply chain.** Compromise of the `bootloader` crate would
   compromise the boot path. Mitigation: pin `bootloader` exact version,
@@ -205,6 +207,47 @@ To land before activation:
 - **Memory disclosure.** The kernel zeroes freed physical pages before
   returning them to the free list, preventing user-to-user disclosure
   through page reuse.
+
+## Privacy Considerations
+
+This OIP scopes the **kernel boot chain and `no_std` transition**; it
+does NOT introduce any user-data flows, persistent identifiers, or
+network exchanges. The privacy surface is therefore intentionally
+narrow:
+
+- **Boot-time identifiers.** UEFI exposes platform identifiers
+  (MAC address of the firmware-managed NIC, vendor / device strings,
+  serial numbers via SMBIOS) to early boot code. The kernel MUST NOT
+  read or persist these identifiers during the boot path covered by
+  this OIP. Any subsystem that later needs a stable platform identity
+  derives it from the TEE attestation (`omni-tee`), not from
+  firmware-leaked metadata.
+- **Boot logs.** The early-boot serial / framebuffer log carries
+  kernel-internal state (memory map, allocator size class, page-table
+  layout). These are infrastructural, not user data, and the v1
+  policy is: log only at boot to a host-local destination, NEVER ship
+  off-device, NEVER include any value derived from a user-managed
+  capability or session.
+- **Allocator zeroization.** Already covered under § Security
+  Considerations (memory disclosure); restated here because page-reuse
+  leakage is also a privacy concern when allocations cross trust
+  boundaries (e.g., a kernel buffer reused for an IPC message that
+  later reaches a user-space service).
+- **Sealed-key residency.** The boot path provisions the per-node
+  TEE-sealed signing key. The key MUST be sealed under a
+  `SealPolicy` (`omni-tee::SealPolicy`) bound to the current
+  measurement; an attacker that swaps the kernel binary cannot
+  unseal the prior key. This is the privacy-relevant property: a
+  device's signing identity does not survive an unauthorized kernel
+  swap.
+- **No phone-home.** The boot path makes zero outbound network
+  connections. Network bring-up, NTP synchronization, and any
+  attestation-service contact happen later in user space, governed
+  by their own OIPs.
+
+The full privacy surface for the kernel ABI (syscalls, IPC, capability
+delegation) is the scope of `OIP-Kernel-004` and successors, which
+inherit this OIP's narrow privacy contract as a baseline.
 
 ## Copyright
 

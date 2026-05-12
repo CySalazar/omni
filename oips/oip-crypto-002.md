@@ -1,16 +1,18 @@
 ---
-oip: Crypto-002
+oip: 2
 title: Compliance Proof Scheme — STARK over SNARK for v1
+track: Standards Track
 status: Draft
-category: Standards Track
-type: Protocol
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-10
+updated: 2026-05-12
 requires:
   - OIP-Process-001
-supersedes: []
+supersedes: ~
+superseded-by: ~
 discussion: https://github.com/CySalazar/omni/discussions (TBD link)
+license: CC0-1.0
 ---
 
 # OIP-Crypto-002 — Compliance Proof Scheme: STARK over SNARK for v1
@@ -157,13 +159,13 @@ construction (e.g., a STARK-friendly hash inside a SNARK circuit) becomes
 mainstream and audited, a future OIP can add it as `snark-vN`. The wire-protocol
 negotiation supports arbitrary scheme additions.
 
-## Backwards compatibility
+## Backwards Compatibility
 
 Not applicable: there is no pre-existing compliance proof scheme. The
 introduction of `sig-v1` and `stark-v0` is the first compliance proof
 specification of the protocol.
 
-## Test cases
+## Test Cases
 
 1. **`sig-v1` round-trip**: issuer signs assertion, verifier validates. Vector
    suite in `crates/omni-mesh/tests/compliance/sig_v1_vectors.rs`.
@@ -177,7 +179,7 @@ specification of the protocol.
 5. **Negotiation downgrade**: if initiator advertises `["stark-v0", "sig-v1"]`
    and responder advertises `["sig-v1"]`, the session adopts `sig-v1`.
 
-## Reference implementation
+## Reference Implementation
 
 To land before activation:
 
@@ -187,7 +189,7 @@ To land before activation:
 - `crates/omni-mesh/Cargo.toml` — `winterfell = "0.10"` behind feature `compliance-stark`.
 - Benchmark suite in `crates/omni-mesh/benches/compliance.rs`.
 
-## Security considerations
+## Security Considerations
 
 - **STARK soundness** depends on the collision resistance of BLAKE3 (the
   underlying hash). If BLAKE3 falls, both `sig-v1` and `stark-v0` are affected
@@ -200,7 +202,7 @@ To land before activation:
 - **Padding oracle / side-channel** risks in the verifier are mitigated by
   constant-time AEAD tag checks and `subtle::ConstantTimeEq` throughout.
 
-## Privacy considerations
+## Privacy Considerations
 
 `stark-v0` provides zero-knowledge of payload content while attesting to a
 public predicate. `sig-v1` provides no zero-knowledge — the assertion structure
