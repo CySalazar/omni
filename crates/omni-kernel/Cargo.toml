@@ -6,9 +6,10 @@
 # everything that can run in user space (drivers, filesystems, networking,
 # AI runtime) does.
 #
-# In Phase 1 this crate becomes a `no_std` bare-metal binary with a custom
-# bootloader integration. For v0.1 it is a placeholder library scaffold so
-# the workspace compiles end-to-end.
+# Default build is `std` (so the workspace compiles end-to-end on developer
+# machines and CI). The `bare-metal` feature switches the crate to
+# `no_std + no_main` for the real kernel binary; that transition lands per
+# `/oips/oip-kernel-003.md` (P6.1 / P6.2 — UEFI bootloader integration).
 # =============================================================================
 
 [package]
@@ -27,6 +28,18 @@ readme.workspace       = true
 
 [lints]
 workspace = true
+
+# -----------------------------------------------------------------------------
+# Feature flags
+# -----------------------------------------------------------------------------
+# `bare-metal` switches `lib.rs` to `#![no_std]` + `#![no_main]` and disables
+# every code path that uses libstd. Without the flag the crate compiles as a
+# normal Rust library so the workspace stays buildable end-to-end on
+# developer machines without a TDX-capable target.
+# -----------------------------------------------------------------------------
+[features]
+default     = []
+bare-metal  = []
 
 [dependencies]
 omni-types      = { workspace = true }
