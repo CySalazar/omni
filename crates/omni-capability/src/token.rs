@@ -377,4 +377,100 @@ mod tests {
         let b = payload.canonical_bytes().unwrap();
         assert_eq!(a, b);
     }
+
+    // -------------------------------------------------------------------
+    // OIP-Serde-004 M3 regression tests — postcard round-trip semantics.
+    // -------------------------------------------------------------------
+    //
+    // These tests assert properties that depend on `canonical_bytes()`
+    // going through `omni_types::wire::encode_canonical` (postcard 1.x).
+    // They are deliberately written against the public API surface
+    // rather than reaching into postcard directly, so a future encoder
+    // swap that preserves the same canonical-encoding contract (under a
+    // follow-up OIP) does not require changing these tests.
+
+    #[test]
+    fn canonical_bytes_match_wire_encode_canonical_of_payload() {
+        // The signing pre-image MUST equal what an external verifier
+        // would produce by independently calling `encode_canonical` on
+        // the same payload. If `canonical_bytes` ever drifts away from
+        // `wire::encode_canonical`, signatures across implementations
+        // diverge silently — this test catches that drift at CI time.
+        let payload = TokenPayload {
+            id: CapabilityId::from_bytes([0xAB; 16]),
+            subject: NodeId::from_attestation_hash([0xCD; 32]),
+            issuer: OmniSigningKey::from_bytes([0xEF; 32]).verifying_key(),
+            parent: Some(CapabilityId::from_bytes([0x11; 16])),
+            scope: fresh_scope(),
+        };
+        let via_method = payload.canonical_bytes().expect("canonical_bytes");
+        let via_helper = omni_types::wire::encode_canonical(&payload)
+            .expect("encode_canonical");
+        assert_eq!(via_method, via_helper);
+    }
+
+    #[test]
+    fn token_round_trip_via_wire_helper_preserves_signature() {
+        // A token encoded via the wire helper, decoded back, MUST
+        // produce the same canonical pre-image and therefore the same
+        // (still-valid) signature.
+        let sk = OmniSigningKey::generate();
+        let token =
+            CapabilityToken::mint(&sk, fresh_node(), fresh_scope(), None).unwrap();
+        let encoded =
+            omni_types::wire::encode_canonical(&token).expect("encode token");
+        let decoded: CapabilityToken =
+            omni_types::wire::decode_canonical(&encoded).expect("decode token");
+        // Same payload, same signature bytes.
+        assert_eq!(decoded.payload, token.payload);
+        assert_eq!(decoded.signature.to_bytes(), token.signature.to_bytes());
+        // Signature still verifies under the issuer key embedded in the
+        // payload.
+        decoded
+            .verify_signature()
+            .expect("decoded signature verifies");
+    }
+
+    #[test]
+    fn token_decode_rejects_trailing_bytes() {
+        // postcard via the wire helper is canonical (no trailing data
+        // allowed). Appending an arbitrary byte to a valid encoded
+        // token MUST cause decode to fail. This is the property that
+        // prevents data smuggling past the signed payload boundary.
+        let sk = OmniSigningKey::generate();
+        let token =
+            CapabilityToken::mint(&sk, fresh_node(), fresh_scope(), None).unwrap();
+        let mut encoded =
+            omni_types::wire::encode_canonical(&token).expect("encode token");
+        encoded.push(0x00);
+        let result: omni_types::error::Result<CapabilityToken> =
+            omni_types::wire::decode_canonical(&encoded);
+        assert!(
+            result.is_err(),
+            "decode must reject token bytes with trailing data"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_change_under_field_mutation() {
+        // Any payload field change MUST produce different canonical
+        // bytes — otherwise signatures would not be sensitive to that
+        // field. This is a structural sanity check, not a security
+        // proof on its own.
+        let base = TokenPayload {
+            id: CapabilityId::from_bytes([1u8; 16]),
+            subject: NodeId::from_attestation_hash([2u8; 32]),
+            issuer: OmniSigningKey::from_bytes([3u8; 32]).verifying_key(),
+            parent: None,
+            scope: fresh_scope(),
+        };
+        let mutated = TokenPayload {
+            id: CapabilityId::from_bytes([0xFF; 16]),
+            ..base.clone()
+        };
+        assert_ne!(
+            base.canonical_bytes().unwrap(),
+            mutated.canonical_bytes().unwrap()
+        );
+    }
 }
