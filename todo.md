@@ -1,10 +1,12 @@
 # OMNI OS — Implementation TODO
 
-> **Status:** Phase 0 (Foundation) — v0.1 design complete, **P0 fully closed 2026-05-09** (9/9 done; repo live at https://github.com/CySalazar/omni, public, AGPL-3.0, branch-protected, all commits SSH-signed and GitHub-verified). **P1 fully closed 2026-05-10** (3/3 foundational crates implemented + verified: `omni-types`, `omni-crypto`, `omni-capability`; 131 tests green; `cargo clippy -D warnings` and `cargo doc -D warnings` clean across all three crates). **P2 fully closed 2026-05-10** (3/3 — `OIP-Process-001` `Active` under bootstrap fiat; `/oips/` registry + template + sentinel + linter live; BDFL veto window documented immutably 2026-05-09 → 2031-05-09 in `OIP-Process-001` §5.4 and `docs/05-governance.md`). Next focus: P3 (cryptographic peer review of `omni-crypto`) and/or kicking off the first non-`Meta` OIP to dogfood the formal voting flow.
-> **Last updated:** 2026-05-10 (post-P2 closure — OIP process live, BDFL window in writing, lint workflow active)
+> **Status:** Phase 0 (Foundation) — v0.1 design complete, **P0 fully closed 2026-05-09** (9/9 done; repo live at https://github.com/CySalazar/omni, public, AGPL-3.0, branch-protected, all commits SSH-signed and GitHub-verified). **P1 fully closed 2026-05-10** (3/3 foundational crates implemented + verified: `omni-types`, `omni-crypto`, `omni-capability`; 131 tests green; `cargo clippy -D warnings` and `cargo doc -D warnings` clean across all three crates). **P2 fully closed 2026-05-10** (3/3 — `OIP-Process-001` `Active` under bootstrap fiat; `/oips/` registry + template + sentinel + linter live; BDFL veto window documented immutably 2026-05-09 → 2031-05-09 in `OIP-Process-001` §5.4 and `docs/05-governance.md`). **P3/P4/P5/P6 scaffolding verified green 2026-05-12** — full workspace builds, 185 tests pass, `cargo clippy --all-targets --all-features -D warnings` clean, `cargo doc -D warnings` clean, `cargo fmt --check` clean (`cargo deny` validated by CI). Next focus: P3 (cryptographic peer review of `omni-crypto`) and/or kicking off the first non-`Meta` OIP to dogfood the formal voting flow.
+> **Last updated:** 2026-05-12 (post-scaffolding verify-state + fix-pass — see `[Unreleased] Fixed` in [`CHANGELOG.md`](CHANGELOG.md) for the full delta. P5.1 / P6.1 / P6.3 / P6.4 / P6.5 / P6.6 transitioned to `[~]` to reflect the verified scaffold; full `[x]` is gated on the per-task acceptance criteria, several of which require external dependencies — hardware, audit, OIP activation).
 > **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
 > **Priority order:** Security → Stability → Performance (per project policy).
 > **Repo:** [github.com/CySalazar/omni](https://github.com/CySalazar/omni) · License: [AGPL-3.0-only](LICENSE) · Branch protection summary in [`docs/11-tooling-and-ci.md`](docs/11-tooling-and-ci.md).
+>
+> **Scaffolding pass (2026-05-10):** every P3–P6 task that can be advanced without external dependencies (notary, hardware, cryptographer) has had its artefacts drafted or scaffolded. P3.1 (mesh handshake spec + Tamarin model), P3.2 (cryptographer engagement template), P3.3 (`OIP-Crypto-002` Draft), P4.1 (bylaws + Stichting checklist drafts), P4.2 (pitch deck + one-pager + 4 grant drafts + sponsor menu), P4.3 (`08-funding-policy.md` v0.2 with bylaws cross-refs), P4.4 (3 role descriptions + salary bands), P5.1 (`TeeBackend` trait + `MockTeeBackend` end-to-end), P5.2/P5.3 (feature-gated TDX/SEV-SNP scaffolds), P5.4 (`omni-hal::tee` re-exports), P6.1 (`bare-metal` feature flag on `omni-kernel`), P6.2 (`OIP-Kernel-003` Draft — UEFI + `bootloader` crate selection), P6.3–P6.6 (memory / scheduling / IPC / capabilities / syscall trait skeletons with stable syscall ABI). Status icons in the body are NOT updated wholesale; per-task transitions to `[~]` / `[x]` are tracked when their downstream activation gates clear.
 
 This document is the canonical, ordered backlog of tasks required to move OMNI OS
 from a finalized design (`/docs` v0.1) into an executable, auditable, contribution-ready
@@ -695,7 +697,7 @@ Add `.github/dependabot.yml`:
 
 ## P5.1 — Define `TeeBackend` trait in `omni-tee`
 
-- **Status:** `[ ]`
+- **Status:** `[~]` (scaffold landed + verified 2026-05-12 — `TeeBackend` trait + `TeeFamily` + `TeeError` taxonomy + `Quote` / `Measurement` / `Nonce` / `SealedBlob` / `SealPolicy` / `TeeSharedKey` + `MockTeeBackend` end-to-end at `crates/omni-tee/`. 23 unit + 4 integration tests. Full `[x]` after the API is consumed by `omni-mesh` per P3 closure.)
 - **Priority:** P5
 - **Effort:** 3 days
 - **Dependencies:** P1.1, P1.2
@@ -756,12 +758,12 @@ Re-export `TeeBackend` and provide a runtime selector (`select_tee_backend()`) t
 
 This tier is intentionally low-detail in the TODO — it is the scope of an entire phase of the roadmap, with multiple OIPs governing its sub-decisions. The high-level breakdown:
 
-- [ ] **P6.1 — Convert `omni-kernel` to `no_std` + `no_main`**
-- [ ] **P6.2 — UEFI bootloader (decision: Limine vs Tock vs custom)**
-- [ ] **P6.3 — Page table management, virtual memory subsystem**
-- [ ] **P6.4 — Scheduler (thermal-aware, AI-workload-aware)**
-- [ ] **P6.5 — Capability-based syscall dispatch**
-- [ ] **P6.6 — Typed message-passing IPC**
+- [~] **P6.1 — Convert `omni-kernel` to `no_std` + `no_main`** (scaffold landed + verified 2026-05-12: `bare-metal` feature flag flips `no_std + no_main` only when `not(test)`; full `[x]` requires the panic handler + allocator OIP — `OIP-Kernel-004` — and the QEMU smoke test at K5)
+- [~] **P6.2 — UEFI bootloader (decision: Limine vs Tock vs custom)** (decision drafted in `OIP-Kernel-003` (`Draft`): `bootloader` crate v0.11+ over Limine; full `[x]` when the OIP transitions to `Active` and the `kernel-runner/` crate boots under QEMU)
+- [~] **P6.3 — Page table management, virtual memory subsystem** (trait skeletons landed + verified 2026-05-12 in `crates/omni-kernel/src/memory.rs`: `PhysAddr` / `VirtAddr` / `PageSize` / `PageFlags` + `Allocator` + `PageTable` traits, in-crate `bitflags_simple!` macro. Full `[x]` requires the arch-specific `x86_64` walker.)
+- [~] **P6.4 — Scheduler (thermal-aware, AI-workload-aware)** (trait skeleton landed + verified 2026-05-12 in `crates/omni-kernel/src/scheduling.rs`: `TaskId` + `PriorityClass::AiInference` + `TaskState` + `Scheduler` trait. Full `[x]` requires the actual scheduler impl + thermal model.)
+- [~] **P6.5 — Capability-based syscall dispatch** (stable numeric ABI landed + verified 2026-05-12 in `crates/omni-kernel/src/syscall.rs` (mem 1-9, task 10-19, ipc 20-29, cap 30-39, tee 40-49, time 50+) + `SyscallDispatcher` trait + `KernelCapabilityId` bridge in `capabilities.rs`. Full `[x]` requires the actual dispatcher impl in arch-specific entry code.)
+- [~] **P6.6 — Typed message-passing IPC** (trait skeleton landed + verified 2026-05-12 in `crates/omni-kernel/src/ipc.rs`: `ChannelId` / `MessageKind` / `BackpressurePolicy` / `ChannelPolicy.tee_bound` / `MessageEnvelope` / `Ipc` trait. Full `[x]` requires the in-kernel queue + capability check impl.)
 - [ ] **P6.7 — Userspace driver model (NVMe, Ethernet/Wi-Fi, TEE)**
 - [ ] **P6.8 — First external security audit of kernel + capability system (per roadmap Phase 1 deliverables)**
 
@@ -795,7 +797,7 @@ Still open:
 
 8. **Repo visibility long-term** — flipped to **PUBLIC** on 2026-05-09 because branch protection on the GitHub free plan requires it and AGPL-3.0 is consistent with public hosting. Confirm this remains the steady state, or signal a temporary embargo for any pre-disclosure phase.
 9. **Branch-protection update for `oip-lint`** — `OIP-Process-001` §9 ¶2 mandates that branch protection on `main` add `oip-lint / oip-lint` as a required status check within 7 calendar days of the OIP transitioning to `Active`. Concrete action: re-run `scripts/bootstrap-github.sh` (or equivalent `gh` CLI invocation) before 2026-05-17 to extend the required-check list from 8 to 9. *(Founder-side action — requires GitHub admin token.)*
-14. **`OIP-bounty-XXX` drafting kickoff** — confirmed as first non-Meta OIP (decision 10 above). Pre-drafting decisions to align: severity tiers (CVSSv4 calibration vs `SECURITY.md` §3 reuse), payout ranges (range €/USD per tier — pre- vs post-funding split), eligibility filters (current contributors above editor tier excluded, conflict-of-interest for Stichting-affiliated researchers), disclosure timeline alignment with `SECURITY.md` SLA. Founder confirmation needed on whether to start drafting now or pre-align on these parameters first.
+14. ~~**`OIP-bounty-002` drafting kickoff**~~ — **In progress 2026-05-10:** `Draft` filed at [`oips/oip-bounty-002.md`](oips/oip-bounty-002.md) (~31KB, 10 sezioni canoniche, lint green). Defaults applicati senza pre-allineamento ulteriore (founder ha confermato "procedi"): severity tiers riusati da `SECURITY.md` §4 (CVSS v4.0); payout ranges Critical €5K–€50K / High €1K–€10K / Medium €250–€2.5K / Low €50–€500; eligibility con 6-month contributor guard + esclusione editor body / Stichting board / commit-access su `main`; disclosure timeline ancorato a `SECURITY.md` §3; payment mechanics con opzioni crypto privacy-preserving (Monero, BTC LN); dispute resolution a 3 livelli che termina in public arbitration; **non-monetary mode** durante Bootstrap con commitment retroattivo entro 24 mesi dall'Activation Date. Index aggiornato in `oips/README.md`; `SECURITY.md` §7 aggiornato per puntare al Draft. Prossimi passi: editorial review by founder; transition to `Review` quando il founder è pronto; questo OIP è il **dogfood test** del flusso §5 di `OIP-Process-001`.
 
 These decisions do not block strategic planning, only execution order.
 
@@ -818,7 +820,7 @@ These decisions do not block strategic planning, only execution order.
 | SSH signing key on GitHub | id 938835 (`~/.ssh/id_ed25519.pub`) |
 | Project identity | `cySalazar <cySalazar@cySalazar.com>` (Matteo's real `matteo.sala@samacyber.io` removed from the GitHub account on 2026-05-09) |
 | Bootstrap scripts | `scripts/bootstrap-local.sh` (idempotent), `scripts/bootstrap-github.sh` (idempotent) |
-| Completion report | [`P0-COMPLETION-REPORT.md`](P0-COMPLETION-REPORT.md) |
+| Completion report | [`docs/audits/p0-completion-report.md`](docs/audits/p0-completion-report.md) (moved 2026-05-10 from repo root for hygiene) |
 | Tooling docs | [`docs/11-tooling-and-ci.md`](docs/11-tooling-and-ci.md) |
 
 ---

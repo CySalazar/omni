@@ -15,7 +15,70 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ## [Unreleased]
 
-Items not yet associated with a numbered release.
+### Added
+
+- **P3 — Threat model deepening & cryptographic peer review preparation (scaffolding).**
+  - [`docs/protocol/handshake.md`](./docs/protocol/handshake.md) — formal wire-level spec of the mesh handshake (Noise_IK over QUIC with mandatory mutual TEE attestation). Documents invariants I1–I8 and lists 5 open issues for cryptographer review.
+  - [`protocol-proofs/handshake.spthy`](./protocol-proofs/handshake.spthy) — Tamarin model with `mutual_authentication`, `forward_secrecy`, `replay_resistance`, `kci_resistance`, and `protocol_version_binding` lemmas. Proof execution deferred to P3.2 cryptographer engagement.
+  - [`docs/audits/cryptographer-engagement-template.md`](./docs/audits/cryptographer-engagement-template.md) — paid (USD 8–15k) and volunteer engagement modes; scope, deliverables, selection criteria, and engagement-letter templates.
+  - [`/CONTRIBUTORS.md`](./CONTRIBUTORS.md) — initial contributor roster with placeholder rows for OIP Editors, Cryptographer (P3.2), and Stichting Trustees.
+  - [`/oips/oip-crypto-002.md`](./oips/oip-crypto-002.md) — `Draft`. Compliance proof scheme: **`sig-v1` mandatory baseline + optional `stark-v0`** for v1.0; STARK chosen over SNARK to avoid trusted setup. `winterfell` v0.10+ as reference. SNARK explicitly deferred.
+  - [`docs/04-security-model.md`](./docs/04-security-model.md) §"Compliance proofs" updated to reference `OIP-Crypto-002` decision; "Open security questions" item on zk-SNARK trusted setup marked resolved.
+- **P4 — Phase 0 non-technical (Stichting + funding) drafts.**
+  - [`docs/legal/bylaws-draft.md`](./docs/legal/bylaws-draft.md) — Stichting OMNI bylaws working English draft (15 articles + 3 appendices). Mission Anchor (Article 3) **immutable** by construction. Founder role with sunset 2026-05-09 → 2031-05-09.
+  - [`docs/legal/stichting-checklist.md`](./docs/legal/stichting-checklist.md) — 6-phase execution checklist for Dutch notary + KVK registration + ANBI application.
+  - [`docs/funding/pitch-deck.md`](./docs/funding/pitch-deck.md) — 15-slide markdown pitch deck.
+  - [`docs/funding/one-pager.md`](./docs/funding/one-pager.md) — short one-pager for warm intros.
+  - [`docs/funding/grant-applications/`](./docs/funding/grant-applications/) — drafts for **NLnet** (EUR 50k), **Mozilla MOSS** (USD 200k), **Sloan** (USD 300k / 18 months), **Open Philanthropy** (USD 500k / 24 months).
+  - [`docs/funding/sponsor-tier-menu.md`](./docs/funding/sponsor-tier-menu.md) — Bronze / Silver / Gold / Platinum sponsorship tiers, anti-capture safeguards explicit.
+  - [`docs/08-funding-policy.md`](./docs/08-funding-policy.md) bumped to **Draft v0.2**: cross-references to bylaws Article 3 (Mission Anchor) and Article 9.1 (30% diversification rule); preliminary founder view on NLnet recorded non-bindingly.
+  - [`docs/hiring/role-rust-engineer-kernel.md`](./docs/hiring/role-rust-engineer-kernel.md), [`role-rust-engineer-networking.md`](./docs/hiring/role-rust-engineer-networking.md), [`role-cryptographer.md`](./docs/hiring/role-cryptographer.md) — 3 role descriptions for post-Phase-0 hires.
+  - [`docs/hiring/salary-bands.md`](./docs/hiring/salary-bands.md) — public salary bands L1–L5 + D, with geographic-adjustment formula.
+- **P5 — `omni-tee` (TEE HAL) production-ready trait surface.**
+  - `crates/omni-tee/src/traits.rs` — `TeeBackend` trait with `attest`, `verify_quote`, `seal`, `unseal`, `derive_key_for`. `TeeFamily` enum (Intel TDX / AMD SEV-SNP / Apple Secure Enclave / ARMv9 CCA / Mock). `TeeError` + `TeeErrorKind` taxonomy with PII-safe static context slugs.
+  - `crates/omni-tee/src/attestation.rs` — `Quote`, `Measurement` (48-byte cross-vendor), `Nonce`, `QuoteVersion`.
+  - `crates/omni-tee/src/sealed_keys.rs` — `SealedBlob`, `SealPolicy`, `TeeSharedKey` (with redacted `Debug` and zeroize-on-Drop via volatile writes).
+  - `crates/omni-tee/src/mock.rs` — `MockTeeBackend` with permissive and strict modes; deterministic in-process behavior for use by every other crate's tests. End-to-end unit tests covering attest/verify/seal/unseal/derive happy paths + 7 adversarial scenarios.
+  - `crates/omni-tee/src/tdx.rs` (feature `tdx`) — Intel TDX backend scaffold with documented P5.2 integration roadmap.
+  - `crates/omni-tee/src/sev_snp.rs` (feature `sev-snp`) — AMD SEV-SNP backend scaffold with documented P5.3 integration roadmap.
+  - `crates/omni-tee/tests/mock_integration.rs` — end-to-end handshake simulation across two `MockTeeBackend` instances; replay, tampering, and cross-family negative tests.
+  - `crates/omni-tee/Cargo.toml` — feature flags `default = ["mock"]`, `mock`, `tdx`, `sev-snp`, `all-backends`.
+  - `crates/omni-hal/src/lib.rs` and `Cargo.toml` — `tee` module re-exports the full `omni-tee` surface; feature flags forwarded so `omni-hal/tdx` transitively enables `omni-tee/tdx`.
+- **P6 — `omni-kernel` no_std-ready scaffolding + UEFI bootloader OIP.**
+  - `crates/omni-kernel/Cargo.toml` — `bare-metal` feature flag.
+  - `crates/omni-kernel/src/lib.rs` — `#![cfg_attr(feature = "bare-metal", no_std)]` + `KernelError` + `KernelResult<T>`.
+  - `crates/omni-kernel/src/memory.rs` — `PhysAddr` / `VirtAddr` / `PageSize` / `PageFlags` + `Allocator` and `PageTable` trait skeletons. In-crate `bitflags_simple!` macro avoids the `bitflags` crate dependency at this layer.
+  - `crates/omni-kernel/src/scheduling.rs` — `TaskId` / `PriorityClass` (System / RealTime / Interactive / **AiInference** / Background / Idle) / `TaskState` / `Scheduler` trait.
+  - `crates/omni-kernel/src/ipc.rs` — `ChannelId` / `MessageKind` / `BackpressurePolicy` / `ChannelPolicy` (`tee_bound: bool`) / `MessageEnvelope` / `Ipc` trait.
+  - `crates/omni-kernel/src/capabilities.rs` — `KernelCapabilityId` (u128) + `CapabilityTable` trait. Bridges to the userspace token in `omni-capability`.
+  - `crates/omni-kernel/src/syscall.rs` — **stable numeric ABI** for syscalls (mem 1–9, task 10–19, ipc 20–29, cap 30–39, tee 40–49, time 50+). Renumbering is a breaking change requiring an OIP.
+  - [`/oips/oip-kernel-003.md`](./oips/oip-kernel-003.md) — `Draft`. UEFI-only boot; **`bootloader` crate v0.11+** selected as reference bootloader for v1.0 (over Limine, GRUB2, custom `uefi-rs`); 5-step `no_std` transition plan (K1–K5).
+
+### Changed
+
+- [`docs/05-governance.md`](./docs/05-governance.md) bumped to **Draft v0.2** with explicit changelog (OIP-Process-001 delegation, BDFL veto immutable window 2026-05-09 → 2031-05-09, founder role years 1–5 / 5+ / 10+).
+- [`docs/README.md`](./docs/README.md) — new "Subdirectories" section indexing `/docs/protocol/`, `/docs/audits/`, `/docs/legal/`, `/docs/funding/`, `/docs/hiring/`, `/oips/`, `/protocol-proofs/`.
+- `Cargo.toml` `[workspace.package].authors` — aligned to project identity policy: `cySalazar <cySalazar@cySalazar.com>` until Stichting OMNI is constituted (was: `Stichting OMNI <hello@omni-os.org>` placeholder). Transition to Stichting documented in-file.
+- `P0-COMPLETION-REPORT.md` moved to [`docs/audits/p0-completion-report.md`](./docs/audits/p0-completion-report.md) (lowercase, kebab-case, in audits directory); `todo.md` cross-reference updated.
+
+### Fixed
+
+- **2026-05-12 — P3–P6 scaffolding verify-state fix-pass.** Brought the 2026-05-10 scaffolding pass to green under `cargo build/test/clippy/doc/fmt --all-features`. Net effect: 185 tests pass (was: 142 in the P1 baseline; the +43 cover P5 / P6 scaffolds plus 2 new round-trip tests for `Measurement` serde); `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --all-features` clean; `cargo fmt --all -- --check` clean. `cargo deny check` is CI-only and verified by `.github/workflows/audit.yml`. Specific fixes:
+  - `crates/omni-tee/src/attestation.rs` — `Measurement([u8; 48])` now implements `Serialize` / `Deserialize` manually (serde derives only auto-impl arrays up to `[T; 32]`); the `Visitor` rejects any input not exactly 48 bytes long, preserving the invariant on the wire. Added two unit tests (`bincode` round-trip + wrong-length rejection).
+  - `crates/omni-tee/Cargo.toml` — `bincode` added as a `dev-dependency` to enable the round-trip tests, consistent with the design-comment intent that `Quote` / `Measurement` / `SealedBlob` travel through `bincode` on the wire.
+  - `crates/omni-tee/src/sealed_keys.rs` — `TeeSharedKey::drop` `unsafe { write_volatile(...) }` block now carries `#[allow(unsafe_code)]` with documented justification (defeats dead-store elimination without pulling the `zeroize` crate). Test `shared_key_drop_zeroizes` rewritten with `core::mem::ManuallyDrop` so the destructor runs in place — `mem::drop(key)` was moving `key` into the parameter slot and zeroing a different stack address than the captured raw pointer.
+  - `crates/omni-tee/src/tdx.rs`, `crates/omni-tee/src/sev_snp.rs` — removed inner `#![cfg(feature = "...")]` (duplicates the gating already present on `pub mod tdx;` / `pub mod sev_snp;` in `lib.rs`).
+  - `crates/omni-tee/src/mock.rs` — XOR-fold loops in `seal` / `unseal` / `derive_key_for` rewritten with `iter().zip(...)` to eliminate `clippy::indexing_slicing` warnings; report-data padding loop similarly converted.
+  - `crates/omni-tee/src/lib.rs`, `crates/omni-tee/src/traits.rs`, `crates/omni-tee/src/attestation.rs`, `crates/omni-tee/src/tdx.rs`, `crates/omni-tee/tests/mock_integration.rs`, `crates/omni-kernel/src/memory.rs`, `crates/omni-kernel/src/syscall.rs` — backticks added to identifiers in doc comments (`x86_64`, `ARMv9`, `derive_key_for`, `local_attest_secret`, `peer_quote.measurement`); `traits::TeeErrorKind` first doc-comment paragraph shortened.
+  - `crates/omni-tee/src/{mock,tdx,attestation}.rs` and `crates/omni-tee/tests/mock_integration.rs` — test modules now carry `#[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]` (and `clippy::similar_names` for the integration test's alice/bob/blob naming). Test code is allowed to panic on assertion failure.
+  - `crates/omni-kernel/src/lib.rs` — `#![cfg_attr(all(feature = "bare-metal", not(test)), no_std)]` and `no_main` (was: gated only on the feature, broke `cargo test --features bare-metal`); `#![allow(clippy::missing_errors_doc)]` for the kernel scaffold's trait surfaces (per-method `# Errors` docs land with the corresponding subsystem implementation per P6.3+).
+  - `crates/omni-kernel/src/memory.rs` — `use crate::{KernelResult, bitflags_simple};` (the `#[macro_export]` macro must be brought into scope explicitly when used in the same crate as its definition).
+
+### Notes
+
+- The scaffolding pass does NOT advance any item to `[x]` status that depends on physical-world action (notarial deed, hardware procurement, cryptographer engagement, audit firm engagement, grant submission). Status icons in `todo.md` remain at `[ ]` for tasks awaiting those gates.
+- `MockTeeBackend` is **intentionally permissive** about attestation soundness — its purpose is to exercise consumer code paths, not to enforce real attestation invariants. Production builds MUST disable the `mock` feature.
+- `OIP-Kernel-003` and `OIP-Crypto-002` are in `Draft` status; they activate per the standard `OIP-Process-001` flow (Review → Last Call → Active).
 
 ---
 
