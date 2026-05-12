@@ -828,6 +828,70 @@ Each of P6.1–P6.8 will be expanded into its own task list when its correspondi
 
 ---
 
+# P8 — OIP-Container-006 reference implementation
+
+**Tracking OIP:** [`OIP-Container-006`](oips/oip-container-006.md) (`Draft` filed 2026-05-12).
+
+P8 turns the OmniContainer specification into the canonical Rust implementation under `crates/omni-container/`. Each milestone closes one of the OIP's subsystems and is a candidate for its own follow-up OIP if the subsystem's design surface raises significant questions during implementation.
+
+## P8.1 — `crates/omni-container/` skeleton (closed 2026-05-12)
+
+- **Status:** `[x]` closed 2026-05-12 (commit `31455a6`, on `feat/p1-foundational-crates`).
+- **Priority:** P8
+- **Effort:** done (~ 1 day implementer time)
+- **Acceptance criteria:**
+  - [x] Crate compiles clean under `cargo check --workspace --all-features`.
+  - [x] Public trait surface (`ContainerEngine`, `ContainerLifecycleState`, `CapabilityProfile`, `OciImageRef`, `ContainerError`) exposed at the crate root.
+  - [x] Every operational method returns `ContainerError::NotYetImplemented(<static slug>)`.
+  - [x] Feature flags `kvm` (default), `tdx`, `sev-snp`, `all-backends` per OIP-Container-006 § 10.
+  - [x] ≥ 15 unit tests + ≥ 1 integration test green (delivered 47 unit + 5 integration).
+  - [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean.
+  - [x] `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --all-features` clean.
+  - [x] `cargo fmt --all -- --check` clean.
+
+## P8.2 — KVM hypervisor backend implementation
+
+- **Status:** `[ ]` blocked on a follow-up OIP (`OIP-Container-Engine-XXX`) that locks in the `kvm-ioctls` API surface, the vCPU thread model, the run-loop placement (tokio vs. dedicated thread), and the guest-kernel boot path.
+- **Priority:** P8
+- **Effort:** 4-6 engineer-months estimated per OIP-Container-006 § 10.
+- **Dependencies:** P8.1 (this); a future `OIP-Container-Engine-XXX`.
+
+## P8.3 — Guest Linux image build pipeline
+
+- **Status:** `[ ]` blocked on a Stichting OMNI signing key (P4.1 derivative) and on the reproducible-build setup in the separate `omni-guest-linux` repo (does not exist yet).
+- **Priority:** P8
+- **Effort:** 3-4 engineer-months estimated.
+- **Dependencies:** P4.1 (Stichting key custody); a future `OIP-Container-GuestImage-XXX`.
+
+## P8.4 — Virtio host-side backends
+
+- **Status:** `[ ]` per-backend, blocked on its own follow-up OIP: `OIP-Container-Networking-XXX` (virtio-net), `OIP-Container-Storage-XXX` (virtio-fs), TBD for virtio-gpu / virtio-vsock / virtio-rng.
+- **Priority:** P8
+- **Effort:** 5-6 engineer-months total estimated per OIP-Container-006 § 10.
+- **Dependencies:** P8.2 (KVM engine), the per-backend OIPs.
+
+## P8.5 — TDX + SEV-SNP confidential-VM modes
+
+- **Status:** `[ ]` blocked on P5.2 / P5.3 (host TEE backends in `omni-tee`) reaching parity and on a Standards-Track OIP that locks in the per-container quote envelope shape.
+- **Priority:** P8
+- **Effort:** 2-3 engineer-months estimated.
+
+## P8.6 — Wine integration image (`omni/linux-wine:N-stable`)
+
+- **Status:** `[ ]` blocked on P8.3 (guest image pipeline).
+- **Priority:** P8
+- **Effort:** 1-2 engineer-months estimated.
+- **Dependencies:** P8.3; tracking community ProtonDB compatibility reports.
+
+## P8.7 — `cyDock-omni` fork retargeting
+
+- **Status:** `[ ]` blocked on P8.2 + P8.4 reaching a stable REST API surface for the management plane.
+- **Priority:** P8
+- **Effort:** 3-4 engineer-months estimated per OIP-Container-006 "cyDock Evolution Path".
+- **Dependencies:** P8.2, P8.4, plus a green light from the existing cyDock maintainer.
+
+---
+
 # Open decisions awaiting Founder input
 
 Decisions resolved during P0 closure:
@@ -854,6 +918,7 @@ Still open:
 
 8. **Repo visibility long-term** — flipped to **PUBLIC** on 2026-05-09 because branch protection on the GitHub free plan requires it and AGPL-3.0 is consistent with public hosting. Confirm this remains the steady state, or signal a temporary embargo for any pre-disclosure phase.
 9. **Branch-protection update for `oip-lint`** — `OIP-Process-001` §9 ¶2 mandates that branch protection on `main` add `oip-lint / oip-lint` as a required status check within 7 calendar days of the OIP transitioning to `Active`. Concrete action: re-run `scripts/bootstrap-github.sh` (or equivalent `gh` CLI invocation) before 2026-05-17 to extend the required-check list from 8 to 9. *(Founder-side action — requires GitHub admin token.)*
+15. **Last Call closing actions for `OIP-Bounty-002` and `OIP-Serde-004` (window closes 2026-05-26)** — Both OIPs entered `Last Call` on 2026-05-12 under `OIP-Process-001` § 4. Under § 5.3 each transitions `Last Call → Active` automatically at the end of the 14-day window unless ≥ 30% weighted vote is reached earlier (in which case the editors close the window at that point) **or** a blocking good-faith objection is filed (in which case the OIP returns to `Review`). Concrete actions for the editor body on or before **2026-05-26**: (a) confirm no blocking objection has been filed on the linked GitHub Discussion thread; (b) merge a single PR per OIP transitioning the frontmatter `status:` from `Last Call` to `Active` and updating the `updated:` field to the close date; (c) for `OIP-Bounty-002` (Process track), no activation phase applies, the OIP is effectively `Final` at `Active`; (d) for `OIP-Serde-004` (Standards Track), the activation phase per § 7 is dormant until Phase 4+ mesh telemetry exists — the OIP remains in `Active` indefinitely; (e) append a row to `oip-editors-report-YYYY-Q2.md` recording the tally (or its absence) and the editorial decision. **No founder-side or hardware-side gate; pure editorial action.**
 14. ~~**`OIP-bounty-002` drafting kickoff**~~ — **In progress 2026-05-10:** `Draft` filed at [`oips/oip-bounty-002.md`](oips/oip-bounty-002.md) (~31KB, 10 sezioni canoniche, lint green). Defaults applicati senza pre-allineamento ulteriore (founder ha confermato "procedi"): severity tiers riusati da `SECURITY.md` §4 (CVSS v4.0); payout ranges Critical €5K–€50K / High €1K–€10K / Medium €250–€2.5K / Low €50–€500; eligibility con 6-month contributor guard + esclusione editor body / Stichting board / commit-access su `main`; disclosure timeline ancorato a `SECURITY.md` §3; payment mechanics con opzioni crypto privacy-preserving (Monero, BTC LN); dispute resolution a 3 livelli che termina in public arbitration; **non-monetary mode** durante Bootstrap con commitment retroattivo entro 24 mesi dall'Activation Date. Index aggiornato in `oips/README.md`; `SECURITY.md` §7 aggiornato per puntare al Draft. Prossimi passi: editorial review by founder; transition to `Review` quando il founder è pronto; questo OIP è il **dogfood test** del flusso §5 di `OIP-Process-001`.
 
 These decisions do not block strategic planning, only execution order.
