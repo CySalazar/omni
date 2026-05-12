@@ -2,11 +2,11 @@
 oip: 2
 title: Bug Bounty Program for OMNI OS
 track: Process
-status: Draft
+status: Review
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-10
-updated: 2026-05-10
+updated: 2026-05-12
 requires:
   - 1
 supersedes: ~
@@ -586,6 +586,12 @@ in `docs/04-security-model.md`.
   transfer involved in the disbursement.
 
 ---
+
+## Amendment history
+
+| Date | Change | Notes |
+|---|---|---|
+| 2026-05-12 | `Draft → Review` | Editorial transition by the interim editor body (founder, sole editor during the Bootstrap Period per `OIP-Process-001` §6.2). No substantive content change: the OIP enters the public discussion phase with all 10 canonical sections intact. The defaults applied at filing (CVSS v4.0 severity tiers anchored to `SECURITY.md` §4; payout ranges Critical €5K–€50K / High €1K–€10K / Medium €250–€2.5K / Low €50–€500; 6-month contributor guard; crypto-payout opt-in; non-monetary mode during Bootstrap with 24-month retroactive commitment) carry into `Review` unchanged. As the **first non-`Meta` OIP** under `OIP-Process-001`, this OIP also dogfoods §5 of the process — its `Review → Last Call → Active` path will be the project's first formal vote. |
 
 ## Copyright
 
