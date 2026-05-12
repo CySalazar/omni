@@ -908,9 +908,11 @@ name = "omni-tee"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bincode",
  "mockall",
  "omni-crypto",
  "omni-types",
+ "proptest",
  "serde",
  "thiserror 2.0.18",
  "tracing",
