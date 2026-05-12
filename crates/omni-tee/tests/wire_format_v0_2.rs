@@ -75,8 +75,7 @@ fn quote_bit_flip_on_mock_covered_fields_is_detected() {
     let baseline_bytes = omni_types::wire::encode_canonical(&quote).unwrap();
 
     // Sanity: the unmodified Quote must decode and verify.
-    let baseline_decoded: Quote =
-        omni_types::wire::decode_canonical(&baseline_bytes).unwrap();
+    let baseline_decoded: Quote = omni_types::wire::decode_canonical(&baseline_bytes).unwrap();
     backend
         .verify_quote(&baseline_decoded, &nonce, backend.measurement())
         .expect("baseline Quote must decode + verify");
@@ -129,8 +128,7 @@ fn quote_bit_flip_on_mock_covered_fields_is_detected() {
         let decode_result: omni_types::error::Result<Quote> =
             omni_types::wire::decode_canonical(&mutated);
         let Ok(decoded) = decode_result else { continue };
-        let verify_result =
-            backend.verify_quote(&decoded, &nonce, backend.measurement());
+        let verify_result = backend.verify_quote(&decoded, &nonce, backend.measurement());
         if verify_result.is_ok() {
             accepted_silent_tampering += 1;
         }
@@ -158,8 +156,7 @@ fn quote_truncation_at_every_prefix_is_detected() {
         let decode_result: omni_types::error::Result<Quote> =
             omni_types::wire::decode_canonical(truncated);
         let Ok(decoded) = decode_result else { continue };
-        let verify_result =
-            backend.verify_quote(&decoded, &nonce, backend.measurement());
+        let verify_result = backend.verify_quote(&decoded, &nonce, backend.measurement());
         if verify_result.is_ok() {
             accepted_truncations += 1;
         }
@@ -183,12 +180,7 @@ fn quote_extension_with_trailing_bytes_is_decode_error() {
 
     // Try several trailing-byte patterns: zero, all-ones, random-ish,
     // and a long suffix. Each must be rejected.
-    let trailers: &[&[u8]] = &[
-        &[0x00],
-        &[0xFF],
-        &[0xDE, 0xAD, 0xBE, 0xEF],
-        &[0u8; 1024],
-    ];
+    let trailers: &[&[u8]] = &[&[0x00], &[0xFF], &[0xDE, 0xAD, 0xBE, 0xEF], &[0u8; 1024]];
     for trailer in trailers {
         let mut extended = baseline_bytes.clone();
         extended.extend_from_slice(trailer);
@@ -217,11 +209,9 @@ fn quote_swap_with_unrelated_bytes_does_not_decode_and_verify() {
         &[0xDEu8; 128],
     ];
     for bytes in patterns {
-        let result: omni_types::error::Result<Quote> =
-            omni_types::wire::decode_canonical(bytes);
+        let result: omni_types::error::Result<Quote> = omni_types::wire::decode_canonical(bytes);
         let Ok(decoded) = result else { continue };
-        let verify =
-            backend.verify_quote(&decoded, &nonce, backend.measurement());
+        let verify = backend.verify_quote(&decoded, &nonce, backend.measurement());
         assert!(
             verify.is_err(),
             "verify_quote must reject Quote synthesized from unrelated \

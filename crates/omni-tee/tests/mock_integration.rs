@@ -143,9 +143,7 @@ fn cross_family_quote_rejected() {
 fn quote_round_trip_via_wire_helper_preserves_all_fields() {
     let backend = MockTeeBackend::with_measurement(Measurement([0x77u8; 48]));
     let nonce = Nonce([0x33u8; 32]);
-    let quote = backend
-        .attest(&nonce, Some(b"transcript-binding"))
-        .unwrap();
+    let quote = backend.attest(&nonce, Some(b"transcript-binding")).unwrap();
 
     let bytes = omni_types::wire::encode_canonical(&quote).expect("encode quote");
     let decoded: omni_tee::Quote =
@@ -185,8 +183,7 @@ fn quote_decode_rejects_trailing_bytes() {
     let backend = MockTeeBackend::new();
     let nonce = Nonce([0xEEu8; 32]);
     let quote = backend.attest(&nonce, None).unwrap();
-    let mut bytes =
-        omni_types::wire::encode_canonical(&quote).expect("encode quote");
+    let mut bytes = omni_types::wire::encode_canonical(&quote).expect("encode quote");
     bytes.push(0xFF);
     let result: omni_types::error::Result<omni_tee::Quote> =
         omni_types::wire::decode_canonical(&bytes);
@@ -200,8 +197,7 @@ fn sealed_blob_round_trip_via_wire_helper() {
     let plaintext = b"OIP-Serde-004 M4 round-trip integrity";
     let blob = backend.seal(plaintext, &policy).expect("seal");
 
-    let encoded =
-        omni_types::wire::encode_canonical(&blob).expect("encode blob");
+    let encoded = omni_types::wire::encode_canonical(&blob).expect("encode blob");
     let decoded: omni_tee::SealedBlob =
         omni_types::wire::decode_canonical(&encoded).expect("decode blob");
 

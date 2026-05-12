@@ -307,8 +307,7 @@ fn round_trip_through_canonical_encoding() {
     // Encode the payload + signature via the canonical wire helper
     // (per `OIP-Serde-004` M2 — `omni_types::wire` is the single audit
     // point; direct `postcard::*` calls are forbidden by clippy).
-    let encoded =
-        omni_types::wire::encode_canonical(&token).expect("serialise token");
+    let encoded = omni_types::wire::encode_canonical(&token).expect("serialise token");
 
     let decoded: CapabilityToken =
         omni_types::wire::decode_canonical(&encoded).expect("deserialise token");
@@ -327,7 +326,6 @@ fn round_trip_through_canonical_encoding() {
 
     // And it byte-equals the original (the canonical encoding is
     // deterministic).
-    let re_encoded =
-        omni_types::wire::encode_canonical(&decoded).expect("re-serialise");
+    let re_encoded = omni_types::wire::encode_canonical(&decoded).expect("re-serialise");
     assert_eq!(encoded, re_encoded);
 }

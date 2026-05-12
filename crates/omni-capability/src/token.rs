@@ -404,8 +404,7 @@ mod tests {
             scope: fresh_scope(),
         };
         let via_method = payload.canonical_bytes().expect("canonical_bytes");
-        let via_helper = omni_types::wire::encode_canonical(&payload)
-            .expect("encode_canonical");
+        let via_helper = omni_types::wire::encode_canonical(&payload).expect("encode_canonical");
         assert_eq!(via_method, via_helper);
     }
 
@@ -415,10 +414,8 @@ mod tests {
         // produce the same canonical pre-image and therefore the same
         // (still-valid) signature.
         let sk = OmniSigningKey::generate();
-        let token =
-            CapabilityToken::mint(&sk, fresh_node(), fresh_scope(), None).unwrap();
-        let encoded =
-            omni_types::wire::encode_canonical(&token).expect("encode token");
+        let token = CapabilityToken::mint(&sk, fresh_node(), fresh_scope(), None).unwrap();
+        let encoded = omni_types::wire::encode_canonical(&token).expect("encode token");
         let decoded: CapabilityToken =
             omni_types::wire::decode_canonical(&encoded).expect("decode token");
         // Same payload, same signature bytes.
@@ -438,10 +435,8 @@ mod tests {
         // token MUST cause decode to fail. This is the property that
         // prevents data smuggling past the signed payload boundary.
         let sk = OmniSigningKey::generate();
-        let token =
-            CapabilityToken::mint(&sk, fresh_node(), fresh_scope(), None).unwrap();
-        let mut encoded =
-            omni_types::wire::encode_canonical(&token).expect("encode token");
+        let token = CapabilityToken::mint(&sk, fresh_node(), fresh_scope(), None).unwrap();
+        let mut encoded = omni_types::wire::encode_canonical(&token).expect("encode token");
         encoded.push(0x00);
         let result: omni_types::error::Result<CapabilityToken> =
             omni_types::wire::decode_canonical(&encoded);

@@ -74,9 +74,8 @@ use crate::error::{OmniError, Result, WireErrorKind};
 /// surrounding function provides the canonical-error mapping.
 #[allow(clippy::disallowed_methods)]
 pub fn encode_canonical<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
-    postcard::to_allocvec(value).map_err(|_| {
-        OmniError::wire(WireErrorKind::EncodeFailed, "wire::encode_canonical")
-    })
+    postcard::to_allocvec(value)
+        .map_err(|_| OmniError::wire(WireErrorKind::EncodeFailed, "wire::encode_canonical"))
 }
 
 /// Decode `bytes` into a value of type `T` under the canonical wire
@@ -104,9 +103,8 @@ pub fn encode_canonical<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
 /// `#[allow(clippy::disallowed_methods)]`.
 #[allow(clippy::disallowed_methods)]
 pub fn decode_canonical<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T> {
-    let (value, tail) = postcard::take_from_bytes::<T>(bytes).map_err(|_| {
-        OmniError::wire(WireErrorKind::DecodeFailed, "wire::decode_canonical")
-    })?;
+    let (value, tail) = postcard::take_from_bytes::<T>(bytes)
+        .map_err(|_| OmniError::wire(WireErrorKind::DecodeFailed, "wire::decode_canonical"))?;
     if !tail.is_empty() {
         return Err(OmniError::wire(
             WireErrorKind::TrailingBytes,
@@ -185,8 +183,7 @@ mod tests {
         };
         let bytes = encode_canonical(&value).expect("encode");
         let truncated = &bytes[..bytes.len() - 2];
-        let err =
-            decode_canonical::<SampleStruct>(truncated).expect_err("must reject truncated");
+        let err = decode_canonical::<SampleStruct>(truncated).expect_err("must reject truncated");
         match err {
             OmniError::Wire { kind, context } => {
                 assert_eq!(kind, WireErrorKind::DecodeFailed);

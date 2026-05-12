@@ -231,8 +231,7 @@ mod tests {
             *slot = u8::try_from(i).expect("i bounded by array length");
         }
         let m = Measurement(bytes);
-        let encoded =
-            omni_types::wire::encode_canonical(&m).expect("encode Measurement");
+        let encoded = omni_types::wire::encode_canonical(&m).expect("encode Measurement");
         let decoded: Measurement =
             omni_types::wire::decode_canonical(&encoded).expect("decode Measurement");
         assert_eq!(m, decoded);
@@ -247,8 +246,7 @@ mod tests {
         // visitor returns an error) or at the trailing-bytes guard
         // (the wire helper enforces no-trailing-data canonically).
         let too_short: alloc::vec::Vec<u8> = alloc::vec![0u8; 47];
-        let encoded =
-            omni_types::wire::encode_canonical(&too_short).expect("encode short vec");
+        let encoded = omni_types::wire::encode_canonical(&too_short).expect("encode short vec");
         let result: omni_types::error::Result<Measurement> =
             omni_types::wire::decode_canonical(&encoded);
         assert!(result.is_err(), "wrong-length input must be rejected");
