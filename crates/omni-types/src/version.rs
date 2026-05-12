@@ -127,9 +127,28 @@ impl fmt::Display for ProtocolVersion {
 // =============================================================================
 
 /// Protocol version 0.1 — the initial draft used during P0/P1 development.
-/// Peers running this version MAY refuse to connect to anything newer
-/// until the protocol stabilizes at v1.0.
+///
+/// Superseded by [`PROTOCOL_VERSION_V0_2`] on the `bincode → postcard`
+/// wire-format cutover (see
+/// [`OIP-Serde-004`](https://github.com/CySalazar/omni/blob/main/oips/oip-serde-004.md)).
+/// Retained as a constant so that historical references in proofs, audit
+/// records, and the Tamarin model remain valid; **no peer negotiates
+/// v0.1 after `OIP-Serde-004` reaches `Active`**.
 pub const PROTOCOL_VERSION_V0_1: ProtocolVersion = ProtocolVersion::new(0, 1);
+
+/// Protocol version 0.2 — first `postcard`-encoded wire format.
+///
+/// Uses `postcard` 1.x as the canonical wire encoding (per
+/// `OIP-Serde-004`). All current development targets v0.2. Mesh
+/// handshake (see `docs/protocol/handshake.md` § 3.2) negotiates v0.2
+/// only; v0.1 is removed from the negotiation menu because the wire
+/// format is incompatible.
+///
+/// The discriminant `serde_format = "postcard-1.0"` is the conceptual
+/// label for this format; the negotiation message carries the
+/// `OMNI-PROTO-v0.2` string and an out-of-band reference to this
+/// constant for the byte-format contract.
+pub const PROTOCOL_VERSION_V0_2: ProtocolVersion = ProtocolVersion::new(0, 2);
 
 /// Protocol version 1.0 — first stable release target. Reserved.
 pub const PROTOCOL_VERSION_V1_0: ProtocolVersion = ProtocolVersion::new(1, 0);
@@ -195,6 +214,27 @@ mod tests {
     #[test]
     fn well_known_constants_are_what_they_say() {
         assert_eq!(PROTOCOL_VERSION_V0_1, ProtocolVersion::new(0, 1));
+        assert_eq!(PROTOCOL_VERSION_V0_2, ProtocolVersion::new(0, 2));
         assert_eq!(PROTOCOL_VERSION_V1_0, ProtocolVersion::new(1, 0));
+    }
+
+    #[test]
+    fn v0_2_is_strictly_after_v0_1() {
+        // The protocol-version ordering is lexicographic on (major,
+        // minor). v0.2 must be strictly greater than v0.1 so version
+        // negotiation can pick the newer one when both peers support
+        // it.
+        assert!(PROTOCOL_VERSION_V0_2 > PROTOCOL_VERSION_V0_1);
+    }
+
+    #[test]
+    fn v0_2_is_minor_compatible_with_v0_1() {
+        // Per `is_compatible_with`'s asymmetric rule: a peer on v0.2
+        // CAN talk down to a peer on v0.1 (same major, local minor ≥
+        // remote minor), but not the reverse. This is the property
+        // the mesh handshake relies on at the version-negotiation
+        // step.
+        assert!(PROTOCOL_VERSION_V0_2.is_compatible_with(PROTOCOL_VERSION_V0_1));
+        assert!(!PROTOCOL_VERSION_V0_1.is_compatible_with(PROTOCOL_VERSION_V0_2));
     }
 }

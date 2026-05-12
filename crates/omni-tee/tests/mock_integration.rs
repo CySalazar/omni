@@ -126,3 +126,99 @@ fn cross_family_quote_rejected() {
         TeeErrorKind::QuoteSignatureInvalid
     );
 }
+
+// =============================================================================
+// OIP-Serde-004 M4 — postcard wire-format round-trip tests for Quote
+// and SealedBlob via the canonical wire helper.
+// =============================================================================
+//
+// These tests sit in the public integration-test surface (not under
+// `#[cfg(test)]` inside src/) so they exercise the exact path a future
+// `omni-mesh` consumer will use: encode a TEE artefact to bytes via
+// `omni_types::wire::encode_canonical`, ship the bytes, decode via
+// `omni_types::wire::decode_canonical`. Determinism and trailing-byte
+// rejection are the two security-relevant properties.
+
+#[test]
+fn quote_round_trip_via_wire_helper_preserves_all_fields() {
+    let backend = MockTeeBackend::with_measurement(Measurement([0x77u8; 48]));
+    let nonce = Nonce([0x33u8; 32]);
+    let quote = backend
+        .attest(&nonce, Some(b"transcript-binding"))
+        .unwrap();
+
+    let bytes = omni_types::wire::encode_canonical(&quote).expect("encode quote");
+    let decoded: omni_tee::Quote =
+        omni_types::wire::decode_canonical(&bytes).expect("decode quote");
+
+    // Every public field must survive the round-trip byte-identically.
+    assert_eq!(decoded.version, quote.version);
+    assert_eq!(decoded.family, quote.family);
+    assert_eq!(decoded.measurement, quote.measurement);
+    assert_eq!(decoded.nonce, quote.nonce);
+    assert_eq!(decoded.report_data, quote.report_data);
+    assert_eq!(decoded.body, quote.body);
+
+    // And the decoded quote still verifies. (This is the property a
+    // remote verifier on the mesh relies on after receiving bytes from
+    // a peer.)
+    backend
+        .verify_quote(&decoded, &nonce, backend.measurement())
+        .expect("decoded quote verifies");
+}
+
+#[test]
+fn quote_round_trip_is_byte_deterministic() {
+    // Two encodes of the same quote MUST produce byte-identical
+    // outputs. Without this, a signature pre-image computed by a peer
+    // could diverge from the locally-computed one.
+    let backend = MockTeeBackend::with_measurement(Measurement([0x66u8; 48]));
+    let nonce = Nonce([0x99u8; 32]);
+    let quote = backend.attest(&nonce, None).unwrap();
+    let a = omni_types::wire::encode_canonical(&quote).expect("encode-a");
+    let b = omni_types::wire::encode_canonical(&quote).expect("encode-b");
+    assert_eq!(a, b);
+}
+
+#[test]
+fn quote_decode_rejects_trailing_bytes() {
+    let backend = MockTeeBackend::new();
+    let nonce = Nonce([0xEEu8; 32]);
+    let quote = backend.attest(&nonce, None).unwrap();
+    let mut bytes =
+        omni_types::wire::encode_canonical(&quote).expect("encode quote");
+    bytes.push(0xFF);
+    let result: omni_types::error::Result<omni_tee::Quote> =
+        omni_types::wire::decode_canonical(&bytes);
+    assert!(result.is_err(), "quote decode must reject trailing bytes");
+}
+
+#[test]
+fn sealed_blob_round_trip_via_wire_helper() {
+    let backend = MockTeeBackend::with_measurement(Measurement([0x55u8; 48]));
+    let policy = SealPolicy::new(TeeFamily::Mock, *backend.measurement());
+    let plaintext = b"OIP-Serde-004 M4 round-trip integrity";
+    let blob = backend.seal(plaintext, &policy).expect("seal");
+
+    let encoded =
+        omni_types::wire::encode_canonical(&blob).expect("encode blob");
+    let decoded: omni_tee::SealedBlob =
+        omni_types::wire::decode_canonical(&encoded).expect("decode blob");
+
+    // The decoded blob unseals to the original plaintext under the same
+    // backend (i.e., the SealedBlob round-trip is faithful end-to-end).
+    let recovered = backend.unseal(&decoded).expect("unseal decoded");
+    assert_eq!(recovered, plaintext);
+}
+
+#[test]
+fn protocol_version_v0_2_constant_is_negotiable() {
+    // Sanity check that the M4-introduced ProtocolVersion::V0_2
+    // constant is wired up correctly. Belongs here (vs in omni-types)
+    // because this is the consumer-facing integration suite that the
+    // future `omni-mesh` handshake will mirror.
+    use omni_types::version::{PROTOCOL_VERSION_V0_1, PROTOCOL_VERSION_V0_2};
+    assert!(PROTOCOL_VERSION_V0_2 > PROTOCOL_VERSION_V0_1);
+    assert!(PROTOCOL_VERSION_V0_2.is_compatible_with(PROTOCOL_VERSION_V0_1));
+    assert!(!PROTOCOL_VERSION_V0_1.is_compatible_with(PROTOCOL_VERSION_V0_2));
+}
