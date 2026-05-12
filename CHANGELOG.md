@@ -17,6 +17,13 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Architecture — Container engine + Linux/Windows compatibility (2026-05-12).**
+  - [`/oips/oip-container-006.md`](./oips/oip-container-006.md) — `Draft`. **OmniContainer**: native micro-VM container engine (Firecracker/Kata pattern), with **per-container TEE attestation** as default on TDX / SEV-SNP capable hosts. Specifies guest Linux image policy (Stichting-signed `omni-guest-linux-vN.M`), virtio-only I/O with capability-bound backends, OCI image compatibility + OMNI extension manifest, 5 built-in capability profiles, full lifecycle state machine, and reference implementation plan (`crates/omni-container/`).
+  - **Windows app compatibility via `omni/linux-wine:N-stable`**: Wine + DXVK + VKD3D-Proton pre-baked image, `omni-container run-windows` CLI alias. ~85-95% Win32 productivity / 75-90% gaming coverage per Steam Deck / ProtonDB baselines. macOS apps explicitly NOT supported (Apple license).
+  - **cyDock evolution path** documented: cyDock (Apache-2.0, `cySalazar/cyDock`) is NOT the basis for `omni-container` (different layer — cyDock is a management plane for containerd), but `cyDock-omni` fork retargets backend to `omni-container` REST API in Phase 5+ while reusing the React frontend.
+  - **Future-work OIPs registered (not yet filed)**: `OIP-AOT-Wine-XXX` (Phase 6 — AOT packager `.exe` + Wine → OMNI ELF), `OIP-Cross-ISA-XXX` (v1.1+ ARM port — Rosetta-style x86→ARM ISA translator for OMNI binaries), `OIP-Container-Networking-XXX`, `OIP-Container-Storage-XXX`, `OIP-Container-BYOLinux-XXX`, `OIP-Container-Windows-VM-XXX`.
+  - [`docs/02-architecture.md`](./docs/02-architecture.md) § "Open architectural questions" — **POSIX compatibility question marked resolved**: no POSIX in OMNI kernel; POSIX exists only inside guest Linux of OmniContainers.
+
 - **P3 — Threat model deepening & cryptographic peer review preparation (scaffolding).**
   - [`docs/protocol/handshake.md`](./docs/protocol/handshake.md) — formal wire-level spec of the mesh handshake (Noise_IK over QUIC with mandatory mutual TEE attestation). Documents invariants I1–I8 and lists 5 open issues for cryptographer review.
   - [`protocol-proofs/handshake.spthy`](./protocol-proofs/handshake.spthy) — Tamarin model with `mutual_authentication`, `forward_secrecy`, `replay_resistance`, `kci_resistance`, and `protocol_version_binding` lemmas. Proof execution deferred to P3.2 cryptographer engagement.

@@ -201,4 +201,4 @@ These will be resolved during Phase 1 implementation, captured as OIPs:
 - **Driver model**: separate processes per driver (max isolation, higher overhead) vs. driver service composition.
 - **Boot architecture**: UEFI-only vs. UEFI + legacy BIOS support. Likely UEFI-only given hardware baseline.
 - **Filesystem**: native OMNI FS vs. existing options (ZFS port, ext4 via compatibility).
-- **POSIX compatibility layer**: yes/no/partial. Affects userspace porting effort vs. ideological purity.
+- ~~**POSIX compatibility layer**: yes/no/partial. Affects userspace porting effort vs. ideological purity.~~ **Resolved by [`OIP-Container-006`](../oips/oip-container-006.md) (2026-05-12):** no POSIX in the OMNI kernel; POSIX exists only inside guest Linux of OmniContainers (micro-VM container engine with capability-bound virtio I/O). Linux apps and Windows apps (via Wine-in-container) are first-class via this path.
