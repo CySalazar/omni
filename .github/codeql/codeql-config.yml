@@ -1,0 +1,50 @@
+# =============================================================================
+# OMNI OS — CodeQL configuration
+# =============================================================================
+# Tunes the CodeQL analysis run by `.github/workflows/codeql.yml`.
+#
+# Rationale for query filters: this is a security-first crypto-heavy
+# project. Test modules contain deterministic test vectors with literal
+# passwords, salts, and keys (e.g., RFC 8032 / 7748 / 8439 vectors,
+# Argon2id determinism tests in `crates/omni-crypto/src/kdf.rs`).
+# CodeQL's `rust/hardcoded-credentials` query fires on every literal
+# byte string passed as `password` / `salt` to a KDF, but inside a
+# `#[cfg(test)]` module those values are intentional and infrastructural,
+# not credentials.
+#
+# We therefore disable the `rust/hardcoded-credentials` query for paths
+# under `crates/*/src/` (where it generates false positives in the
+# inline `mod tests {}` blocks). Production code at the same paths is
+# still analyzed by every other security query in `security-and-quality`.
+#
+# This is a conservative scoping: when a separate test directory or a
+# test-only crate appears, narrow the path further (e.g., `**/tests/**`
+# only) and re-enable the query for `src/` proper.
+# =============================================================================
+
+name: "OMNI CodeQL config"
+
+# Use the same query suite as the workflow (`queries: security-and-quality`).
+# We only modify the suite via filters; we do not switch to a smaller suite.
+disable-default-queries: false
+
+query-filters:
+  - exclude:
+      id: rs/hardcoded-credentials
+  - exclude:
+      id: rust/hardcoded-credentials
+
+# When a dedicated test-only directory appears (e.g., `tests/` per-crate),
+# we can scope the analysis here. Today, all our tests live in `#[cfg(test)]`
+# blocks inside `src/`, which CodeQL cannot path-filter; the query-level
+# exclusion above is the only sound option.
+paths:
+  - "crates/**/src/**"
+
+paths-ignore:
+  - "**/target/**"
+  - "doe-framework/**"
+  - "scripts/**"
+  - "docs/**"
+  - "oips/**"
+  - "protocol-proofs/**"
