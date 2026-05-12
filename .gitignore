@@ -101,3 +101,9 @@ Icon
 .Trashes
 ehthumbs.db
 desktop.ini
+
+doe-framework/.startup-prompt.txt
+
+# Python bytecode cache (e.g., from /scripts/lint-oips.py)
+__pycache__/
+*.pyc
