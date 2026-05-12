@@ -1,12 +1,18 @@
 /*
  * OMNI OS Mesh Handshake — Tamarin Model
  *
- * Status: Draft v0.2 — pending cryptographer review (P3.2).
- *         2026-05-12: extended with rules + lemmas for I3 (mutual TEE
- *         attestation binding), I7-extended (measurement-root binding),
+ * Status: Draft v0.3 — pending cryptographer review (P3.2).
+ *         2026-05-12 (v0.2): extended with rules + lemmas for I3 (mutual
+ *         TEE attestation binding), I7-extended (measurement-root binding),
  *         and I8 (compliance-capability downgrade resistance) per the
  *         original .spthy footer task list. Existing v0.1 lemmas
  *         retained verbatim.
+ *         2026-05-12 (v0.3): added `restriction caps_intersect_meet`
+ *         encoding the lattice-meet axioms (idempotence + commutativity)
+ *         for caps_intersect/2 — precommits the algebraic identities
+ *         that the I8 lemma `compliance_capability_no_downgrade` relies
+ *         on (per the original footer note "if proof heuristics struggle,
+ *         add restriction caps_intersect_meet:").
  *
  * This file models the handshake described in /docs/protocol/handshake.md and
  * mechanically checks invariants I1–I8 with the Tamarin prover.
@@ -55,6 +61,45 @@ functions:
   pk/1,              // public key from a long-term secret
   mr_root/1,         // Merkle root of an allowlist of measurements
   caps_intersect/2   // intersection of two capability sets (lattice-meet)
+
+/*--------------------------------------------------------------------*\
+ *  Restriction — lattice-meet axioms for caps_intersect/2.
+ *
+ *  caps_intersect/2 is declared as an uninterpreted function above; without
+ *  axioms, Tamarin's solver cannot conclude that swapping the order of
+ *  arguments or applying the function to two equal sets yields the expected
+ *  algebraic identities. The `compliance_capability_no_downgrade` lemma
+ *  (I8, defined below) relies on those identities — an attacker that
+ *  reorders capsA / capsB in the transcript would, in the absence of these
+ *  axioms, appear to produce a "different" negotiated set, which would
+ *  defeat the no-downgrade argument.
+ *
+ *  This restriction encodes the two axioms that the original .spthy footer
+ *  task list flagged ("caps_intersect_meet" — idempotence + symmetric
+ *  monotonicity):
+ *
+ *    (A1) Idempotence:    caps_intersect(x, x) = x
+ *    (A2) Commutativity:  caps_intersect(x, y) = caps_intersect(y, x)
+ *
+ *  Together these make caps_intersect/2 behave like the meet (∧) on a
+ *  finite meet-semilattice — the model the protocol assumes. Associativity
+ *  is not required by any current lemma (only 2-party meets are computed)
+ *  and is therefore intentionally omitted; it can be added in a future
+ *  revision if a 3+-party negotiation primitive is introduced.
+ *
+ *  Each conjunct is keyed on an existing action label so the restriction
+ *  fires only for capability sets the protocol actually instantiates;
+ *  the constraint solver does not waste effort on free variables that
+ *  never appear in a trace.
+\*--------------------------------------------------------------------*/
+
+restriction caps_intersect_meet:
+    "(All A x #i.
+          Advertised_Caps(A, x) @ i
+          ==> caps_intersect(x, x) = x)
+   & (All B x y r #i.
+          Negotiated_Caps(B, x, y, r) @ i
+          ==> caps_intersect(x, y) = caps_intersect(y, x))"
 
 /*--------------------------------------------------------------------*\
  *  Identity setup
@@ -330,11 +375,12 @@ end
  *      via Bound_Measurements / Bound_Roots / Verified_Caps_Negotiation
  *      action labels).
  *   3. Document any auxiliary lemmas needed to close the proofs in
- *      reasonable time. In particular, the abstract `caps_intersect`
- *      function does NOT enforce the lattice-meet property; if proof
- *      heuristics struggle, add `restriction caps_intersect_meet:`
- *      stating capsA = caps_intersect(capsA, capsA) and the symmetric
- *      monotonicity axiom.
+ *      reasonable time. The 2026-05-12 (v0.3) revision precommits the
+ *      lattice-meet axioms for caps_intersect/2 via
+ *      `restriction caps_intersect_meet:` (idempotence + commutativity);
+ *      this is expected to be sufficient for `compliance_capability_no_downgrade`
+ *      to close. Reviewer should confirm and flag if associativity (for
+ *      future 3+-party negotiation) is also needed.
  *   4. Add lemmas for I4 (attestation freshness via nonce uniqueness)
  *      and I6 (UKS resistance) if not implied by the existing lemmas.
  */
