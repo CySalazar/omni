@@ -810,6 +810,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "omni-container"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "mockall",
+ "omni-capability",
+ "omni-tee",
+ "omni-types",
+ "proptest",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "omni-crypto"
 version = "0.1.0"
 dependencies = [

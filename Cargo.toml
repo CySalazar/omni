@@ -34,6 +34,11 @@ members = [
     "crates/omni-sdk",
     "crates/omni-agent",
     "crates/omni-shell",
+    # `omni-container` is the userspace container engine specified in
+    # OIP-Container-006. Unlike the foundational `no_std + alloc` crates,
+    # it is std-enabled (it runs as a host userspace service with KVM
+    # ioctls, OCI image cache, subprocess management for virtio backends).
+    "crates/omni-container",
 ]
 
 # Fuzz harnesses live in their own ephemeral packages outside the
