@@ -532,25 +532,30 @@ Add `.github/dependabot.yml`:
 
 ## P3.1 — Formal mesh handshake specification
 
-- **Status:** `[ ]`
+- **Status:** `[~]` (spec + Tamarin model landed 2026-05-10; model extended to v0.2 on 2026-05-12 with lemmas for I3 + I7-extended + I8; proof execution gated on P3.2)
 - **Priority:** P3
 - **Effort:** 1–2 weeks
 - **Dependencies:** existing `04-security-model.md`, `04a-threat-model.md`
 - **Rationale:** changing protocol post-implementation is 10× the cost of changing it on paper.
 
 **Deliverables:**
-- `/docs/protocol/handshake.md` — pseudo-code or formal notation (TLA+ if available, otherwise Alloy or pseudo-code with explicit invariants).
-- Protocol verification with **ProVerif** or **Tamarin** for symbolic analysis. Validate:
-  - Mutual authentication
-  - Forward secrecy
-  - TEE attestation freshness
-  - Resistance to KCI (Key Compromise Impersonation)
-  - Resistance to UKS (Unknown Key-Share)
-- Document each property as an invariant in the spec.
+- [x] `/docs/protocol/handshake.md` — formal wire-level spec with 8 numbered invariants (I1–I8).
+- [~] Protocol verification with **ProVerif** or **Tamarin** for symbolic analysis. v0.2 model at [`/protocol-proofs/handshake.spthy`](protocol-proofs/handshake.spthy) covers 8 lemmas:
+  - [x] `mutual_authentication` (I1)
+  - [x] `forward_secrecy` (I2)
+  - [x] `mutual_tee_attestation_binding` (I3) — added 2026-05-12
+  - [x] `replay_resistance` (I4 — partial; full I4 needs nonce-uniqueness lemma)
+  - [x] `kci_resistance` (I5)
+  - [x] `protocol_version_binding` (I7)
+  - [x] `measurement_root_binding` (I7-extended) — added 2026-05-12
+  - [x] `compliance_capability_no_downgrade` (I8) — added 2026-05-12
+  - [ ] I6 (UKS) — to be added or implied by `mutual_authentication` + identity binding (cryptographer to confirm)
+- Each property documented as an invariant in `handshake.md` § 2.
 
 **Acceptance criteria:**
-- [ ] Spec lives under `/docs/protocol/`.
-- [ ] Tamarin/ProVerif proof artifacts checked into `/protocol-proofs/`.
+- [x] Spec lives under `/docs/protocol/`.
+- [x] Tamarin/ProVerif proof artifacts checked into `/protocol-proofs/`.
+- [ ] **Tamarin proof execution** (`tamarin-prover handshake.spthy --prove` returns `verified` for all 8 lemmas) — blocked on `tamarin-prover` install + cryptographer engagement (P3.2).
 - [ ] Review by external cryptographer (P3.2).
 
 ---
