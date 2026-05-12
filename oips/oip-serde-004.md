@@ -2,7 +2,7 @@
 oip: 4
 title: Migrate workspace serialization from bincode v2 (unmaintained) to postcard
 track: Standards Track
-status: Draft
+status: Review
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-12
@@ -45,10 +45,16 @@ Option (3) is the only choice that resolves the supply-chain risk *and* removes 
 
 ```diff
 -bincode = { version = "2.0", default-features = false, features = ["serde", "alloc"] }
-+postcard = { version = "1.0", default-features = false, features = ["alloc", "use-std"] }
-+# `use-std` is gated behind `cfg(feature = "std")` at the consumer level
-+# so foundational crates remain `no_std + alloc`. `postcard`'s alloc
-+# support requires version ≥ 1.0.7.
++postcard = { version = "1.0", default-features = false, features = ["alloc"] }
++# `default-features = false` + `alloc` only. `postcard`'s `use-std` feature
++# is *not* enabled at the workspace level because Cargo features are additive
++# — enabling `use-std` once would pull `std` into every foundational crate
++# (`omni-types`, `omni-crypto`, `omni-capability`, `omni-tee`, `omni-kernel`).
++# A consumer that genuinely requires `std::io::Read`/`Write` adapters MUST
++# depend on `postcard` directly (not via the workspace re-export) and enable
++# `use-std` in that crate's `Cargo.toml` only. There are no such consumers
++# at v0.2; the rule is stated to head off future drift.
++# `postcard`'s alloc support requires version ≥ 1.0.7.
 ```
 
 Every `bincode = { workspace = true }` in `crates/*/Cargo.toml` is replaced with `postcard = { workspace = true }`. The replacement is:
@@ -180,6 +186,12 @@ The wire-format version bump is itself a piece of metadata exchanged at handshak
 When a user-data flow eventually depends on this serialization (e.g., `omni-tokenization` `MaskedSSN` round-trips), the privacy considerations of *that* flow are governed by the OIP introducing it, with `postcard`'s wire-format properties as a baseline assumption.
 
 ---
+
+## Amendment history
+
+| Date | Change | Notes |
+|---|---|---|
+| 2026-05-12 | `Draft → Review` | Editorial transition by the interim editor body (founder, sole editor during the Bootstrap Period per `OIP-Process-001` §6.2). One in-Review correction applied: §S1 dropped the `use-std` feature from the workspace-level `postcard` dependency declaration. Reason: Cargo features are additive — enabling `use-std` in `[workspace.dependencies]` would unconditionally pull `std` into the foundational crates that must remain `no_std + alloc` for the kernel trajectory (`omni-types`, `omni-crypto`, `omni-capability`, `omni-tee`, `omni-kernel`). The corrected `features = ["alloc"]` matches the actual constraint. No other content change; the migration plan (M1–M5) is unchanged. |
 
 ## Copyright
 
