@@ -555,7 +555,7 @@ Add `.github/dependabot.yml`:
 **Acceptance criteria:**
 - [x] Spec lives under `/docs/protocol/`.
 - [x] Tamarin/ProVerif proof artifacts checked into `/protocol-proofs/`.
-- [ ] **Tamarin proof execution** (`tamarin-prover handshake.spthy --prove` returns `verified` for all 8 lemmas) — blocked on `tamarin-prover` install + cryptographer engagement (P3.2).
+- [x] **Tamarin proof execution** (`tamarin-prover handshake.spthy --prove` returns `verified` for all 8 lemmas) — completed 2026-05-12 with tamarin-prover 1.12.0; processing time ≈ 1.36s; full run log at [`protocol-proofs/handshake-proof-run-2026-05-12.txt`](protocol-proofs/handshake-proof-run-2026-05-12.txt). Five structural model defects were fixed in-place during the run; details in the run log footer and in [`protocol-proofs/handshake.spthy`](protocol-proofs/handshake.spthy) `Status of proofs` block. One residual wellformedness warning (Message Derivation Checks on peer-controlled variables) carried forward to the cryptographer review.
 - [ ] Review by external cryptographer (P3.2).
 
 ---
