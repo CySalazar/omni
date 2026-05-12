@@ -1,6 +1,15 @@
 # Governance
 
-**Status:** Draft v0.1
+**Status:** Draft v0.2
+
+> **Changelog**
+> - **v0.2 (2026-05-10):** OIP process delegated to authoritative `OIP-Process-001`
+>   (`Active`); BDFL veto window dates immutably anchored (2026-05-09 → 2031-05-09,
+>   sunset 23:59 UTC); founder role (years 1–5 / 5+ / 10+) fully fleshed; veto-log
+>   requirement formalized at `docs/audits/bdfl-veto-log.md`; previously open
+>   questions on voting threshold and category lifecycle resolved by `OIP-Process-001`.
+> - **v0.1 (initial):** three-layer model, anti-Sybil, forking policy, conflict
+>   resolution, transparency commitments.
 
 ## Three-layer governance model
 
