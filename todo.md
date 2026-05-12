@@ -801,20 +801,20 @@ Each of P6.1–P6.8 will be expanded into its own task list when its correspondi
 
 ## P7.2 — Migration steps M1–M5
 
-- **Status:** `[ ]` blocked on P7.1
+- **Status:** `[~]` — M1–M5 all landed locally 2026-05-12 on branch `feat/p1-foundational-crates`. `OIP-Serde-004` remains in `Review` pending the `Review → Last Call → Active` transition; full `[x]` requires `audit.yml` cron green for 7 calendar days post-merge per the OIP's `Final` criterion.
 - **Priority:** P7 / High
 - **Effort:** ~1 week of focused work; each step is its own commit per `OIP-Serde-004` § S5.
 - **Dependencies:** P7.1 `Active`.
 
 **Sub-tasks:**
 
-- [ ] **P7.2.M1** — Workspace dep swap in `Cargo.toml`. Verify with `cargo build --workspace --all-features`.
-- [ ] **P7.2.M2** — `omni-types::wire` canonical-encoding helper module + clippy `disallowed-methods` on raw `postcard::*` calls outside the helper. Verify with `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
-- [ ] **P7.2.M3** — `omni-capability` `CapabilityToken` migration; existing 43 tests rewritten against `postcard` round-trips.
-- [ ] **P7.2.M4** — `omni-tee` round-trip tests + `omni-types::ProtocolVersion::V0_2` constant.
-- [ ] **P7.2.M5** — `crates/omni-capability/tests/wire_format_v0_2.rs` reference vector + `crates/omni-tee/tests/wire_format_v0_2.rs` adversarial bit-flip suite. Verify `cargo audit` and `cargo deny check` exit 0; `RUSTSEC-2025-0141` no longer in the report.
+- [x] **P7.2.M1** — Workspace dep swap in `Cargo.toml`. Verified `cargo build --workspace --all-features` clean (commit `b8de469`).
+- [x] **P7.2.M2** — `omni-types::wire` canonical-encoding helper module + clippy `disallowed-methods` on raw `postcard::*` calls outside the helper. Verified `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean (commit `9b3d977`).
+- [x] **P7.2.M3** — `omni-capability` `CapabilityToken` migration; 4 new round-trip regression tests pin postcard-canonical-encoding properties at the public-API boundary. 47 unit + 7 integration tests green (commit `b451539`).
+- [x] **P7.2.M4** — `omni-tee` round-trip tests + `omni-types::ProtocolVersion::V0_2` constant. Five new wire-format tests on `Quote` and `SealedBlob` + two version-compatibility tests (commit `61a2b02`).
+- [x] **P7.2.M5** — `crates/omni-capability/tests/wire_format_v0_2.rs` reference vector (`TokenPayload` byte prefix pinned at 49 bytes) + `crates/omni-tee/tests/wire_format_v0_2.rs` adversarial suite (4 tests covering bit-flip-on-covered-fields, prefix-truncation, trailing-byte-extension, swap-with-unrelated). `cargo audit` exit 0 (RUSTSEC-2025-0141 absent — `cargo tree --invert bincode` returns "did not match any packages"); `cargo deny check advisories` ok. (`bans` + `licenses` fail with **pre-existing** issues unrelated to OIP-Serde-004: `cpufeatures` 0.2/0.3 duplicate and `Unicode-DFS-2016` license — separate cleanup work.)
 
-**Acceptance:** all 185 workspace tests + 2 new test files green; `bincode` removed from `Cargo.lock` (`cargo tree --invert bincode` empty); `OIP-Serde-004` transitions to `Final` after 7 calendar days of clean `audit.yml` cron runs.
+**Acceptance:** all workspace tests + 2 new test files green; `bincode` removed from `Cargo.lock` (`cargo tree --invert bincode` empty); `OIP-Serde-004` transitions to `Final` after 7 calendar days of clean `audit.yml` cron runs.
 
 ---
 
