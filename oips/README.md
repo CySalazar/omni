@@ -114,10 +114,10 @@ Full state machine and transition rules: `OIP-Process-001` §4 (*Lifecycle*).
 |---|---|---|---|---|---|
 | 0000 | Meta | Template (reserved) | — | — | 2026-05-10 |
 | 001 | Meta | The OIP Process | Active *(Bootstrap)* | cySalazar | 2026-05-10 |
-| 002 | Process | Bug Bounty Program for OMNI OS | Review | cySalazar | 2026-05-10 |
+| 002 | Process | Bug Bounty Program for OMNI OS | Last Call *(closes 2026-05-26)* | cySalazar | 2026-05-10 |
 | 002 | Standards Track | Compliance Proof Scheme — STARK over SNARK for v1 | Draft | cySalazar | 2026-05-10 |
 | 003 | Standards Track | UEFI Bootloader Selection and Kernel `no_std` Transition Plan | Draft | cySalazar | 2026-05-10 |
-| 004 | Standards Track | Migrate workspace serialization from bincode v2 (unmaintained) to postcard | Review | cySalazar | 2026-05-12 |
+| 004 | Standards Track | Migrate workspace serialization from bincode v2 (unmaintained) to postcard | Last Call *(closes 2026-05-26)* | cySalazar | 2026-05-12 |
 | 004 | Standards Track | Kernel panic handler and global allocator (gate K3 of OIP-Kernel-003) | Draft | cySalazar | 2026-05-12 |
 | 005 | Standards Track | Boot hand-off ABI and kernel-runner crate (gate K4 of OIP-Kernel-003) | Draft | cySalazar | 2026-05-12 |
 | 005 | Process | Voting weight formula — non-saturating uptime, contribution signals, conflict-of-interest guards | Draft | cySalazar | 2026-05-12 |

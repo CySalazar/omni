@@ -2,7 +2,7 @@
 oip: 4
 title: Migrate workspace serialization from bincode v2 (unmaintained) to postcard
 track: Standards Track
-status: Review
+status: Last Call
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-12
@@ -192,6 +192,7 @@ When a user-data flow eventually depends on this serialization (e.g., `omni-toke
 | Date | Change | Notes |
 |---|---|---|
 | 2026-05-12 | `Draft → Review` | Editorial transition by the interim editor body (founder, sole editor during the Bootstrap Period per `OIP-Process-001` §6.2). One in-Review correction applied: §S1 dropped the `use-std` feature from the workspace-level `postcard` dependency declaration. Reason: Cargo features are additive — enabling `use-std` in `[workspace.dependencies]` would unconditionally pull `std` into the foundational crates that must remain `no_std + alloc` for the kernel trajectory (`omni-types`, `omni-crypto`, `omni-capability`, `omni-tee`, `omni-kernel`). The corrected `features = ["alloc"]` matches the actual constraint. No other content change; the migration plan (M1–M5) is unchanged. |
+| 2026-05-12 | `Review → Last Call` | Editorial transition by the interim editor body. **14-day public-objection window opens 2026-05-12 and closes 2026-05-26** per `OIP-Process-001` §4 and §5.3. All five migration steps M1–M5 have landed locally on branch `feat/p1-foundational-crates` (commits `b8de469` / `9b3d977` / `b451539` / `61a2b02` / `784918b`), with verification: `cargo build --workspace --all-features` clean; `cargo test --workspace --all-features` 204 tests / 0 failures; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo audit` exit 0 with **RUSTSEC-2025-0141 absent**; `cargo deny check advisories` ok. Pre-existing `cargo deny` failures on `bans` (cpufeatures 0.2/0.3 duplicate) and `licenses` (`Unicode-DFS-2016`) are explicitly noted as **out of scope** for this OIP and tracked separately. Transition to `Active` requires either ≥30% weighted vote OR the 14-day window elapsing — whichever fires first — per `OIP-Process-001` §5.3. |
 
 ## Copyright
 

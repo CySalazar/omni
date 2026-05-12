@@ -2,7 +2,7 @@
 oip: 2
 title: Bug Bounty Program for OMNI OS
 track: Process
-status: Review
+status: Last Call
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-10
@@ -592,6 +592,7 @@ in `docs/04-security-model.md`.
 | Date | Change | Notes |
 |---|---|---|
 | 2026-05-12 | `Draft → Review` | Editorial transition by the interim editor body (founder, sole editor during the Bootstrap Period per `OIP-Process-001` §6.2). No substantive content change: the OIP enters the public discussion phase with all 10 canonical sections intact. The defaults applied at filing (CVSS v4.0 severity tiers anchored to `SECURITY.md` §4; payout ranges Critical €5K–€50K / High €1K–€10K / Medium €250–€2.5K / Low €50–€500; 6-month contributor guard; crypto-payout opt-in; non-monetary mode during Bootstrap with 24-month retroactive commitment) carry into `Review` unchanged. As the **first non-`Meta` OIP** under `OIP-Process-001`, this OIP also dogfoods §5 of the process — its `Review → Last Call → Active` path will be the project's first formal vote. |
+| 2026-05-12 | `Review → Last Call` | Editorial transition by the interim editor body. **14-day public-objection window opens 2026-05-12 and closes 2026-05-26** per `OIP-Process-001` §4 and §5.3. No content change carried by this transition; the OIP enters the vote window with the same text the Draft and Review phases had. Transition to `Active` requires either ≥30% weighted vote OR the 14-day window elapsing — whichever fires first — per `OIP-Process-001` §5.3. Because the editor body is in Bootstrap (1 interim editor), the Bootstrap clause of `OIP-Process-001` §6.3 applies to ratification once the window closes. |
 
 ## Copyright
 
