@@ -120,8 +120,9 @@ Full state machine and transition rules: `OIP-Process-001` §4 (*Lifecycle*).
 | 004 | Standards Track | Migrate workspace serialization from bincode v2 (unmaintained) to postcard | Draft | cySalazar | 2026-05-12 |
 | 004 | Standards Track | Kernel panic handler and global allocator (gate K3 of OIP-Kernel-003) | Draft | cySalazar | 2026-05-12 |
 | 005 | Standards Track | Boot hand-off ABI and kernel-runner crate (gate K4 of OIP-Kernel-003) | Draft | cySalazar | 2026-05-12 |
+| 005 | Process | Voting weight formula — non-saturating uptime, contribution signals, conflict-of-interest guards | Draft | cySalazar | 2026-05-12 |
 
-> **Note on duplicate trailing numbers:** `OIP-Bounty-002` / `OIP-Crypto-002` and `OIP-Serde-004` / `OIP-Kernel-004` share trailing numbers (different per-track placeholders). Per the *Numbering* convention above, the global integer is **assigned by editors on Last Call → Active**; the duplicates are acceptable for `Draft` status and will be reconciled before any of these OIPs transition out of `Draft`.
+> **Note on duplicate trailing numbers:** `OIP-Bounty-002` / `OIP-Crypto-002`, `OIP-Serde-004` / `OIP-Kernel-004`, and `OIP-Kernel-005` / `OIP-Voting-005` share trailing numbers (different per-track placeholders). Per the *Numbering* convention above, the global integer is **assigned by editors on Last Call → Active**; the duplicates are acceptable for `Draft` status and will be reconciled before any of these OIPs transition out of `Draft`.
 
 ---
 
