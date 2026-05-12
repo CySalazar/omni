@@ -50,16 +50,19 @@ These go through ordinary PR flow described in `CONTRIBUTING.md`.
 
 ## Numbering
 
+Authoritative spec: `OIP-Process-001` §8 (Numbering). Quick reference:
+
 | Aspect | Convention |
 |---|---|
 | **Filename** | `oip-<slug>-<NNN>.md` — kebab-case slug, 3-digit zero-padded number |
-| **Number `NNN`** | **Global, monotonically increasing** across the entire registry (not per-track). Assigned by the editors on Last Call → Active transition |
-| **Slug** | 1–3 kebab-case words derived from the title, free-form |
+| **Number `NNN`** | **Globally unique and monotonically increasing** across the entire registry (not per-track). Authors pick the next free integer at filing; editors reconcile placeholder collisions at the `Draft → Review` transition (§8.3) |
+| **Slug** | 1–3 kebab-case **category hint** (e.g. `process`, `bounty`, `kernel`, `serde`). **NOT a secondary identifier** — cross-references MUST use the integer (§8.1, §8.2) |
 | **Reserved** | `0000` is reserved for the template (`oip-0000-template.md`) |
 
 Examples:
 - `oip-process-001.md` — OIP #1, slug `process` (this registry's first proposal).
-- `oip-bounty-002.md` — OIP #2, slug `bounty` (hypothetical future).
+- `oip-bounty-002.md` — OIP #2, slug `bounty` (Process-track bug-bounty program).
+- `oip-container-006.md` — OIP #6, slug `container` (OmniContainer micro-VM engine).
 - `oip-snark-stark-007.md` — OIP #7, slug `snark-stark` (hypothetical future, see `todo.md` P3.3).
 
 > **Compatibility note:** older `todo.md` entries reference identifiers like `OIP-Voting-002`,
@@ -121,8 +124,9 @@ Full state machine and transition rules: `OIP-Process-001` §4 (*Lifecycle*).
 | 004 | Standards Track | Kernel panic handler and global allocator (gate K3 of OIP-Kernel-003) | Draft | cySalazar | 2026-05-12 |
 | 005 | Standards Track | Boot hand-off ABI and kernel-runner crate (gate K4 of OIP-Kernel-003) | Draft | cySalazar | 2026-05-12 |
 | 005 | Process | Voting weight formula — non-saturating uptime, contribution signals, conflict-of-interest guards | Draft | cySalazar | 2026-05-12 |
+| 006 | Standards Track | OmniContainer — native container engine with Linux/Windows compatibility | Draft | cySalazar | 2026-05-12 |
 
-> **Note on duplicate trailing numbers:** `OIP-Bounty-002` / `OIP-Crypto-002`, `OIP-Serde-004` / `OIP-Kernel-004`, and `OIP-Kernel-005` / `OIP-Voting-005` share trailing numbers (different per-track placeholders). Per the *Numbering* convention above, the global integer is **assigned by editors on Last Call → Active**; the duplicates are acceptable for `Draft` status and will be reconciled before any of these OIPs transition out of `Draft`.
+> **Note on duplicate trailing numbers:** `OIP-Bounty-002` / `OIP-Crypto-002`, `OIP-Serde-004` / `OIP-Kernel-004`, and `OIP-Kernel-005` / `OIP-Voting-005` share trailing numbers (placeholder collisions). Per `OIP-Process-001` §8.3, placeholder collisions in `Draft` are explicitly permitted and reconciled by the editors at the `Draft → Review` transition: the first of a colliding pair to reach `Review` retains its placeholder integer; the other is renumbered to the next free integer in the same PR that opens its own `Review` window. `OIP-Bounty-002` and `OIP-Serde-004` are already past `Review` (Last Call closes 2026-05-26), so their integers are now canonical; `OIP-Crypto-002` and `OIP-Kernel-004` will be renumbered when they reach `Review`.
 
 ---
 
@@ -133,8 +137,11 @@ Full state machine and transition rules: `OIP-Process-001` §4 (*Lifecycle*).
    [`oip_proposal.yml`](../.github/ISSUE_TEMPLATE/oip_proposal.yml) issue template. Editors will
    pre-validate scope.
 3. **Branch** as `oip/<slug>` (per `CONTRIBUTING.md` §6).
-4. **Copy** [`oip-template.md`](./oip-template.md) → `oip-<slug>-XXX.md` (use `XXX` placeholder
-   for the number; editors will assign on Last Call → Active).
+4. **Copy** [`oip-template.md`](./oip-template.md) → `oip-<slug>-<NNN>.md`. Per
+   `OIP-Process-001` §8.3, pick the next free integer at filing (or any free integer if
+   filing in parallel with another `Draft`). Editors reconcile placeholder collisions at
+   the `Draft → Review` transition — the first colliding OIP to reach `Review` retains its
+   integer; the other is renumbered in the same PR that opens its `Review` window.
 5. **Fill all required sections.** The lint at `scripts/lint-oips.py` will run in CI; fix any
    structural errors before requesting review.
 6. **Open a PR** with a `Signed-off-by:` trailer (DCO) and Conventional Commit prefix

@@ -6,7 +6,7 @@ status: Active
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-10
-updated: 2026-05-10
+updated: 2026-05-12
 requires: []
 supersedes: ~
 superseded-by: ~
@@ -401,17 +401,48 @@ clause is dormant and the OIP remains in `Active` indefinitely).
 
 ### §8. Numbering *(normative)*
 
+#### §8.1. Identifier rule
+
 The frontmatter `oip:` integer is **globally unique and monotonically increasing** across the
-entire registry. Numbers are assigned by the editors at the moment of `Last Call → Active`
-transition. No two OIPs share a number; no number is reused after `Withdrawn`/`Rejected` (the
-file remains in the registry, occupying its number).
+entire registry. No two OIPs in any state at or beyond `Review` MAY share a number. No number
+is reused after `Withdrawn`/`Rejected` (the file remains in the registry, occupying its
+number). The integer is the canonical identifier; all cross-references — in docs, in
+`requires:` / `supersedes:` frontmatter, in the BDFL veto log, in voting tallies — MUST use
+the integer.
 
-The number `0000` is reserved for the sentinel template (`oip-0000-template.md`) and MUST NOT
-be assigned to any real OIP.
+#### §8.2. Filename convention
 
-The canonical filename is `oip-<slug>-<NNN>.md` where `<slug>` is a 1–3-word kebab-case tag
-and `<NNN>` is the 3-digit zero-padded number. The slug is informational; the number is
-authoritative for cross-references.
+The canonical filename is `oip-<slug>-<NNN>.md` where `<slug>` is a 1–3-word kebab-case
+**category hint** (e.g. `process`, `bounty`, `crypto`, `kernel`, `serde`, `voting`,
+`container`) and `<NNN>` is the 3-digit zero-padded number. **The slug is informational, not
+an identifier.** Two OIPs MAY share a slug across history without ambiguity (they cannot
+share an integer once at or beyond `Review`); the linter does not enforce slug uniqueness,
+only that the `<NNN>` in the filename matches the frontmatter `oip:` field and that the
+index table in `oips/README.md` references every file.
+
+#### §8.3. Draft-stage placeholder numbers
+
+OIPs in `Draft` MAY hold a **placeholder** integer that collides with another `Draft` OIP
+filed in parallel. Editors reconcile such placeholders at the `Draft → Review` transition:
+the first colliding OIP to reach `Review` retains its placeholder integer, and any other
+`Draft` OIP sharing that integer is renumbered to the next free integer in the same PR that
+opens its own `Review` window.
+
+Rationale: editors-of-record do not pre-allocate numbers because that would couple filing
+throughput to editor availability during the Bootstrap Period and beyond. A parallel-`Draft`
+author MAY pick any free integer at filing time; the global-uniqueness invariant is enforced
+at the editorial-attention gate (`Review`), which is also where the index table in
+`oips/README.md` is synchronized with the registry.
+
+The lint at `scripts/lint-oips.py` enforces filename↔frontmatter coherence (the integer in
+the filename matches `oip:`) and index-table presence; it intentionally does NOT enforce
+global uniqueness of `<NNN>` across files, because that invariant is editorial (it binds
+at `Review`, not at file creation).
+
+#### §8.4. Reserved numbers
+
+The number `0000` is reserved for the sentinel template (`oip-0000-template.md`) and MUST
+NOT be assigned to any real OIP.
 
 ### §9. Maintenance *(normative)*
 
@@ -677,6 +708,7 @@ It exists for the same reason §5.4 mandates a public veto log: trust requires a
 |---|---|---|
 | 2026-05-10 | Bootstrap fiat (§6.3, ratification) | Initial publication. `Active` under one-time founder fiat because no prior process exists to vote it in. |
 | 2026-05-10 | Bootstrap fiat (§6.3, structural amendment) | First amendment, applied the same day as ratification after founder review. Three changes: (i) **new §6.5** "Critical-security Bootstrap exception" — narrow escape valve for `Standards Track` OIPs responding to `Critical` vulnerabilities while Seat 2 is vacant, with 72h objection window, mandatory post-Bootstrap re-ratification, and public emergency log; (ii) **expanded §5.2** with explicit "Known limitations" of the bootstrap voting defaults and a soft 2028-05-10 deadline for the `voting`-slug Process OIP that retires them; (iii) **refined `## Privacy Considerations`** and **`oips/oip-template.md` HTML guidance** to actively encourage project-scoped pseudonymous filing (privacy-first mission alignment, GDPR pre-emption). Rationale: founder editorial review surfaced three valid critiques that warranted material rather than cosmetic response. |
+| 2026-05-12 | Bootstrap fiat (§6.3, structural amendment) | Second amendment, applied 2026-05-12. **Section §8 (Numbering) restructured** into four sub-sections (§8.1 identifier rule, §8.2 filename convention, §8.3 draft-stage placeholder numbers, §8.4 reserved numbers). Substantive clarifications: (a) the integer is the canonical identifier for all cross-references; (b) the slug is explicitly a **category hint**, not a secondary identifier; (c) the global-uniqueness invariant binds at `Review`, not at `Last Call → Active` as the original wording implied — placeholder integer collisions in `Draft` are explicitly permitted and reconciled by the editors at the `Draft → Review` transition. Rationale: the registry currently holds three `Draft`/`Last Call` placeholder collisions (`OIP-Bounty-002` / `OIP-Crypto-002`; `OIP-Serde-004` / `OIP-Kernel-004`; `OIP-Kernel-005` / `OIP-Voting-005`); the previous §8 wording was silent on this case and required ad-hoc footnotes in `oips/README.md`. This amendment formalizes what the editors were already doing, ahead of the first parallel-`Draft` pair reaching `Review`. No semantic change to any prior `Active` OIP. |
 
 Future amendments after the Bootstrap Period MUST go through the standard §5 voting flow as
 `Meta` OIPs that supersede this one, per §4 (Lifecycle) and §8 (Numbering). The bootstrap fiat
