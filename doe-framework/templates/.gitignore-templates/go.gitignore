@@ -1,0 +1,68 @@
+# =============================================================================
+# D.O.E. Framework — .gitignore Template: Go
+# Generated: <YYYY-MM-DD>
+# Base: gitignore.io/api/go + D.O.E. security rules
+# =============================================================================
+
+# --- Secrets and credentials (NEVER commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+service-account.json
+**/secrets/
+
+# --- Agent-specific files (NEVER commit) ---
+CLAUDE.md
+.cursorrules
+.cursor/
+.aider*
+copilot-*
+
+# --- OS-generated files ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# --- IDE and editor files ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# --- Temporary and generated files ---
+tmp/
+temp/
+.tmp/
+*.log
+*.bak
+*.orig
+
+# --- Go ---
+/vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+go.work.sum
+
+# --- Build output ---
+bin/
+dist/
+
+# --- Coverage ---
+coverage.out
+coverage.html
+*.coverprofile
