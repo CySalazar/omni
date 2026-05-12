@@ -224,28 +224,33 @@ mod tests {
     }
 
     #[test]
-    fn measurement_serde_round_trip_via_postcard() {
+    fn measurement_serde_round_trip_via_wire_helper() {
         let mut bytes = [0u8; 48];
         for (i, slot) in bytes.iter_mut().enumerate() {
             // i ∈ 0..48 fits in a u8.
             *slot = u8::try_from(i).expect("i bounded by array length");
         }
         let m = Measurement(bytes);
-        let encoded = postcard::to_allocvec(&m).expect("encode Measurement");
+        let encoded =
+            omni_types::wire::encode_canonical(&m).expect("encode Measurement");
         let decoded: Measurement =
-            postcard::from_bytes(&encoded).expect("decode Measurement");
+            omni_types::wire::decode_canonical(&encoded).expect("decode Measurement");
         assert_eq!(m, decoded);
     }
 
     #[test]
     fn measurement_deserialize_rejects_wrong_length() {
-        // Encode a 47-byte byte sequence via `serialize_bytes` semantics,
+        // Encode a 47-byte byte sequence via the canonical wire helper,
         // then try to decode it as `Measurement`. The custom
         // `Measurement` deserializer enforces a 48-byte length, so the
-        // shorter input must be rejected.
+        // shorter input must be rejected — either at decode time (the
+        // visitor returns an error) or at the trailing-bytes guard
+        // (the wire helper enforces no-trailing-data canonically).
         let too_short: alloc::vec::Vec<u8> = alloc::vec![0u8; 47];
-        let encoded = postcard::to_allocvec(&too_short).expect("encode short vec");
-        let result: Result<Measurement, _> = postcard::from_bytes(&encoded);
+        let encoded =
+            omni_types::wire::encode_canonical(&too_short).expect("encode short vec");
+        let result: omni_types::error::Result<Measurement> =
+            omni_types::wire::decode_canonical(&encoded);
         assert!(result.is_err(), "wrong-length input must be rejected");
     }
 

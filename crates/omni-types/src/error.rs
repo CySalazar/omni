@@ -192,6 +192,30 @@ pub enum TokenizationErrorKind {
     ServiceUnavailable,
 }
 
+/// Categories of canonical wire-encoding failure.
+///
+/// Emitted by [`crate::wire::encode_canonical`] and
+/// [`crate::wire::decode_canonical`]. Every variant maps to a
+/// `postcard::Error` family member, but the enum is intentionally
+/// abstracted so a future encoder swap (under an OIP) does not break
+/// downstream pattern matches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum WireErrorKind {
+    /// Encoder failed to produce bytes (allocation failure, serializer
+    /// error in a `Serialize` impl, etc.). Treat as an internal bug —
+    /// every `Serialize` impl in OMNI OS is total over its domain.
+    EncodeFailed,
+    /// Decoder failed to parse the input bytes into the target type.
+    /// Maps to `postcard::Error::DeserializeBadEncoding` and friends.
+    DecodeFailed,
+    /// Decoder produced a value but the input contained trailing bytes
+    /// past the canonical encoding. Canonical encodings forbid trailing
+    /// data so any tail indicates either a framing error or an attempt
+    /// to smuggle data past a signature pre-image.
+    TrailingBytes,
+}
+
 /// Categories of policy / consent failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -307,6 +331,19 @@ pub enum OmniError {
         context: &'static str,
     },
 
+    /// Canonical wire-encoding failure (encode/decode round-trip).
+    ///
+    /// Emitted by [`crate::wire::encode_canonical`] /
+    /// [`crate::wire::decode_canonical`]. See [`WireErrorKind`] for
+    /// the kind discriminant.
+    #[error("wire: {kind:?} (context: {context})")]
+    Wire {
+        /// The category of wire-encoding failure.
+        kind: WireErrorKind,
+        /// Static, audit-reviewed identifier of the failing call site.
+        context: &'static str,
+    },
+
     /// Internal invariant violation.
     ///
     /// Reaching this variant indicates a bug in OMNI OS itself, not a
@@ -391,6 +428,13 @@ impl OmniError {
         Self::Policy { kind, context }
     }
 
+    /// Construct a [`OmniError::Wire`] error with the given kind and
+    /// static context slug.
+    #[must_use]
+    pub const fn wire(kind: WireErrorKind, context: &'static str) -> Self {
+        Self::Wire { kind, context }
+    }
+
     /// Construct a [`OmniError::Internal`] error with the given context
     /// slug. Reserve for unrecoverable invariant violations.
     #[must_use]
@@ -446,7 +490,7 @@ mod tests {
     // Smoke test: each variant builds and Debug-formats.
     #[test]
     fn all_variants_format() {
-        let variants: [OmniError; 10] = [
+        let variants: [OmniError; 11] = [
             OmniError::crypto(CryptoErrorKind::DecryptionFailure, "x"),
             OmniError::capability(CapabilityErrorKind::Expired, "x"),
             OmniError::identity(IdentityErrorKind::InvalidLength, "x"),
@@ -456,6 +500,7 @@ mod tests {
             OmniError::hal(HalErrorKind::Io, "x"),
             OmniError::tokenization(TokenizationErrorKind::TokenNotFound, "x"),
             OmniError::policy(PolicyErrorKind::AccessDenied, "x"),
+            OmniError::wire(WireErrorKind::DecodeFailed, "x"),
             OmniError::internal("x"),
         ];
         for v in &variants {

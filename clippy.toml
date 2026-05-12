@@ -53,6 +53,10 @@ disallowed-methods = [
   { path = "std::process::exit", reason = "Exit only at the binary entrypoint after graceful shutdown. Library code must return Result and let the caller decide." },
   { path = "std::time::SystemTime::now", reason = "OMNI OS time must come from a monotonic, attestable clock service (omni-runtime). Wall-clock NOW is non-deterministic and TEE-unsafe." },
   { path = "std::sync::Mutex::new", reason = "Prefer parking_lot::Mutex (no PoisonError) or async lock (tokio::sync::Mutex) where the call site is async. Std Mutex has poison semantics that complicate audits." },
+  { path = "postcard::to_allocvec", reason = "OIP-Serde-004 M2: workspace canonical encoding is omni_types::wire::encode_canonical, which is the single audit point for serialization. Allowlist via #[allow(clippy::disallowed_methods)] only inside omni-types::wire itself." },
+  { path = "postcard::to_vec", reason = "Same rationale as postcard::to_allocvec — go through omni_types::wire::encode_canonical." },
+  { path = "postcard::from_bytes", reason = "OIP-Serde-004 M2: workspace canonical decoding is omni_types::wire::decode_canonical, which enforces the no-trailing-bytes invariant. Allowlist only inside omni-types::wire." },
+  { path = "postcard::take_from_bytes", reason = "Same rationale as postcard::from_bytes — go through omni_types::wire::decode_canonical (which calls take_from_bytes internally + checks tail.is_empty())." },
 ]
 
 # --- Disallowed types ------------------------------------------------------

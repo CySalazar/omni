@@ -18,15 +18,16 @@
 //! byte-identical pre-images, which is the security-critical invariant
 //! for signature verification.
 //!
-//! At M1 of `OIP-Serde-004` the encode/decode call sites use
-//! `postcard::*` directly. M2 introduces `omni-types::wire` and migrates
-//! call sites to go through the helper exclusively.
+//! Per `OIP-Serde-004` M2, all encode/decode flow through
+//! [`omni_types::wire`] — never call `postcard::*` directly. The
+//! workspace clippy `disallowed-methods` lint enforces this.
 
 use alloc::vec::Vec;
 
 use omni_crypto::signing::{OmniSignature, OmniSigningKey, OmniVerifyingKey};
 use omni_types::error::{CapabilityErrorKind, OmniError, Result};
 use omni_types::identity::{CapabilityId, NodeId};
+use omni_types::wire;
 use serde::{Deserialize, Serialize};
 
 use crate::scope::Scope;
@@ -76,7 +77,7 @@ impl TokenPayload {
     /// (which only happens on out-of-memory or truly broken `Serde`
     /// impls — practically infallible for our types).
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
-        postcard::to_allocvec(self).map_err(|_| {
+        wire::encode_canonical(self).map_err(|_| {
             OmniError::capability(
                 CapabilityErrorKind::MalformedToken,
                 "token::canonical_bytes::encode",

@@ -84,9 +84,9 @@ tracing     = { workspace = true }
 # tests inside this crate only.
 mockall  = { workspace = true }
 proptest = { workspace = true }
-# `postcard` 1.x is the canonical wire encoding for `Quote`,
-# `Measurement`, and `SealedBlob`. At M1 of `OIP-Serde-004` round-trip
-# tests call `postcard::*` directly; at M2 they migrate to the
-# `omni-types::wire` helper and this dev-dependency is dropped in favour
-# of `omni-types` re-export.
-postcard = { workspace = true }
+# `postcard` access is delegated to `omni-types::wire::{encode_canonical,
+# decode_canonical}`; no direct postcard dev-dependency. Round-trip
+# tests use `omni_types::wire::encode_canonical(&value).expect(...)` and
+# its decode counterpart. This is the single-audit-point property
+# mandated by `OIP-Serde-004` and enforced by the workspace clippy
+# `disallowed-methods` lint.

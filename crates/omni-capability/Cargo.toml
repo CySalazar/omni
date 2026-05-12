@@ -37,11 +37,10 @@ workspace = true
 omni-types  = { workspace = true }
 omni-crypto = { workspace = true }
 serde       = { workspace = true }
-# `postcard` 1.x is the canonical wire encoding. At M1 of `OIP-Serde-004`
-# the call sites use `postcard::*` directly; at M2 they migrate to the
-# `omni-types::wire` helper and this direct dependency is dropped in
-# favour of `omni-types` re-export.
-postcard    = { workspace = true }
+# `postcard` access is delegated to `omni-types::wire::{encode_canonical,
+# decode_canonical}`; no direct postcard dependency. This is the
+# single-audit-point property mandated by `OIP-Serde-004` and enforced
+# by the workspace clippy `disallowed-methods` lint.
 thiserror   = { workspace = true }
 
 [dev-dependencies]

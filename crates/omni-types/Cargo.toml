@@ -48,6 +48,11 @@ _tokenization_provider = []
 # `no_std + alloc`-compatible.
 [dependencies]
 serde     = { workspace = true }
+# `postcard` is the workspace canonical wire encoding (per `OIP-Serde-004`).
+# `omni-types` owns the only direct dependency — every other crate goes
+# through `omni-types::wire::{encode_canonical, decode_canonical}` so the
+# encoding contract is auditable from a single audit point.
+postcard  = { workspace = true }
 thiserror = { workspace = true }
 # Random UUIDv4 identifiers for runtime-generated IDs (`AgentId`,
 # `CapabilityId`, `SessionId`). Entropy is supplied by `getrandom`.

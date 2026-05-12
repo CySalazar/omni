@@ -304,13 +304,14 @@ fn round_trip_through_canonical_encoding() {
     let user = user_node();
     let token = CapabilityToken::mint(&issuer, user, root_inference_scope(), None).expect("mint");
 
-    // Encode the payload + signature using postcard (the same canonical
-    // encoder used internally for the signature pre-image, per
-    // `OIP-Serde-004`).
-    let encoded = postcard::to_allocvec(&token).expect("serialise token");
+    // Encode the payload + signature via the canonical wire helper
+    // (per `OIP-Serde-004` M2 — `omni_types::wire` is the single audit
+    // point; direct `postcard::*` calls are forbidden by clippy).
+    let encoded =
+        omni_types::wire::encode_canonical(&token).expect("serialise token");
 
     let decoded: CapabilityToken =
-        postcard::from_bytes(&encoded).expect("deserialise token");
+        omni_types::wire::decode_canonical(&encoded).expect("deserialise token");
 
     // The decoded token verifies just like the in-memory one.
     decoded
@@ -326,6 +327,7 @@ fn round_trip_through_canonical_encoding() {
 
     // And it byte-equals the original (the canonical encoding is
     // deterministic).
-    let re_encoded = postcard::to_allocvec(&decoded).expect("re-serialise");
+    let re_encoded =
+        omni_types::wire::encode_canonical(&decoded).expect("re-serialise");
     assert_eq!(encoded, re_encoded);
 }

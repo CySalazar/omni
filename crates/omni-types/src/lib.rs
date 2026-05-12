@@ -41,6 +41,8 @@
 //! - [`identity`] — Node, agent, model, capability, session identifiers.
 //! - [`error`] — Top-level [`error::OmniError`] taxonomy and [`error::Result`].
 //! - [`version`] — OS and protocol version vocabulary.
+//! - [`wire`] — Canonical `postcard` wire-encoding helper (single audit point
+//!   for serialization across the workspace, per `OIP-Serde-004`).
 //!
 //! ## See also
 //!
@@ -83,6 +85,7 @@ pub mod encrypted;
 pub mod error;
 pub mod identity;
 pub mod version;
+pub mod wire;
 
 // Re-export the most frequently used items at the crate root for ergonomic
 // imports (`use omni_types::{NodeId, OmniError, Result}`).
