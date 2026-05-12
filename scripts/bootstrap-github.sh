@@ -97,7 +97,8 @@ cat > /tmp/branch-protection.json <<JSON
       "audit / cargo audit",
       "audit / cargo deny",
       "dco / DCO sign-off",
-      "codeql / CodeQL — rust"
+      "codeql / CodeQL — rust",
+      "oip-lint / oip-lint"
     ]
   },
   "enforce_admins": true,
