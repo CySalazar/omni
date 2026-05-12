@@ -61,6 +61,12 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 - `Cargo.toml` `[workspace.package].authors` — aligned to project identity policy: `cySalazar <cySalazar@cySalazar.com>` until Stichting OMNI is constituted (was: `Stichting OMNI <hello@omni-os.org>` placeholder). Transition to Stichting documented in-file.
 - `P0-COMPLETION-REPORT.md` moved to [`docs/audits/p0-completion-report.md`](./docs/audits/p0-completion-report.md) (lowercase, kebab-case, in audits directory); `todo.md` cross-reference updated.
 
+### Added
+
+- **2026-05-12 — `OIP-Serde-004` (Draft).** Standards-Track OIP proposing the migration of the workspace serialization layer from `bincode` v2.0 (unmaintained per RUSTSEC-2025-0141) to `postcard` 1.x. Specifies the canonical-encoding helper module (`omni-types::wire`), the breaking wire-format change (`OMNI-PROTO-v0.1` → `OMNI-PROTO-v0.2`), and a 5-step migration plan (M1–M5) with per-step verification gates. Includes a 6-candidate selection matrix (postcard / bitcode / rkyv / wincode / bincode 1.3.3) ranked against six weighted criteria, with `postcard` as the only candidate satisfying all four hard requirements (`no_std + alloc + serde derive`, active maintenance, stable wire-format spec, audit history).
+- **2026-05-12 — `todo.md` P7 tier.** New tier "Workspace serialization migration" with three task groups: P7.1 (`OIP-Serde-004` Last Call closure), P7.2 (M1–M5 migration commits), P7.3 (`OMNI-PROTO-v0.2` documentation update). Tracking gate for `cargo audit` / `cargo deny` returning to clean.
+- **2026-05-12 — `oips/README.md` index.** Catches up on the three Draft OIPs filed in the 2026-05-10 scaffolding pass that were not added to the table at the time (`OIP-Crypto-002`, `OIP-Kernel-003`) plus the new `OIP-Serde-004`. Documents the duplicate `002` numbering between `OIP-Bounty-002` and `OIP-Crypto-002` as an acceptable Draft-stage placeholder collision per `OIP-Process-001` § 5 (editors reconcile global numbers on Last Call → Active).
+
 ### Fixed
 
 - **2026-05-12 — CI workflow gaps surfaced by PR #13.**

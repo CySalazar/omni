@@ -33,6 +33,7 @@ enough that an external contributor could pick it up in isolation.
 | **P4** | Phase 0 non-technical (Stichting, funding, legal) |
 | **P5** | `omni-tee` + TEE HAL (root of trust) |
 | **P6** | Kernel `no_std` transition + UEFI bootloader (Phase 1 core) |
+| **P7** | Workspace serialization migration `bincode` → `postcard` (resolves RUSTSEC-2025-0141) |
 
 ## Dependency graph (one-line)
 
@@ -42,6 +43,7 @@ P0 ─────────────────────────�
 P2 ──► (parallel to P1, gates community contributions)
 P3 ──► (parallel to P1, gates mesh implementation in Phase 4)
 P4 ──► (parallel everywhere, gates team hiring + Phase 1 start)
+P7 ──► (parallel, gates clean cargo audit/deny pass; depends on P1)
 ```
 
 ---
@@ -768,6 +770,56 @@ This tier is intentionally low-detail in the TODO — it is the scope of an enti
 - [ ] **P6.8 — First external security audit of kernel + capability system (per roadmap Phase 1 deliverables)**
 
 Each of P6.1–P6.8 will be expanded into its own task list when its corresponding OIP is filed.
+
+---
+
+# P7 — Workspace serialization migration (`bincode` v2 → `postcard`)
+
+**Goal:** resolve `RUSTSEC-2025-0141` (`bincode` v2 unmaintained) by migrating the workspace serialization layer to `postcard` 1.x, bumping the wire-protocol from `OMNI-PROTO-v0.1` to `OMNI-PROTO-v0.2`.
+**Blocker for:** clean `cargo audit` and `cargo deny` runs on `main` and on every PR.
+**Tracking OIP:** [`OIP-Serde-004`](oips/oip-serde-004.md) (`Draft`).
+**Estimated effort:** 1–2 weeks (per the 5-step migration plan in `OIP-Serde-004` § S5).
+
+---
+
+## P7.1 — `OIP-Serde-004` Last Call closure
+
+- **Status:** `[~]` (`Draft` filed 2026-05-12)
+- **Priority:** P7 / High
+- **Effort:** 14-day Last Call window per `OIP-Process-001` § 5.3 + cryptographer review pass on the canonical-encoding contract (§ S2).
+- **Dependencies:** none for advancement to `Review`; cryptographer engagement (P3.2) for advancement to `Active`.
+- **Rationale:** the OIP must be `Active` before code-touching work begins so the migration is governed by a ratified specification.
+
+**Acceptance:** OIP transitions `Draft → Review → Last Call → Active`.
+
+---
+
+## P7.2 — Migration steps M1–M5
+
+- **Status:** `[ ]` blocked on P7.1
+- **Priority:** P7 / High
+- **Effort:** ~1 week of focused work; each step is its own commit per `OIP-Serde-004` § S5.
+- **Dependencies:** P7.1 `Active`.
+
+**Sub-tasks:**
+
+- [ ] **P7.2.M1** — Workspace dep swap in `Cargo.toml`. Verify with `cargo build --workspace --all-features`.
+- [ ] **P7.2.M2** — `omni-types::wire` canonical-encoding helper module + clippy `disallowed-methods` on raw `postcard::*` calls outside the helper. Verify with `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+- [ ] **P7.2.M3** — `omni-capability` `CapabilityToken` migration; existing 43 tests rewritten against `postcard` round-trips.
+- [ ] **P7.2.M4** — `omni-tee` round-trip tests + `omni-types::ProtocolVersion::V0_2` constant.
+- [ ] **P7.2.M5** — `crates/omni-capability/tests/wire_format_v0_2.rs` reference vector + `crates/omni-tee/tests/wire_format_v0_2.rs` adversarial bit-flip suite. Verify `cargo audit` and `cargo deny check` exit 0; `RUSTSEC-2025-0141` no longer in the report.
+
+**Acceptance:** all 185 workspace tests + 2 new test files green; `bincode` removed from `Cargo.lock` (`cargo tree --invert bincode` empty); `OIP-Serde-004` transitions to `Final` after 7 calendar days of clean `audit.yml` cron runs.
+
+---
+
+## P7.3 — `OMNI-PROTO-v0.2` documentation update
+
+- **Status:** `[ ]` blocked on P7.2
+- **Priority:** P7
+- **Effort:** 1 day
+- **Dependencies:** P7.2.M5
+- **Rationale:** `docs/protocol/handshake.md` § 3.2 currently negotiates only `OMNI-PROTO-v0.1`. After P7.2.M5, the handshake spec must reflect the v0.2 cutover (`serde_format = "postcard-1.0"` discriminant; v0.1 negotiation removed).
 
 ---
 

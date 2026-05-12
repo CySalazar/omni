@@ -115,6 +115,11 @@ Full state machine and transition rules: `OIP-Process-001` §4 (*Lifecycle*).
 | 0000 | Meta | Template (reserved) | — | — | 2026-05-10 |
 | 001 | Meta | The OIP Process | Active *(Bootstrap)* | cySalazar | 2026-05-10 |
 | 002 | Process | Bug Bounty Program for OMNI OS | Draft | cySalazar | 2026-05-10 |
+| 002 | Standards Track | Compliance Proof Scheme — STARK over SNARK for v1 | Draft | cySalazar | 2026-05-10 |
+| 003 | Standards Track | UEFI Bootloader Selection and Kernel `no_std` Transition Plan | Draft | cySalazar | 2026-05-10 |
+| 004 | Standards Track | Migrate workspace serialization from bincode v2 (unmaintained) to postcard | Draft | cySalazar | 2026-05-12 |
+
+> **Note on the duplicate `002`:** both `OIP-Bounty-002` and `OIP-Crypto-002` were filed during the 2026-05-10 scaffolding pass with the same trailing number (different per-track placeholders). Per the *Numbering* convention above, the global integer is **assigned by editors on Last Call → Active**; the duplicate is acceptable for `Draft` status and will be reconciled before either OIP transitions out of `Draft`.
 
 ---
 
