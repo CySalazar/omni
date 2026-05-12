@@ -304,14 +304,13 @@ fn round_trip_through_canonical_encoding() {
     let user = user_node();
     let token = CapabilityToken::mint(&issuer, user, root_inference_scope(), None).expect("mint");
 
-    // Encode the payload + signature using bincode (the same canonical
-    // encoder used internally for the signature pre-image).
-    let encoded = bincode::serde::encode_to_vec(&token, bincode::config::standard())
-        .expect("serialise token");
+    // Encode the payload + signature using postcard (the same canonical
+    // encoder used internally for the signature pre-image, per
+    // `OIP-Serde-004`).
+    let encoded = postcard::to_allocvec(&token).expect("serialise token");
 
-    let (decoded, _len): (CapabilityToken, usize) =
-        bincode::serde::decode_from_slice(&encoded, bincode::config::standard())
-            .expect("deserialise token");
+    let decoded: CapabilityToken =
+        postcard::from_bytes(&encoded).expect("deserialise token");
 
     // The decoded token verifies just like the in-memory one.
     decoded
@@ -327,7 +326,6 @@ fn round_trip_through_canonical_encoding() {
 
     // And it byte-equals the original (the canonical encoding is
     // deterministic).
-    let re_encoded =
-        bincode::serde::encode_to_vec(&decoded, bincode::config::standard()).expect("re-serialise");
+    let re_encoded = postcard::to_allocvec(&decoded).expect("re-serialise");
     assert_eq!(encoded, re_encoded);
 }

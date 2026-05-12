@@ -167,8 +167,8 @@ pub enum QuoteVersion {
 /// implementation does this).
 ///
 /// The wrapper is `Clone`-able and `Serialize`/`Deserialize`-able so it
-/// flows through `bincode` on the wire and through `serde_json` in audit
-/// records.
+/// flows through `postcard` on the wire (per `OIP-Serde-004`) and
+/// through `serde_json` in audit records.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Quote {
     /// Protocol version of this Quote envelope.
@@ -224,36 +224,35 @@ mod tests {
     }
 
     #[test]
-    fn measurement_serde_round_trip_via_bincode() {
+    fn measurement_serde_round_trip_via_postcard() {
         let mut bytes = [0u8; 48];
         for (i, slot) in bytes.iter_mut().enumerate() {
             // i ∈ 0..48 fits in a u8.
             *slot = u8::try_from(i).expect("i bounded by array length");
         }
         let m = Measurement(bytes);
-        let cfg = bincode::config::standard();
-        let encoded = bincode::serde::encode_to_vec(m, cfg).expect("encode Measurement");
-        let (decoded, _): (Measurement, usize) =
-            bincode::serde::decode_from_slice(&encoded, cfg).expect("decode Measurement");
+        let encoded = postcard::to_allocvec(&m).expect("encode Measurement");
+        let decoded: Measurement =
+            postcard::from_bytes(&encoded).expect("decode Measurement");
         assert_eq!(m, decoded);
     }
 
     #[test]
     fn measurement_deserialize_rejects_wrong_length() {
-        let cfg = bincode::config::standard();
-        // Serialize a 47-byte vector, then try to decode as Measurement.
+        // Encode a 47-byte byte sequence via `serialize_bytes` semantics,
+        // then try to decode it as `Measurement`. The custom
+        // `Measurement` deserializer enforces a 48-byte length, so the
+        // shorter input must be rejected.
         let too_short: alloc::vec::Vec<u8> = alloc::vec![0u8; 47];
-        let encoded = bincode::serde::encode_to_vec(&too_short, cfg).expect("encode short vec");
-        let result: Result<(Measurement, usize), _> =
-            bincode::serde::decode_from_slice(&encoded, cfg);
+        let encoded = postcard::to_allocvec(&too_short).expect("encode short vec");
+        let result: Result<Measurement, _> = postcard::from_bytes(&encoded);
         assert!(result.is_err(), "wrong-length input must be rejected");
     }
 
     #[test]
-    fn quote_round_trip_via_bincode() {
-        // We don't pull `bincode` as a dep here; this test asserts the
-        // shape of `Quote` rather than the actual encoding. Full
-        // round-trip with `bincode` lives in `mock_integration.rs`.
+    fn quote_shape_unit() {
+        // Shape assertion only; the actual round-trip lives in
+        // `tests/mock_integration.rs` to exercise the public path.
         let q = Quote {
             version: QuoteVersion::V0_1,
             family: TeeFamily::Mock,

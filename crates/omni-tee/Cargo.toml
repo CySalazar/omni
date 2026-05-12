@@ -61,8 +61,9 @@ omni-crypto = { workspace = true }
 thiserror   = { workspace = true }
 
 # Serialization — `Quote`, `Measurement`, and `SealedBlob` derive `Serialize`
-# / `Deserialize` so they can travel through `bincode` on the wire and
-# through `serde_json` in audit logs.
+# / `Deserialize` so they can travel through `postcard` (via the canonical
+# helper in `omni-types::wire`) on the wire and through `serde_json` in
+# audit logs.
 serde       = { workspace = true }
 
 # `async-trait` is retained so a future async backend (e.g. a TEE that goes
@@ -83,7 +84,9 @@ tracing     = { workspace = true }
 # tests inside this crate only.
 mockall  = { workspace = true }
 proptest = { workspace = true }
-# `bincode` is the canonical wire encoding for `Quote`, `Measurement`, and
-# `SealedBlob`. Tests that exercise the round-trip live here; the runtime
-# crates pick `bincode` up via `omni-capability`.
-bincode  = { workspace = true }
+# `postcard` 1.x is the canonical wire encoding for `Quote`,
+# `Measurement`, and `SealedBlob`. At M1 of `OIP-Serde-004` round-trip
+# tests call `postcard::*` directly; at M2 they migrate to the
+# `omni-types::wire` helper and this dev-dependency is dropped in favour
+# of `omni-types` re-export.
+postcard = { workspace = true }

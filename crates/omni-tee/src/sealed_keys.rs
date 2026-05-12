@@ -60,12 +60,12 @@ impl SealPolicy {
 /// A blob sealed under a [`SealPolicy`]. The blob is safe to persist to
 /// untrusted storage.
 ///
-/// The on-disk layout (when written via `bincode`) is:
+/// The on-disk layout (when written via `postcard` per `OIP-Serde-004`) is:
 ///
 /// ```text
 /// ┌────────────────────┬──────────────────────┬─────────────┐
 /// │ envelope version 1 │  serialized policy   │  ciphertext │
-/// │      (u8)          │   (bincode bytes)    │  (Vec<u8>)  │
+/// │      (u8)          │   (postcard bytes)   │  (Vec<u8>)  │
 /// └────────────────────┴──────────────────────┴─────────────┘
 /// ```
 ///

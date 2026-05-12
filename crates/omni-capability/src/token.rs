@@ -6,21 +6,24 @@
 //! The signature covers the canonical encoding of the payload, where
 //! "canonical" means:
 //!
-//! * `bincode` 2.0 with the **standard** configuration:
-//!   little-endian, fixed-length integers, no length limit, no
-//!   trailing data tolerated on decode.
+//! * `postcard` 1.x with default options: LEB128 varints, length-prefixed
+//!   sequences/strings, COBS framing on output. The encoding is canonical
+//!   (one byte sequence per value) under `OIP-Serde-004`.
 //! * Field order is the textual order in [`TokenPayload`]; do not
 //!   reorder fields in this file without a wire-format major bump.
-//! * `Vec`s are length-prefixed; `String`s are UTF-8 length-prefixed;
-//!   enum variants carry their `serde` discriminant.
+//! * `Vec`s and `String`s carry a varint length prefix; enum variants
+//!   carry their `serde` discriminant as a varint tag.
 //!
 //! These rules ensure two encoders on different platforms produce
-//! byte-identical pre-images, which is the security-critical
-//! invariant for signature verification.
+//! byte-identical pre-images, which is the security-critical invariant
+//! for signature verification.
+//!
+//! At M1 of `OIP-Serde-004` the encode/decode call sites use
+//! `postcard::*` directly. M2 introduces `omni-types::wire` and migrates
+//! call sites to go through the helper exclusively.
 
 use alloc::vec::Vec;
 
-use bincode::config::Configuration;
 use omni_crypto::signing::{OmniSignature, OmniSigningKey, OmniVerifyingKey};
 use omni_types::error::{CapabilityErrorKind, OmniError, Result};
 use omni_types::identity::{CapabilityId, NodeId};
@@ -28,19 +31,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::scope::Scope;
 use crate::tee::AttestationSource;
-
-// =============================================================================
-// Canonical encoding configuration.
-// =============================================================================
-
-/// The bincode configuration used for canonical encoding of token
-/// payloads. Returns a config equivalent to
-/// `bincode::config::standard()` — exposed as a function to make the
-/// choice grep-friendly across the workspace.
-#[must_use]
-fn canonical_config() -> Configuration {
-    bincode::config::standard()
-}
 
 // =============================================================================
 // TokenPayload
@@ -86,7 +76,7 @@ impl TokenPayload {
     /// (which only happens on out-of-memory or truly broken `Serde`
     /// impls — practically infallible for our types).
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
-        bincode::serde::encode_to_vec(self, canonical_config()).map_err(|_| {
+        postcard::to_allocvec(self).map_err(|_| {
             OmniError::capability(
                 CapabilityErrorKind::MalformedToken,
                 "token::canonical_bytes::encode",

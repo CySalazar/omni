@@ -11,8 +11,9 @@
 //!
 //! ## Wire format
 //!
-//! Tokens are canonically encoded with `bincode` v2 in
-//! fixed-int / no-trailing-data mode, then signed with `Ed25519`
+//! Tokens are canonically encoded with `postcard` 1.x (LEB128 varints,
+//! self-delimiting, one byte sequence per value, per `OIP-Serde-004`),
+//! then signed with `Ed25519`
 //! ([`omni_crypto::signing`]). The pre-image of the signature is the
 //! canonical encoding of the token's payload (every field except the
 //! signature itself). Wire format details live in

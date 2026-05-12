@@ -782,20 +782,20 @@ Each of P6.1–P6.8 will be expanded into its own task list when its correspondi
 
 **Goal:** resolve `RUSTSEC-2025-0141` (`bincode` v2 unmaintained) by migrating the workspace serialization layer to `postcard` 1.x, bumping the wire-protocol from `OMNI-PROTO-v0.1` to `OMNI-PROTO-v0.2`.
 **Blocker for:** clean `cargo audit` and `cargo deny` runs on `main` and on every PR.
-**Tracking OIP:** [`OIP-Serde-004`](oips/oip-serde-004.md) (`Draft`).
+**Tracking OIP:** [`OIP-Serde-004`](oips/oip-serde-004.md) (`Review` since 2026-05-12; transitioned same day by interim editor body under `OIP-Process-001` §6.2).
 **Estimated effort:** 1–2 weeks (per the 5-step migration plan in `OIP-Serde-004` § S5).
 
 ---
 
 ## P7.1 — `OIP-Serde-004` Last Call closure
 
-- **Status:** `[~]` (`Draft` filed 2026-05-12)
+- **Status:** `[~]` (`Draft` filed 2026-05-12; `Review` since 2026-05-12 with `use-std` correction applied in-Review)
 - **Priority:** P7 / High
 - **Effort:** 14-day Last Call window per `OIP-Process-001` § 5.3 + cryptographer review pass on the canonical-encoding contract (§ S2).
 - **Dependencies:** none for advancement to `Review`; cryptographer engagement (P3.2) for advancement to `Active`.
 - **Rationale:** the OIP must be `Active` before code-touching work begins so the migration is governed by a ratified specification.
 
-**Acceptance:** OIP transitions `Draft → Review → Last Call → Active`.
+**Acceptance:** OIP transitions `Draft → Review → Last Call → Active`. (`Draft → Review` transition completed 2026-05-12; `Review → Last Call` queued together with the M1–M5 migration evidence.)
 
 ---
 
