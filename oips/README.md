@@ -114,6 +114,7 @@ Full state machine and transition rules: `OIP-Process-001` §4 (*Lifecycle*).
 |---|---|---|---|---|---|
 | 0000 | Meta | Template (reserved) | — | — | 2026-05-10 |
 | 001 | Meta | The OIP Process | Active *(Bootstrap)* | cySalazar | 2026-05-10 |
+| 002 | Process | Bug Bounty Program for OMNI OS | Draft | cySalazar | 2026-05-10 |
 
 ---
 
