@@ -63,7 +63,8 @@ Examples:
 - `oip-process-001.md` — OIP #1, slug `process` (this registry's first proposal).
 - `oip-bounty-002.md` — OIP #2, slug `bounty` (Process-track bug-bounty program).
 - `oip-container-006.md` — OIP #6, slug `container` (OmniContainer micro-VM engine).
-- `oip-snark-stark-007.md` — OIP #7, slug `snark-stark` (hypothetical future, see `todo.md` P3.3).
+- `oip-helper-007.md` — OIP #7, slug `helper` (`omni-helper` daemon: autonomy levels + Impact Dashboard).
+- `oip-snark-stark-NNN.md` — OIP #*NNN* (TBD), slug `snark-stark` (hypothetical future, see `todo.md` P3.3 — number will be allocated at filing).
 
 > **Compatibility note:** older `todo.md` entries reference identifiers like `OIP-Voting-002`,
 > `OIP-Bounty-001`, `OIP-Crypto-002`. These are **placeholder names** from a pre-OIP-Process-001
@@ -125,6 +126,11 @@ Full state machine and transition rules: `OIP-Process-001` §4 (*Lifecycle*).
 | 005 | Standards Track | Boot hand-off ABI and kernel-runner crate (gate K4 of OIP-Kernel-003) | Draft | cySalazar | 2026-05-12 |
 | 005 | Process | Voting weight formula — non-saturating uptime, contribution signals, conflict-of-interest guards | Draft | cySalazar | 2026-05-12 |
 | 006 | Standards Track | OmniContainer — native container engine with Linux/Windows compatibility | Draft | cySalazar | 2026-05-12 |
+| 007 | Standards Track | OMNI Helper — Agentic Need-Detection, Autonomy Levels, and Impact Dashboard | Draft | cySalazar | 2026-05-12 |
+| 008 | Standards Track | `omni-pkg` — Content-Addressed Federated Package Manager | Draft | cySalazar | 2026-05-12 |
+| 009 | Standards Track | `omni-forge` — On-Demand Rust → WASM/ELF Generation Pipeline | Draft | cySalazar | 2026-05-12 |
+| 010 | Standards Track | `omni-market` — Stichting-Curated Marketplace + Continuous CVE Re-Scan | Draft | cySalazar | 2026-05-12 |
+| 011 | Standards Track | Omni\* Flagship Apps Program + OmniCode v1 (Phased Delivery) | Draft | cySalazar | 2026-05-12 |
 
 > **Note on duplicate trailing numbers:** `OIP-Bounty-002` / `OIP-Crypto-002`, `OIP-Serde-004` / `OIP-Kernel-004`, and `OIP-Kernel-005` / `OIP-Voting-005` share trailing numbers (placeholder collisions). Per `OIP-Process-001` §8.3, placeholder collisions in `Draft` are explicitly permitted and reconciled by the editors at the `Draft → Review` transition: the first of a colliding pair to reach `Review` retains its placeholder integer; the other is renumbered to the next free integer in the same PR that opens its own `Review` window. `OIP-Bounty-002` and `OIP-Serde-004` are already past `Review` (Last Call closes 2026-05-26), so their integers are now canonical; `OIP-Crypto-002` and `OIP-Kernel-004` will be renumbered when they reach `Review`.
 

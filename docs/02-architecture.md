@@ -193,6 +193,54 @@ Capability properties:
 
 See [09-tech-specifications.md](./09-tech-specifications.md) for exact versions.
 
+## OMNI App Mesh — the user-facing AI-native layer
+
+OMNI OS treats application discovery, installation, generation, and marketplace curation as **integrated OS primitives**, not as orthogonal apps. The five components are governed by five OIPs filed 2026-05-12:
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  OMNI Helper (OIP-Helper-007)                                       │
+│  • detects need (file-failure / explicit-invoke / watch opt-in)     │
+│  • 3 autonomy levels: Autonomous / Guided (default) / Inform        │
+│  • mandatory Impact Dashboard (Privacy / Trust / Cost / Time)       │
+│  • escalation taxonomy for destructive / privacy / cap-escalation   │
+│  • 30s undo window in Autonomous mode                               │
+└───────────────────────────────┬────────────────────────────────────┘
+                                ▼
+              ┌─────────────────┴─────────────────┐
+              │                                   │
+   ┌──────────▼──────────┐         ┌──────────────▼──────────────┐
+   │ omni-pkg (008)      │         │ omni-forge (009)            │
+   │ content-addressed   │         │ Rust → WASM/ELF on-demand   │
+   │ federated package   │         │ generation pipeline; LLM    │
+   │ manager, Sigstore   │         │ source gen + static analysis│
+   │ + CT log mandatory; │         │ + capability inference +    │
+   │ capability manifest │         │ TEE-bound ephemeral signing │
+   │ atomic upgrade      │         │ + mandatory first-run review│
+   └──────────┬──────────┘         └──────────────┬──────────────┘
+              │                                   │
+              ▼                                   ▼
+   ┌──────────────────────────────────────────────────────────────┐
+   │ omni-market (OIP-Market-010)                                  │
+   │ Stichting-curated marketplace + community-federated optional  │
+   │ Bronze / Silver / Gold / Stichting-Curated tiers              │
+   │ continuous CVE scan with public SLA (Critical: 14d)           │
+   │ 0% OSS / 10% commercial / 0% Stichting-sponsored commission   │
+   └──────────────────────────┬────────────────────────────────────┘
+                              ▼
+   ┌──────────────────────────────────────────────────────────────┐
+   │ Omni* flagship apps (OIP-Flagship-011)                        │
+   │ OmniCode (Codium-in-container Phase 1, Tauri-native Phase 2)  │
+   │ OmniShell · OmniMail · OmniNotes · OmniDocs · OmniPhotos …    │
+   │ Stichting-Curated tier in omni-market; AGPL-3.0; no telemetry │
+   └──────────────────────────────────────────────────────────────┘
+```
+
+The same `OmniContainer` engine (per [OIP-Container-006](../oips/oip-container-006.md))
+runs Linux apps from omni-pkg, Windows apps via Wine-in-container, AOT-generated apps from omni-forge, and flagship apps. The Helper, Pkg, Forge, Market, and Flagship layers all converge on a single execution substrate.
+
+This synthesis — agentic discovery + federated package manager + generation pipeline + Foundation-curated marketplace + flagship reference apps — has no equivalent in Windows / macOS / Linux today, and is the single most distinguishing feature of OMNI OS at the user-experience layer.
+
 ## Open architectural questions
 
 These will be resolved during Phase 1 implementation, captured as OIPs:
