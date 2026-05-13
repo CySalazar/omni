@@ -71,6 +71,13 @@ allow = [
   "Zlib",
   "CC0-1.0",          # Public-domain-equivalent
   "MPL-2.0",          # File-level copyleft, AGPL-compatible
+  # Community Data License Agreement — Permissive 2.0. MIT-equivalent for
+  # data and documentation; AGPL-compatible inbound. Required by
+  # `webpki-root-certs` (transitively via `rustls-platform-verifier →
+  # quinn-proto → quinn → omni-mesh`); the crate ships the Mozilla CA
+  # root list under CDLA-Permissive-2.0. Vetted by cySalazar (BDFL) on
+  # 2026-05-13.
+  "CDLA-Permissive-2.0",
 ]
 
 # Crates with explicit licensing exceptions or hand-vetted clarifications.
@@ -114,7 +121,8 @@ deny = [
     reason = "Cryptographically weak for security purposes. Same exception path as md5 if non-security use is required." },
 
   { name = "rand",
-    reason = "Use `rand_core` + an explicit, auditable RNG (OsRng for OS entropy, ChaCha20Rng for deterministic). Top-level `rand` re-exports too much surface and changes defaults across versions." },
+    wrappers = ["fastbloom", "proptest", "quinn-proto"],
+    reason = "Use `rand_core` + an explicit, auditable RNG (OsRng for OS entropy, ChaCha20Rng for deterministic) in first-party OMNI code. Top-level `rand` re-exports too much surface and changes defaults across versions. Carve-outs (transitives only; never first-party):\n  - `fastbloom` — bloom-filter perf path inside quinn-proto; no security boundary.\n  - `quinn-proto` — QUIC transport; its `rand` use is for connection-ID + retry-token entropy, audited upstream.\n  - `proptest` — dev/test only (property-based and adversarial test suites).\nRationale: replacing any of these would mean forking widely-vetted crates. Re-evaluate at every quinn-proto / proptest bump." },
 
   { name = "time",
     reason = "Historic CVE-2020-26235 lineage and ergonomic footguns. Use `chrono` (with `clock` feature audited) or `jiff` once it lands stable." },
