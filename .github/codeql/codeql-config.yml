@@ -30,10 +30,24 @@ name: "OMNI CodeQL config"
 disable-default-queries: false
 
 query-filters:
+  # `hardcoded-credentials` family — different CodeQL versions spell the
+  # rule ID with or without the hyphen between `hard` and `coded`; cover both.
   - exclude:
       id: rs/hardcoded-credentials
   - exclude:
       id: rust/hardcoded-credentials
+  - exclude:
+      id: rs/hard-coded-credentials
+  - exclude:
+      id: rust/hard-coded-credentials
+  # `hard-coded-cryptographic-value` family — the upstream Rust query
+  # uses the hyphenated form (verified via SARIF on PR #13, 2026-05-13).
+  # The non-hyphenated variants are kept as defensive aliases against
+  # rule-ID drift in future CodeQL versions.
+  - exclude:
+      id: rs/hard-coded-cryptographic-value
+  - exclude:
+      id: rust/hard-coded-cryptographic-value
   - exclude:
       id: rs/hardcoded-cryptographic-value
   - exclude:
