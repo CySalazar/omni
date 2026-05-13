@@ -2,85 +2,85 @@
 //!
 //! Cryptographic primitives for OMNI OS.
 //!
-//! This crate wraps battle-tested cryptographic libraries (`ring`,
-//! `RustCrypto`, `dalek`, `arkworks`) behind OMNI-specific traits and
-//! provides higher-level constructions used elsewhere in the workspace
-//! (compliance proofs, encrypted-by-default types, capability signing).
+//! This crate wraps battle-tested cryptographic libraries from the
+//! `RustCrypto` family (see <https://github.com/RustCrypto>) behind
+//! OMNI-specific typed APIs. It provides the composition layer (typed
+//! keys, nonces, ciphertexts) — it does **not** invent algorithms.
 //!
-//! ## Status
+//! ## ⚠️ Status: `AWAITING_CRYPTO_REVIEW`
 //!
-//! Draft v0.1 — scaffold only. Implementation arrives in Phase 1–4 per
-//! [`/docs/06-roadmap.md`](../../../docs/06-roadmap.md). zk-SNARK predicate
-//! support is targeted for Phase 4 (mesh release).
+//! This crate has not yet been reviewed by an external cryptographer
+//! (P3.2 in `/todo.md`, blocked on funding via P4). The implementation
+//! follows established RustCrypto APIs with RFC test vectors for every
+//! primitive, but no public auditor has signed off on the composition
+//! layer. Do not use the output of this crate in adversarial settings
+//! until that review lands.
 //!
 //! ## Design rationale
 //!
-//! 1. **Use libraries; do not write crypto.** All primitives delegate to
-//!    well-reviewed implementations. This crate provides the composition
-//!    layer, not new algorithms.
-//! 2. **Strict error types.** Cryptographic failures must never silently
-//!    succeed. Errors are explicit and untyped failures are not allowed.
-//! 3. **Constant-time where applicable.** Side-channel-aware coding for
-//!    private-key operations. See
-//!    [`/docs/04-security-model.md`](../../../docs/04-security-model.md)
-//!    § "Side channels".
-//! 4. **Algorithm agility.** Cipher suites are negotiated, not hardcoded.
-//!    Sunset dates for deprecated algorithms are tracked at the protocol
-//!    level. Post-quantum migration roadmap targets 2030.
+//! 1. **Use libraries; do not write crypto.** Every primitive delegates
+//!    to a well-reviewed implementation. This crate is the typed
+//!    composition layer.
+//! 2. **Strict, opaque error types.** Cryptographic failures map onto
+//!    [`omni_types::OmniError::Crypto`]. Error messages never expose
+//!    key material, plaintext, or correlation hints.
+//! 3. **Constant-time on adversarial paths.** AEAD tag verification and
+//!    signature verification go through [`subtle::ConstantTimeEq`] (or
+//!    the equivalent inside the wrapped library). Equality comparisons
+//!    on keys/MACs/tags MUST NOT use `==`.
+//! 4. **`Zeroize` on every secret.** Keys, shared secrets, and any
+//!    intermediate buffer that holds key material implements
+//!    [`zeroize::Zeroize`] and wipes itself on `Drop`.
+//! 5. **Algorithm agility.** Cipher suites are negotiated, not
+//!    hardcoded. Sunset dates for deprecated algorithms are tracked in
+//!    `/docs/04-security-model.md` § "Crypto agility".
+//! 6. **`no_std + alloc`.** Like the rest of the foundational layer.
 //!
-//! ## Modules
+//! ## Module map
 //!
-//! - [`aead`] — Authenticated Encryption with Associated Data (ChaCha20-Poly1305).
-//! - [`signing`] — Digital signatures (Ed25519).
-//! - [`kex`] — Key exchange (X25519, hybrid PQ in Phase 4+).
-//! - [`hash`] — Cryptographic hashes (SHA-2, SHA-3, BLAKE3).
-//! - [`kdf`] — Key derivation functions (HKDF, Argon2).
-//! - [`fpe`] — Format-preserving encryption (FF1, FF3-1).
-//! - [`snark`] — Zero-knowledge predicates for compliance proofs.
+//! | Module | Phase | What |
+//! |---|---|---|
+//! | [`aead`]    | P1.2 | Authenticated Encryption with Associated Data (`ChaCha20-Poly1305`, RFC 8439). |
+//! | [`signing`] | P1.2 | Digital signatures (`Ed25519`, RFC 8032). |
+//! | [`kex`]     | P1.2 | Key exchange (`X25519`, RFC 7748). Hybrid PQ in Phase 4. |
+//! | [`hash`]    | P1.2 | Cryptographic hashes (`SHA-256`, `SHA3-256`, `BLAKE3`). |
+//! | [`kdf`]     | P1.2 | Key derivation (`HKDF-SHA-256`, `Argon2id`). |
+//! | [`fpe`]     | P4   | Format-preserving encryption (placeholder). |
+//! | [`snark`]   | P4   | Zero-knowledge predicates (placeholder). |
+//!
+//! ## See also
+//!
+//! - [`/docs/04-security-model.md`](../../../docs/04-security-model.md)
+//!   for the security rationale.
+//! - [`/docs/09-tech-specifications.md`](../../../docs/09-tech-specifications.md)
+//!   for the dependency rationale and version pins.
 
 #![doc(html_root_url = "https://docs.omni-os.org/omni-crypto")]
+#![no_std]
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
+// See `omni-types/src/lib.rs` for the rationale on this `cfg_attr`.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unnecessary_wraps,
+        clippy::indexing_slicing,
+    )
+)]
 
-/// Authenticated Encryption with Associated Data (ChaCha20-Poly1305).
-pub mod aead {
-    // TODO(phase-1): wrap `chacha20poly1305` with OMNI-specific key types.
-}
+extern crate alloc;
 
-/// Digital signatures (Ed25519).
-pub mod signing {
-    // TODO(phase-1): wrap `ed25519-dalek` with OMNI signing API.
-}
+pub mod aead;
+pub mod hash;
+pub mod kdf;
+pub mod kex;
+pub mod signing;
 
-/// Key exchange (X25519, hybrid PQ in Phase 4+).
-pub mod kex {
-    // TODO(phase-1): wrap `x25519-dalek`. Phase 4: hybrid Kyber.
-}
-
-/// Cryptographic hashes (SHA-2, SHA-3, BLAKE3).
-pub mod hash {
-    // TODO(phase-1): unified hash trait + impls.
-}
-
-/// Key derivation functions (HKDF, Argon2).
-pub mod kdf {
-    // TODO(phase-1): HKDF for protocol session keys, Argon2 for user secrets.
-}
-
-/// Format-preserving encryption (FF1, FF3-1).
-pub mod fpe {
-    // TODO(phase-4): FF1/FF3-1 implementations for routing metadata.
-}
-
-/// Zero-knowledge predicates for compliance proofs.
-pub mod snark {
-    // TODO(phase-4): zk-SNARK / STARK construction for compliance proofs.
-    // Trusted-setup avoidance is a hard requirement; favor STARK or
-    // transparent constructions where feasible.
-}
-
-#[cfg(test)]
-mod tests {
-    /// Placeholder test asserting the crate compiles.
-    #[test]
-    fn placeholder() {}
-}
+// Phase 4 placeholder modules. They exist as empty modules so downstream
+// crates can `use omni_crypto::fpe;` without conditional compilation,
+// and so the public-API surface is visible from day one.
+pub mod fpe;
+pub mod snark;

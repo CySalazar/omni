@@ -138,8 +138,10 @@ Every payload includes a cryptographic proof that:
 - The schema conforms to OMNI OS encrypted-data-type definitions.
 - The session is bound to the destination's attested TEE.
 
-For simple predicates: a signature over a structured assertion suffices.
-For complex predicates (e.g., "this prompt does not contain any byte sequence matching a regex of PII patterns"): zk-SNARKs are used.
+For simple predicates: a signature over a structured assertion suffices (`sig-v1`).
+For complex predicates (e.g., "this prompt does not contain any byte sequence matching a regex of PII patterns"): **STARK proofs are used** (`stark-v0`), not zk-SNARKs.
+
+The STARK-over-SNARK choice for v1 is decided in [`/oips/oip-crypto-002.md`](../oips/oip-crypto-002.md): transparent (no trusted setup), post-quantum sound under the Random Oracle Model, larger proof size accepted as the trade-off. SNARK is not forbidden indefinitely; a future OIP may introduce `snark-vN` if a transparent-setup construction becomes mainstream and audited.
 
 ### 5. TEE-only decryption envelope
 
@@ -152,7 +154,7 @@ This means: a compromised host OS on the destination cannot read the payload. On
 - **TEE side-channel attacks**: Intel SGX has a long history of academic side-channel attacks. TDX is improving but not impervious. Mitigation: TEE diversity, hardware refresh policy, and OIP-driven deny-list of compromised TEE generations.
 - **Quantum migration**: PQ-resistant cryptography roadmap. Likely Kyber + Dilithium hybrid starting v1, full migration by 2030 per NIST guidance.
 - **Recovery from key compromise**: forward secrecy + key rotation policies. Detailed plan deferred to OIP-002.
-- **zk-SNARK trusted setup**: most efficient zk-SNARKs require a trusted setup ceremony. Approach: use STARKs or other transparent constructions for v1 to avoid this risk; revisit per benchmarks.
+- ~~**zk-SNARK trusted setup**~~: resolved by [`OIP-Crypto-002`](../oips/oip-crypto-002.md) (2026-05-10). v1 uses STARKs (`winterfell` v0.10+ reference) for transparent setup. SNARKs are not forbidden indefinitely but require a future OIP and an audited transparent-setup construction.
 - **Secure agent sandboxing**: WASM-based sandbox vs. process isolation. Trade-off: WASM is faster but less battle-tested for security boundaries; process isolation is heavier but more conservative.
 
 ## Audit and review

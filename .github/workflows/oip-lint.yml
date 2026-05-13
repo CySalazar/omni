@@ -1,0 +1,61 @@
+# =============================================================================
+# OMNI OS — OIP structural linter
+# =============================================================================
+# Validates every file under /oips/ against the canonical structure defined in
+# OIP-Process-001 and oips/oip-template.md.
+#
+# Triggered on:
+#   - push / PR that touches /oips/, scripts/lint-oips.py, or this workflow itself.
+#   - manual dispatch (for re-running after fixes without an unrelated push).
+#
+# Why a separate workflow (rather than a step in ci.yml):
+#   - Keeps Rust CI fast; this lint is sub-second and rarely changes.
+#   - Allows targeted re-runs without re-running cargo build / test.
+#   - The status check name ("oip-lint / oip-lint") is added to branch protection
+#     once the registry is non-empty, so OIP changes block on a green lint.
+# =============================================================================
+
+name: oip-lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "oips/**"
+      - "scripts/lint-oips.py"
+      - ".github/workflows/oip-lint.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "oips/**"
+      - "scripts/lint-oips.py"
+      - ".github/workflows/oip-lint.yml"
+  workflow_dispatch:
+
+# One run per ref; cancel in-progress runs of the same ref when a new push arrives.
+concurrency:
+  group: oip-lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  oip-lint:
+    name: oip-lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # We pin Python because the linter is stdlib-only but we want a deterministic
+      # interpreter — 3.11 is the oldest supported actively-maintained Python and
+      # ships every modern syntax feature the linter uses (PEP 604 union types,
+      # PEP 585 builtin generics).
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run OIP linter
+        run: |
+          python3 scripts/lint-oips.py "${{ github.workspace }}"

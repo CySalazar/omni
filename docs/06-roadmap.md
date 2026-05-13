@@ -19,7 +19,7 @@ Key deliverables:
 - Core team assembled: Lead Architect (founder) + 2 senior Rust engineers + 1 cryptographer.
 - All `/docs` finalized to v0.1.
 - Public repository live with AGPL-3.0 license + commercial license agreement template.
-- OIP process documented and operational; OIP-Process-001 published.
+- OIP process documented and operational; [`OIP-Process-001`](../oips/oip-process-001.md) `Active` since 2026-05-10 (under bootstrap fiat clause; first formal vote deferred to first non-`Meta` OIP filed).
 - Foundation bylaws published.
 
 ### Phase 1 — Microkernel proof-of-concept (months 6–18)

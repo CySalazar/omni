@@ -204,14 +204,24 @@ We will not embargo a fix to favor a specific commercial licensee
 
 ## 7. Hall of fame & bounty
 
-A formal bounty program will be defined by **OIP-Bounty-001** once the
-OIP process is operational (`todo.md` P2). Until then:
+The formal bounty program is defined by [`OIP-Bounty-002`](./oips/oip-bounty-002.md)
+(filed 2026-05-10, currently in `Draft`; lifecycle per
+[`OIP-Process-001` §4](./oips/oip-process-001.md)). The OIP specifies severity-tiered payout
+ranges (Critical €5K–€50K, High €1K–€10K, Medium €250–€2.5K, Low €50–€500), eligibility
+filters with a 6-month contributor guard, conflict-of-interest disclosure, payment mechanics
+including privacy-preserving cryptocurrency options, public-arbitration dispute resolution,
+and a 24-month retroactive-payout commitment from the Activation Date (the day the Stichting
+OMNI bank account opens with an approved disbursement procedure).
+
+Until OIP-Bounty-002 reaches `Active` and the Activation Date is met, the program runs in
+**non-monetary mode**:
 
 - **Hall of fame:** researchers who report valid issues are credited in
   the advisory and, with consent, in `CONTRIBUTORS.md` under "Security
   Researchers".
-- **Monetary rewards:** the project does not currently offer bounties.
-  This will change after Stichting OMNI is funded (P4 in `todo.md`).
+- **Monetary rewards:** deferred. Reports that would qualify for monetary payout per
+  OIP-Bounty-002 §3 once Active are recorded with their would-be payout amount in the
+  internal bounty ledger and become payable retroactively per §6.1 of that OIP.
 
 ---
 

@@ -23,6 +23,21 @@ readme.workspace       = true
 [lints]
 workspace = true
 
+# -----------------------------------------------------------------------------
+# Feature flags
+# -----------------------------------------------------------------------------
+# Forwarded to `omni-tee` so a consumer enabling `omni-hal/tdx` transitively
+# enables `omni-tee/tdx`. This keeps the feature surface coherent across the
+# workspace: a user picks the TEE backend at the HAL layer and the
+# underlying crate follows.
+# -----------------------------------------------------------------------------
+[features]
+default      = ["mock"]
+mock         = ["omni-tee/mock"]
+tdx          = ["omni-tee/tdx"]
+sev-snp      = ["omni-tee/sev-snp"]
+all-backends = ["tdx", "sev-snp", "mock"]
+
 [dependencies]
 omni-types  = { workspace = true }
 omni-tee    = { workspace = true }

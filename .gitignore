@@ -76,6 +76,13 @@ tarpaulin-report.html
 cobertura.xml
 
 # -----------------------------------------------------------------------------
+# trybuild scratch (generated when a `.stderr` snapshot is missing — the
+# committed snapshots live under tests/compile_fail/, while trybuild writes
+# its WIP versions to <crate>/wip/ which we never commit).
+# -----------------------------------------------------------------------------
+**/wip/
+
+# -----------------------------------------------------------------------------
 # Documentation build outputs
 # -----------------------------------------------------------------------------
 book/
@@ -94,3 +101,9 @@ Icon
 .Trashes
 ehthumbs.db
 desktop.ini
+
+doe-framework/.startup-prompt.txt
+
+# Python bytecode cache (e.g., from /scripts/lint-oips.py)
+__pycache__/
+*.pyc

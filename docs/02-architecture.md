@@ -1,10 +1,23 @@
 # Architecture Overview
 
-**Status:** Draft v0.1
+**Status:** Draft v0.1.1 — foundational layer implemented (P1, 2026-05-10).
 
 ## Executive summary
 
 OMNI OS is structured in concentric layers, from a custom Rust microkernel up to the application layer. AI is a first-class kernel concept, not a userspace addition. Computation can happen entirely on the local device, distributed across the user's own devices on a personal LAN cluster, federated across the global P2P mesh, or — as a last resort — sent to commercial cloud providers.
+
+## Implementation status
+
+| Layer | Crates | State (2026-05-10) |
+|---|---|---|
+| Foundational | `omni-types`, `omni-crypto`, `omni-capability` | **Implemented** (P1 closed). 131 unit tests + 7 integration tests + 4 trybuild compile-fail tests, all green. `no_std + alloc`. `omni-crypto` carries the `AWAITING_CRYPTO_REVIEW` marker pending P3.2. |
+| TEE root of trust | `omni-tee` | Trait surface (`omni_capability::tee::AttestationSource`) declared in P1; concrete backends (Intel TDX, AMD SEV-SNP) land in P5. |
+| Microkernel | `omni-kernel` | Stub. Bare-metal `no_std + no_main` transition is Phase 1 (P6). |
+| Hardware Abstraction | `omni-hal` | Stub. P5–P6. |
+| System services | `omni-runtime`, `omni-mesh`, `omni-tokenization` | Stubs. Phase 2+. The `omni-tokenization` crate is the only one authorised to enable `omni-types`'s `_tokenization_provider` feature flag (the construction gate for `EncryptedString` and friends). |
+| User-facing | `omni-sdk`, `omni-agent`, `omni-shell` | Stubs. Phase 2+. |
+
+See [`/todo.md`](../todo.md) for the active backlog and [`/CHANGELOG.md`](../CHANGELOG.md) for the per-release record.
 
 ## High-level system layers
 
@@ -180,6 +193,54 @@ Capability properties:
 
 See [09-tech-specifications.md](./09-tech-specifications.md) for exact versions.
 
+## OMNI App Mesh — the user-facing AI-native layer
+
+OMNI OS treats application discovery, installation, generation, and marketplace curation as **integrated OS primitives**, not as orthogonal apps. The five components are governed by five OIPs filed 2026-05-12:
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  OMNI Helper (OIP-Helper-007)                                       │
+│  • detects need (file-failure / explicit-invoke / watch opt-in)     │
+│  • 3 autonomy levels: Autonomous / Guided (default) / Inform        │
+│  • mandatory Impact Dashboard (Privacy / Trust / Cost / Time)       │
+│  • escalation taxonomy for destructive / privacy / cap-escalation   │
+│  • 30s undo window in Autonomous mode                               │
+└───────────────────────────────┬────────────────────────────────────┘
+                                ▼
+              ┌─────────────────┴─────────────────┐
+              │                                   │
+   ┌──────────▼──────────┐         ┌──────────────▼──────────────┐
+   │ omni-pkg (008)      │         │ omni-forge (009)            │
+   │ content-addressed   │         │ Rust → WASM/ELF on-demand   │
+   │ federated package   │         │ generation pipeline; LLM    │
+   │ manager, Sigstore   │         │ source gen + static analysis│
+   │ + CT log mandatory; │         │ + capability inference +    │
+   │ capability manifest │         │ TEE-bound ephemeral signing │
+   │ atomic upgrade      │         │ + mandatory first-run review│
+   └──────────┬──────────┘         └──────────────┬──────────────┘
+              │                                   │
+              ▼                                   ▼
+   ┌──────────────────────────────────────────────────────────────┐
+   │ omni-market (OIP-Market-010)                                  │
+   │ Stichting-curated marketplace + community-federated optional  │
+   │ Bronze / Silver / Gold / Stichting-Curated tiers              │
+   │ continuous CVE scan with public SLA (Critical: 14d)           │
+   │ 0% OSS / 10% commercial / 0% Stichting-sponsored commission   │
+   └──────────────────────────┬────────────────────────────────────┘
+                              ▼
+   ┌──────────────────────────────────────────────────────────────┐
+   │ Omni* flagship apps (OIP-Flagship-011)                        │
+   │ OmniCode (Codium-in-container Phase 1, Tauri-native Phase 2)  │
+   │ OmniShell · OmniMail · OmniNotes · OmniDocs · OmniPhotos …    │
+   │ Stichting-Curated tier in omni-market; AGPL-3.0; no telemetry │
+   └──────────────────────────────────────────────────────────────┘
+```
+
+The same `OmniContainer` engine (per [OIP-Container-006](../oips/oip-container-006.md))
+runs Linux apps from omni-pkg, Windows apps via Wine-in-container, AOT-generated apps from omni-forge, and flagship apps. The Helper, Pkg, Forge, Market, and Flagship layers all converge on a single execution substrate.
+
+This synthesis — agentic discovery + federated package manager + generation pipeline + Foundation-curated marketplace + flagship reference apps — has no equivalent in Windows / macOS / Linux today, and is the single most distinguishing feature of OMNI OS at the user-experience layer.
+
 ## Open architectural questions
 
 These will be resolved during Phase 1 implementation, captured as OIPs:
@@ -188,4 +249,4 @@ These will be resolved during Phase 1 implementation, captured as OIPs:
 - **Driver model**: separate processes per driver (max isolation, higher overhead) vs. driver service composition.
 - **Boot architecture**: UEFI-only vs. UEFI + legacy BIOS support. Likely UEFI-only given hardware baseline.
 - **Filesystem**: native OMNI FS vs. existing options (ZFS port, ext4 via compatibility).
-- **POSIX compatibility layer**: yes/no/partial. Affects userspace porting effort vs. ideological purity.
+- ~~**POSIX compatibility layer**: yes/no/partial. Affects userspace porting effort vs. ideological purity.~~ **Resolved by [`OIP-Container-006`](../oips/oip-container-006.md) (2026-05-12):** no POSIX in the OMNI kernel; POSIX exists only inside guest Linux of OmniContainers (micro-VM container engine with capability-bound virtio I/O). Linux apps and Windows apps (via Wine-in-container) are first-class via this path.

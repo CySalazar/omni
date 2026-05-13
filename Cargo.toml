@@ -34,6 +34,20 @@ members = [
     "crates/omni-sdk",
     "crates/omni-agent",
     "crates/omni-shell",
+    # `omni-container` is the userspace container engine specified in
+    # OIP-Container-006. Unlike the foundational `no_std + alloc` crates,
+    # it is std-enabled (it runs as a host userspace service with KVM
+    # ioctls, OCI image cache, subprocess management for virtio backends).
+    "crates/omni-container",
+]
+
+# Fuzz harnesses live in their own ephemeral packages outside the
+# workspace because `cargo-fuzz` requires standalone crates with
+# `bin` targets. Excluding them prevents accidental rebuilds during
+# normal `cargo build`/`cargo test` and keeps the workspace closure
+# minimal.
+exclude = [
+    "crates/omni-crypto/fuzz",
 ]
 
 # -----------------------------------------------------------------------------
@@ -45,7 +59,12 @@ members = [
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-authors = ["Stichting OMNI <hello@omni-os.org>"]
+# Authors: project pseudonym `cySalazar` is used until Stichting OMNI is
+# constituted (tracked under `todo.md` P4.1). Once the Foundation exists,
+# this field transitions to `Stichting OMNI <hello@omni-os.org>`. Rationale
+# for the pseudonym lives in the project identity policy (see governance
+# doc and project memory).
+authors = ["cySalazar <cySalazar@cySalazar.com>"]
 license = "AGPL-3.0-only"
 repository = "https://github.com/CySalazar/omni"
 homepage = "https://omni-os.org"
@@ -79,19 +98,72 @@ async-trait  = "0.1"
 futures      = "0.3"
 
 # --- Serialization ---
-serde       = { version = "1.0", features = ["derive"] }
+# `serde` is configured with `default-features = false` + `derive` + `alloc`
+# so that consumers can opt into `no_std + alloc` without dragging `std` in.
+serde       = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 serde_json  = "1.0"
-bincode     = "2.0"
+# `postcard` 1.x is the canonical wire encoding used for capability-token
+# signing pre-images and TEE attestation envelopes. It replaces `bincode`
+# v2 (unmaintained per RUSTSEC-2025-0141) under `OIP-Serde-004`.
+#
+# `default-features = false` + `alloc` only — `use-std` is intentionally
+# NOT enabled at the workspace level: Cargo features are additive, so
+# enabling it once would pull `std` into every foundational crate
+# (`omni-types`, `omni-crypto`, `omni-capability`, `omni-tee`,
+# `omni-kernel`). A consumer that genuinely requires `std::io::Read`/
+# `Write` adapters MUST depend on `postcard` directly (not via the
+# workspace re-export) and enable `use-std` in that crate's Cargo.toml
+# only. There are no such consumers at v0.2; the rule is stated to head
+# off future drift.
+#
+# All call sites MUST go through `omni-types::wire::{encode_canonical,
+# decode_canonical}` — never invoke `postcard::*` directly outside of
+# `omni-types::wire`. Enforced by clippy `disallowed-methods` in
+# `clippy.toml` (introduced in M2 of `OIP-Serde-004`).
+postcard    = { version = "1.0", default-features = false, features = ["alloc"] }
 
 # --- Cryptography (subset — see /docs/09-tech-specifications.md) ---
-ring               = "0.17"
-ed25519-dalek      = "2.1"
-x25519-dalek       = "2.0"
-chacha20poly1305   = "0.10"
-sha2               = "0.10"
-sha3               = "0.10"
-blake3             = "1.5"
-argon2             = "0.5"
+# All crypto crates are pinned and selected from the RustCrypto family for
+# audit coherence + `no_std`-friendliness (consistent with the kernel
+# trajectory in P6). `ring` is intentionally NOT used: it is not
+# `no_std`-friendly and would force a divergent crypto trust base.
+ed25519-dalek      = { version = "2.1", default-features = false, features = ["zeroize", "rand_core", "serde"] }
+x25519-dalek       = { version = "2.0", default-features = false, features = ["zeroize", "static_secrets", "reusable_secrets", "serde"] }
+chacha20poly1305   = { version = "0.10", default-features = false, features = ["alloc"] }
+sha2               = { version = "0.10", default-features = false }
+sha3               = { version = "0.10", default-features = false }
+blake3             = { version = "1.5", default-features = false }
+hkdf               = { version = "0.12", default-features = false }
+argon2             = { version = "0.5", default-features = false, features = ["alloc"] }
+
+# --- Random number generation ---
+# CSPRNG abstraction used by signing/kex/AEAD nonce generation.
+# `getrandom` v0.2 is the platform CSPRNG bridge; `rand_core` is the trait
+# surface implemented by all RustCrypto crates that need entropy.
+rand_core          = { version = "0.6", default-features = false, features = ["getrandom"] }
+getrandom          = { version = "0.2", default-features = false }
+
+# --- Constant-time + zeroization helpers ---
+# `subtle` provides `ConstantTimeEq` for AEAD tag check / signature verify.
+# `zeroize` ensures key material is wiped on `Drop`.
+subtle             = { version = "2.6", default-features = false }
+zeroize            = { version = "1.8", default-features = false, features = ["derive", "alloc"] }
+
+# --- Identifiers + encoding ---
+# `uuid` v1 with `v4` is a 122-bit random identifier used for AgentId /
+# CapabilityId / SessionId. v4 is chosen over v7 (sortable timestamped)
+# because v7 requires `std::time::SystemTime`, which is unavailable in
+# `no_std` foundational crates. Entropy is sourced from `getrandom`
+# directly at the call site, so the `rng-*` features of `uuid` are not
+# enabled (we keep the dependency surface minimal). When a `Clock`
+# abstraction lands in `omni-hal` (P6), we can revisit using v7 with an
+# injected timestamp.
+#
+# `hex` provides safe encoding for raw-byte identifiers (we deliberately
+# do NOT impl `Display` for raw bytes; call sites must pass through
+# `to_hex` to surface an ID).
+uuid               = { version = "1.11", default-features = false, features = ["v4", "serde"] }
+hex                = { version = "0.4", default-features = false, features = ["alloc"] }
 
 # --- Networking (mesh protocol) ---
 quinn = "0.11"
@@ -104,12 +176,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # --- Error handling ---
 # thiserror v2 chosen to align with the version pulled by upstream crates
 # (quinn, tokio ecosystem), eliminating duplicate-dependency warnings.
-thiserror = "2.0"
+# `default-features = false` enables `no_std` mode (Rust 1.81+ has
+# `core::error::Error` so this is fully supported on our MSRV 1.85).
+thiserror = { version = "2.0", default-features = false }
 anyhow    = "1.0"
 
 # --- Testing utilities ---
 proptest = "1.5"
 mockall  = "0.13"
+# Compile-fail tests for type-system invariants (e.g., proving that a
+# `ModelId` cannot be passed where a `NodeId` is expected). Dev-only.
+trybuild = "1.0"
 
 # -----------------------------------------------------------------------------
 # Build profiles

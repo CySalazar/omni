@@ -1,0 +1,96 @@
+# =============================================================================
+# D.O.E. Framework — .gitignore Template: Dart / Flutter
+# Generated: <YYYY-MM-DD>
+# Base: gitignore.io/api/dart,flutter + D.O.E. security rules
+# =============================================================================
+
+# --- Secrets and credentials (NEVER commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+credentials.json
+service-account.json
+**/secrets/
+**/key.properties
+**/google-services.json
+**/GoogleService-Info.plist
+
+# --- Agent-specific files (NEVER commit) ---
+CLAUDE.md
+.cursorrules
+.cursor/
+.aider*
+copilot-*
+
+# --- OS-generated files ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# --- IDE and editor files ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# --- Temporary and generated files ---
+tmp/
+temp/
+.tmp/
+*.log
+*.bak
+*.orig
+
+# --- Dart ---
+.dart_tool/
+.packages
+build/
+.pub-cache/
+.pub/
+# For libraries only (applications should commit pubspec.lock):
+# pubspec.lock
+
+# --- Flutter ---
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+.metadata
+
+# --- Android ---
+**/android/**/gradle-wrapper.jar
+**/android/.gradle
+**/android/captures/
+**/android/gradlew
+**/android/gradlew.bat
+**/android/local.properties
+**/android/**/GeneratedPluginRegistrant.java
+
+# --- iOS ---
+**/ios/**/*.mode1v3
+**/ios/**/*.mode2v3
+**/ios/**/*.moved-aside
+**/ios/**/*.pbxuser
+**/ios/**/*.perspectivev3
+**/ios/**/DerivedData/
+**/ios/.generated/
+**/ios/Flutter/App.framework
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/ephemeral/
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/ServiceDefinitions.json
+**/ios/Runner/GeneratedPluginRegistrant.*
+**/ios/Pods/
+
+# --- Coverage ---
+coverage/

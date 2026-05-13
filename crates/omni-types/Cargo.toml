@@ -24,9 +24,56 @@ readme.workspace       = true
 [lints]
 workspace = true
 
+# -----------------------------------------------------------------------------
+# Feature flags
+# -----------------------------------------------------------------------------
+# `_tokenization_provider` is an INTERNAL feature gate. The leading
+# underscore is the project-wide convention for "do not enable from your
+# Cargo.toml unless you are the trusted-base crate that owns this
+# capability". The only crate authorized to enable this flag is
+# `omni-tokenization` (Phase 2). Enabling it elsewhere bypasses the
+# encrypted-by-default invariant and is an audit-worthy event.
+[features]
+default = []
+# Exposes constructors for `EncryptedString`, `MaskedSSN`, `TokenizedEmail`,
+# and `AttestedHash`. Implies that the calling crate runs inside an
+# attested TEE.
+_tokenization_provider = []
+
+# -----------------------------------------------------------------------------
+# Dependencies
+# -----------------------------------------------------------------------------
+# All dependencies inherit `default-features = false` from the workspace
+# manifest (see /Cargo.toml [workspace.dependencies]) so this crate stays
+# `no_std + alloc`-compatible.
 [dependencies]
 serde     = { workspace = true }
+# `postcard` is the workspace canonical wire encoding (per `OIP-Serde-004`).
+# `omni-types` owns the only direct dependency — every other crate goes
+# through `omni-types::wire::{encode_canonical, decode_canonical}` so the
+# encoding contract is auditable from a single audit point.
+postcard  = { workspace = true }
 thiserror = { workspace = true }
+# Random UUIDv4 identifiers for runtime-generated IDs (`AgentId`,
+# `CapabilityId`, `SessionId`). Entropy is supplied by `getrandom`.
+uuid      = { workspace = true }
+# Platform CSPRNG bridge. On Linux this is `getrandom(2)`; on aarch64
+# bare-metal targets the embedded port supplies a HW RNG implementation.
+getrandom = { workspace = true }
+# Safe hex encoding helpers for raw-byte identifiers. We deliberately do NOT
+# implement `core::fmt::Display` for byte-array IDs — call sites must go
+# through `to_hex` so accidental logging is traceable.
+hex       = { workspace = true }
+# `Zeroize` is derived on identifier wrappers that may transit through
+# memory-mapped buffers, so dropping them does not leak attestation hashes
+# in stale heap pages.
+zeroize   = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# `trybuild` runs compile-fail integration tests. Used to assert
+# type-system invariants such as: passing a `ModelId` where a `NodeId` is
+# expected MUST be a compile error, and constructing an `EncryptedString`
+# from a `String` outside the `omni-tokenization` crate MUST be a compile
+# error.
+trybuild = { workspace = true }

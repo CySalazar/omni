@@ -23,11 +23,26 @@ readme.workspace       = true
 [lints]
 workspace = true
 
+# -----------------------------------------------------------------------------
+# Dependencies
+# -----------------------------------------------------------------------------
+# Token canonical encoding is delegated to `omni-types::wire`, which
+# wraps `postcard` 1.x with the project's canonical-encoding options.
+# Direct `postcard::*` calls outside `omni-types::wire` are forbidden by
+# the workspace clippy `disallowed-methods` lint (see `OIP-Serde-004`).
+# The bloom filter used by the revocation list is implemented in-crate
+# (see `revocation.rs`) so we avoid pulling in `std`-only crates such as
+# `bloomfilter`.
 [dependencies]
 omni-types  = { workspace = true }
 omni-crypto = { workspace = true }
 serde       = { workspace = true }
+# `postcard` access is delegated to `omni-types::wire::{encode_canonical,
+# decode_canonical}`; no direct postcard dependency. This is the
+# single-audit-point property mandated by `OIP-Serde-004` and enforced
+# by the workspace clippy `disallowed-methods` lint.
 thiserror   = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+hex      = { workspace = true }

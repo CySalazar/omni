@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+
+# =============================================================================
+# commit-msg hook — Strip AI/LLM attribution from commit messages
+# =============================================================================
+#
+# Part of the D.O.E. Framework (Direttiva, Orchestrazione, Esecuzione)
+#
+# PURPOSE:
+#   Automatically removes any Co-Authored-By, Generated-By, or similar
+#   trailers that attribute code to AI models, LLMs, or coding agents.
+#   This ensures all commits appear as authored solely by the human developer.
+#
+# HANDLED PATTERNS:
+#   - Co-Authored-By: Claude ...
+#   - Co-Authored-By: GPT ...
+#   - Co-Authored-By: Copilot ...
+#   - Co-Authored-By: Gemini ...
+#   - Co-authored-by: ... <noreply@anthropic.com>
+#   - Co-authored-by: ... <noreply@github.com> (Copilot)
+#   - Co-authored-by: ... <noreply@openai.com>
+#   - Co-authored-by: ... <noreply@google.com> (Gemini)
+#   - Generated-By: ... (any AI/LLM mention)
+#   - Any line containing "AI-generated" or "LLM-generated"
+#
+# INSTALLATION:
+#   cp doe-framework/templates/git-hooks/commit-msg .git/hooks/commit-msg
+#   chmod +x .git/hooks/commit-msg
+#
+# =============================================================================
+
+set -euo pipefail
+
+COMMIT_MSG_FILE="$1"
+
+if [ ! -f "$COMMIT_MSG_FILE" ]; then
+    echo "Error: commit message file not found: $COMMIT_MSG_FILE" >&2
+    exit 1
+fi
+
+# Create a temporary file for the cleaned message
+TEMP_FILE=$(mktemp)
+trap 'rm -f "$TEMP_FILE"' EXIT
+
+# Define patterns to remove (case-insensitive)
+# Each pattern matches a full line that should be stripped
+PATTERNS=(
+    # Co-Authored-By with known AI/LLM names
+    'co-authored-by:.*\b(claude|anthropic|gpt|openai|copilot|gemini|google ai|codewhisperer|amazon q|cursor|windsurf|cody|sourcegraph|tabnine|replit)\b'
+    # Co-Authored-By with known noreply domains used by AI services
+    'co-authored-by:.*<.*noreply@(anthropic|openai|google|github)\.com.*>'
+    # Generic AI/LLM attribution trailers
+    'generated-by:.*\b(claude|gpt|copilot|gemini|ai|llm|codewhisperer|cursor|windsurf)\b'
+    # Explicit AI-generated markers
+    '\b(ai|llm|machine)[- ]generated\b'
+    # Signed-off-by with AI names (some tools use this)
+    'signed-off-by:.*\b(claude|gpt|copilot|gemini)\b.*<.*noreply@'
+)
+
+# Build a single grep pattern from all patterns
+COMBINED_PATTERN=$(IFS='|'; echo "${PATTERNS[*]}")
+
+# Filter out matching lines (case-insensitive), preserve everything else
+grep -viE "$COMBINED_PATTERN" "$COMMIT_MSG_FILE" > "$TEMP_FILE" || true
+
+# Remove trailing blank lines that may be left after stripping trailers.
+# Portable across BSD sed (macOS) and GNU sed (Linux): shell command
+# substitution strips trailing newlines, then we re-add a single one.
+content=$(cat "$TEMP_FILE")
+printf '%s\n' "$content" > "$TEMP_FILE"
+
+# Replace the original commit message
+cp "$TEMP_FILE" "$COMMIT_MSG_FILE"
+
+exit 0

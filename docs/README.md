@@ -21,6 +21,26 @@
 | 10 | [Glossary](./10-glossary.md) | Draft v0.1 | Terminology and acronyms |
 | 11 | [Tooling & CI](./11-tooling-and-ci.md) | Draft v0.1 | Toolchain pinning, lints, CI/CD enforcement matrix |
 
+## Subdirectories
+
+In addition to the numbered design documents above, `/docs/` hosts several
+subdirectories created during P3–P5 to keep the root tidy:
+
+| Path | Purpose | First populated |
+|---|---|---|
+| [`/docs/protocol/`](./protocol/) | Formal wire-level specifications (handshake, compliance proof format, eventually IPC ABI). Authoritative over high-level prose elsewhere. | 2026-05-10 (P3.1) |
+| [`/docs/audits/`](./audits/) | Independent audit reports, closure reports (e.g. P0), cryptographer-engagement template, BDFL veto log (created on first veto). | 2026-05-10 |
+| [`/docs/legal/`](./legal/) | Stichting OMNI bylaws draft, NL notary execution checklist. Authoritative version of bylaws will be the Dutch notarial deed; this is the working English draft. | 2026-05-10 (P4.1) |
+| [`/docs/funding/`](./funding/) | Pitch deck, one-pager, grant application drafts (NLnet, Mozilla MOSS, Sloan, Open Philanthropy), sponsor tier menu. | 2026-05-10 (P4.2) |
+| [`/docs/hiring/`](./hiring/) | Role descriptions (kernel engineer, networking engineer, cryptographer) and public salary bands. | 2026-05-10 (P4.4) |
+
+Related directories outside `/docs/`:
+
+| Path | Purpose |
+|---|---|
+| [`/oips/`](../oips/) | OMNI Improvement Proposals. Authoritative for protocol / process decisions. |
+| [`/protocol-proofs/`](../protocol-proofs/) | Tamarin / ProVerif / TLA+ formal proof artifacts for protocol-level claims. |
+
 ## Suggested reading order
 
 For new contributors:

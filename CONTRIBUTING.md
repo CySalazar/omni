@@ -25,7 +25,7 @@ no production code yet). The most valuable contributions today are:
 | **Documentation review**   | Spotting inconsistencies between `/docs/*.md` files; suggesting clarifications. |
 | **Threat model refinement**| Adversary scenarios we missed in `/docs/04a-threat-model.md`.          |
 | **Cryptographic review**   | Sanity-checking the API design in `omni-crypto` (no implementation yet — see `todo.md` P1.2). |
-| **OIP drafting**           | Once `OIP-Process-001` ships (see `todo.md` P2.1), proposals shape the spec. |
+| **OIP drafting**           | The OIP process is `Active` since 2026-05-10 — see [`OIP-Process-001`](./oips/oip-process-001.md). Substantive proposals shape the spec. |
 | **Bug reports**            | Even pre-code, doc bugs and link-rot count.                            |
 | **Translation**            | The vision documents are English-only today; quality translations are welcome (separate `i18n/` directory, opens later). |
 
@@ -272,15 +272,24 @@ If your contribution is one of the following, **file an OIP first**:
 - Change to the governance model.
 - New funding source category.
 
-The OIP process is defined in `OIP-Process-001` (`todo.md` P2.1 — drafting
-in progress). Until that lands, file a discussion issue using the
-`oip_proposal.yml` template and we'll align on the form factor together.
+The OIP process is defined in [`OIP-Process-001`](./oips/oip-process-001.md) (`Active` since
+2026-05-10). The full filing flow — branch naming, template, lifecycle, voting, editor body,
+Bootstrap Period — is in that document. Quick path:
 
-OIPs are typed:
+1. Open a discussion issue using the [`oip_proposal.yml`](./.github/ISSUE_TEMPLATE/oip_proposal.yml) template so editors can pre-validate scope.
+2. Branch as `oip/<slug>` (see §6 above).
+3. Copy [`oips/oip-template.md`](./oips/oip-template.md) → `oips/oip-<slug>-XXX.md` (`XXX` is a placeholder; editors assign the global number on Last Call → Active).
+4. Open a PR with `Signed-off-by:` (DCO) and Conventional Commit prefix `oip(<slug>): <title>`.
+5. Iterate `Draft → Review → Last Call`; the editors merge on positive Last Call outcome.
 
-- **Standards Track** — protocol or API changes that affect compatibility.
-- **Process** — changes to how we work.
-- **Informational** — guidance documents.
+The CI lint at `scripts/lint-oips.py` (`oip-lint` workflow) will validate frontmatter, sections,
+and index coherence on every push touching `/oips/`.
+
+OIPs are typed (per `OIP-Process-001` §1):
+
+- **Standards Track** — protocol, wire format, cryptographic primitive, capability format, kernel ABI, or mesh handshake changes.
+- **Process** — governance, voting, editor rotation, contribution flow, release cadence.
+- **Informational** — best practices, advisories, guidelines (non-binding).
 - **Meta** — OIPs about the OIP process itself.
 
 ---

@@ -1,8 +1,10 @@
 # Technical Specifications
 
-**Status:** Draft v0.1
+**Status:** Draft v0.1.1 (P1 implementation in progress)
 
 This document tracks exact versions of languages, libraries, and tooling used by OMNI OS. It is updated whenever dependencies change. Per project policy, code changes that affect dependencies MUST update this document in the same change set.
+
+**Last review:** May 2026 — workspace dependency set frozen for P1 (foundational crates implementation).
 
 ## Language
 
@@ -34,18 +36,31 @@ These are intended dependencies. Final selections will be confirmed during Phase
 
 ### Cryptography
 
-| Crate | Version (planned) | Purpose |
-|---|---|---|
-| `ring` | 0.17.x | Symmetric and asymmetric primitives baseline |
-| `ed25519-dalek` | 2.x | Ed25519 signatures |
-| `x25519-dalek` | 2.x | X25519 key exchange |
-| `chacha20poly1305` | 0.10.x | AEAD |
-| `sha2`, `sha3`, `blake3` | latest | Hashes |
-| `argon2` | 0.5.x | Password hashing (where applicable) |
-| `arkworks` (`ark-*`) | latest | zk-SNARK construction (TBD) |
-| `pq-crystals` (Kyber + Dilithium) | TBD | Post-quantum hybrid (Phase 4+) |
+| Crate | Version (pinned) | Purpose | `no_std` |
+|---|---|---|---|
+| `ed25519-dalek` | 2.1.x | Ed25519 signatures (`verify_strict` to reject malleable forms) | yes |
+| `x25519-dalek` | 2.0.x | X25519 ECDH key exchange | yes |
+| `chacha20poly1305` | 0.10.x | AEAD (RFC 8439) | yes (`alloc`) |
+| `sha2` | 0.10.x | SHA-256 / SHA-512 family | yes |
+| `sha3` | 0.10.x | SHA3-256 / Keccak family | yes |
+| `blake3` | 1.5.x | BLAKE3 (default protocol-level hash; fastest, hardware-friendly) | yes |
+| `hkdf` | 0.12.x | HKDF-SHA-256 for protocol session keys | yes |
+| `argon2` | 0.5.x | Argon2id for memory-hard user-secret hashing | yes (`alloc`) |
+| `subtle` | 2.6.x | `ConstantTimeEq` for AEAD tag check / signature verify | yes |
+| `zeroize` | 1.8.x | Wipe key material on `Drop` (derive macro) | yes (`alloc`) |
+| `rand_core` | 0.6.x | CSPRNG abstraction shared by RustCrypto | yes |
+| `getrandom` | 0.2.x | Platform CSPRNG bridge (Linux: `getrandom(2)`) | yes |
+| `arkworks` (`ark-*`) | TBD | zk-SNARK construction (Phase 4) | partial |
+| `pq-crystals` (Kyber + Dilithium) | TBD | Post-quantum hybrid (Phase 4+) | partial |
 
-Rationale: `ring` for battle-tested baseline; RustCrypto family for specific algorithms; arkworks for zk-SNARK research-grade implementations.
+**Rationale (decision recorded 2026-05-10):** The crypto base is **RustCrypto family for everything**. `ring` was evaluated and explicitly rejected because (a) `ring` is not `no_std`-friendly which would block kernel-side use in P6, (b) maintaining two parallel crypto trust bases doubles the audit surface, (c) RustCrypto crates expose typed APIs (`Key`, `Nonce`, `Tag`) that map naturally to OMNI's strongly-typed wrappers, (d) `Zeroize` and `subtle` integrate natively with the rest of the family. The trade-off is that the audit history of any single RustCrypto primitive is shorter than `ring`'s; this is mitigated by the planned external cryptographer review (P3.2 in `/todo.md`).
+
+### Identifiers and encoding
+
+| Crate | Version (pinned) | Purpose | `no_std` |
+|---|---|---|---|
+| `uuid` | 1.11.x | UUIDv4 random identifiers (`AgentId`, `CapabilityId`, `SessionId`). v4 chosen over v7 because v7 requires `std::time::SystemTime`. To revisit when `omni-hal` exposes a `Clock` abstraction (P6). Entropy from `getrandom` at call site. | yes |
+| `hex` | 0.4.x | Safe hex encoding for raw-byte IDs (we deliberately do NOT impl `Display` for byte arrays) | yes (`alloc`) |
 
 ### Networking
 
@@ -97,15 +112,16 @@ Sandboxing approach (WASM vs. process isolation) is an open architectural questi
 
 ### Testing
 
-| Crate | Version (planned) | Purpose |
+| Crate | Version (pinned) | Purpose |
 |---|---|---|
-| `criterion` | 0.5.x | Benchmarking |
-| `proptest` | 1.x | Property-based testing |
-| `mockall` | 0.13.x | Mocking |
-| `insta` | latest | Snapshot testing |
+| `criterion` | 0.5.x | Benchmarking (Phase 1.5: perf baselines for crypto primitives) |
+| `proptest` | 1.5.x | Property-based testing (attenuation monotony, ID determinism) |
+| `mockall` | 0.13.x | Mocking (`TeeBackend`, `Clock`) |
+| `trybuild` | 1.0.x | Compile-fail tests (proves type-system invariants — e.g. cannot pass `ModelId` where `NodeId` expected, cannot construct `EncryptedString` outside the tokenization service) |
+| `insta` | latest | Snapshot testing (canonical wire format regression) |
 | `playwright`-like for E2E | TBD | End-to-end tests (per project policy requiring E2E) |
 
-End-to-end testing harness will be specified in Phase 1.
+End-to-end testing harness will be specified later in Phase 1.
 
 ### Observability
 
@@ -117,10 +133,10 @@ End-to-end testing harness will be specified in Phase 1.
 
 ### Error handling
 
-| Crate | Version (planned) | Purpose |
-|---|---|---|
-| `thiserror` | 2.0.x | Library error types. v2 chosen to align with upstream ecosystem (quinn, tokio); eliminates duplicate-dependency warnings. |
-| `anyhow` | 1.0.x | Application-level error handling. |
+| Crate | Version (pinned) | Purpose | `no_std` |
+|---|---|---|---|
+| `thiserror` | 2.0.x | Library error types. v2 chosen to align with upstream ecosystem (`quinn`, `tokio`); eliminates duplicate-dependency warnings. Used with `default-features = false` to enable `core::error::Error` (Rust 1.81+) and stay `no_std`-compatible. | yes |
+| `anyhow` | 1.0.x | Application-level error handling. Std-only; not used in foundational crates. | no |
 
 ## TEE-specific dependencies
 
@@ -178,6 +194,23 @@ The mesh protocol has its own versioning negotiated at handshake; protocol versi
 - Forbidden licenses: GPL-2/3 (incompatible with our AGPL-3.0+commercial dual-licensing), proprietary, unlicensed.
 - All dependencies must have clear, machine-readable licenses.
 
+## `no_std` policy
+
+OMNI OS targets a `no_std` future (P6 — kernel transition) where the foundational crates must compile without the standard library. The policy is enforced layer by layer:
+
+| Crate | `no_std` status | Notes |
+|---|---|---|
+| `omni-types` | `#![no_std]` + `extern crate alloc` | Mandatory from P1.1. |
+| `omni-crypto` | `#![no_std]` + `extern crate alloc` | Mandatory from P1.2. CSPRNG uses `getrandom` which auto-detects platform (Linux: `getrandom(2)`; falls back when in `no_std` host with appropriate feature). |
+| `omni-capability` | `#![no_std]` + `extern crate alloc` | Mandatory from P1.3. Bloom filter implemented in-crate to avoid pulling a `std`-only dependency. |
+| `omni-tee` | `#![no_std]` + `extern crate alloc` | Mandatory from P5. |
+| `omni-kernel` | `#![no_std]` + `#![no_main]` | Bare metal. |
+| `omni-hal` | `#![no_std]` | HAL trait surface only. |
+| Service crates (`omni-runtime`, `omni-mesh`, `omni-tokenization`) | `std` allowed | Userspace daemons. |
+| User-facing crates (`omni-sdk`, `omni-agent`, `omni-shell`) | `std` | Userspace. |
+
+Why this matters: every `no_std` violation in a foundational crate is a refactor hazard for P6. We pay the discipline cost up front rather than amortize it across a kernel rewrite.
+
 ## Update cadence
 
 This document is updated:
@@ -186,4 +219,4 @@ This document is updated:
 - On any version bump of MSRV or core dependencies.
 - At each release.
 
-Last review: May 2026 (initial draft).
+Last review: 2026-05-10 (P1 implementation: workspace dependency set frozen, RustCrypto-only crypto base, full `no_std + alloc` for foundational layer).

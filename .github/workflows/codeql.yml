@@ -39,6 +39,13 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           queries: security-and-quality
+          # `rust/hardcoded-credentials` is excluded for `crates/**/src/`
+          # because it false-positives on RFC test vectors in
+          # `#[cfg(test)]` blocks (e.g., the Argon2id determinism tests
+          # in `crates/omni-crypto/src/kdf.rs`). The config also pins the
+          # analysis to `crates/**/src/**`, excluding doc / OIP / framework
+          # / scripts paths from CodeQL's scope.
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3

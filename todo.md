@@ -1,10 +1,12 @@
 # OMNI OS — Implementation TODO
 
-> **Status:** Phase 0 (Foundation) — v0.1 design complete, **P0 fully closed 2026-05-09** (9/9 done; repo live at https://github.com/CySalazar/omni, public, AGPL-3.0, branch-protected, all commits SSH-signed and GitHub-verified). Next focus: P1 (foundational crates) and/or P2 (OIP process).
-> **Last updated:** 2026-05-09 (post-P0 deliverables, post-push, post-bootstrap-github, post-identity-rebase)
+> **Status:** Phase 0 (Foundation) — v0.1 design complete, **P0 fully closed 2026-05-09** (9/9 done; repo live at https://github.com/CySalazar/omni, public, AGPL-3.0, branch-protected, all commits SSH-signed and GitHub-verified). **P1 fully closed 2026-05-10** (3/3 foundational crates implemented + verified: `omni-types`, `omni-crypto`, `omni-capability`; 131 tests green; `cargo clippy -D warnings` and `cargo doc -D warnings` clean across all three crates). **P2 fully closed 2026-05-10** (3/3 — `OIP-Process-001` `Active` under bootstrap fiat; `/oips/` registry + template + sentinel + linter live; BDFL veto window documented immutably 2026-05-09 → 2031-05-09 in `OIP-Process-001` §5.4 and `docs/05-governance.md`). **P3/P4/P5/P6 scaffolding verified green 2026-05-12** — full workspace builds, 185 tests pass, `cargo clippy --all-targets --all-features -D warnings` clean, `cargo doc -D warnings` clean, `cargo fmt --check` clean (`cargo deny` validated by CI). Next focus: P3 (cryptographic peer review of `omni-crypto`) and/or kicking off the first non-`Meta` OIP to dogfood the formal voting flow.
+> **Last updated:** 2026-05-12 (post-scaffolding verify-state + fix-pass — see `[Unreleased] Fixed` in [`CHANGELOG.md`](CHANGELOG.md) for the full delta. P5.1 / P6.1 / P6.3 / P6.4 / P6.5 / P6.6 transitioned to `[~]` to reflect the verified scaffold; full `[x]` is gated on the per-task acceptance criteria, several of which require external dependencies — hardware, audit, OIP activation). **2026-05-12 — `OIP-Container-006` filed as `Draft`**: OmniContainer micro-VM engine + Wine-in-container for Windows apps + cyDock evolution path. This OIP **resolves** the previously-open POSIX-compatibility question in `docs/02-architecture.md`. **2026-05-12 — 5 ulteriori OIP filati come `Draft`** che compongono la "OMNI App Mesh": `OIP-Helper-007` (autonomy levels + impact dashboard), `OIP-Pkg-008` (federated content-addressed package manager), `OIP-Forge-009` (Rust→WASM/ELF on-demand generation), `OIP-Market-010` (Stichting marketplace + Bronze/Silver/Gold + continuous CVE), `OIP-Flagship-011` (Omni* prefix policy + OmniCode v1 phased). Architecture doc aggiornato con nuova sezione "OMNI App Mesh".
 > **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
 > **Priority order:** Security → Stability → Performance (per project policy).
 > **Repo:** [github.com/CySalazar/omni](https://github.com/CySalazar/omni) · License: [AGPL-3.0-only](LICENSE) · Branch protection summary in [`docs/11-tooling-and-ci.md`](docs/11-tooling-and-ci.md).
+>
+> **Scaffolding pass (2026-05-10):** every P3–P6 task that can be advanced without external dependencies (notary, hardware, cryptographer) has had its artefacts drafted or scaffolded. P3.1 (mesh handshake spec + Tamarin model), P3.2 (cryptographer engagement template), P3.3 (`OIP-Crypto-002` Draft), P4.1 (bylaws + Stichting checklist drafts), P4.2 (pitch deck + one-pager + 4 grant drafts + sponsor menu), P4.3 (`08-funding-policy.md` v0.2 with bylaws cross-refs), P4.4 (3 role descriptions + salary bands), P5.1 (`TeeBackend` trait + `MockTeeBackend` end-to-end), P5.2/P5.3 (feature-gated TDX/SEV-SNP scaffolds), P5.4 (`omni-hal::tee` re-exports), P6.1 (`bare-metal` feature flag on `omni-kernel`), P6.2 (`OIP-Kernel-003` Draft — UEFI + `bootloader` crate selection), P6.3–P6.6 (memory / scheduling / IPC / capabilities / syscall trait skeletons with stable syscall ABI). Status icons in the body are NOT updated wholesale; per-task transitions to `[~]` / `[x]` are tracked when their downstream activation gates clear.
 
 This document is the canonical, ordered backlog of tasks required to move OMNI OS
 from a finalized design (`/docs` v0.1) into an executable, auditable, contribution-ready
@@ -31,6 +33,7 @@ enough that an external contributor could pick it up in isolation.
 | **P4** | Phase 0 non-technical (Stichting, funding, legal) |
 | **P5** | `omni-tee` + TEE HAL (root of trust) |
 | **P6** | Kernel `no_std` transition + UEFI bootloader (Phase 1 core) |
+| **P7** | Workspace serialization migration `bincode` → `postcard` (resolves RUSTSEC-2025-0141) |
 
 ## Dependency graph (one-line)
 
@@ -40,6 +43,7 @@ P0 ─────────────────────────�
 P2 ──► (parallel to P1, gates community contributions)
 P3 ──► (parallel to P1, gates mesh implementation in Phase 4)
 P4 ──► (parallel everywhere, gates team hiring + Phase 1 start)
+P7 ──► (parallel, gates clean cargo audit/deny pass; depends on P1)
 ```
 
 ---
@@ -296,7 +300,7 @@ Add `.github/dependabot.yml`:
 
 ## P1.1 — Implement `omni-types`
 
-- **Status:** `[ ]`
+- **Status:** `[x]` (closed 2026-05-10 — 33 tests passing, clippy strict + doc strict clean, `no_std + alloc` compile-verified)
 - **Priority:** P1
 - **Effort:** 1 week
 - **Dependencies:** P0 (CI must exist to gate this work)
@@ -346,7 +350,7 @@ Add `.github/dependabot.yml`:
 
 ## P1.2 — Implement `omni-crypto`
 
-- **Status:** `[ ]`
+- **Status:** `[x]` (closed 2026-05-10 — 55 tests passing including RFC vectors for ChaCha20-Poly1305 / Ed25519 / X25519 / SHA-256 / SHA3-256 / BLAKE3 / HKDF-SHA-256; clippy strict + doc strict clean; **AWAITING_CRYPTO_REVIEW** marker in `lib.rs` per P3.2 dependency)
 - **Priority:** P1 / Critical
 - **Effort:** 2–3 weeks (longer if cryptographer review is sequential)
 - **Dependencies:** P1.1, P3 (peer review should run in parallel and gate the merge)
@@ -407,7 +411,7 @@ Add `.github/dependabot.yml`:
 
 ## P1.3 — Implement `omni-capability`
 
-- **Status:** `[ ]`
+- **Status:** `[x]` (closed 2026-05-10 — 43 tests passing including Macaroons-style attenuation monotony property test (64 cases) + tampered-child adversarial property test; clippy strict + doc strict clean; in-crate `MicroBloom` revocation list to keep `no_std + alloc`)
 - **Priority:** P1 / Critical
 - **Effort:** 2 weeks
 - **Dependencies:** P1.1, P1.2
@@ -460,60 +464,61 @@ Add `.github/dependabot.yml`:
 
 ## P2.1 — Write OIP-Process-001 (the meta-OIP)
 
-- **Status:** `[ ]`
+- **Status:** `[x]` (closed 2026-05-10 — `oips/oip-process-001.md` `Active` under bootstrap fiat clause §6.3; lifecycle, categories, voting, BDFL window, editor body, Bootstrap Period all formalized; structural lint green. **Amended same day** under bootstrap fiat clause §6.3 with three structural changes: new §6.5 Critical-security Bootstrap exception, expanded §5.2 Known limitations, refined `## Privacy Considerations` + template HTML guidance. Amendment history logged in OIP itself.)
 - **Priority:** P2 / Critical
 - **Effort:** 3 days
 - **Dependencies:** P0.3 (CONTRIBUTING)
 - **Rationale:** roadmap explicitly requires `OIP-Process-001` to close Phase 0. Without it, every architectural change is autocratic instead of federated.
 
 **Deliverables (`/oips/oip-process-001.md`):**
-- OIP types: `Process`, `Standards Track`, `Informational`, `Meta`.
-- Lifecycle: `Draft` → `Active` → (`Final` | `Withdrawn` | `Superseded`).
-- Required sections: Abstract, Motivation, Specification, Rationale, Backwards Compatibility, Test Cases, Reference Implementation, Security Considerations, Privacy Considerations, Copyright.
+- OIP types: `Process`, `Standards Track`, `Informational`, `Meta`. *(Done — §1)*
+- Lifecycle: `Draft → Review → Last Call → Active → Final | Withdrawn | Superseded | Rejected`. *(Done — §4. Unified the two slightly different lifecycles in `todo.md` and `docs/05-governance.md` v0.1; the OIP is the authoritative source going forward.)*
+- Required sections: Abstract, Motivation, Specification, Rationale, Backwards Compatibility, Test Cases, Reference Implementation, Security Considerations, Privacy Considerations, Copyright. *(Done — §2; CI lint enforces them.)*
 - Voting mechanism (initial, manual until tooling exists):
-  - Eligibility: TEE-attested unique device (anti-Sybil).
-  - Weighting: proof-of-uptime + proof-of-contribution. Concrete formula deferred to OIP-Voting-002.
-  - Quorum: 30% of eligible voters or 14-day open window, whichever is reached first.
-  - Approval threshold: quadratic-vote majority.
-- BDFL veto window: 5 years from v0.1, sunset confirmed in writing in OIP itself.
-- Editor role: 2 OIP editors per term, rotated annually.
+  - Eligibility: TEE-attested unique device (anti-Sybil). *(Done — §5.1)*
+  - Weighting: proof-of-uptime + proof-of-contribution. Concrete formula deferred to a future Process OIP under slug `voting`. *(Done — §5.2; bootstrap defaults specified for the deferred period.)*
+  - Quorum: 30% of eligible voters or 14-day open window, whichever is reached first. *(Done — §5.3)*
+  - Approval threshold: quadratic-vote majority (50%+1); 66.7% supermajority for Layer 1 cryptographic breaks. *(Done — §5.3)*
+- BDFL veto window: 5 years from 2026-05-09 (first public commit), sunset 2031-05-09 23:59 UTC, structurally non-extensible. *(Done — §5.4)*
+- Editor role: 2 OIP editors per term, rotated annually. Bootstrap Period explicitly codified: 1 interim editor (founder) + Seat 2 vacant until Phase 1 hire OR 2027-05-10 hard deadline. *(Done — §6)*
 
 **Acceptance criteria:**
-- [ ] OIP-Process-001 itself passes its own process (dogfood test).
-- [ ] Linked from README and `05-governance.md`.
-- [ ] Issue template for new OIPs (P0.8) functional.
+- [x] OIP-Process-001 itself passes its own process (dogfood test). *(Ratified under the one-time bootstrap fiat clause §6.3 — no prior process exists to vote it in. The dogfood test of the formal flow is deferred to the first non-`Meta` OIP, by design, and explicitly documented as such in §6.3 ¶3.)*
+- [x] Linked from README and `05-governance.md`. *(README §"Public commitments" + §"Contributing"; `docs/05-governance.md` §2 fully refactored to point at the OIP as authoritative.)*
+- [x] Issue template for new OIPs (P0.8) functional. *(Pre-existing: `.github/ISSUE_TEMPLATE/oip_proposal.yml`; cross-referenced from `oips/README.md` and `CONTRIBUTING.md` §9.)*
 
 ---
 
 ## P2.2 — Set up `/oips/` directory and template
 
-- **Status:** `[ ]`
+- **Status:** `[x]` (closed 2026-05-10)
 - **Priority:** P2
 - **Effort:** 2 h
 - **Dependencies:** P2.1
 
 **Deliverables:**
-- `/oips/README.md` — index of all OIPs by number, status, title.
-- `/oips/oip-template.md` — copy this for new proposals.
-- `/oips/oip-0000-template.md` — same content with reserved number 0.
+- `/oips/README.md` — index of all OIPs by number, status, title. *(Done; auto-validated against the registry by the lint.)*
+- `/oips/oip-template.md` — copy this for new proposals. *(Done; canonical template with frontmatter + 10 required sections.)*
+- `/oips/oip-0000-template.md` — same content with reserved number 0. *(Done; sentinel file with `oip: 0000`, status `Withdrawn` to keep it out of the active index, treated as a special case by the lint.)*
+- `scripts/lint-oips.py` + `.github/workflows/oip-lint.yml` — CI lint that validates frontmatter, sections, filename↔number coherence, and index cross-reference. *(Done; stdlib-only Python 3.11.)*
 
 **Acceptance criteria:**
-- [ ] `/oips/README.md` auto-renders a table of contents.
-- [ ] CI lint that fails if an OIP file deviates from the template structure.
+- [x] `/oips/README.md` auto-renders a table of contents. *(Markdown table; lint enforces every OIP file has a row.)*
+- [x] CI lint that fails if an OIP file deviates from the template structure. *(Verified manually: lint exits 0 with 2 valid OIPs, exits 1 on injected violations during development — see `scripts/lint-oips.py` test trace in dev session.)*
 
 ---
 
 ## P2.3 — Document the BDFL veto window in writing
 
-- **Status:** `[ ]`
+- **Status:** `[x]` (closed 2026-05-10 — start `2026-05-09`, sunset `2031-05-09` 23:59 UTC, immutable; structurally non-extensible per asymmetric clause `OIP-Process-001` §5.4)
 - **Priority:** P2
 - **Effort:** 2 h
 - **Dependencies:** P2.1
 - **Rationale:** the memory says "BDFL veto for first 5 years (sunset clause)". This must be in a versioned, immutable document so it can't be silently extended.
 
 **Deliverables:**
-- Section in `05-governance.md` cross-referencing OIP-Process-001 with explicit start date and sunset date.
-- Public commitment in README that the veto cannot be extended without an OIP that itself cannot be vetoed.
+- Section in `05-governance.md` cross-referencing OIP-Process-001 with explicit start date and sunset date. *(Done — `docs/05-governance.md` §2 "Founder role (years 1–5)" rewritten with three independent immutable anchors: this file, OIP-Process-001 §5.4, first signed commit `61426d5` on 2026-05-09.)*
+- Public commitment in README that the veto cannot be extended without an OIP that itself cannot be vetoed. *(Done — README §"Public commitments". The asymmetric clause in `OIP-Process-001` §5.4 makes the window structurally non-extensible by founder action alone.)*
 
 ---
 
@@ -527,25 +532,30 @@ Add `.github/dependabot.yml`:
 
 ## P3.1 — Formal mesh handshake specification
 
-- **Status:** `[ ]`
+- **Status:** `[~]` (spec + Tamarin model landed 2026-05-10; model extended to v0.2 on 2026-05-12 with lemmas for I3 + I7-extended + I8; proof execution gated on P3.2)
 - **Priority:** P3
 - **Effort:** 1–2 weeks
 - **Dependencies:** existing `04-security-model.md`, `04a-threat-model.md`
 - **Rationale:** changing protocol post-implementation is 10× the cost of changing it on paper.
 
 **Deliverables:**
-- `/docs/protocol/handshake.md` — pseudo-code or formal notation (TLA+ if available, otherwise Alloy or pseudo-code with explicit invariants).
-- Protocol verification with **ProVerif** or **Tamarin** for symbolic analysis. Validate:
-  - Mutual authentication
-  - Forward secrecy
-  - TEE attestation freshness
-  - Resistance to KCI (Key Compromise Impersonation)
-  - Resistance to UKS (Unknown Key-Share)
-- Document each property as an invariant in the spec.
+- [x] `/docs/protocol/handshake.md` — formal wire-level spec with 8 numbered invariants (I1–I8).
+- [~] Protocol verification with **ProVerif** or **Tamarin** for symbolic analysis. v0.2 model at [`/protocol-proofs/handshake.spthy`](protocol-proofs/handshake.spthy) covers 8 lemmas:
+  - [x] `mutual_authentication` (I1)
+  - [x] `forward_secrecy` (I2)
+  - [x] `mutual_tee_attestation_binding` (I3) — added 2026-05-12
+  - [x] `replay_resistance` (I4 — partial; full I4 needs nonce-uniqueness lemma)
+  - [x] `kci_resistance` (I5)
+  - [x] `protocol_version_binding` (I7)
+  - [x] `measurement_root_binding` (I7-extended) — added 2026-05-12
+  - [x] `compliance_capability_no_downgrade` (I8) — added 2026-05-12
+  - [ ] I6 (UKS) — to be added or implied by `mutual_authentication` + identity binding (cryptographer to confirm)
+- Each property documented as an invariant in `handshake.md` § 2.
 
 **Acceptance criteria:**
-- [ ] Spec lives under `/docs/protocol/`.
-- [ ] Tamarin/ProVerif proof artifacts checked into `/protocol-proofs/`.
+- [x] Spec lives under `/docs/protocol/`.
+- [x] Tamarin/ProVerif proof artifacts checked into `/protocol-proofs/`.
+- [x] **Tamarin proof execution** (`tamarin-prover handshake.spthy --prove` returns `verified` for all 8 lemmas) — completed 2026-05-12 with tamarin-prover 1.12.0; processing time ≈ 1.36s; full run log at [`protocol-proofs/handshake-proof-run-2026-05-12.txt`](protocol-proofs/handshake-proof-run-2026-05-12.txt). Five structural model defects were fixed in-place during the run; details in the run log footer and in [`protocol-proofs/handshake.spthy`](protocol-proofs/handshake.spthy) `Status of proofs` block. One residual wellformedness warning (Message Derivation Checks on peer-controlled variables) carried forward to the cryptographer review.
 - [ ] Review by external cryptographer (P3.2).
 
 ---
@@ -694,7 +704,7 @@ Add `.github/dependabot.yml`:
 
 ## P5.1 — Define `TeeBackend` trait in `omni-tee`
 
-- **Status:** `[ ]`
+- **Status:** `[~]` (scaffold landed + verified 2026-05-12 — `TeeBackend` trait + `TeeFamily` + `TeeError` taxonomy + `Quote` / `Measurement` / `Nonce` / `SealedBlob` / `SealPolicy` / `TeeSharedKey` + `MockTeeBackend` end-to-end at `crates/omni-tee/`. 23 unit + 4 integration tests. Full `[x]` after the API is consumed by `omni-mesh` per P3 closure.)
 - **Priority:** P5
 - **Effort:** 3 days
 - **Dependencies:** P1.1, P1.2
@@ -755,16 +765,130 @@ Re-export `TeeBackend` and provide a runtime selector (`select_tee_backend()`) t
 
 This tier is intentionally low-detail in the TODO — it is the scope of an entire phase of the roadmap, with multiple OIPs governing its sub-decisions. The high-level breakdown:
 
-- [ ] **P6.1 — Convert `omni-kernel` to `no_std` + `no_main`**
-- [ ] **P6.2 — UEFI bootloader (decision: Limine vs Tock vs custom)**
-- [ ] **P6.3 — Page table management, virtual memory subsystem**
-- [ ] **P6.4 — Scheduler (thermal-aware, AI-workload-aware)**
-- [ ] **P6.5 — Capability-based syscall dispatch**
-- [ ] **P6.6 — Typed message-passing IPC**
+- [~] **P6.1 — Convert `omni-kernel` to `no_std` + `no_main`** (scaffold landed + verified 2026-05-12: `bare-metal` feature flag flips `no_std + no_main` only when `not(test)`; **`OIP-Kernel-004` filed `Draft` 2026-05-12** at [`oips/oip-kernel-004.md`](oips/oip-kernel-004.md) defining the panic handler + bump global allocator + heap region provisioning per gate K3 of `OIP-Kernel-003` § 3; full `[x]` requires the OIP `Active` + the QEMU smoke test at K5 per `OIP-Kernel-003`)
+- [~] **P6.2 — UEFI bootloader (decision: Limine vs Tock vs custom)** (decision drafted in `OIP-Kernel-003` (`Draft`): `bootloader` crate v0.11+ over Limine; full `[x]` when the OIP transitions to `Active` and the `kernel-runner/` crate boots under QEMU)
+- [~] **P6.3 — Page table management, virtual memory subsystem** (trait skeletons landed + verified 2026-05-12 in `crates/omni-kernel/src/memory.rs`: `PhysAddr` / `VirtAddr` / `PageSize` / `PageFlags` + `Allocator` + `PageTable` traits, in-crate `bitflags_simple!` macro. Full `[x]` requires the arch-specific `x86_64` walker.)
+- [~] **P6.4 — Scheduler (thermal-aware, AI-workload-aware)** (trait skeleton landed + verified 2026-05-12 in `crates/omni-kernel/src/scheduling.rs`: `TaskId` + `PriorityClass::AiInference` + `TaskState` + `Scheduler` trait. Full `[x]` requires the actual scheduler impl + thermal model.)
+- [~] **P6.5 — Capability-based syscall dispatch** (stable numeric ABI landed + verified 2026-05-12 in `crates/omni-kernel/src/syscall.rs` (mem 1-9, task 10-19, ipc 20-29, cap 30-39, tee 40-49, time 50+) + `SyscallDispatcher` trait + `KernelCapabilityId` bridge in `capabilities.rs`. Full `[x]` requires the actual dispatcher impl in arch-specific entry code.)
+- [~] **P6.6 — Typed message-passing IPC** (trait skeleton landed + verified 2026-05-12 in `crates/omni-kernel/src/ipc.rs`: `ChannelId` / `MessageKind` / `BackpressurePolicy` / `ChannelPolicy.tee_bound` / `MessageEnvelope` / `Ipc` trait. Full `[x]` requires the in-kernel queue + capability check impl.)
 - [ ] **P6.7 — Userspace driver model (NVMe, Ethernet/Wi-Fi, TEE)**
 - [ ] **P6.8 — First external security audit of kernel + capability system (per roadmap Phase 1 deliverables)**
 
 Each of P6.1–P6.8 will be expanded into its own task list when its corresponding OIP is filed.
+
+---
+
+# P7 — Workspace serialization migration (`bincode` v2 → `postcard`)
+
+**Goal:** resolve `RUSTSEC-2025-0141` (`bincode` v2 unmaintained) by migrating the workspace serialization layer to `postcard` 1.x, bumping the wire-protocol from `OMNI-PROTO-v0.1` to `OMNI-PROTO-v0.2`.
+**Blocker for:** clean `cargo audit` and `cargo deny` runs on `main` and on every PR.
+**Tracking OIP:** [`OIP-Serde-004`](oips/oip-serde-004.md) (`Last Call` since 2026-05-12; 14-day public-objection window closes 2026-05-26).
+**Estimated effort:** 1–2 weeks (per the 5-step migration plan in `OIP-Serde-004` § S5).
+
+---
+
+## P7.1 — `OIP-Serde-004` Last Call closure
+
+- **Status:** `[~]` (`Draft → Review → Last Call` all on 2026-05-12; 14-day public-objection window closes 2026-05-26)
+- **Priority:** P7 / High
+- **Effort:** 14-day Last Call window per `OIP-Process-001` § 5.3 + cryptographer review pass on the canonical-encoding contract (§ S2).
+- **Dependencies:** none for advancement to `Review` or `Last Call`; cryptographer engagement (P3.2) for advancement to `Active` is recommended but not procedurally required.
+- **Rationale:** the OIP needs to be `Active` for the migration evidence in M1–M5 to be ratified under the Standards-Track activation process.
+
+**Acceptance:** OIP transitions `Draft → Review → Last Call → Active`. `Draft → Review` 2026-05-12 (commit `be4a920`); `Review → Last Call` 2026-05-12 (this commit). `Last Call → Active` triggers on 2026-05-26 (or earlier if ≥30% weighted vote is reached, per `OIP-Process-001` § 5.3).
+
+---
+
+## P7.2 — Migration steps M1–M5
+
+- **Status:** `[~]` — M1–M5 all landed locally 2026-05-12 on branch `feat/p1-foundational-crates`. `OIP-Serde-004` remains in `Review` pending the `Review → Last Call → Active` transition; full `[x]` requires `audit.yml` cron green for 7 calendar days post-merge per the OIP's `Final` criterion.
+- **Priority:** P7 / High
+- **Effort:** ~1 week of focused work; each step is its own commit per `OIP-Serde-004` § S5.
+- **Dependencies:** P7.1 `Active`.
+
+**Sub-tasks:**
+
+- [x] **P7.2.M1** — Workspace dep swap in `Cargo.toml`. Verified `cargo build --workspace --all-features` clean (commit `b8de469`).
+- [x] **P7.2.M2** — `omni-types::wire` canonical-encoding helper module + clippy `disallowed-methods` on raw `postcard::*` calls outside the helper. Verified `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean (commit `9b3d977`).
+- [x] **P7.2.M3** — `omni-capability` `CapabilityToken` migration; 4 new round-trip regression tests pin postcard-canonical-encoding properties at the public-API boundary. 47 unit + 7 integration tests green (commit `b451539`).
+- [x] **P7.2.M4** — `omni-tee` round-trip tests + `omni-types::ProtocolVersion::V0_2` constant. Five new wire-format tests on `Quote` and `SealedBlob` + two version-compatibility tests (commit `61a2b02`).
+- [x] **P7.2.M5** — `crates/omni-capability/tests/wire_format_v0_2.rs` reference vector (`TokenPayload` byte prefix pinned at 49 bytes) + `crates/omni-tee/tests/wire_format_v0_2.rs` adversarial suite (4 tests covering bit-flip-on-covered-fields, prefix-truncation, trailing-byte-extension, swap-with-unrelated). `cargo audit` exit 0 (RUSTSEC-2025-0141 absent — `cargo tree --invert bincode` returns "did not match any packages"); `cargo deny check advisories` ok. (`bans` + `licenses` fail with **pre-existing** issues unrelated to OIP-Serde-004: `cpufeatures` 0.2/0.3 duplicate and `Unicode-DFS-2016` license — separate cleanup work.)
+
+**Acceptance:** all workspace tests + 2 new test files green; `bincode` removed from `Cargo.lock` (`cargo tree --invert bincode` empty); `OIP-Serde-004` transitions to `Final` after 7 calendar days of clean `audit.yml` cron runs.
+
+---
+
+## P7.3 — `OMNI-PROTO-v0.2` documentation update
+
+- **Status:** `[ ]` blocked on P7.2
+- **Priority:** P7
+- **Effort:** 1 day
+- **Dependencies:** P7.2.M5
+- **Rationale:** `docs/protocol/handshake.md` § 3.2 currently negotiates only `OMNI-PROTO-v0.1`. After P7.2.M5, the handshake spec must reflect the v0.2 cutover (`serde_format = "postcard-1.0"` discriminant; v0.1 negotiation removed).
+
+---
+
+# P8 — OIP-Container-006 reference implementation
+
+**Tracking OIP:** [`OIP-Container-006`](oips/oip-container-006.md) (`Draft` filed 2026-05-12).
+
+P8 turns the OmniContainer specification into the canonical Rust implementation under `crates/omni-container/`. Each milestone closes one of the OIP's subsystems and is a candidate for its own follow-up OIP if the subsystem's design surface raises significant questions during implementation.
+
+## P8.1 — `crates/omni-container/` skeleton (closed 2026-05-12)
+
+- **Status:** `[x]` closed 2026-05-12 (commit `31455a6`, on `feat/p1-foundational-crates`).
+- **Priority:** P8
+- **Effort:** done (~ 1 day implementer time)
+- **Acceptance criteria:**
+  - [x] Crate compiles clean under `cargo check --workspace --all-features`.
+  - [x] Public trait surface (`ContainerEngine`, `ContainerLifecycleState`, `CapabilityProfile`, `OciImageRef`, `ContainerError`) exposed at the crate root.
+  - [x] Every operational method returns `ContainerError::NotYetImplemented(<static slug>)`.
+  - [x] Feature flags `kvm` (default), `tdx`, `sev-snp`, `all-backends` per OIP-Container-006 § 10.
+  - [x] ≥ 15 unit tests + ≥ 1 integration test green (delivered 47 unit + 5 integration).
+  - [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean.
+  - [x] `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --all-features` clean.
+  - [x] `cargo fmt --all -- --check` clean.
+
+## P8.2 — KVM hypervisor backend implementation
+
+- **Status:** `[ ]` blocked on a follow-up OIP (`OIP-Container-Engine-XXX`) that locks in the `kvm-ioctls` API surface, the vCPU thread model, the run-loop placement (tokio vs. dedicated thread), and the guest-kernel boot path.
+- **Priority:** P8
+- **Effort:** 4-6 engineer-months estimated per OIP-Container-006 § 10.
+- **Dependencies:** P8.1 (this); a future `OIP-Container-Engine-XXX`.
+
+## P8.3 — Guest Linux image build pipeline
+
+- **Status:** `[ ]` blocked on a Stichting OMNI signing key (P4.1 derivative) and on the reproducible-build setup in the separate `omni-guest-linux` repo (does not exist yet).
+- **Priority:** P8
+- **Effort:** 3-4 engineer-months estimated.
+- **Dependencies:** P4.1 (Stichting key custody); a future `OIP-Container-GuestImage-XXX`.
+
+## P8.4 — Virtio host-side backends
+
+- **Status:** `[ ]` per-backend, blocked on its own follow-up OIP: `OIP-Container-Networking-XXX` (virtio-net), `OIP-Container-Storage-XXX` (virtio-fs), TBD for virtio-gpu / virtio-vsock / virtio-rng.
+- **Priority:** P8
+- **Effort:** 5-6 engineer-months total estimated per OIP-Container-006 § 10.
+- **Dependencies:** P8.2 (KVM engine), the per-backend OIPs.
+
+## P8.5 — TDX + SEV-SNP confidential-VM modes
+
+- **Status:** `[ ]` blocked on P5.2 / P5.3 (host TEE backends in `omni-tee`) reaching parity and on a Standards-Track OIP that locks in the per-container quote envelope shape.
+- **Priority:** P8
+- **Effort:** 2-3 engineer-months estimated.
+
+## P8.6 — Wine integration image (`omni/linux-wine:N-stable`)
+
+- **Status:** `[ ]` blocked on P8.3 (guest image pipeline).
+- **Priority:** P8
+- **Effort:** 1-2 engineer-months estimated.
+- **Dependencies:** P8.3; tracking community ProtonDB compatibility reports.
+
+## P8.7 — `cyDock-omni` fork retargeting
+
+- **Status:** `[ ]` blocked on P8.2 + P8.4 reaching a stable REST API surface for the management plane.
+- **Priority:** P8
+- **Effort:** 3-4 engineer-months estimated per OIP-Container-006 "cyDock Evolution Path".
+- **Dependencies:** P8.2, P8.4, plus a green light from the existing cyDock maintainer.
 
 ---
 
@@ -776,11 +900,26 @@ Decisions resolved during P0 closure:
 2. ~~**P0 vs P1 ordering**~~ — **Resolved 2026-05-09:** *P0 first*. Closed before any code in foundational crates lands.
 3. ~~**Phase 0 non-technical work (P4)**~~ — **Resolved 2026-05-09:** *Out of scope* for current implementer engagement; P4 remains in this document but execution is on the founder's calendar (notary, KVK, grants).
 
+Decisions resolved during P2 closure (2026-05-10):
+
+4. ~~**OIP-Process-001 authorship (P2.1)**~~ — **Resolved 2026-05-10:** *Claude drafts, founder reviews* (Implementer mode preserved from §1 above). OIP shipped under bootstrap fiat clause §6.3.
+5. ~~**P1 vs P2 ordering**~~ — **Resolved de facto 2026-05-10:** P1 closed first; P2 followed within the same day. Sequence preserved but cycle time short enough that the "federated review of `omni-crypto`" benefit was not lost — `omni-crypto` carries an explicit `AWAITING_CRYPTO_REVIEW` marker (P3.2) and any breaking change to its API will now go through the formal OIP process.
+6. ~~**BDFL veto window start date (P2.3)**~~ — **Resolved 2026-05-10:** *2026-05-09* (first public commit, GitHub-verified). Maximally constraining on the founder, certain today, independently verifiable. Sunset 2031-05-09 23:59 UTC, immutable.
+7. ~~**OIP editor body composition during Bootstrap (P2.1)**~~ — **Resolved 2026-05-10:** *1 interim editor (founder), Seat 2 vacant until Phase 1 hire OR 2027-05-10 (hard deadline)*. Codified in `OIP-Process-001` §6.2.
+
+Resolved during P2 review (2026-05-10, post-publication founder editorial review):
+
+10. ~~**First non-`Meta` OIP to dogfood the formal vote**~~ — **Resolved 2026-05-10:** *`OIP-bounty-XXX`* (slug `bounty`, Process track; global number assigned at Last Call). Self-contained, sblocca grant narrative, ~1 settimana di drafting, primo Last Call reale. Subsequent order: `OIP-voting-XXX` (refines §5.2 bootstrap defaults), then `OIP-stark-snark-XXX` (after P3.2 cryptographer review unblocks). Drafting non avviato — gating su decisione del founder se partire ora o pre-allineare prima sui parametri chiave (severity tiers, payout ranges, eligibility filters).
+11. ~~**OIP-Process-001 critical-security gap during Bootstrap**~~ — **Resolved 2026-05-10:** founder review surfaced the gap; addressed via OIP-Process-001 §6.5 amendment under bootstrap fiat. Bootstrap deadlock on `Critical` Standards Track OIPs is now bounded by 72h objection window + mandatory post-Bootstrap re-ratification.
+12. ~~**OIP-Process-001 voting formula generational unfitness**~~ — **Resolved 2026-05-10:** founder review surfaced the saturation issue; addressed via §5.2 "Known limitations" amendment with soft 2028-05-10 deadline for the `voting`-slug Process OIP.
+13. ~~**OIP-Process-001 author-identity privacy posture**~~ — **Resolved 2026-05-10:** founder review surfaced the GDPR/privacy-first inconsistency; addressed via `## Privacy Considerations` refinement + `oips/oip-template.md` HTML guidance.
+
 Still open:
 
-4. **OIP-Process-001 authorship (P2.1)** — Claude drafts based on `/docs/05-governance.md` and the architecture memory, founder reviews, OR founder drafts and Claude reviews? *(Decision needed before P2 starts.)*
-5. **P1 vs P2 ordering** — Should P1 (`omni-types` → `omni-crypto` → `omni-capability`) start now, or close P2 (OIP process + `/oips/` directory) first to enable federated review of the cryptographic API as it lands? *(Recommendation: P2.1 first — 3 days of work — so P1.2 lands under formal OIP process. Founder confirmation requested.)*
-6. **Repo visibility long-term** — flipped to **PUBLIC** on 2026-05-09 because branch protection on the GitHub free plan requires it and AGPL-3.0 is consistent with public hosting. Confirm this remains the steady state, or signal a temporary embargo for any pre-disclosure phase.
+8. **Repo visibility long-term** — flipped to **PUBLIC** on 2026-05-09 because branch protection on the GitHub free plan requires it and AGPL-3.0 is consistent with public hosting. Confirm this remains the steady state, or signal a temporary embargo for any pre-disclosure phase.
+9. **Branch-protection update for `oip-lint`** — `OIP-Process-001` §9 ¶2 mandates that branch protection on `main` add `oip-lint / oip-lint` as a required status check within 7 calendar days of the OIP transitioning to `Active`. Concrete action: re-run `scripts/bootstrap-github.sh` (or equivalent `gh` CLI invocation) before 2026-05-17 to extend the required-check list from 8 to 9. *(Founder-side action — requires GitHub admin token.)*
+15. **Last Call closing actions for `OIP-Bounty-002` and `OIP-Serde-004` (window closes 2026-05-26)** — Both OIPs entered `Last Call` on 2026-05-12 under `OIP-Process-001` § 4. Under § 5.3 each transitions `Last Call → Active` automatically at the end of the 14-day window unless ≥ 30% weighted vote is reached earlier (in which case the editors close the window at that point) **or** a blocking good-faith objection is filed (in which case the OIP returns to `Review`). Concrete actions for the editor body on or before **2026-05-26**: (a) confirm no blocking objection has been filed on the linked GitHub Discussion thread; (b) merge a single PR per OIP transitioning the frontmatter `status:` from `Last Call` to `Active` and updating the `updated:` field to the close date; (c) for `OIP-Bounty-002` (Process track), no activation phase applies, the OIP is effectively `Final` at `Active`; (d) for `OIP-Serde-004` (Standards Track), the activation phase per § 7 is dormant until Phase 4+ mesh telemetry exists — the OIP remains in `Active` indefinitely; (e) append a row to `oip-editors-report-YYYY-Q2.md` recording the tally (or its absence) and the editorial decision. **No founder-side or hardware-side gate; pure editorial action.**
+14. ~~**`OIP-bounty-002` drafting kickoff**~~ — **In progress 2026-05-10:** `Draft` filed at [`oips/oip-bounty-002.md`](oips/oip-bounty-002.md) (~31KB, 10 sezioni canoniche, lint green). Defaults applicati senza pre-allineamento ulteriore (founder ha confermato "procedi"): severity tiers riusati da `SECURITY.md` §4 (CVSS v4.0); payout ranges Critical €5K–€50K / High €1K–€10K / Medium €250–€2.5K / Low €50–€500; eligibility con 6-month contributor guard + esclusione editor body / Stichting board / commit-access su `main`; disclosure timeline ancorato a `SECURITY.md` §3; payment mechanics con opzioni crypto privacy-preserving (Monero, BTC LN); dispute resolution a 3 livelli che termina in public arbitration; **non-monetary mode** durante Bootstrap con commitment retroattivo entro 24 mesi dall'Activation Date. Index aggiornato in `oips/README.md`; `SECURITY.md` §7 aggiornato per puntare al Draft. Prossimi passi: editorial review by founder; transition to `Review` quando il founder è pronto; questo OIP è il **dogfood test** del flusso §5 di `OIP-Process-001`.
 
 These decisions do not block strategic planning, only execution order.
 
@@ -803,7 +942,7 @@ These decisions do not block strategic planning, only execution order.
 | SSH signing key on GitHub | id 938835 (`~/.ssh/id_ed25519.pub`) |
 | Project identity | `cySalazar <cySalazar@cySalazar.com>` (Matteo's real `matteo.sala@samacyber.io` removed from the GitHub account on 2026-05-09) |
 | Bootstrap scripts | `scripts/bootstrap-local.sh` (idempotent), `scripts/bootstrap-github.sh` (idempotent) |
-| Completion report | [`P0-COMPLETION-REPORT.md`](P0-COMPLETION-REPORT.md) |
+| Completion report | [`docs/audits/p0-completion-report.md`](docs/audits/p0-completion-report.md) (moved 2026-05-10 from repo root for hygiene) |
 | Tooling docs | [`docs/11-tooling-and-ci.md`](docs/11-tooling-and-ci.md) |
 
 ---

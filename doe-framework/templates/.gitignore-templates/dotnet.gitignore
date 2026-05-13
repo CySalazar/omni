@@ -1,0 +1,116 @@
+# =============================================================================
+# D.O.E. Framework — .gitignore Template: C# / .NET
+# Generated: <YYYY-MM-DD>
+# Base: gitignore.io/api/csharp + D.O.E. security rules
+# =============================================================================
+
+# --- Secrets and credentials (NEVER commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+service-account.json
+**/secrets/
+appsettings.Development.json
+appsettings.*.local.json
+
+# --- Agent-specific files (NEVER commit) ---
+CLAUDE.md
+.cursorrules
+.cursor/
+.aider*
+copilot-*
+
+# --- OS-generated files ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# --- IDE and editor files ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# --- Temporary and generated files ---
+tmp/
+temp/
+.tmp/
+*.log
+*.bak
+*.orig
+
+# --- C# / .NET ---
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# --- User-specific files ---
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# --- NuGet ---
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nupkg
+**/packages/repositories.config
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# --- Visual Studio ---
+.vs/
+*.userprefs
+*_i.c
+*_p.c
+*_h.h
+*.ilk
+*.meta
+*.obj
+*.iobj
+*.pch
+*.pdb
+*.ipdb
+*.pgc
+*.pgd
+*.rsp
+*.sbr
+*.tlb
+*.tli
+*.tlh
+*.tmp_proj
+*_wpftmp.csproj
+*.vspscc
+*.vssscc
+.builds
+*.pidb
+*.svclog
+*.scc
+
+# --- Test results ---
+[Tt]est[Rr]esult*/
+[Dd]ebug[Pp]ublic/
+[Rr]elease[Pp]ublic/
+[Tt]est[Rr]esult*/
+*.trx
+coverage/
+*.coveragexml

@@ -1,6 +1,18 @@
 # Funding Policy
 
-**Status:** Draft v0.1
+**Status:** Draft v0.2
+
+> **Changelog**
+> - **v0.2 (2026-05-10):** cross-referenced Stichting OMNI bylaws Article 3
+>   (Mission Anchor, immutable) and Article 9.1 (30% diversification rule);
+>   added explicit links to operational materials (`docs/funding/`,
+>   `docs/funding/sponsor-tier-menu.md`, `docs/funding/grant-applications/`);
+>   tightened the Borderline-Sources subsection with a recorded preliminary
+>   founder view on NLnet (final board decision deferred to first board
+>   meeting post-Stichting constitution).
+> - **v0.1 (initial):** principles, excluded sources, accepted tiers, dual
+>   licensing, allocation, transparency commitments, donor relationships,
+>   conflict-of-interest, emergency procedures.
 
 ## Principles
 
@@ -12,6 +24,8 @@ OMNI OS funding must satisfy four principles:
 4. **Diversified**: no single source > 30% of operating budget after year 2.
 
 These principles narrow available funding paths significantly. The trade-off is intentional: it is mission-coherent and reduces the risk of capture by funders, even at the cost of slower growth.
+
+**Bylaws anchor.** Principles 1–3 are reflected in **Stichting OMNI bylaws Article 3 (Mission Anchor)** — explicitly **immutable** for the lifetime of the Foundation (modification requires unanimous board + 80% OIP supermajority + 6-month public notice). Principle 4 (diversification) is anchored in **Article 9.1**. A breach of any of these principles by the board is a stop-condition triggering public review.
 
 ## Excluded sources
 
@@ -36,6 +50,8 @@ Sources where the principle of independence may or may not be violated, dependin
 
 Borderline decisions are documented publicly with rationale.
 
+**Preliminary founder view on NLnet (recorded 2026-05-10, non-binding on future board):** the founder's view is that NLnet's track record of operational independence (project selection, no political interference, no IP claims) meets the Principle-2 bar despite the EU-NGI upstream relationship. The first board, once constituted, makes the final call per the procedure above. The first NLnet application is drafted ([`/docs/funding/grant-applications/nlnet-draft.md`](funding/grant-applications/nlnet-draft.md)) and held pending Stichting constitution + board ratification.
+
 ## Accepted sources
 
 ### Tier 1 — Mission-aligned private nonprofits
@@ -57,6 +73,8 @@ Companies with values aligned to the OMNI OS mission and without regulatory powe
 - **Aligned ecosystem players** (case-by-case): companies whose business model does not conflict with OMNI OS goals.
 
 Excluded: FAANG, telcos, banks, cloud hyperscalers, advertising networks. Their participation as customers (commercial license buyers) is allowed; their participation as funders is not.
+
+**Operational menu.** See [`docs/funding/sponsor-tier-menu.md`](funding/sponsor-tier-menu.md) for the public Bronze / Silver / Gold / Platinum tiers, annual amounts, what sponsors get (and what they explicitly do NOT get), and the application process.
 
 ### Tier 3 — Community
 
