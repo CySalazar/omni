@@ -42,9 +42,25 @@ default     = []
 bare-metal  = []
 
 [dependencies]
-omni-types      = { workspace = true }
-omni-capability = { workspace = true }
-omni-tee        = { workspace = true }
+# `omni-types` is the only first-party dep K3 needs: `bare_metal::panic`
+# encodes its `PanicRecord` via `omni_types::wire::encode_into_slice`.
+# Future modules (capabilities, IPC, syscall dispatch) will reintroduce
+# `omni-capability` and `omni-tee` as deps once they consume those
+# crates' types — at present the kernel's internal traits/types are
+# self-contained and pulling those deps only inflates the compile
+# closure (and breaks the bare-metal cross-build because their
+# transitive `getrandom`/`cmov` chain has no `x86_64-unknown-none`
+# implementation).
+# Bare-metal kernel cannot use `workspace = true` for omni-types
+# because `id-generation` (default-enabled) pulls `uuid` + `getrandom`,
+# neither of which build on `x86_64-unknown-none`. Pin path + version
+# directly with `default-features = false` to opt out cleanly.
+omni-types      = { path = "../omni-types", version = "0.1.0", default-features = false }
+# `serde` is required by `bare_metal::panic::PanicRecord` (derive
+# Serialize). The workspace pins `default-features = false` + `derive`
+# + `alloc`, so the kernel pulls `serde` without `std`. OIP-Kernel-012
+# § S1.
+serde           = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
