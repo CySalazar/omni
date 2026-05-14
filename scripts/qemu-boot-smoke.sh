@@ -60,6 +60,7 @@ for arg in "$@"; do
 done
 
 IMAGE_PATH="${REPO_ROOT}/kernel-runner/target/x86_64-unknown-none/${PROFILE_DIR}/bootimage-kernel-runner.bin"
+KERNEL_ELF_PATH="${REPO_ROOT}/kernel-runner/target/x86_64-unknown-none/${PROFILE_DIR}/kernel-runner"
 
 # ---------------------------------------------------------------------------
 # Banner sequence — must match `kernel_entry` (kernel-runner/src/main.rs)
@@ -110,6 +111,26 @@ build_image() {
         fail "bootimage build did not produce ${IMAGE_PATH}"
     fi
     log "image: ${IMAGE_PATH}"
+    # Verify the kernel ELF is ET_EXEC (type 2). bootloader 0.9 panics if
+    # it receives ET_DYN (type 3). Fail early with a clear message here
+    # rather than letting QEMU timeout with no serial output.
+    if [[ -f "${KERNEL_ELF_PATH}" ]]; then
+        local elf_type
+        elf_type=$(python3 -c "
+import struct, sys
+data = open('${KERNEL_ELF_PATH}', 'rb').read()
+if data[:4] != b'\x7fELF':
+    print('NOT_ELF'); sys.exit(1)
+t = struct.unpack_from('<H', data, 16)[0]
+print('ET_EXEC' if t == 2 else 'ET_DYN' if t == 3 else str(t))
+" 2>/dev/null || echo "UNKNOWN")
+        log "kernel ELF type: ${elf_type}"
+        if [[ "${elf_type}" != "ET_EXEC" ]]; then
+            log "ERROR: kernel is ${elf_type} — bootloader 0.9 requires ET_EXEC."
+            log "Check kernel-runner/.cargo/config.toml and kernel-runner/build.rs."
+            fail "kernel ELF type is not ET_EXEC (got: ${elf_type})"
+        fi
+    fi
 }
 
 run_qemu_and_capture() {
