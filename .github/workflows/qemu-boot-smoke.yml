@@ -75,10 +75,20 @@ jobs:
       - name: Install bootimage CLI
         run: cargo install bootimage --version "^0.10"
 
+      # `bootloader = "0.9"` (bootimage's bootloader stage) uses a custom
+      # JSON target (`x86_64-bootloader.json`) that has no pre-compiled
+      # `core`, so bootimage passes `-Z build-std=core` internally when it
+      # builds that stage. That flag requires nightly cargo. The kernel
+      # itself and kernel-runner still compile on stable 1.85; nightly is
+      # needed only for the disk-image packaging step.
+      - name: Install nightly toolchain for bootimage disk-image step
+        run: rustup toolchain install nightly --target x86_64-unknown-none --no-self-update
+
       - name: Run smoke test
         run: bash scripts/qemu-boot-smoke.sh --release
         env:
           SMOKE_TIMEOUT_SECS: "60"
+          OMNI_BOOTIMAGE_BIN: "cargo +nightly bootimage"
 
       - name: Upload boot artifact
         if: always()

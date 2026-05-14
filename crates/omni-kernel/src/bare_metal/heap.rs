@@ -294,7 +294,10 @@ pub fn pick_region(regions: &[bootloader::bootinfo::MemoryRegion]) -> (*mut u8, 
         if region.region_type != MemoryRegionType::Usable {
             continue;
         }
-        let length = region.range.end_addr().saturating_sub(region.range.start_addr());
+        let length = region
+            .range
+            .end_addr()
+            .saturating_sub(region.range.start_addr());
         // x86_64 is 64-bit; `u64 → usize` is lossless on the kernel
         // target. The cast lint also fires on 32-bit hosts during
         // host tests, where the actual u64 values are bounded to

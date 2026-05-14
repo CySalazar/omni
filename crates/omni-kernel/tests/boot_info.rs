@@ -76,11 +76,7 @@ fn skips_regions_below_min_heap_bytes() {
 fn skips_non_usable_regions() {
     let regions = [
         region(0x0010_0000, 0x0100_0000, MemoryRegionType::Bootloader),
-        region(
-            0x0200_0000,
-            0x0100_0000,
-            MemoryRegionType::UnknownUefi(0x1234),
-        ),
+        region(0x0200_0000, 0x0100_0000, MemoryRegionType::Reserved),
         region(0x0300_0000, 0x0080_0000, MemoryRegionType::Usable), // 8 MiB <- only Usable
     ];
     let (ptr, _) = pick_region(&regions);
