@@ -48,6 +48,15 @@ members = [
 # minimal.
 exclude = [
     "crates/omni-crypto/fuzz",
+    # `kernel-runner` is the bootable artifact (OIP-Kernel-005 § S1):
+    # a bare-metal bin that compiles only for `x86_64-unknown-none`.
+    # Excluding it from the default workspace matrix keeps `cargo
+    # build --workspace` green on developer machines without a
+    # cross-toolchain. CI builds it explicitly via
+    # `cargo build --manifest-path kernel-runner/Cargo.toml \
+    #              --target x86_64-unknown-none --release`
+    # See `kernel-runner/README.md` for the full build + QEMU run flow.
+    "kernel-runner",
 ]
 
 # -----------------------------------------------------------------------------

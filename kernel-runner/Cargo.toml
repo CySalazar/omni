@@ -1,0 +1,74 @@
+# =============================================================================
+# kernel-runner — OMNI OS UEFI bootloader-runner harness
+# =============================================================================
+# Specified by OIP-Kernel-005 § S1. This crate is the **bootable
+# artifact**: it consumes `omni-kernel` (built with the `bare-metal`
+# feature) as a `staticlib` and produces a UEFI-bootable disk image
+# via the `bootloader` crate's `DiskImageBuilder`.
+#
+# Excluded from the default workspace `cargo build` matrix (see the
+# root Cargo.toml `[workspace.exclude]` list) so developers without a
+# cross-toolchain still get `cargo build --workspace` green. To build
+# the runner image:
+#
+#   cargo build --manifest-path kernel-runner/Cargo.toml \
+#               --target x86_64-unknown-none --release
+#
+# Or, more conveniently, via the `Makefile.toml` `run-qemu-uefi`
+# task once the developer machine has OVMF installed.
+# =============================================================================
+
+[package]
+name             = "kernel-runner"
+description      = "OMNI OS UEFI bootloader-runner harness (consumes omni-kernel; emits *.efi)"
+version          = "0.1.0"
+edition          = "2024"
+rust-version     = "1.85"
+authors          = ["cySalazar <cySalazar@cySalazar.com>"]
+license          = "AGPL-3.0-only"
+repository       = "https://github.com/CySalazar/omni"
+homepage         = "https://omni-os.org"
+keywords         = ["operating-system", "kernel", "uefi", "bootloader"]
+categories       = ["os", "embedded"]
+publish          = false
+
+[[bin]]
+name = "kernel-runner"
+path = "src/main.rs"
+
+[dependencies]
+# `bootloader_api` (0.11) is the kernel-facing crate: it exposes
+# `BootInfo`, the `entry_point!` macro, and `BootloaderConfig`. The
+# crate is `no_std` and ships only types + the macro.
+#
+# The host-side `bootloader` build-deb (which would do image
+# generation via `UefiBoot::create_disk_image`) is INTENTIONALLY
+# absent from this Cargo.toml: as of v0.11.15 its `build.rs` invokes
+# `cargo` with `-Z bindeps` flags, which require nightly. The
+# kernel-runner build target stays on stable; image generation is
+# deferred to either:
+#
+#   (a) a separate `tools/image-builder/` crate that runs on nightly,
+#   (b) an external CLI such as `bootimage` (`cargo install bootimage`),
+#   (c) a future Limine-based bootloader if the editor body revisits
+#       OIP-Kernel-003 § 2.
+#
+# Tracked as a follow-up under OIP-Kernel-005 § S7 (build pipeline)
+# — the K4 gate per § S11 K4.e is the kernel-runner binary, not the
+# disk image; K5 picks up the image flow.
+bootloader_api = "0.11"
+omni-kernel    = { path = "../crates/omni-kernel", features = ["bare-metal"] }
+
+# The runner is its own profile: it always builds with link-time
+# optimization in release (we ship the kernel as a single ELF, then
+# `bootloader` strips and embeds it). Inheriting the workspace's
+# release profile would force LTO on the rest of the workspace too,
+# which is unnecessary host-side.
+[profile.release]
+lto             = true
+codegen-units   = 1
+panic           = "abort"
+strip           = "symbols"
+
+[profile.dev]
+panic = "abort"
