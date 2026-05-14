@@ -237,3 +237,112 @@ unsafe impl GlobalAlloc for BumpHeap {
 #[cfg(all(target_os = "none", not(test)))]
 #[global_allocator]
 pub static GLOBAL_HEAP: BumpHeap = BumpHeap::new();
+
+/// Minimum heap region size accepted by [`pick_region`].
+///
+/// Per `OIP-Kernel-005` § S5 and `OIP-Kernel-003` § 5 rationale: the
+/// long-lived kernel allocations (IPC ring buffers, task table,
+/// capability table) at the v1.0 "small-server" baseline (256
+/// channels × 64 KiB + 1024 tasks × 1 KiB + 16k capabilities × 256 B
+/// ≈ 21 MiB) need at least 4 MiB headroom. Hardware that cannot
+/// surface a 4 MiB contiguous Usable region falls back to the panic
+/// path with a clear message.
+///
+/// Changing this constant is breaking-change-equivalent at the boot
+/// ABI (hardware that boots today may not boot tomorrow) and requires
+/// an OIP that supersedes `OIP-Kernel-005`.
+pub const MIN_HEAP_BYTES: usize = 4 * 1024 * 1024;
+
+// =============================================================================
+// pick_region — bridge `bootloader_api::BootInfo::memory_regions`
+// to a contiguous heap region for `BumpHeap::init`.
+//
+// OIP-Kernel-005 § S5.
+// =============================================================================
+
+/// Select the heap region from a bootloader-supplied memory map.
+///
+/// The selection algorithm (per `OIP-Kernel-005` § S5):
+///
+/// 1. Iterate `regions` in order.
+/// 2. Filter to entries with `kind == MemoryRegionKind::Usable`.
+/// 3. Pick the **largest** filtered entry whose length is at least
+///    [`MIN_HEAP_BYTES`].
+/// 4. Tie-break on equal length by **lowest start address**
+///    (determinism across boots on the same hardware — same map →
+///    same returned region).
+/// 5. If no entry satisfies (3), panic with a clear "no usable heap
+///    region" message. The K3 panic handler emits the structured
+///    record over COM1 and halts; this is the documented "unbootable
+///    hardware" termination state.
+///
+/// Returns `(*mut u8, usize)` — the base pointer and length of the
+/// chosen region, suitable for passing directly into
+/// [`BumpHeap::init`].
+///
+/// # Panics
+///
+/// Panics if no Usable contiguous region of at least [`MIN_HEAP_BYTES`]
+/// exists in `regions`.
+#[cfg(feature = "bare-metal")]
+#[must_use]
+pub fn pick_region(regions: &[bootloader_api::info::MemoryRegion]) -> (*mut u8, usize) {
+    use bootloader_api::info::MemoryRegionKind;
+
+    let mut best: Option<(u64, u64)> = None; // (start, length)
+    for region in regions {
+        if region.kind != MemoryRegionKind::Usable {
+            continue;
+        }
+        let length = region.end.saturating_sub(region.start);
+        // x86_64 is 64-bit; `u64 → usize` is lossless on the kernel
+        // target. The cast lint also fires on 32-bit hosts during
+        // host tests, where the actual u64 values are bounded to
+        // synthetic test fixtures (well under usize::MAX).
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "u64 → usize is lossless on x86_64; bounded on test hosts"
+        )]
+        let length_us = length as usize;
+        if length_us < MIN_HEAP_BYTES {
+            continue;
+        }
+        match best {
+            None => best = Some((region.start, length)),
+            Some((cur_start, cur_len)) => {
+                if length > cur_len || (length == cur_len && region.start < cur_start) {
+                    best = Some((region.start, length));
+                }
+            }
+        }
+    }
+
+    match best {
+        Some((start, length)) => {
+            // Same `u64 → usize` lossless cast as above; the start
+            // address fits in a pointer because the bootloader's
+            // memory map already ranges over the host's address
+            // space.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "u64 → usize is lossless on x86_64; bounded on test hosts"
+            )]
+            let length_us = length as usize;
+            (start as *mut u8, length_us)
+        }
+        None => {
+            #[allow(
+                clippy::panic,
+                reason = "documented \"unbootable hardware\" termination state per OIP-Kernel-005 § S5"
+            )]
+            {
+                panic!("no usable heap region of \u{2265} 4 MiB found in BootInfo memory map");
+            }
+        }
+    }
+}
+
+// Host-mode tests can exercise `pick_region`'s logic by importing the
+// `bootloader_api` types directly (it is `no_std`). The integration
+// test at `tests/boot_info.rs` covers tie-breaking, smallest-rejection,
+// and the panic-on-empty case.

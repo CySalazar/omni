@@ -7,12 +7,19 @@
 # Rust build artifacts
 # -----------------------------------------------------------------------------
 /target/
+# Workspace-excluded crates have their own `target/` directory. Enumerate
+# them explicitly so a future workspace-excluded crate must add itself
+# here — the wildcard `**/target/` would also catch unrelated paths.
+/kernel-runner/target/
 **/*.rs.bk
 *.pdb
 
 # Cargo.lock policy:
 # - We DO commit Cargo.lock for the workspace (binary project)
 # - Library crates published independently may need different rules
+# - Workspace-excluded binary crates (kernel-runner) ALSO commit their
+#   own Cargo.lock for reproducibility of the boot artifact per
+#   OIP-Kernel-005 § S9.
 # Cargo.lock
 
 # -----------------------------------------------------------------------------

@@ -37,10 +37,6 @@ workspace = true
 # normal Rust library so the workspace stays buildable end-to-end on
 # developer machines without a TDX-capable target.
 # -----------------------------------------------------------------------------
-[features]
-default     = []
-bare-metal  = []
-
 [dependencies]
 # `omni-types` is the only first-party dep K3 needs: `bare_metal::panic`
 # encodes its `PanicRecord` via `omni_types::wire::encode_into_slice`.
@@ -61,6 +57,22 @@ omni-types      = { path = "../omni-types", version = "0.1.0", default-features 
 # + `alloc`, so the kernel pulls `serde` without `std`. OIP-Kernel-012
 # § S1.
 serde           = { workspace = true }
+# `bootloader_api` (0.11) provides the `BootInfo` types consumed by
+# `bare_metal::heap::pick_region` and by `kmain`. The crate is `no_std`
+# and ships only types + the `entry_point!` macro; the heavy lifting
+# lives in the host-side `bootloader` build-deb of `kernel-runner`. We
+# gate it under `bare-metal` so default `cargo build -p omni-kernel`
+# (host, no bare-metal feature) does not pull it in. OIP-Kernel-005
+# § S3 / § S4.
+bootloader_api  = { version = "0.11", optional = true }
+
+[features]
+default     = []
+# `bare-metal` switches the crate to `no_std + no_main` (gated in
+# `lib.rs`) and enables the `bare_metal` module + its
+# `bootloader_api`-dependent surface (`kmain`, `pick_region`).
+# OIP-Kernel-012 § S5 K3.a; OIP-Kernel-005 § S3 K4.b.
+bare-metal  = ["dep:bootloader_api"]
 
 [dev-dependencies]
 proptest = { workspace = true }
