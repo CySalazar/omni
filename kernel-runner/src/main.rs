@@ -43,6 +43,11 @@ fn kernel_entry(boot_info: &'static BootInfo) -> ! {
     // can emit a single byte of diagnostics.
     omni_kernel::bare_metal::arch::interrupts::disable();
 
+    // Initialise the 16550 UART on COM1 to a known-good state before
+    // any serial writes. The bootloader firmware may leave DLAB set or
+    // the FIFO in an unknown state; this resets it to 8N1 / 115200.
+    omni_kernel::bare_metal::early_console::init();
+
     // Step 1 — early console. No allocation required (the kernel
     // heap is not yet initialised). Spin on the UART line-status
     // register; byte-by-byte writes only.

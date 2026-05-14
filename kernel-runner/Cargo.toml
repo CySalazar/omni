@@ -37,14 +37,13 @@ name = "kernel-runner"
 path = "src/main.rs"
 
 [dependencies]
-# `bootloader` 0.9 is the stable-Rust-compatible BIOS/UEFI bootloader
-# crate. It provides `BootInfo`, the `entry_point!` macro, and the
-# `cargo bootimage` toolchain integration used by the K5 QEMU smoke
-# test. The `map_physical_memory` feature instructs the loader to
-# identity-map all physical RAM and report the virtual offset in
-# `BootInfo.physical_memory_offset` (used by the K6+ page-table
-# walker). OIP-Kernel-005 § S3 / § S4.
-bootloader  = { version = "0.9", features = ["map_physical_memory"] }
+# `bootloader` 0.9 is the stable-Rust-compatible BIOS bootloader crate.
+# It provides `BootInfo`, the `entry_point!` macro, and the `cargo
+# bootimage` toolchain integration used by the K5 QEMU smoke test. K4
+# scope does not use `physical_memory_offset` so the `map_physical_memory`
+# feature is omitted; it will be re-enabled under OIP-Kernel-006 when
+# the K6+ page-table walker lands. OIP-Kernel-005 § S3 / § S4.
+bootloader  = { version = "0.9" }
 omni-kernel = { path = "../crates/omni-kernel", features = ["bare-metal"] }
 
 # The runner is its own profile: it always builds with link-time
