@@ -20,6 +20,7 @@
 | 09 | [Tech specifications](./09-tech-specifications.md) | Draft v0.1 | Languages, libraries, exact versions |
 | 10 | [Glossary](./10-glossary.md) | Draft v0.1 | Terminology and acronyms |
 | 11 | [Tooling & CI](./11-tooling-and-ci.md) | Draft v0.1 | Toolchain pinning, lints, CI/CD enforcement matrix |
+| 12 | [Brand & visual identity](./12-brand.md) | Draft v0.1 | Pointer to the canonical brand pack in `/brand/` — naming, voice, logos, palette, typography, icons, templates, brand book PDF |
 
 ## Subdirectories
 
@@ -40,6 +41,7 @@ Related directories outside `/docs/`:
 |---|---|
 | [`/oips/`](../oips/) | OMNI Improvement Proposals. Authoritative for protocol / process decisions. |
 | [`/protocol-proofs/`](../protocol-proofs/) | Tamarin / ProVerif / TLA+ formal proof artifacts for protocol-level claims. |
+| [`/brand/`](../brand/) | OMNI / OMNI Foundation brand pack — strategy, voice, logos, palette, typography, icons, templates, brand book PDF. Authoritative for visual and verbal identity. |
 
 ## Suggested reading order
 

@@ -1,0 +1,175 @@
+/* ============================================================
+   OMNI OS — Typography tokens
+   Direction:    C — Civic Tech / Generational
+   Authoritative: brand/typography/typography.md
+   ============================================================ */
+
+/* Font-face declarations (local-first preferred — drop WOFF2 in ./fonts/) */
+@font-face {
+  font-family: 'Source Serif 4';
+  font-style: normal;
+  font-weight: 200 900;
+  font-display: swap;
+  src: local('Source Serif 4'), local('SourceSerif4-Variable'),
+       url('./fonts/SourceSerif4-VF.woff2') format('woff2-variations');
+}
+@font-face {
+  font-family: 'Source Serif 4';
+  font-style: italic;
+  font-weight: 200 900;
+  font-display: swap;
+  src: local('Source Serif 4 Italic'), local('SourceSerif4-ItalicVariable'),
+       url('./fonts/SourceSerif4-Italic-VF.woff2') format('woff2-variations');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: local('Inter'), local('Inter Variable'),
+       url('./fonts/Inter-VF.woff2') format('woff2-variations');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 300 600;
+  font-display: swap;
+  src: local('IBM Plex Mono'),
+       url('./fonts/IBMPlexMono-Variable.woff2') format('woff2-variations');
+}
+
+:root {
+  /* Family stacks */
+  --omni-font-display: 'Source Serif 4', 'Source Serif Pro', 'Georgia', 'Times New Roman', serif;
+  --omni-font-body:    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --omni-font-mono:    'IBM Plex Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', 'Roboto Mono', 'Menlo', 'Consolas', monospace;
+
+  /* Modular scale 1.250 */
+  --omni-text-xs:    0.75rem;    /* 12 px */
+  --omni-text-sm:    0.875rem;   /* 14 px */
+  --omni-text-base:  1rem;       /* 16 px */
+  --omni-text-lg:    1.25rem;    /* 20 px */
+  --omni-text-xl:    1.5625rem;  /* 25 px */
+  --omni-text-2xl:   1.953rem;   /* 31 px */
+  --omni-text-3xl:   2.441rem;   /* 39 px */
+  --omni-text-4xl:   3.052rem;   /* 49 px */
+  --omni-text-5xl:   3.815rem;   /* 61 px */
+
+  /* Line heights */
+  --omni-leading-tight:    1.15;
+  --omni-leading-snug:     1.4;
+  --omni-leading-normal:   1.55;
+  --omni-leading-relaxed:  1.6;
+
+  /* Letter spacing */
+  --omni-tracking-tight:   -0.015em;
+  --omni-tracking-normal:  0;
+  --omni-tracking-wide:    0.06em;
+  --omni-tracking-wider:   0.08em;
+  --omni-tracking-widest:  0.12em;
+
+  /* Weights */
+  --omni-weight-regular:   400;
+  --omni-weight-medium:    500;
+  --omni-weight-semibold:  600;
+  --omni-weight-bold:      700;
+}
+
+.omni-typography {
+  font-family: var(--omni-font-body);
+  font-size: var(--omni-text-base);
+  line-height: var(--omni-leading-normal);
+  font-feature-settings: "liga" on, "calt" on, "kern" on;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+.omni-typography h1,
+.omni-typography h2,
+.omni-typography h3,
+.omni-typography .display {
+  font-family: var(--omni-font-display);
+  font-weight: var(--omni-weight-bold);
+  letter-spacing: var(--omni-tracking-tight);
+  line-height: var(--omni-leading-tight);
+}
+
+.omni-typography h1 { font-size: var(--omni-text-3xl); }
+.omni-typography h2 { font-size: var(--omni-text-2xl); }
+.omni-typography h3 { font-size: var(--omni-text-xl); }
+.omni-typography h4 { font-size: var(--omni-text-lg); font-family: var(--omni-font-body); font-weight: var(--omni-weight-semibold); }
+.omni-typography h5, .omni-typography h6 { font-size: var(--omni-text-base); font-family: var(--omni-font-body); font-weight: var(--omni-weight-semibold); }
+
+.omni-typography .lede {
+  font-family: var(--omni-font-display);
+  font-size: var(--omni-text-lg);
+  line-height: var(--omni-leading-normal);
+  color: var(--omni-text-secondary);
+}
+
+.omni-typography code,
+.omni-typography pre,
+.omni-typography kbd,
+.omni-typography samp {
+  font-family: var(--omni-font-mono);
+  font-size: 0.95em;
+  font-feature-settings: "liga" off, "calt" off;
+}
+
+.omni-typography pre {
+  line-height: var(--omni-leading-relaxed);
+  padding: 1rem 1.25rem;
+  background: var(--omni-bg-code);
+  border-left: 3px solid var(--omni-border-accent);
+  overflow-x: auto;
+}
+
+/* Owned patterns */
+.omni-status {
+  font-family: var(--omni-font-mono);
+  font-size: var(--omni-text-xs);
+  font-weight: var(--omni-weight-medium);
+  letter-spacing: var(--omni-tracking-wider);
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 2px;
+  display: inline-block;
+  white-space: nowrap;
+}
+.omni-status--draft    { background: var(--omni-bg-surface-2); color: var(--omni-text-secondary); border: 1px solid var(--omni-border-default); }
+.omni-status--review   { background: var(--omni-bg-surface-2); color: var(--omni-status-info); border: 1px solid var(--omni-status-info); }
+.omni-status--active   { background: var(--omni-sage-100); color: var(--omni-sage-900); }
+.omni-status--final    { background: var(--omni-petrol-500); color: var(--omni-cream-300); }
+.omni-status--vetoed,
+.omni-status--critical { background: var(--omni-brick-500); color: var(--omni-cream-300); }
+.omni-status--withdrawn { background: var(--omni-charcoal-100); color: var(--omni-charcoal-500); text-decoration: line-through; }
+
+.omni-doc-fingerprint {
+  font-family: var(--omni-font-mono);
+  font-size: var(--omni-text-xs);
+  letter-spacing: var(--omni-tracking-wide);
+  color: var(--omni-text-tertiary);
+}
+
+.omni-pullquote {
+  font-family: var(--omni-font-display);
+  font-style: italic;
+  font-weight: var(--omni-weight-semibold);
+  font-size: var(--omni-text-2xl);
+  line-height: var(--omni-leading-snug);
+  color: var(--omni-text-accent);
+  max-width: 38em;
+  padding-left: 1rem;
+  border-left: 3px solid var(--omni-border-accent);
+  margin: 1.5rem 0;
+}
+
+.omni-label-allcaps {
+  font-family: var(--omni-font-mono);
+  font-size: var(--omni-text-xs);
+  font-weight: var(--omni-weight-medium);
+  letter-spacing: var(--omni-tracking-wider);
+  text-transform: uppercase;
+  color: var(--omni-text-secondary);
+}

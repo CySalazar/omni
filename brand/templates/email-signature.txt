@@ -1,0 +1,16 @@
+<!--
+  Plain-text companion to email-signature.html.
+  Use this in plain-text-only mail clients (mutt, neomutt, mailing-list replies).
+  Compatible with PGP-signed plain-text email.
+-->
+
+--
+cySalazar
+Lead Architect · OMNI Foundation
+
+cySalazar@cySalazar.com
+github.com/CySalazar/omni
+omni-foundation.org
+
+OMNI Foundation · Stichting OMNI · Amsterdam, NL
+Encrypted reports: github.com/CySalazar/omni/blob/main/SECURITY.md
