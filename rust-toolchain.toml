@@ -24,10 +24,12 @@ components = [
     "llvm-tools-preview", # Required by cargo-llvm-cov and similar tools.
 ]
 
-# Build targets. Initial scope: x86_64 Linux only, per
-# /docs/07-hardware-requirements.md. Apple Silicon and ARMv9 added in v1.1+.
+# Build targets. x86_64-unknown-linux-gnu for the workspace; x86_64-unknown-none
+# for the bare-metal kernel and kernel-runner crates (OIP-Kernel-012/005).
+# Apple Silicon and ARMv9 added in v1.1+.
 targets = [
     "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-none",
 ]
 
 profile = "default"
