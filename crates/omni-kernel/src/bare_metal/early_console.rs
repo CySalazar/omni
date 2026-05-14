@@ -34,7 +34,7 @@ const LSR_THR_EMPTY: u8 = 1 << 5;
 ///
 /// Must be called once, before the first [`write_str`] or [`emit`],
 /// from `kernel_entry` (after `interrupts::disable`). The sequence
-/// follows the OSDev 16550 canonical init:
+/// follows the `OSDev` 16550 canonical init:
 ///
 /// 1. Disable UART interrupts — IRQ4 must not fire before the IDT is
 ///    installed (and we already ran `interrupts::disable`, but the UART
@@ -50,7 +50,7 @@ pub fn init() {
     unsafe {
         arch::outb(COM1 + 1, 0x00); // IER: disable all UART interrupts
         arch::outb(COM1 + 3, 0x80); // LCR: set DLAB to access divisor latch
-        arch::outb(COM1 + 0, 0x01); // DLL: divisor low byte  (1 → 115200 baud)
+        arch::outb(COM1, 0x01); // DLL: divisor low byte  (1 → 115200 baud)
         arch::outb(COM1 + 1, 0x00); // DLM: divisor high byte
         arch::outb(COM1 + 3, 0x03); // LCR: 8-bit, no parity, 1 stop; clears DLAB
         arch::outb(COM1 + 2, 0xC7); // FCR: enable FIFO, clear TX+RX, 14-byte trigger
