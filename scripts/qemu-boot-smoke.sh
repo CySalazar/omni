@@ -115,46 +115,59 @@ build_image() {
 run_qemu_and_capture() {
     log "running QEMU (timeout ${SMOKE_TIMEOUT_SECS}s)..."
 
-    # Write serial output to a temp file.  This avoids the -serial stdio
-    # stdin-EOF issue (see prior commit) AND is the simplest stable path
-    # across QEMU versions.
-    local serial_log
+    local serial_log qemu_debug_log
     serial_log=$(mktemp /tmp/qemu-serial-XXXXXXXXXX)
+    qemu_debug_log=$(mktemp /tmp/qemu-debug-XXXXXXXXXX)
 
-    # `-machine accel=tcg` forces software emulation.  GitHub Actions
-    # runners on Azure sometimes expose /dev/kvm; KVM can produce
-    # different exception semantics from TCG for bare-metal payloads that
-    # do not yet have a full IDT.  TCG is slower but behaviorally identical
-    # to real hardware for BIOS-mode boot.
+    # `-d guest_errors,cpu_reset,unimp -D <logfile>` captures QEMU internal
+    # events: cpu_reset (triple faults → resets), guest_errors (illegal guest
+    # state), unimp (unimplemented device access). The log file is dumped to
+    # stderr after the run so it appears in the CI job log.
     #
-    # `-m 128M` keeps the BIOS E820 memory map small (fewer entries ⇒
-    # less bootloader page-table work) while still giving the kernel more
-    # than its 4 MiB heap minimum.
+    # `-machine pc,accel=tcg`: explicit PC (i440FX) machine + software
+    # emulation.  Avoids potential KVM edge cases with a bare-metal payload
+    # that has no full IDT yet.
     #
-    # `-boot c` tells SeaBIOS to skip PXE / floppy probing and boot from
-    # the first hard disk immediately.
+    # `-cpu qemu64`: well-known 64-bit CPU model; avoids host-CPU-feature
+    # surprises in a VM environment.
     #
-    # QEMU stderr (error messages, termination notices) is captured via
-    # 2>&1 so it appears in the assert_banner_sequence debug dump on failure.
+    # `-drive if=ide,...`: explicit IDE interface (BIOS INT 13h path).
+    #
+    # `-boot order=c,strict=on`: SeaBIOS → boot from first HDD immediately;
+    # strict=on suppresses the PXE/floppy fallback that adds latency.
+    #
+    # QEMU's stderr (termination messages) is captured alongside the debug
+    # log so failures show the full picture.
     timeout "${SMOKE_TIMEOUT_SECS}" "${QEMU_BINARY}" \
-        -drive "format=raw,file=${IMAGE_PATH}" \
+        -machine "pc,accel=tcg" \
+        -cpu "qemu64" \
+        -drive "if=ide,format=raw,file=${IMAGE_PATH}" \
         -serial "file:${serial_log}" \
-        -machine "accel=tcg" \
-        -boot c \
+        -d "guest_errors,cpu_reset,unimp" \
+        -D "${qemu_debug_log}" \
+        -boot "order=c,strict=on" \
         -display none \
         -no-reboot \
         -m 128M \
+        -smp 1 \
         2>&1 || true
 
-    # Diagnostic: echo serial log size to stderr (visible in CI log, not
-    # captured in $OUTPUT so it cannot confuse assert_banner_sequence).
+    # Diagnostic output to the CI job log (stderr — not captured in $OUTPUT).
     echo "[smoke-diag] serial log bytes: $(wc -c < "${serial_log}" 2>/dev/null || echo '?')" >&2
-    echo "[smoke-diag] serial log hex (first 64 bytes):" >&2
-    xxd "${serial_log}" 2>/dev/null | head -4 >&2 || true
+    if [[ -s "${serial_log}" ]]; then
+        echo "[smoke-diag] serial log (hex):" >&2
+        xxd "${serial_log}" >&2
+    fi
+    if [[ -s "${qemu_debug_log}" ]]; then
+        echo "[smoke-diag] QEMU debug events (guest_errors/cpu_reset/unimp):" >&2
+        cat "${qemu_debug_log}" >&2
+    else
+        echo "[smoke-diag] QEMU debug log: empty (no guest_errors / cpu_reset / unimp events)" >&2
+    fi
 
     # Emit the serial log to stdout so the caller's $() captures it.
     cat "${serial_log}"
-    rm -f "${serial_log}"
+    rm -f "${serial_log}" "${qemu_debug_log}"
 }
 
 assert_banner_sequence() {
