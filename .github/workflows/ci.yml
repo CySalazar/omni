@@ -103,6 +103,64 @@ jobs:
         run: cargo doc --workspace --no-deps --all-features
 
   # ---------------------------------------------------------------------------
+  # bare-metal-build — K3 gate of OIP-Kernel-003 § 3 (per OIP-Kernel-012).
+  # Cross-builds omni-kernel for `x86_64-unknown-none` with the
+  # `bare-metal` feature on. This is the build that fails today because
+  # the kernel lacks `#[panic_handler]` / `#[global_allocator]`; once
+  # OIP-Kernel-012 ratifies, this job stays green on every PR.
+  # ---------------------------------------------------------------------------
+  bare-metal-build:
+    name: bare-metal build (x86_64-unknown-none)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-none
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build (bare-metal)
+        run: |
+          cargo build -p omni-kernel --features bare-metal \
+            --target x86_64-unknown-none
+      - name: cargo clippy (bare-metal)
+        run: |
+          cargo clippy -p omni-kernel --features bare-metal \
+            --target x86_64-unknown-none -- -D warnings
+
+  # ---------------------------------------------------------------------------
+  # kernel-runner-build — K4 gate of OIP-Kernel-003 § 3 (per
+  # OIP-Kernel-005 § S11 K4.e). Cross-builds the bootable artifact (the
+  # `kernel-runner` bin) for `x86_64-unknown-none`. Uploads the binary as
+  # a CI artifact so K5 (QEMU smoke test) can consume it. The
+  # kernel-runner crate is workspace-excluded; cargo is invoked with
+  # --manifest-path explicitly.
+  # ---------------------------------------------------------------------------
+  kernel-runner-build:
+    name: kernel-runner build (x86_64-unknown-none)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-none
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build kernel-runner (release)
+        run: |
+          cargo build --manifest-path kernel-runner/Cargo.toml \
+            --target x86_64-unknown-none --release
+      - name: cargo clippy kernel-runner
+        run: |
+          cargo clippy --manifest-path kernel-runner/Cargo.toml \
+            --target x86_64-unknown-none -- -D warnings
+      - name: Upload kernel-runner binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-runner-x86_64-unknown-none
+          path: kernel-runner/target/x86_64-unknown-none/release/kernel-runner
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
   # tbd-guard — fail if the merge target contains TBD/TODO placeholders that
   # were intentionally allowed in P0 docs but should never reach `main` after
   # Stichting incorporation. Today, this only WARNS so we can ship the P0

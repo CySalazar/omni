@@ -159,6 +159,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bootloader_api"
+version = "0.11.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c074a3d1075b26ed77e502d6af8ab1263abbdc3d026c166e46480f973287293"
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -916,6 +922,7 @@ dependencies = [
 name = "omni-kernel"
 version = "0.1.0"
 dependencies = [
+ "bootloader_api",
  "omni-types",
  "proptest",
  "serde",
