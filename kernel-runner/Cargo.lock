@@ -3,10 +3,10 @@
 version = 4
 
 [[package]]
-name = "bootloader_api"
-version = "0.11.15"
+name = "bootloader"
+version = "0.9.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c074a3d1075b26ed77e502d6af8ab1263abbdc3d026c166e46480f973287293"
+checksum = "13f6a8a495d2f93fe3d6eb3a224f9aa749a63cfd746ed03eb5ddcbd00ade7d8f"
 
 [[package]]
 name = "cobs"
@@ -39,7 +39,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 name = "kernel-runner"
 version = "0.1.0"
 dependencies = [
- "bootloader_api",
+ "bootloader",
  "omni-kernel",
 ]
 
@@ -47,7 +47,7 @@ dependencies = [
 name = "omni-kernel"
 version = "0.1.0"
 dependencies = [
- "bootloader_api",
+ "bootloader",
  "omni-types",
  "serde",
 ]

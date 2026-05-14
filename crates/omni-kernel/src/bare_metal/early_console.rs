@@ -30,6 +30,34 @@ const LSR_OFFSET: u16 = 5;
 /// LSR bit indicating the THR is empty.
 const LSR_THR_EMPTY: u8 = 1 << 5;
 
+/// Initialise the 16550 UART on COM1 to a known-good state.
+///
+/// Must be called once, before the first [`write_str`] or [`emit`],
+/// from `kernel_entry` (after `interrupts::disable`). The sequence
+/// follows the `OSDev` 16550 canonical init:
+///
+/// 1. Disable UART interrupts — IRQ4 must not fire before the IDT is
+///    installed (and we already ran `interrupts::disable`, but the UART
+///    interrupt enable register is separate from RFLAGS.IF).
+/// 2. Set baud-rate divisor = 1 (→ 115 200 baud).
+/// 3. Set 8N1 line format, clearing DLAB so subsequent writes go to THR.
+/// 4. Enable and flush the 14-byte FIFOs.
+/// 5. Assert DTR + RTS + OUT2 (required by some multiplexers; no-op on QEMU).
+///
+/// On non-x86 hosts the underlying [`arch::outb`] is a no-op, so this
+/// function compiles and runs harmlessly in host tests.
+pub fn init() {
+    unsafe {
+        arch::outb(COM1 + 1, 0x00); // IER: disable all UART interrupts
+        arch::outb(COM1 + 3, 0x80); // LCR: set DLAB to access divisor latch
+        arch::outb(COM1, 0x01); // DLL: divisor low byte  (1 → 115200 baud)
+        arch::outb(COM1 + 1, 0x00); // DLM: divisor high byte
+        arch::outb(COM1 + 3, 0x03); // LCR: 8-bit, no parity, 1 stop; clears DLAB
+        arch::outb(COM1 + 2, 0xC7); // FCR: enable FIFO, clear TX+RX, 14-byte trigger
+        arch::outb(COM1 + 4, 0x0B); // MCR: DTR + RTS + OUT2
+    }
+}
+
 /// Emit a byte slice to COM1 in polled mode.
 ///
 /// This function blocks until every byte is delivered to the UART

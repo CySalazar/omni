@@ -17,29 +17,11 @@
 #![allow(unsafe_code)]
 #![allow(clippy::missing_docs_in_private_items)]
 
-use bootloader_api::{BootInfo, BootloaderConfig, config::Mapping, entry_point};
+use bootloader::{bootinfo::BootInfo, entry_point};
 
 mod early_console;
 
-/// Bootloader configuration handed to the loader stub via
-/// [`entry_point!`].
-///
-/// - **Physical memory mapping = Dynamic.** Identity-maps all physical
-///   memory at a runtime-chosen virtual offset reported in
-///   `BootInfo.physical_memory_offset`. Simplest model for v1.0; the
-///   K6 page-table walker uses the offset for `phys → virt`
-///   translation.
-/// - **Kernel stack = 1 MiB.** Sized to absorb the K3 1 KiB panic
-///   record + early-init recursion in K6+ subsystems. See
-///   `OIP-Kernel-005` § "Why 1 MiB initial stack" for the analysis.
-pub static BOOTLOADER_CONFIG: BootloaderConfig = {
-    let mut cfg = BootloaderConfig::new_default();
-    cfg.mappings.physical_memory = Some(Mapping::Dynamic);
-    cfg.kernel_stack_size = 1024 * 1024;
-    cfg
-};
-
-entry_point!(kernel_entry, config = &BOOTLOADER_CONFIG);
+entry_point!(kernel_entry);
 
 /// Entry point invoked by the bootloader after UEFI exit-boot-services.
 ///
@@ -54,7 +36,27 @@ entry_point!(kernel_entry, config = &BOOTLOADER_CONFIG);
 /// 3. Hand control to [`omni_kernel::kmain`], which banners and halts.
 ///
 /// The function is `-> !`: the kernel never returns.
-fn kernel_entry(boot_info: &'static mut BootInfo) -> ! {
+fn kernel_entry(boot_info: &'static BootInfo) -> ! {
+    // Debug-port probe: write 'K' to QEMU's debug console (port 0xE9)
+    // as the absolute first act — before CLI, before UART init.
+    // QEMU launched with `-debugcon stdio` routes this byte to stdout,
+    // allowing the CI log to distinguish "kernel_entry reached" from
+    // "bootloader hung before calling kernel_entry".
+    // SAFETY: port 0xE9 is QEMU's debug exit/console port; the write is
+    // harmless on real hardware (unimplemented port, silently dropped).
+    unsafe { omni_kernel::bare_metal::arch::outb(0xE9, b'K') };
+
+    // Disable maskable interrupts immediately. The bootloader may not
+    // have masked them, and without an IDT in place, any hardware IRQ
+    // (PIC timer, etc.) would triple-fault the CPU before the kernel
+    // can emit a single byte of diagnostics.
+    omni_kernel::bare_metal::arch::interrupts::disable();
+
+    // Initialise the 16550 UART on COM1 to a known-good state before
+    // any serial writes. The bootloader firmware may leave DLAB set or
+    // the FIFO in an unknown state; this resets it to 8N1 / 115200.
+    omni_kernel::bare_metal::early_console::init();
+
     // Step 1 — early console. No allocation required (the kernel
     // heap is not yet initialised). Spin on the UART line-status
     // register; byte-by-byte writes only.
@@ -64,7 +66,8 @@ fn kernel_entry(boot_info: &'static mut BootInfo) -> ! {
     // panics with a structured message if no Usable region of at least
     // `MIN_HEAP_BYTES` exists; the K3 panic handler routes that to the
     // serial console and halts.
-    let (heap_base, heap_len) = omni_kernel::bare_metal::heap::pick_region(&boot_info.memory_regions);
+    let (heap_base, heap_len) =
+        omni_kernel::bare_metal::heap::pick_region(&boot_info.memory_map);
     // SAFETY: `pick_region` returns a region tagged `Usable`,
     // contiguous, and now exclusively owned by the kernel for the
     // remainder of the boot. `init` is called exactly once per boot
