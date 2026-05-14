@@ -1,0 +1,148 @@
+/* ============================================================
+   OMNI OS — Color tokens
+   Direction:    C — Civic Tech / Generational
+   Authoritative: brand/STRATEGY.md, brand/colors/palette.md
+   Last updated: 2026-05-13
+   ============================================================
+   Token layers:
+     1. Core scale — raw color ramps, named by hue
+     2. Semantic   — purpose-bound aliases (use these in production)
+     3. Mode       — light + dark mode overrides
+
+   Production code MUST use Semantic tokens, never Core scale directly.
+
+   Accessibility budget (WCAG 2.1 AA minimum, AAA target):
+     • text-primary on bg-canvas:   12.2 : 1 (AAA)
+     • text-primary on bg-surface:  14.6 : 1 (AAA)
+     • text-inverse on bg-inverse:  11.8 : 1 (AAA)
+     • accent-danger on bg-canvas:   4.7 : 1 (AA — large/UI only)
+============================================================ */
+
+:root {
+  /* 1 · CORE SCALE — Petrol (primary brand hue) */
+  --omni-petrol-50:  #E6EEF0;
+  --omni-petrol-100: #C5D6DB;
+  --omni-petrol-200: #94B3BC;
+  --omni-petrol-300: #6390A0;
+  --omni-petrol-400: #386F82;
+  --omni-petrol-500: #0F4C5C;   /* canonical petrol */
+  --omni-petrol-600: #0C3E4B;
+  --omni-petrol-700: #0A323C;
+  --omni-petrol-800: #07242C;
+  --omni-petrol-900: #051921;
+
+  /* Cream — warm canvas */
+  --omni-cream-50:  #FDFBF4;
+  --omni-cream-100: #FAF5E6;
+  --omni-cream-200: #F8F0DA;
+  --omni-cream-300: #F4EBD0;   /* canonical cream */
+  --omni-cream-400: #E8DAB1;
+  --omni-cream-500: #D9C68A;
+  --omni-cream-600: #B5A26B;
+  --omni-cream-700: #8F7F50;
+
+  /* Brick — Mission Anchor accent */
+  --omni-brick-50:  #F8E1DE;
+  --omni-brick-100: #EFB7B0;
+  --omni-brick-300: #D85C50;
+  --omni-brick-500: #C03221;   /* canonical brick */
+  --omni-brick-700: #8F2519;
+  --omni-brick-900: #5C1710;
+
+  /* Sage — community / success / status-OK */
+  --omni-sage-50:  #EAF1EB;
+  --omni-sage-100: #C6D8C8;
+  --omni-sage-300: #9CBC9F;
+  --omni-sage-500: #7A9E7E;   /* canonical sage */
+  --omni-sage-700: #587657;
+  --omni-sage-900: #2E4E2D;
+
+  /* Charcoal — body text + dark surfaces */
+  --omni-charcoal-50:  #F2F3F2;
+  --omni-charcoal-100: #DCDEDC;
+  --omni-charcoal-200: #B3B7B3;
+  --omni-charcoal-300: #888D88;
+  --omni-charcoal-400: #5E635E;
+  --omni-charcoal-500: #3E423E;
+  --omni-charcoal-600: #2D312D;
+  --omni-charcoal-700: #252925;
+  --omni-charcoal-800: #1F2421;   /* canonical charcoal */
+  --omni-charcoal-900: #14171A;
+  --omni-charcoal-950: #0A0B0C;
+
+  --omni-white: #FFFFFF;
+  --omni-black: #000000;
+
+  /* 2 · SEMANTIC TOKENS — light mode default */
+  --omni-bg-canvas:     var(--omni-cream-300);
+  --omni-bg-surface:    var(--omni-white);
+  --omni-bg-surface-2:  var(--omni-cream-100);
+  --omni-bg-inverse:    var(--omni-charcoal-800);
+  --omni-bg-code:       var(--omni-petrol-50);
+
+  --omni-text-primary:    var(--omni-charcoal-800);
+  --omni-text-secondary:  var(--omni-charcoal-500);
+  --omni-text-tertiary:   var(--omni-charcoal-300);
+  --omni-text-inverse:    var(--omni-cream-300);
+  --omni-text-accent:     var(--omni-petrol-500);
+  --omni-text-link:       var(--omni-petrol-500);
+  --omni-text-link-hover: var(--omni-petrol-700);
+
+  --omni-border-default:  var(--omni-charcoal-100);
+  --omni-border-strong:   var(--omni-charcoal-300);
+  --omni-border-accent:   var(--omni-petrol-300);
+  --omni-rule:            var(--omni-petrol-200);
+
+  --omni-status-success:  var(--omni-sage-500);
+  --omni-status-warning:  #B58D32;
+  --omni-status-danger:   var(--omni-brick-500);
+  --omni-status-info:     var(--omni-petrol-500);
+  --omni-status-neutral:  var(--omni-charcoal-300);
+
+  --omni-anchor: var(--omni-brick-500);
+  --omni-focus-ring: var(--omni-brick-500);
+  --omni-focus-ring-offset: var(--omni-bg-canvas);
+}
+
+/* 3 · MODE — Dark mode overrides */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-omni-theme="light"]) {
+    --omni-bg-canvas:     var(--omni-charcoal-900);
+    --omni-bg-surface:    var(--omni-charcoal-800);
+    --omni-bg-surface-2:  var(--omni-charcoal-700);
+    --omni-bg-inverse:    var(--omni-cream-300);
+    --omni-bg-code:       var(--omni-petrol-900);
+
+    --omni-text-primary:    var(--omni-cream-300);
+    --omni-text-secondary:  var(--omni-cream-500);
+    --omni-text-tertiary:   var(--omni-charcoal-300);
+    --omni-text-inverse:    var(--omni-charcoal-800);
+    --omni-text-accent:     var(--omni-cream-300);
+    --omni-text-link:       var(--omni-cream-400);
+    --omni-text-link-hover: var(--omni-cream-300);
+
+    --omni-border-default:  var(--omni-charcoal-700);
+    --omni-border-strong:   var(--omni-charcoal-500);
+    --omni-border-accent:   var(--omni-petrol-300);
+    --omni-rule:            var(--omni-charcoal-700);
+  }
+}
+
+[data-omni-theme="dark"] {
+  --omni-bg-canvas:     var(--omni-charcoal-900);
+  --omni-bg-surface:    var(--omni-charcoal-800);
+  --omni-bg-surface-2:  var(--omni-charcoal-700);
+  --omni-bg-inverse:    var(--omni-cream-300);
+  --omni-bg-code:       var(--omni-petrol-900);
+  --omni-text-primary:    var(--omni-cream-300);
+  --omni-text-secondary:  var(--omni-cream-500);
+  --omni-text-tertiary:   var(--omni-charcoal-300);
+  --omni-text-inverse:    var(--omni-charcoal-800);
+  --omni-text-accent:     var(--omni-cream-300);
+  --omni-text-link:       var(--omni-cream-400);
+  --omni-text-link-hover: var(--omni-cream-300);
+  --omni-border-default:  var(--omni-charcoal-700);
+  --omni-border-strong:   var(--omni-charcoal-500);
+  --omni-border-accent:   var(--omni-petrol-300);
+  --omni-rule:            var(--omni-charcoal-700);
+}

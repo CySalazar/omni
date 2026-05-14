@@ -35,6 +35,7 @@ All technical documentation lives in [`/docs`](./docs/README.md). Highlights:
 - [Tech specifications](./docs/09-tech-specifications.md)
 - [Glossary](./docs/10-glossary.md)
 - [Tooling & CI](./docs/11-tooling-and-ci.md)
+- [Brand & visual identity](./docs/12-brand.md) — pointer to the [`/brand/`](./brand/) pack (strategy, voice, logos, palette, typography, icons, templates, [brand book PDF](./brand/OMNI-Brand-Book-v0.1.pdf))
 
 ## Project policies
 
