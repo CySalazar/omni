@@ -2,11 +2,11 @@
 oip: 3
 title: UEFI Bootloader Selection and Kernel `no_std` Transition Plan
 track: Standards Track
-status: Draft
+status: Review
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-10
-updated: 2026-05-12
+updated: 2026-05-15
 requires:
   - OIP-Process-001
 supersedes: ~
