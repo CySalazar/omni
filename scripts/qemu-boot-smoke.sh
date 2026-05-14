@@ -114,17 +114,32 @@ build_image() {
 
 run_qemu_and_capture() {
     log "running QEMU (timeout ${SMOKE_TIMEOUT_SECS}s)..."
-    local output
-    output=$(timeout --foreground "${SMOKE_TIMEOUT_SECS}" "${QEMU_BINARY}" \
+
+    # Write serial output to a temp file instead of using `-serial stdio`.
+    # With `-serial stdio`, QEMU's stdio chardev reads from stdin; when
+    # stdin hits EOF (as it does in GitHub Actions CI where stdin is not
+    # a tty), the chardev marks itself "disconnected" and silently discards
+    # all guest TX bytes — the kernel banners never reach our capture pipe.
+    # A file chardev has no stdin and is always "connected" for writes.
+    local serial_log
+    serial_log=$(mktemp /tmp/qemu-serial-XXXXXXXXXX)
+
+    # Run QEMU; stderr goes to stdout so QEMU diagnostics appear in the
+    # captured output alongside the serial log content below.
+    timeout --foreground "${SMOKE_TIMEOUT_SECS}" "${QEMU_BINARY}" \
         -drive "format=raw,file=${IMAGE_PATH}" \
-        -serial stdio \
+        -chardev "file,id=char0,path=${serial_log}" \
+        -serial "chardev:char0" \
         -display none \
         -no-reboot \
         -no-shutdown \
         -m 512M \
         -smp 1 \
-        2>&1 || true)
-    printf '%s' "${output}"
+        2>&1 || true
+
+    # Emit the serial log to stdout so the caller's $() captures it.
+    cat "${serial_log}"
+    rm -f "${serial_log}"
 }
 
 assert_banner_sequence() {
