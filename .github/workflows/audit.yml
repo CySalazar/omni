@@ -2,7 +2,10 @@
 # OMNI OS — Supply-chain audit workflow
 # =============================================================================
 # Runs:
-#   - on every Cargo.lock change
+#   - on every PR targeting main (no path filter: required checks must always
+#     report a result, otherwise PRs that don't touch Cargo files get stuck
+#     on "N of 8 required status checks are expected")
+#   - on every push to main that changes Cargo/deny files
 #   - daily at 06:00 UTC (catch advisories published since last commit)
 #   - on demand via workflow_dispatch
 # =============================================================================
@@ -20,19 +23,6 @@ on:
       - ".github/workflows/audit.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "crates/**/Cargo.toml"
-      - "deny.toml"
-      # Workflow files: GitHub Actions / Cargo dependency bumps via
-      # `.github/workflows/**` and `.github/dependabot.yml` are required
-      # to pass `cargo audit` + `cargo deny` as part of branch
-      # protection. Without these paths, those required checks are
-      # never reported for dependabot-driven action bumps, and the PR
-      # cannot merge ("N of 8 required status checks are expected").
-      - ".github/workflows/**"
-      - ".github/dependabot.yml"
   schedule:
     # Daily at 06:00 UTC.
     - cron: "0 6 * * *"
