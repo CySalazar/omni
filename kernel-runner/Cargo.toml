@@ -37,27 +37,15 @@ name = "kernel-runner"
 path = "src/main.rs"
 
 [dependencies]
-# `bootloader_api` (0.11) is the kernel-facing crate: it exposes
-# `BootInfo`, the `entry_point!` macro, and `BootloaderConfig`. The
-# crate is `no_std` and ships only types + the macro.
-#
-# The host-side `bootloader` build-deb (which would do image
-# generation via `UefiBoot::create_disk_image`) is INTENTIONALLY
-# absent from this Cargo.toml: as of v0.11.15 its `build.rs` invokes
-# `cargo` with `-Z bindeps` flags, which require nightly. The
-# kernel-runner build target stays on stable; image generation is
-# deferred to either:
-#
-#   (a) a separate `tools/image-builder/` crate that runs on nightly,
-#   (b) an external CLI such as `bootimage` (`cargo install bootimage`),
-#   (c) a future Limine-based bootloader if the editor body revisits
-#       OIP-Kernel-003 § 2.
-#
-# Tracked as a follow-up under OIP-Kernel-005 § S7 (build pipeline)
-# — the K4 gate per § S11 K4.e is the kernel-runner binary, not the
-# disk image; K5 picks up the image flow.
-bootloader_api = "0.11"
-omni-kernel    = { path = "../crates/omni-kernel", features = ["bare-metal"] }
+# `bootloader` 0.9 is the stable-Rust-compatible BIOS/UEFI bootloader
+# crate. It provides `BootInfo`, the `entry_point!` macro, and the
+# `cargo bootimage` toolchain integration used by the K5 QEMU smoke
+# test. The `map_physical_memory` feature instructs the loader to
+# identity-map all physical RAM and report the virtual offset in
+# `BootInfo.physical_memory_offset` (used by the K6+ page-table
+# walker). OIP-Kernel-005 § S3 / § S4.
+bootloader  = { version = "0.9", features = ["map_physical_memory"] }
+omni-kernel = { path = "../crates/omni-kernel", features = ["bare-metal"] }
 
 # The runner is its own profile: it always builds with link-time
 # optimization in release (we ship the kernel as a single ELF, then

@@ -147,19 +147,21 @@ pub type KernelResult<T> = Result<T, KernelError>;
 /// The signature is **stable for v1.0** per `OIP-Kernel-005` § S3
 /// constraint 3: renaming, reordering, or removing arguments to
 /// `kmain` requires an OIP that supersedes `OIP-Kernel-005`.
+///
+/// Takes `&'static BootInfo` (immutable) because `bootloader = "0.9"`'s
+/// `entry_point!` macro coerces the bootloader-provided `&'static mut`
+/// to `&'static` before calling the user function. K6+ subsystems that
+/// need ownership of memory-map data will source it from the frame
+/// allocator, not from a mutable `BootInfo` pointer.
 #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
-#[allow(
-    clippy::needless_pass_by_ref_mut,
-    reason = "OIP-Kernel-005 § S3 constraint 3: `kmain` signature is locked at v1.0. K4 reads only, but K6+ (frame allocator) will consume `memory_regions` mutably."
-)]
-pub fn kmain(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
+pub fn kmain(boot_info: &'static bootloader::bootinfo::BootInfo) -> ! {
     use bare_metal::early_console;
 
     early_console::write_str("\n[OMNI OS] kmain entered.\n");
     early_console::write_str("[OMNI OS] kernel version: ");
     early_console::write_str(env!("CARGO_PKG_VERSION"));
     early_console::write_str("\n[OMNI OS] memory regions: ");
-    early_console::write_usize(boot_info.memory_regions.len());
+    early_console::write_usize(boot_info.memory_map.iter().count());
     early_console::write_str("\n[OMNI OS] halting (K4 scope ends here).\n");
 
     bare_metal::arch::halt_forever()
