@@ -37,6 +37,12 @@ entry_point!(kernel_entry);
 ///
 /// The function is `-> !`: the kernel never returns.
 fn kernel_entry(boot_info: &'static BootInfo) -> ! {
+    // Disable maskable interrupts immediately. The bootloader may not
+    // have masked them, and without an IDT in place, any hardware IRQ
+    // (PIC timer, etc.) would triple-fault the CPU before the kernel
+    // can emit a single byte of diagnostics.
+    omni_kernel::bare_metal::arch::interrupts::disable();
+
     // Step 1 — early console. No allocation required (the kernel
     // heap is not yet initialised). Spin on the UART line-status
     // register; byte-by-byte writes only.
