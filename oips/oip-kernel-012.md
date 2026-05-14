@@ -2,7 +2,7 @@
 oip: 12
 title: Kernel panic handler and global allocator (gate K3 of OIP-Kernel-003)
 track: Standards Track
-status: Last Call
+status: Active
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-12
