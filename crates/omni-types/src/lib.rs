@@ -83,6 +83,11 @@ extern crate alloc;
 
 pub mod encrypted;
 pub mod error;
+// `identity` is feature-gated behind `id-generation` (default ON) because
+// its UUIDv4 constructors pull `uuid` + `getrandom`, which have no
+// implementation on `x86_64-unknown-none` (the kernel target). The
+// kernel disables the default features and consumes only `wire`.
+#[cfg(feature = "id-generation")]
 pub mod identity;
 pub mod version;
 pub mod wire;
@@ -90,5 +95,6 @@ pub mod wire;
 // Re-export the most frequently used items at the crate root for ergonomic
 // imports (`use omni_types::{NodeId, OmniError, Result}`).
 pub use crate::error::{OmniError, Result};
+#[cfg(feature = "id-generation")]
 pub use crate::identity::{AgentId, CapabilityId, ModelId, NodeId, SessionId};
 pub use crate::version::{OsVersion, ProtocolVersion};

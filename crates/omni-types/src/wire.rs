@@ -78,6 +78,41 @@ pub fn encode_canonical<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
         .map_err(|_| OmniError::wire(WireErrorKind::EncodeFailed, "wire::encode_canonical"))
 }
 
+/// Encode `value` into a caller-provided byte buffer under the canonical
+/// wire encoding, returning the number of bytes written.
+///
+/// This is the **non-allocating** companion to [`encode_canonical`].
+/// It is the encoder used on code paths that cannot tolerate a heap
+/// allocation — most prominently the kernel panic handler
+/// (`OIP-Kernel-012` §S1) which encodes a structured `PanicRecord` into
+/// a `static`-sized buffer while interrupts are already disabled and the
+/// allocator may be in an inconsistent state.
+///
+/// On overflow (the encoded value would not fit in `buf`) the function
+/// returns [`OmniError::Wire`] with [`WireErrorKind::EncodeFailed`].
+/// The caller MUST handle that case: in the panic-path use case it falls
+/// back to a fixed-string overflow marker emitted to the early console.
+///
+/// # Errors
+///
+/// - [`OmniError::Wire`] with [`WireErrorKind::EncodeFailed`] if the
+///   encoder fails — either because the value cannot be serialized or
+///   because `buf` is too small.
+///
+/// # Lint suppression rationale
+///
+/// `clippy::disallowed_methods` is configured workspace-wide to flag
+/// direct calls to `postcard::to_slice` outside this module. As with
+/// [`encode_canonical`], the `#[allow]` here is the audit anchor: the
+/// only call to the raw slice encoder lives on this single line, with
+/// canonical-error mapping applied around it.
+#[allow(clippy::disallowed_methods)]
+pub fn encode_into_slice<T: Serialize + ?Sized>(value: &T, buf: &mut [u8]) -> Result<usize> {
+    let encoded = postcard::to_slice(value, buf)
+        .map_err(|_| OmniError::wire(WireErrorKind::EncodeFailed, "wire::encode_into_slice"))?;
+    Ok(encoded.len())
+}
+
 /// Decode `bytes` into a value of type `T` under the canonical wire
 /// encoding.
 ///
@@ -226,5 +261,74 @@ mod tests {
         let bytes = encode_canonical(&()).expect("encode unit");
         assert!(bytes.is_empty());
         let _decoded: () = decode_canonical(&bytes).expect("decode unit");
+    }
+
+    // -------------------------------------------------------------------------
+    // encode_into_slice — non-allocating encoder (OIP-Kernel-012 K3.b)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn encode_into_slice_matches_encode_canonical_bytes() {
+        // The non-allocating slice encoder must produce byte-for-byte
+        // identical output to the allocating encoder for any value that
+        // fits in the destination buffer. This is the determinism
+        // invariant inherited from postcard: same value → same bytes,
+        // regardless of which encoder produced them.
+        let value = SampleStruct {
+            a: 0xCAFE_BABE,
+            b: String::from("slice-encoder"),
+            c: vec![0x11, 0x22, 0x33, 0x44],
+        };
+        let allocated = encode_canonical(&value).expect("encode_canonical");
+        let mut buf = [0u8; 256];
+        let written = encode_into_slice(&value, &mut buf).expect("encode_into_slice");
+        assert_eq!(written, allocated.len());
+        assert_eq!(&buf[..written], allocated.as_slice());
+    }
+
+    #[test]
+    fn encode_into_slice_returns_overflow_error_when_buf_too_small() {
+        let value = SampleStruct {
+            a: 1,
+            b: String::from("this-is-too-long-for-an-8-byte-buffer"),
+            c: vec![0; 32],
+        };
+        let mut tiny = [0u8; 8];
+        let err = encode_into_slice(&value, &mut tiny).expect_err("must overflow");
+        match err {
+            OmniError::Wire { kind, context } => {
+                assert_eq!(kind, WireErrorKind::EncodeFailed);
+                assert_eq!(context, "wire::encode_into_slice");
+            }
+            other => panic!("expected Wire::EncodeFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn encode_into_slice_round_trip_via_decode_canonical() {
+        // The bytes produced by encode_into_slice must decode back via
+        // the canonical decoder — i.e., the encoder is not a separate
+        // wire format, just a non-allocating path to the same bytes.
+        let value = SampleStruct {
+            a: 0x1234_5678,
+            b: String::from("round-trip"),
+            c: vec![9, 8, 7, 6, 5],
+        };
+        let mut buf = [0u8; 128];
+        let written = encode_into_slice(&value, &mut buf).expect("encode");
+        let decoded: SampleStruct = decode_canonical(&buf[..written]).expect("decode");
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn encode_into_slice_writes_zero_bytes_for_unit() {
+        // Symmetric with `unit_type_round_trip_is_zero_bytes` above:
+        // the non-allocating encoder also produces an empty encoding
+        // for `()`. The returned byte count is 0; the buffer is
+        // untouched (well, may have stale data — the contract is only
+        // that the *first* `written` bytes are the encoding).
+        let mut buf = [0u8; 4];
+        let written = encode_into_slice(&(), &mut buf).expect("encode unit");
+        assert_eq!(written, 0);
     }
 }

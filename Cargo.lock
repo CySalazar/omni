@@ -916,10 +916,9 @@ dependencies = [
 name = "omni-kernel"
 version = "0.1.0"
 dependencies = [
- "omni-capability",
- "omni-tee",
  "omni-types",
  "proptest",
+ "serde",
 ]
 
 [[package]]

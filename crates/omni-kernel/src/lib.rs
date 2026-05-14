@@ -74,6 +74,17 @@ pub mod memory;
 pub mod scheduling;
 pub mod syscall;
 
+// Bare-metal runtime: panic handler, global allocator, early console,
+// arch intrinsics. Lives only when the `bare-metal` feature is on; the
+// inner `#[panic_handler]` and `#[global_allocator]` items are further
+// gated `not(test)` to keep `cargo test --all-features` compilable.
+//
+// Specified by OIP-Kernel-012 (was OIP-Kernel-004 — renumbered at
+// Draft → Review on 2026-05-14 per OIP-Process-001 §8.3 to free the
+// "004" integer for the canonical OIP-Serde-004).
+#[cfg(feature = "bare-metal")]
+pub mod bare_metal;
+
 // -----------------------------------------------------------------------------
 // Kernel-wide error type
 // -----------------------------------------------------------------------------
