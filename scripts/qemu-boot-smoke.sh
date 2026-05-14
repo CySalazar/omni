@@ -115,27 +115,42 @@ build_image() {
 run_qemu_and_capture() {
     log "running QEMU (timeout ${SMOKE_TIMEOUT_SECS}s)..."
 
-    # Write serial output to a temp file instead of using `-serial stdio`.
-    # With `-serial stdio`, QEMU's stdio chardev reads from stdin; when
-    # stdin hits EOF (as it does in GitHub Actions CI where stdin is not
-    # a tty), the chardev marks itself "disconnected" and silently discards
-    # all guest TX bytes — the kernel banners never reach our capture pipe.
-    # A file chardev has no stdin and is always "connected" for writes.
+    # Write serial output to a temp file.  This avoids the -serial stdio
+    # stdin-EOF issue (see prior commit) AND is the simplest stable path
+    # across QEMU versions.
     local serial_log
     serial_log=$(mktemp /tmp/qemu-serial-XXXXXXXXXX)
 
-    # Run QEMU; stderr goes to stdout so QEMU diagnostics appear in the
-    # captured output alongside the serial log content below.
-    timeout --foreground "${SMOKE_TIMEOUT_SECS}" "${QEMU_BINARY}" \
+    # `-machine accel=tcg` forces software emulation.  GitHub Actions
+    # runners on Azure sometimes expose /dev/kvm; KVM can produce
+    # different exception semantics from TCG for bare-metal payloads that
+    # do not yet have a full IDT.  TCG is slower but behaviorally identical
+    # to real hardware for BIOS-mode boot.
+    #
+    # `-m 128M` keeps the BIOS E820 memory map small (fewer entries ⇒
+    # less bootloader page-table work) while still giving the kernel more
+    # than its 4 MiB heap minimum.
+    #
+    # `-boot c` tells SeaBIOS to skip PXE / floppy probing and boot from
+    # the first hard disk immediately.
+    #
+    # QEMU stderr (error messages, termination notices) is captured via
+    # 2>&1 so it appears in the assert_banner_sequence debug dump on failure.
+    timeout "${SMOKE_TIMEOUT_SECS}" "${QEMU_BINARY}" \
         -drive "format=raw,file=${IMAGE_PATH}" \
-        -chardev "file,id=char0,path=${serial_log}" \
-        -serial "chardev:char0" \
+        -serial "file:${serial_log}" \
+        -machine "accel=tcg" \
+        -boot c \
         -display none \
         -no-reboot \
-        -no-shutdown \
-        -m 512M \
-        -smp 1 \
+        -m 128M \
         2>&1 || true
+
+    # Diagnostic: echo serial log size to stderr (visible in CI log, not
+    # captured in $OUTPUT so it cannot confuse assert_banner_sequence).
+    echo "[smoke-diag] serial log bytes: $(wc -c < "${serial_log}" 2>/dev/null || echo '?')" >&2
+    echo "[smoke-diag] serial log hex (first 64 bytes):" >&2
+    xxd "${serial_log}" 2>/dev/null | head -4 >&2 || true
 
     # Emit the serial log to stdout so the caller's $() captures it.
     cat "${serial_log}"

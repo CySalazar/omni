@@ -55,7 +55,7 @@ omni-kernel = { path = "../crates/omni-kernel", features = ["bare-metal"] }
 lto             = true
 codegen-units   = 1
 panic           = "abort"
-strip           = "symbols"
+strip           = "debuginfo"
 
 [profile.dev]
 panic = "abort"
