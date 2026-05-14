@@ -96,7 +96,7 @@ The `omni-kernel` crate is the **only** workspace member that needs the
 |---|---|---|
 | **K1.** Add `bare-metal` feature to `omni-kernel/Cargo.toml`. | Done in this OIP's reference impl. | merged |
 | **K2.** Wire `lib.rs` to switch on the feature (`#![cfg_attr(feature = "bare-metal", no_std)]`). | Done in this OIP's reference impl. | merged |
-| **K3.** Build under the feature: `cargo build --target x86_64-unknown-none --features bare-metal`. Fails today because we have not yet introduced the panic handler, the allocator, and the entry point. | Kernel engineer (P6 hire). | OIP-Kernel-004 (panic handler + allocator). |
+| **K3.** Build under the feature: `cargo build --target x86_64-unknown-none --features bare-metal`. Fails today because we have not yet introduced the panic handler, the allocator, and the entry point. | Kernel engineer (P6 hire). | OIP-Kernel-012 (panic handler + allocator). |
 | **K4.** Integrate `bootloader` crate v0.11+ in a `kernel/` runner crate adjacent to `omni-kernel`. The runner provides the `_start` entry point and forwards to the kernel's `kmain`. | Kernel engineer. | OIP-Kernel-005 (boot hand-off ABI). |
 | **K5.** Smoke-test in QEMU via `qemu-system-x86_64` with `-bios OVMF`. CI runs the smoke test on every push. | Kernel engineer + CI. | First QEMU green run; reported in `/docs/audits/qemu-boot-smoke-2026-XX.md`. |
 
@@ -246,7 +246,7 @@ narrow:
   by their own OIPs.
 
 The full privacy surface for the kernel ABI (syscalls, IPC, capability
-delegation) is the scope of `OIP-Kernel-004` and successors, which
+delegation) is the scope of `OIP-Kernel-012` and successors, which
 inherit this OIP's narrow privacy contract as a baseline.
 
 ## Copyright

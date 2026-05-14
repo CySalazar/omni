@@ -1,12 +1,12 @@
 ---
-oip: 4
+oip: 12
 title: Kernel panic handler and global allocator (gate K3 of OIP-Kernel-003)
 track: Standards Track
-status: Draft
+status: Review
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-12
-updated: 2026-05-12
+updated: 2026-05-14
 requires:
   - 1
   - 3
@@ -212,7 +212,7 @@ Detailed in § S4 above. Summary acceptance for the OIP:
 
 ## Reference Implementation
 
-Will land on the branch `feat/oip-kernel-004-panic-and-heap`. Reference layout:
+Will land on the branch `feat/oip-kernel-012-panic-and-heap`. Reference layout:
 
 ```
 crates/omni-kernel/src/bare_metal/
