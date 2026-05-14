@@ -82,7 +82,7 @@ jobs:
       # itself and kernel-runner still compile on stable 1.85; nightly is
       # needed only for the disk-image packaging step.
       - name: Install nightly toolchain for bootimage disk-image step
-        run: rustup toolchain install nightly --target x86_64-unknown-none --component rust-src --no-self-update
+        run: rustup toolchain install nightly --target x86_64-unknown-none --component rust-src,llvm-tools-preview --no-self-update
 
       - name: Run smoke test
         run: bash scripts/qemu-boot-smoke.sh --release
