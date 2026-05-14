@@ -65,6 +65,18 @@ jobs:
           # main workspace cache.
           workspaces: ". -> target\nkernel-runner -> kernel-runner/target"
 
+      # GitHub Actions ubuntu-24.04 exposes /dev/kvm but the runner user
+      # is not in the kvm group by default.  The udev rule makes the
+      # device world-writable so `qemu-system-x86_64 -machine accel=kvm`
+      # works without sudo.  Falls back to TCG if KVM is unavailable.
+      - name: Enable KVM acceleration for QEMU
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -la /dev/kvm 2>/dev/null || echo "/dev/kvm not present — QEMU will use TCG"
+
       - name: Install QEMU + OVMF
         run: |
           sudo apt-get update
@@ -87,7 +99,7 @@ jobs:
       - name: Run smoke test
         run: bash scripts/qemu-boot-smoke.sh --release
         env:
-          SMOKE_TIMEOUT_SECS: "60"
+          SMOKE_TIMEOUT_SECS: "120"
           OMNI_BOOTIMAGE_BIN: "cargo +nightly bootimage"
 
       - name: Upload boot artifact

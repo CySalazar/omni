@@ -142,8 +142,13 @@ run_qemu_and_capture() {
     # The kernel writes b'K' (0x4b) to 0xE9 as its very first instruction
     # so we can distinguish "kernel_entry reached" from "bootloader hung".
     # This output is captured by the $() subshell and appears in $OUTPUT.
+    #
+    # `accel=kvm:tcg`: use KVM hardware acceleration when the runner
+    # supports it (GitHub Actions ubuntu-24.04 exposes /dev/kvm), fall
+    # back to software TCG. KVM makes SeaBIOS POST finish in < 5 s;
+    # pure TCG can exceed the timeout on a heavily-loaded CI host.
     timeout "${SMOKE_TIMEOUT_SECS}" "${QEMU_BINARY}" \
-        -machine "pc,accel=tcg" \
+        -machine "pc,accel=kvm:tcg" \
         -cpu "qemu64" \
         -drive "if=ide,format=raw,file=${IMAGE_PATH}" \
         -serial "file:${serial_log}" \
