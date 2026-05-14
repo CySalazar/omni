@@ -1,0 +1,90 @@
+# =============================================================================
+# OMNI OS — QEMU boot smoke test (K5 gate of OIP-Kernel-003 § 3)
+# =============================================================================
+# Boots the `kernel-runner` ELF under QEMU+OVMF and asserts the canonical
+# banner sequence appears on the serial console. This is the K5 deliverable
+# for OIP-Kernel-003 § 3; OIP-Kernel-005 § S11 K4.e requires this job to
+# stay green for 7 consecutive calendar days before the OIP transitions
+# to `Final` (currently dormant per § 7 — Active is the terminal state
+# until mesh telemetry exists in Phase 4+).
+#
+# The workflow runs:
+#   - on every PR touching kernel/runner code or this workflow itself
+#   - on every push to main
+#   - on manual dispatch
+#   - daily on a cron schedule (07:00 UTC) to detect upstream regressions
+#     in `bootimage`, `bootloader`, or the Rust toolchain.
+# =============================================================================
+
+name: qemu-boot-smoke
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/omni-kernel/**'
+      - 'kernel-runner/**'
+      - 'scripts/qemu-boot-smoke.sh'
+      - '.github/workflows/qemu-boot-smoke.yml'
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 7 * * *'   # 07:00 UTC daily
+  workflow_dispatch:
+
+concurrency:
+  group: qemu-boot-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_BACKTRACE: short
+
+jobs:
+  smoke:
+    name: QEMU boot smoke (x86_64-unknown-none)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rust toolchain (stable + x86_64-unknown-none)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-none
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Workspace-excluded crate has its own target/ — cache it
+          # separately so kernel-runner rebuilds don't invalidate the
+          # main workspace cache.
+          workspaces: ". -> target\nkernel-runner -> kernel-runner/target"
+
+      - name: Install QEMU + OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              qemu-system-x86 \
+              ovmf \
+              timeout
+
+      - name: Install bootimage CLI
+        run: cargo install bootimage --version "^0.10"
+
+      - name: Run smoke test
+        run: bash scripts/qemu-boot-smoke.sh --release
+        env:
+          SMOKE_TIMEOUT_SECS: "60"
+
+      - name: Upload boot artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootimage-kernel-runner
+          path: kernel-runner/target/x86_64-unknown-none/release/bootimage-kernel-runner.bin
+          if-no-files-found: warn
+          retention-days: 7
