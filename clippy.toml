@@ -57,6 +57,7 @@ disallowed-methods = [
   { path = "postcard::to_vec", reason = "Same rationale as postcard::to_allocvec — go through omni_types::wire::encode_canonical." },
   { path = "postcard::from_bytes", reason = "OIP-Serde-004 M2: workspace canonical decoding is omni_types::wire::decode_canonical, which enforces the no-trailing-bytes invariant. Allowlist only inside omni-types::wire." },
   { path = "postcard::take_from_bytes", reason = "Same rationale as postcard::from_bytes — go through omni_types::wire::decode_canonical (which calls take_from_bytes internally + checks tail.is_empty())." },
+  { path = "postcard::to_slice", reason = "OIP-Kernel-012 K3.b: workspace non-allocating canonical encoding is omni_types::wire::encode_into_slice. The slice-targeted encoder is audit-critical on the kernel panic path (no allocation permitted) and must go through the single helper that maps postcard errors to OmniError::Wire. Allowlist only inside omni-types::wire." },
 ]
 
 # --- Disallowed types ------------------------------------------------------
