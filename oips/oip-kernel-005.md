@@ -2,7 +2,7 @@
 oip: 5
 title: Boot hand-off ABI and kernel-runner crate (gate K4 of OIP-Kernel-003)
 track: Standards Track
-status: Review
+status: Last Call
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-12
