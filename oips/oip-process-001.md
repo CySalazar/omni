@@ -6,7 +6,7 @@ status: Active
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-10
-updated: 2026-05-12
+updated: 2026-05-14
 requires: []
 supersedes: ~
 superseded-by: ~
@@ -254,6 +254,111 @@ The BDFL veto:
 The veto count and any veto exercises MUST be logged publicly in
 [`docs/audits/bdfl-veto-log.md`](../docs/audits/bdfl-veto-log.md) with the OIP number, date, and
 written rationale (or the file MUST be created the first time a veto is exercised).
+
+#### §5.5. Solo Founder Fast-Track *(normative, structurally self-deactivating)*
+
+The Bootstrap Period (§6.2) and the standard 14-day Last Call window (§5.3 ¶1) interact in a way
+that creates a degenerate edge case: when the eligible voter set §5.1 contains a single
+contributor whose weighted eligibility exceeds **50%** of the total, the 14-day window protects
+no community check the founder cannot already perform alone. Every ballot is decided in advance
+by the only voter who can carry the vote. The window's *only* remaining function is to invite
+external (non-voter) review — which §5.5 preserves, in compressed form.
+
+The **Solo Founder Fast-Track** allows the editors to compress the Last Call window from 14 days
+to **48 hours** **if and only if** all of the following conditions are met:
+
+- **(a) Voter-set trigger.** At the moment the OIP transitions `Review → Last Call`, the
+  eligible voter set §5.1 satisfies **both**:
+  - (a.i) Exactly one voter (the **dominant voter**) holds ≥ **50%** of the total weighted
+    eligibility under §5.2.
+  - (a.ii) No other eligible voter holds ≥ **10%** of the total weighted eligibility under §5.2.
+
+  Once a second voter crosses the 10% floor — whether by their own attestation activity, by a
+  Stichting board-issued contribution credit, or by any future replacement of the bootstrap
+  defaults under the `voting`-slug Process OIP — clause (a.ii) fails and §5.5 ceases to apply
+  to any future `Review → Last Call` transition. This is the **structural self-deactivation**:
+  no calendar sunset, no founder action, no Meta OIP required.
+- **(b) Track scope.** The OIP MUST be one of: `Process`, `Informational`, `Meta` (subject to
+  (b.iii) below), or `Standards Track` **not** breaking Layer 1 cryptographic guarantees per
+  §5.3 ¶2. Specifically:
+  - (b.i) `Standards Track` OIPs touching cipher suites, signature schemes, capability format,
+    or the mesh handshake **continue to require** the full 14-day window and the 66.7%
+    supermajority. The fast-track does **not** apply to them, even when (a) holds. Rationale:
+    the supermajority's function is to invite *external* cryptographic review whose reviewers
+    are typically not yet eligible voters under §5.1; compressing the window removes their
+    operational space.
+  - (b.ii) `Standards Track` OIPs affecting any other surface (kernel internals, boot ABI,
+    container engine, wire formats other than crypto / capability / handshake, tooling,
+    serialization within the bounds set by an already-`Active` Standards Track OIP such as
+    `OIP-Serde-004`) ARE in scope.
+  - (b.iii) `Meta` OIPs that narrow the dominant voter's authority are **out of scope** by the
+    same asymmetric principle codified in §5.4 ¶2.5: the dominant voter MUST NOT use the
+    fast-track to ratify constraints on themselves that a future quorate body might object to.
+    Such a `Meta` OIP MUST go through the standard 14-day flow even under (a).
+- **(c) Compressed objection window.** The 48-hour clock starts at the merge of the
+  `Review → Last Call` transition PR and is announced simultaneously on the linked GitHub
+  Discussion thread and (when available) on the Stichting OMNI mailing list. The editors MUST
+  add a top-of-OIP banner during the window stating "**Solo Founder Fast-Track per §5.5 —
+  Last Call closes <ISO-8601 timestamp> UTC**" so that an external reader cannot miss the
+  compressed schedule.
+- **(d) Hard veto on objection.** A blocking objection raised in good faith during the 48-hour
+  window — by any eligible voter per §5.1, by the Stichting board, **or by any non-voter
+  cryptographer / security researcher / domain expert citing a concrete technical artifact**
+  (PR comment, diff line, advisory text, formal-model counterexample) — **annuls** the
+  compressed window immediately and forces the OIP back to a full 14-day standard §5.3 Last
+  Call. "Good faith" is defined identically to §6.5 (d): technical incorrectness, undisclosed
+  scope creep, conflict-of-interest disclosure failure. Procedural-only objections
+  ("the window is too short") do NOT meet the threshold; the compressed window's adequacy is
+  the policy choice this clause makes and re-litigating it requires a `Meta` OIP, not an
+  objection ballot.
+- **(e) Mandatory post-deactivation re-ratification.** Any OIP that transitioned `Active`
+  under §5.5 MUST be re-validated through the standard §5.3 voting flow within **90 calendar
+  days** of the first `Review → Last Call` transition that the editors processed under the
+  standard (non-fast-track) flow because clause (a.ii) had failed. The re-ratification ballot
+  is scheduled by the editors as a single batched vote covering every fast-tracked OIP still
+  in `Active` at the time of deactivation. A re-ratification vote that fails forces a
+  **rollback** by a follow-up OIP under the now-quorate process. This makes every §5.5
+  activation **provisional**: it buys schedule velocity during the solo-founder phase but does
+  not bypass the federated check forever.
+- **(f) Public log.** Every exercise of §5.5 MUST be recorded in
+  [`docs/audits/solo-founder-fast-track-log.md`](../docs/audits/solo-founder-fast-track-log.md)
+  with the OIP number, the actual 48-hour window dates (UTC), the dominant voter's measured
+  weighted eligibility at clause-(a) evaluation time, the count and identity of any other
+  eligible voters at that moment with their measured weights, the editor's written rationale
+  for invoking §5.5 instead of the standard flow, and (post-deactivation) the re-ratification
+  outcome. The file MUST be created the first time §5.5 is exercised.
+
+The fast-track **does not apply** to and **does not affect**:
+
+- The BDFL veto (§5.4). A fast-tracked `Standards Track` OIP remains vetoable by the BDFL
+  within the compressed 48-hour window; the BDFL has been notified by construction (they are
+  the dominant voter) and a veto under §5.4 follows its own signed-statement procedure.
+- The Critical-security Bootstrap exception (§6.5). §6.5 retains its dedicated role for
+  `Standards Track` OIPs responding to `Critical` vulnerabilities: when (a)(i) holds *and*
+  the OIP qualifies under §6.5 (a), the editors SHOULD prefer §6.5 because its post-Bootstrap
+  re-ratification clause is stricter and its trigger (CVSSv4 ≥ 9.0) is independently
+  attestable. §5.5 covers the residual non-critical schedule-velocity case; §6.5 covers the
+  emergency-security case. They are orthogonal mechanisms with disjoint primary triggers.
+- The quorum and approval thresholds (§5.3 ¶1, ¶2). §5.5 compresses **only** the time axis;
+  ≥ 30% weighted vote and ≥ 50% + 1 (or ≥ 66.7% for Layer 1, when applicable per (b.i))
+  remain the substantive thresholds. In the solo-founder scenario these are vacuously met by
+  the dominant voter casting a single in-favor ballot, which §5.5 expressly does not change.
+- §6.5's recusal exclusion ("any `Standards Track` OIP authored by the BDFL themselves —
+  recusal is automatic, deferral to Seat 2 filling is mandatory"). §5.5 (b) makes no recusal
+  requirement on the dominant voter; the §6.5 recusal exists to prevent a single-editor /
+  single-author loop *during a Critical-security emergency*, where the 72-hour window plus
+  the substantive scope of "Critical Layer 1 swap" together justify a stronger guardrail.
+  §5.5's compressed window plus clause (e) re-ratification already constrain the
+  single-editor / single-author loop in the non-emergency setting; an additional recusal would
+  make §5.5 unusable by the dominant voter, which is its primary user by clause-(a)
+  construction.
+
+The fast-track is **structurally self-deactivating, scope-bounded, externally-objectable,
+post-validable, and publicly logged**. It exists because the federated check the standard
+14-day window enables has, by clause-(a) construction, no community to perform it; preserving
+the window in name only would be ceremonial governance — exactly the failure mode the
+Bootstrap Period was designed to make explicit and bounded rather than implicit and
+permanent.
 
 ### §6. Editors
 
@@ -536,6 +641,54 @@ drafting):
    board is mandated to nominate). Pairs with the bootstrap fiat clause (§6.3) to make
    Bootstrap-era decisions explicit.
 
+### Why the Solo Founder Fast-Track is structural, not temporal
+
+The two pre-existing exceptional governance mechanisms — the BDFL veto (§5.4) and the
+Critical-security Bootstrap exception (§6.5) — are both **calendar-bounded**: §5.4 sunsets
+2031-05-09; §6.5 sunsets when Seat 2 is filled or 2027-05-10, whichever is earlier. Both
+mechanisms therefore expire whether or not the underlying condition that motivated them is
+still present. This was correct for those clauses: §5.4 exists to dampen founder dominance
+during a fixed transition; §6.5 exists to bridge a fixed Bootstrap window.
+
+§5.5 is different. The condition it responds to — *"there is no community-side check to
+perform during Last Call because the eligible voter set has no contested vote"* — is **not** a
+calendar condition. It is a structural fact about the voter set at a given moment. A calendar
+sunset for §5.5 would mean either:
+
+- An overly long sunset (e.g., 2031-05-09 aligned with §5.4) that keeps the fast-track alive
+  long after the eligible voter set has diversified — which would let the founder compress
+  windows on OIPs that *should* be reviewed by an existing community. This is exactly the
+  "bad precedent" failure mode the founder asked the §5.5 design to avoid.
+- An overly short sunset (e.g., 90 days from §5.5 activation) that fires while the founder is
+  still solo — which would force a return to ceremonial 14-day windows during which still
+  nobody can object substantively, achieving only schedule loss.
+
+A **structural** trigger — "deactivates the first time a second voter crosses 10% weighted
+eligibility" — is dominant-strategy-correct against both failure modes: it stays alive exactly
+as long as the underlying degeneracy holds, and not one moment longer. The 10% floor (rather
+than, e.g., 50% to match clause (a.i)) is chosen so that the deactivation triggers on the
+*first sign* of meaningful community presence, not on a regime change. This biases the
+mechanism toward early self-retirement.
+
+The 48-hour window (rather than 24 h or 72 h) is calibrated to span exactly one waking cycle:
+long enough for a non-voter external reviewer (e.g., a cryptographer notified of a `Process`
+or `Informational` OIP via the GitHub Discussion thread) to read the diff and file a
+clause-(d) objection during business hours in either Europe or the Americas, short enough that
+schedule velocity is materially recovered relative to 14 days (≈ 7× speedup). 24 h would
+overlap only the dominant voter's working day and exclude time-zone-shifted reviewers; 72 h
+matches §6.5 but §6.5 deals with `Critical`-severity context where the cost of every day's
+delay is bounded — §5.5 has no such security-driven cost gradient, so the upper-bound
+selection prefers the *external-review* axis (longest reasonable) over the *schedule* axis
+(shortest reasonable).
+
+The exclusion of Layer 1 (clause (b.i)) is the most important self-restriction. The Layer 1
+supermajority §5.3 ¶2 exists because cryptographic decisions have *non-voter* expert
+constituencies (academic cryptographers, audit firms, formal-methods researchers) whose
+involvement the standard 14-day window structurally invites. A solo founder cannot
+self-substitute for that constituency. §5.5 (b.i) therefore preserves the full 14-day flow
+for exactly the OIPs whose Last Call serves a function §5.5's clause-(a) trigger cannot
+satisfy.
+
 ### Why a custom linter (and not markdownlint + JSON-schema)
 
 `scripts/lint-oips.py` enforces three project-local invariants that generic linters cannot:
@@ -709,6 +862,7 @@ It exists for the same reason §5.4 mandates a public veto log: trust requires a
 | 2026-05-10 | Bootstrap fiat (§6.3, ratification) | Initial publication. `Active` under one-time founder fiat because no prior process exists to vote it in. |
 | 2026-05-10 | Bootstrap fiat (§6.3, structural amendment) | First amendment, applied the same day as ratification after founder review. Three changes: (i) **new §6.5** "Critical-security Bootstrap exception" — narrow escape valve for `Standards Track` OIPs responding to `Critical` vulnerabilities while Seat 2 is vacant, with 72h objection window, mandatory post-Bootstrap re-ratification, and public emergency log; (ii) **expanded §5.2** with explicit "Known limitations" of the bootstrap voting defaults and a soft 2028-05-10 deadline for the `voting`-slug Process OIP that retires them; (iii) **refined `## Privacy Considerations`** and **`oips/oip-template.md` HTML guidance** to actively encourage project-scoped pseudonymous filing (privacy-first mission alignment, GDPR pre-emption). Rationale: founder editorial review surfaced three valid critiques that warranted material rather than cosmetic response. |
 | 2026-05-12 | Bootstrap fiat (§6.3, structural amendment) | Second amendment, applied 2026-05-12. **Section §8 (Numbering) restructured** into four sub-sections (§8.1 identifier rule, §8.2 filename convention, §8.3 draft-stage placeholder numbers, §8.4 reserved numbers). Substantive clarifications: (a) the integer is the canonical identifier for all cross-references; (b) the slug is explicitly a **category hint**, not a secondary identifier; (c) the global-uniqueness invariant binds at `Review`, not at `Last Call → Active` as the original wording implied — placeholder integer collisions in `Draft` are explicitly permitted and reconciled by the editors at the `Draft → Review` transition. Rationale: the registry currently holds three `Draft`/`Last Call` placeholder collisions (`OIP-Bounty-002` / `OIP-Crypto-002`; `OIP-Serde-004` / `OIP-Kernel-004`; `OIP-Kernel-005` / `OIP-Voting-005`); the previous §8 wording was silent on this case and required ad-hoc footnotes in `oips/README.md`. This amendment formalizes what the editors were already doing, ahead of the first parallel-`Draft` pair reaching `Review`. No semantic change to any prior `Active` OIP. |
+| 2026-05-14 | Bootstrap fiat (§6.3, structural amendment) | Third amendment, applied 2026-05-14. **New §5.5 "Solo Founder Fast-Track"** — a structurally self-deactivating clause that compresses Last Call from 14 days to **48 hours** when the eligible voter set §5.1 has exactly one dominant voter (≥ 50% weighted eligibility) and no other voter at ≥ 10%. Layer 1 Standards Track OIPs (cipher suites / signature schemes / capability format / mesh handshake) and `Meta` OIPs narrowing the dominant voter's authority are **out of scope** and continue to require the full 14-day window. The clause **self-deactivates** the moment a second voter crosses the 10% floor — structural, not calendar-based — and every OIP activated under §5.5 is subject to **mandatory post-deactivation re-ratification** within 90 days via standard §5.3 voting. Public log mandated at `docs/audits/solo-founder-fast-track-log.md`. New `## Rationale` sub-section "Why the Solo Founder Fast-Track is structural, not temporal" explains the design choices (structural vs. calendar trigger, 48h vs. 24h / 72h, Layer 1 exclusion). Rationale for the amendment itself: the eligible voter set today contains a single voter (founder, sole eligible device under §5.1), the 14-day Last Call protects no community check that the founder cannot perform alone, and the kernel-boot path (`OIP-Kernel-004` `Draft`, `OIP-Kernel-005` `Draft`) is gated by exactly this ceremonial window. The amendment recovers ≈ 12 days per non-Layer-1 OIP without bypassing any substantive threshold; the structural trigger ensures the clause retires itself as soon as it stops being honest. No semantic change to any prior `Active` OIP. |
 
 Future amendments after the Bootstrap Period MUST go through the standard §5 voting flow as
 `Meta` OIPs that supersede this one, per §4 (Lifecycle) and §8 (Numbering). The bootstrap fiat
