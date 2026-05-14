@@ -37,6 +37,15 @@ entry_point!(kernel_entry);
 ///
 /// The function is `-> !`: the kernel never returns.
 fn kernel_entry(boot_info: &'static BootInfo) -> ! {
+    // Debug-port probe: write 'K' to QEMU's debug console (port 0xE9)
+    // as the absolute first act — before CLI, before UART init.
+    // QEMU launched with `-debugcon stdio` routes this byte to stdout,
+    // allowing the CI log to distinguish "kernel_entry reached" from
+    // "bootloader hung before calling kernel_entry".
+    // SAFETY: port 0xE9 is QEMU's debug exit/console port; the write is
+    // harmless on real hardware (unimplemented port, silently dropped).
+    unsafe { omni_kernel::bare_metal::arch::outb(0xE9, b'K') };
+
     // Disable maskable interrupts immediately. The bootloader may not
     // have masked them, and without an IDT in place, any hardware IRQ
     // (PIC timer, etc.) would triple-fault the CPU before the kernel

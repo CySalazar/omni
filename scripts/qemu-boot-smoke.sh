@@ -138,11 +138,16 @@ run_qemu_and_capture() {
     #
     # QEMU's stderr (termination messages) is captured alongside the debug
     # log so failures show the full picture.
+    # `-debugcon stdio` routes QEMU debug port 0xE9 writes to stdout.
+    # The kernel writes b'K' (0x4b) to 0xE9 as its very first instruction
+    # so we can distinguish "kernel_entry reached" from "bootloader hung".
+    # This output is captured by the $() subshell and appears in $OUTPUT.
     timeout "${SMOKE_TIMEOUT_SECS}" "${QEMU_BINARY}" \
         -machine "pc,accel=tcg" \
         -cpu "qemu64" \
         -drive "if=ide,format=raw,file=${IMAGE_PATH}" \
         -serial "file:${serial_log}" \
+        -debugcon stdio \
         -d "guest_errors,cpu_reset,unimp" \
         -D "${qemu_debug_log}" \
         -boot "order=c,strict=on" \
@@ -214,5 +219,14 @@ fi
 
 OUTPUT=$(run_qemu_and_capture)
 log "QEMU done. asserting banner sequence..."
+
+# Diagnostic: check whether the debug port 0xE9 marker ('K', 0x4b) appeared
+# in the captured output, which proves kernel_entry was reached.
+if printf '%s' "${OUTPUT}" | grep -qF 'K'; then
+    log "[diag] debug-port marker 'K' found — kernel_entry WAS reached."
+else
+    log "[diag] debug-port marker 'K' NOT found — kernel_entry was NOT reached (bootloader hung?)."
+fi
+
 assert_banner_sequence "${OUTPUT}"
 log "PASS — all ${#EXPECTED_LINES[@]} banner lines present and in order."
