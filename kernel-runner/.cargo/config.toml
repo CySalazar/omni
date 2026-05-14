@@ -1,0 +1,15 @@
+# =============================================================================
+# kernel-runner — Cargo target configuration
+# =============================================================================
+# Rust 1.83+ changed x86_64-unknown-none to produce PIE binaries (ET_DYN)
+# by default.  bootloader 0.9 parses the embedded kernel ELF at runtime
+# and expects ET_EXEC (static, fixed-address executable).  A PIE kernel
+# causes the bootloader's ELF loader to fail and the boot halts.
+#
+# `-C relocation-model=static` overrides the PIE default → the kernel
+# ELF is produced as ET_EXEC with no DYNAMIC segment, which bootloader
+# 0.9 can load and execute.
+# =============================================================================
+
+[target.x86_64-unknown-none]
+rustflags = ["-C", "relocation-model=static"]
