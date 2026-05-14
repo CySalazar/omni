@@ -11,7 +11,10 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::missing_docs_in_private_items,
-    clippy::uninlined_format_args
+    clippy::uninlined_format_args,
+    // `start / 4096` and `(start + len) / 4096` compute page-frame numbers
+    // from byte addresses. Floor division is intentional; floats are wrong here.
+    clippy::integer_division
 )]
 
 use bootloader::bootinfo::{FrameRange, MemoryRegion, MemoryRegionType};
