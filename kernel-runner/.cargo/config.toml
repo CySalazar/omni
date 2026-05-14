@@ -1,15 +1,25 @@
 # =============================================================================
 # kernel-runner — Cargo target configuration
 # =============================================================================
-# Rust 1.83+ changed x86_64-unknown-none to produce PIE binaries (ET_DYN)
-# by default.  bootloader 0.9 parses the embedded kernel ELF at runtime
-# and expects ET_EXEC (static, fixed-address executable).  A PIE kernel
-# causes the bootloader's ELF loader to fail and the boot halts.
+# Rust 1.83+ x86_64-unknown-none has `position_independent_executables = true`
+# in the target spec.  This causes rustc to:
+#   1. Generate RIP-relative code for globals (relocation model = static-pie)
+#   2. Pass `-pie` to the linker → ELF type ET_DYN + DYNAMIC segment
 #
-# `-C relocation-model=static` overrides the PIE default → the kernel
-# ELF is produced as ET_EXEC with no DYNAMIC segment, which bootloader
-# 0.9 can load and execute.
+# bootloader 0.9's second-stage ELF loader expects ET_EXEC (static,
+# fixed-address executable).  When it receives ET_DYN it calls its error
+# handler which panics at an infinite `jmp $` loop — confirmed by local
+# QEMU in_asm trace (bootloader panics at virtual address 0xBEC0).
+#
+# Two flags are required to produce ET_EXEC:
+#   1. `-C relocation-model=static`   → absolute addressing, no GOT/PLT
+#   2. `-C link-arg=--no-pie`         → cancels the `-pie` rustc passes
+#                                        to LLD due to the target spec;
+#                                        last flag wins in LLD → ET_EXEC
 # =============================================================================
 
 [target.x86_64-unknown-none]
-rustflags = ["-C", "relocation-model=static"]
+rustflags = [
+    "-C", "relocation-model=static",
+    "-C", "link-arg=--no-pie",
+]
