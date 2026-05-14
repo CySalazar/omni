@@ -122,8 +122,7 @@ Full state machine and transition rules: `OIP-Process-001` §4 (*Lifecycle*).
 | 002 | Standards Track | Compliance Proof Scheme — STARK over SNARK for v1 | Draft | cySalazar | 2026-05-10 |
 | 003 | Standards Track | UEFI Bootloader Selection and Kernel `no_std` Transition Plan | Draft | cySalazar | 2026-05-10 |
 | 004 | Standards Track | Migrate workspace serialization from bincode v2 (unmaintained) to postcard | Last Call *(closes 2026-05-26)* | cySalazar | 2026-05-12 |
-| 004 | Standards Track | Kernel panic handler and global allocator (gate K3 of OIP-Kernel-003) | Draft | cySalazar | 2026-05-12 |
-| 005 | Standards Track | Boot hand-off ABI and kernel-runner crate (gate K4 of OIP-Kernel-003) | Draft | cySalazar | 2026-05-12 |
+| 005 | Standards Track | Boot hand-off ABI and kernel-runner crate (gate K4 of OIP-Kernel-003) | Review | cySalazar | 2026-05-12 |
 | 005 | Process | Voting weight formula — non-saturating uptime, contribution signals, conflict-of-interest guards | Draft | cySalazar | 2026-05-12 |
 | 006 | Standards Track | OmniContainer — native container engine with Linux/Windows compatibility | Draft | cySalazar | 2026-05-12 |
 | 007 | Standards Track | OMNI Helper — Agentic Need-Detection, Autonomy Levels, and Impact Dashboard | Draft | cySalazar | 2026-05-12 |
@@ -131,8 +130,9 @@ Full state machine and transition rules: `OIP-Process-001` §4 (*Lifecycle*).
 | 009 | Standards Track | `omni-forge` — On-Demand Rust → WASM/ELF Generation Pipeline | Draft | cySalazar | 2026-05-12 |
 | 010 | Standards Track | `omni-market` — Stichting-Curated Marketplace + Continuous CVE Re-Scan | Draft | cySalazar | 2026-05-12 |
 | 011 | Standards Track | Omni\* Flagship Apps Program + OmniCode v1 (Phased Delivery) | Draft | cySalazar | 2026-05-12 |
+| 012 | Standards Track | Kernel panic handler and global allocator (gate K3 of OIP-Kernel-003) | Review | cySalazar | 2026-05-12 |
 
-> **Note on duplicate trailing numbers:** `OIP-Bounty-002` / `OIP-Crypto-002`, `OIP-Serde-004` / `OIP-Kernel-004`, and `OIP-Kernel-005` / `OIP-Voting-005` share trailing numbers (placeholder collisions). Per `OIP-Process-001` §8.3, placeholder collisions in `Draft` are explicitly permitted and reconciled by the editors at the `Draft → Review` transition: the first of a colliding pair to reach `Review` retains its placeholder integer; the other is renumbered to the next free integer in the same PR that opens its own `Review` window. `OIP-Bounty-002` and `OIP-Serde-004` are already past `Review` (Last Call closes 2026-05-26), so their integers are now canonical; `OIP-Crypto-002` and `OIP-Kernel-004` will be renumbered when they reach `Review`.
+> **Note on duplicate trailing numbers (history):** `OIP-Bounty-002` / `OIP-Crypto-002`, `OIP-Serde-004` / `OIP-Kernel-004` (was), and `OIP-Kernel-005` / `OIP-Voting-005` shared trailing numbers as placeholder collisions at `Draft` stage. Per `OIP-Process-001` §8.3, placeholder collisions in `Draft` are explicitly permitted and reconciled by the editors at the `Draft → Review` transition: the first of a colliding pair to reach `Review` retains its placeholder integer; the other is renumbered to the next free integer in the same PR that opens its own `Review` window. Current state: `OIP-Bounty-002` and `OIP-Serde-004` are canonical (Last Call closes 2026-05-26). `OIP-Kernel-005` reached `Review` first within its collision pair, retaining `005`; `OIP-Voting-005` (still `Draft`) will be renumbered when it reaches `Review`. `OIP-Kernel-004` was renumbered to **`OIP-Kernel-012`** at its `Draft → Review` transition (2026-05-14) since `OIP-Serde-004` was already canonical. `OIP-Crypto-002` (still `Draft`) will be renumbered when it reaches `Review`.
 
 ---
 

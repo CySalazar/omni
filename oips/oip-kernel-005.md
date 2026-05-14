@@ -2,14 +2,14 @@
 oip: 5
 title: Boot hand-off ABI and kernel-runner crate (gate K4 of OIP-Kernel-003)
 track: Standards Track
-status: Draft
+status: Review
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-12
-updated: 2026-05-12
+updated: 2026-05-14
 requires:
   - 3
-  - 4
+  - 12
 supersedes: ~
 superseded-by: ~
 discussion: https://github.com/CySalazar/omni/discussions (TBD link)
@@ -18,7 +18,7 @@ license: CC0-1.0
 
 ## Abstract
 
-`OIP-Kernel-003` § 3 defines a 5-step transition (K1–K5) for `omni-kernel`. K1 (feature flag) and K2 (`#![no_std]` switch) merged on `feat/p1-foundational-crates`. K3 (panic handler + bump allocator) is specified by `OIP-Kernel-004` (in `Draft`) and closes the bare-metal build gate. This OIP — `OIP-Kernel-005` — specifies K4: the **boot hand-off ABI** between the bootloader and `omni-kernel`, and introduces the **`kernel-runner/` crate** (separate workspace member, sibling to `omni-kernel`) that owns the `_start` entry point, the `bootloader` crate v0.11+ build glue, the QEMU run configuration, and the `BumpHeap::init` call that bridges the K3 allocator to a real heap region.
+`OIP-Kernel-003` § 3 defines a 5-step transition (K1–K5) for `omni-kernel`. K1 (feature flag) and K2 (`#![no_std]` switch) merged on `feat/p1-foundational-crates`. K3 (panic handler + bump allocator) is specified by `OIP-Kernel-012` (in `Draft`) and closes the bare-metal build gate. This OIP — `OIP-Kernel-005` — specifies K4: the **boot hand-off ABI** between the bootloader and `omni-kernel`, and introduces the **`kernel-runner/` crate** (separate workspace member, sibling to `omni-kernel`) that owns the `_start` entry point, the `bootloader` crate v0.11+ build glue, the QEMU run configuration, and the `BumpHeap::init` call that bridges the K3 allocator to a real heap region.
 
 K4 is the natural follow-up to K3: once the kernel can *compile* under `x86_64-unknown-none`, it still cannot *boot* without an entry point and a memory map. K4 produces a bootable artifact that halts in `kmain` after printing a recognizable banner. The QEMU smoke test (K5) follows in a separate OIP.
 
@@ -217,7 +217,7 @@ Fields not listed above (`api_version` etc.) MAY be inspected for sanity logging
 
 ### S6. Removal of the K3 extern-symbol stubs
 
-`OIP-Kernel-004` § S3 introduces `OMNI_KERNEL_HEAP_BASE` and `OMNI_KERNEL_HEAP_LEN` as `extern "Rust"` symbols that an external runner must set. **This OIP removes those symbols** and replaces them with the in-kernel `pick_region` API documented in § S5. Removal is mandatory: leaving the stubs in place would invite two ways of provisioning the heap (the runner setting symbols *and* `pick_region` choosing a region), which is exactly the kind of dual-path ambiguity the OIP process exists to prevent.
+`OIP-Kernel-012` § S3 introduces `OMNI_KERNEL_HEAP_BASE` and `OMNI_KERNEL_HEAP_LEN` as `extern "Rust"` symbols that an external runner must set. **This OIP removes those symbols** and replaces them with the in-kernel `pick_region` API documented in § S5. Removal is mandatory: leaving the stubs in place would invite two ways of provisioning the heap (the runner setting symbols *and* `pick_region` choosing a region), which is exactly the kind of dual-path ambiguity the OIP process exists to prevent.
 
 The K4 reference branch deletes the `// TODO(OIP-Kernel-005)` lines introduced by K3, the extern declarations, and the per-symbol documentation block. The K3 OIP transitions to `Final` when this OIP's reference branch merges (K3's deferred work is closed by K4 landing).
 
@@ -356,9 +356,9 @@ Patch releases of `bootloader` have, in the past, changed the on-disk layout of 
 
 ## Backwards Compatibility
 
-`OIP-Kernel-004` introduced two extern-symbol stubs (`OMNI_KERNEL_HEAP_BASE`, `OMNI_KERNEL_HEAP_LEN`) as a deliberate placeholder until this OIP. This OIP **removes** the stubs (§ S6). The removal is breaking only at the K3 implementation level — no third-party code consumes the stubs, no on-disk artifact depends on them, and no wire-format byte changes.
+`OIP-Kernel-012` introduced two extern-symbol stubs (`OMNI_KERNEL_HEAP_BASE`, `OMNI_KERNEL_HEAP_LEN`) as a deliberate placeholder until this OIP. This OIP **removes** the stubs (§ S6). The removal is breaking only at the K3 implementation level — no third-party code consumes the stubs, no on-disk artifact depends on them, and no wire-format byte changes.
 
-Because `OIP-Kernel-004` is still in `Draft` at the time this OIP is filed, the removal is a coordinated drafting concern, not a backwards-compatibility break in any meaningful sense. The two OIPs land on adjacent branches and the K3 stubs never survive past the K3 → K4 transition. If K3 transitions to `Active` before K4, the stubs live for the activation phase only and are removed in the K4 PR that lands shortly after.
+Because `OIP-Kernel-012` is still in `Draft` at the time this OIP is filed, the removal is a coordinated drafting concern, not a backwards-compatibility break in any meaningful sense. The two OIPs land on adjacent branches and the K3 stubs never survive past the K3 → K4 transition. If K3 transitions to `Active` before K4, the stubs live for the activation phase only and are removed in the K4 PR that lands shortly after.
 
 `omni-kernel`'s public Rust API gains one new public symbol: `omni_kernel::kmain`. This is additive; no existing consumer's build breaks.
 
