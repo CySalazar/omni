@@ -113,9 +113,15 @@ fi
 echo "  DISPLAY=\${DISPLAY}"
 
 # Converti raw → VDI (sempre, per aggiornare il disco)
+# Il bootimage prodotto da cargo bootimage è ~108K: troppo piccolo per VirtualBox.
+# Padding a 4MB prima della conversione.
+echo "  Padding bootimage a 4MB..."
+PADDED_PATH="${REMOTE_DIR}/bootimage-padded.img"
+cp "\$BOOTIMAGE_PATH" "\$PADDED_PATH"
+truncate -s 4M "\$PADDED_PATH"
 echo "  Conversione raw → VDI..."
 rm -f "\$VDI_PATH"
-VBoxManage convertfromraw "\$BOOTIMAGE_PATH" "\$VDI_PATH" --format VDI
+VBoxManage convertfromraw "\$PADDED_PATH" "\$VDI_PATH" --format VDI
 echo "  VDI: \$(du -sh \$VDI_PATH | cut -f1)"
 
 # Crea VM se non esiste
@@ -128,7 +134,8 @@ if ! VBoxManage showvminfo "\$VM" &>/dev/null; then
         --boot1 disk --boot2 none --boot3 none --boot4 none \
         --firmware bios \
         --nic1 none \
-        --audio none
+        --audio none \
+        --usb off
     VBoxManage storagectl "\$VM" --name "IDE" --add ide --controller PIIX4
 else
     echo "  VM '\$VM' già esistente — aggiorno disco."
@@ -136,8 +143,10 @@ else
     VBoxManage storageattach "\$VM" --storagectl "IDE" \
         --port 0 --device 0 --type hdd --medium none 2>/dev/null || true
     VBoxManage closemedium disk "\$VDI_PATH" --delete 2>/dev/null || true
-    # Ri-converti (era stato cancellato sopra dal closemedium --delete)
-    VBoxManage convertfromraw "\$BOOTIMAGE_PATH" "\$VDI_PATH" --format VDI
+    # Ri-converti con padding
+    cp "\$BOOTIMAGE_PATH" "\$PADDED_PATH"
+    truncate -s 4M "\$PADDED_PATH"
+    VBoxManage convertfromraw "\$PADDED_PATH" "\$VDI_PATH" --format VDI
 fi
 
 # Attacca il disco

@@ -71,9 +71,12 @@ log "Bootimage: ${BOOTIMAGE} ($(wc -c < "$BOOTIMAGE") bytes)"
 # 3. Convert raw image → VDI
 # ---------------------------------------------------------------------------
 
-log "Converting to VDI → ${VDI_PATH}"
+log "Padding bootimage to 4MB (VirtualBox minimum) and converting to VDI → ${VDI_PATH}"
+PADDED_IMG="/tmp/omni-os-k4-padded.img"
+cp "${BOOTIMAGE}" "${PADDED_IMG}"
+truncate -s 4M "${PADDED_IMG}"
 rm -f "${VDI_PATH}"
-VBoxManage convertfromraw "${BOOTIMAGE}" "${VDI_PATH}" --format VDI
+VBoxManage convertfromraw "${PADDED_IMG}" "${VDI_PATH}" --format VDI
 
 # ---------------------------------------------------------------------------
 # 4. Create VM (idempotent: skip if already exists)
@@ -102,9 +105,11 @@ else
         --port 0 --device 0 --type hdd --medium none 2>/dev/null || true
     # Unregister the old VDI from VirtualBox media registry.
     VBoxManage closemedium disk "${VDI_PATH}" --delete 2>/dev/null || true
-    # Re-convert and re-attach.
-    rm -f "${VDI_PATH}"
-    VBoxManage convertfromraw "${BOOTIMAGE}" "${VDI_PATH}" --format VDI
+    # Re-convert and re-attach (with padding).
+    rm -f "${VDI_PATH}" "${PADDED_IMG}"
+    cp "${BOOTIMAGE}" "${PADDED_IMG}"
+    truncate -s 4M "${PADDED_IMG}"
+    VBoxManage convertfromraw "${PADDED_IMG}" "${VDI_PATH}" --format VDI
     VBoxManage storageattach "${VM_NAME}" --storagectl "IDE" \
         --port 0 --device 0 --type hdd --medium "${VDI_PATH}"
 fi
