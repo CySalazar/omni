@@ -89,3 +89,75 @@ pub unsafe fn inb(port: u16) -> u8 {
     }
     value
 }
+
+// ---------------------------------------------------------------------------
+// RTC-based busy-wait
+// ---------------------------------------------------------------------------
+
+const CMOS_ADDR: u16 = 0x70;
+const CMOS_DATA: u16 = 0x71;
+
+unsafe fn cmos_read(reg: u8) -> u8 {
+    // Bit 7 of the address port controls NMI; keep it clear.
+    // SAFETY: forwarded to caller's safety contract.
+    unsafe {
+        outb(CMOS_ADDR, reg & 0x7F);
+        inb(CMOS_DATA)
+    }
+}
+
+fn rtc_update_in_progress() -> bool {
+    // SAFETY: CMOS status register A (0x0A) is a well-defined read target.
+    (unsafe { cmos_read(0x0A) } & 0x80) != 0
+}
+
+/// Spin-wait for `secs` seconds using the CMOS Real-Time Clock.
+///
+/// The RTC seconds register advances once per second regardless of
+/// interrupt state, making it safe to call after `interrupts::disable`.
+/// Accuracy: ±1 second (single-second resolution of the RTC register).
+/// Works on QEMU `pc` and `q35` machine types and on VirtualBox.
+pub fn wait_secs(secs: u32) {
+    if secs == 0 {
+        return;
+    }
+
+    // Status register B bit 2: 1 = binary mode, 0 = BCD mode.
+    // SAFETY: CMOS register 0x0B is safe to read in ring 0.
+    let is_binary = unsafe { cmos_read(0x0B) } & 0x04 != 0;
+
+    let decode = |raw: u8| -> u32 {
+        if is_binary {
+            raw as u32
+        } else {
+            ((raw >> 4) as u32) * 10 + (raw & 0x0F) as u32
+        }
+    };
+
+    // Wait for any in-progress update to finish before sampling start time.
+    while rtc_update_in_progress() {
+        core::hint::spin_loop();
+    }
+    // SAFETY: CMOS register 0x00 (seconds) is safe to read in ring 0.
+    let start = decode(unsafe { cmos_read(0x00) });
+    let mut prev = start;
+    let mut elapsed: u32 = 0;
+
+    while elapsed < secs {
+        // Spin until the RTC is not in an update cycle.
+        while rtc_update_in_progress() {
+            core::hint::spin_loop();
+        }
+        let curr = decode(unsafe { cmos_read(0x00) });
+        if curr != prev {
+            elapsed += if curr > prev {
+                curr - prev
+            } else {
+                // Wrapped past 59 → 0.
+                (60 - prev) + curr
+            };
+            prev = curr;
+        }
+        core::hint::spin_loop();
+    }
+}

@@ -41,3 +41,4 @@ pub mod arch;
 pub mod early_console;
 pub mod heap;
 pub mod panic;
+pub mod vga;
