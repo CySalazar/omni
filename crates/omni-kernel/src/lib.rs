@@ -180,15 +180,33 @@ pub fn kmain(boot_info: &'static bootloader::bootinfo::BootInfo) -> ! {
     vga::write_at(4, 27, b"  O M N I   O S  ", vga::YELLOW, vga::BLACK);
     vga::write_at(5, 27, b"  K4 Boot Demo    ", vga::WHITE, vga::BLACK);
     vga::write_at(6, 27, b"  v", vga::WHITE, vga::BLACK);
-    vga::write_at(6, 30, env!("CARGO_PKG_VERSION").as_bytes(), vga::LIGHT_CYAN, vga::BLACK);
+    vga::write_at(
+        6,
+        30,
+        env!("CARGO_PKG_VERSION").as_bytes(),
+        vga::LIGHT_CYAN,
+        vga::BLACK,
+    );
 
     // Info table (rows 9-12).
-    vga::write_at( 9, 4, b"Kernel:", vga::LIGHT_CYAN, vga::BLACK);
-    vga::write_at( 9, 20, b"omni-kernel v", vga::WHITE, vga::BLACK);
-    vga::write_at( 9, 33, env!("CARGO_PKG_VERSION").as_bytes(), vga::WHITE, vga::BLACK);
+    vga::write_at(9, 4, b"Kernel:", vga::LIGHT_CYAN, vga::BLACK);
+    vga::write_at(9, 20, b"omni-kernel v", vga::WHITE, vga::BLACK);
+    vga::write_at(
+        9,
+        33,
+        env!("CARGO_PKG_VERSION").as_bytes(),
+        vga::WHITE,
+        vga::BLACK,
+    );
 
     vga::write_at(10, 4, b"Boot mode:", vga::LIGHT_CYAN, vga::BLACK);
-    vga::write_at(10, 20, b"BIOS / bootloader v0.9 (SeaBIOS)", vga::WHITE, vga::BLACK);
+    vga::write_at(
+        10,
+        20,
+        b"BIOS / bootloader v0.9 (SeaBIOS)",
+        vga::WHITE,
+        vga::BLACK,
+    );
 
     vga::write_at(11, 4, b"Memory:", vga::LIGHT_CYAN, vga::BLACK);
     vga::write_usize_at(11, 20, region_count, vga::WHITE, vga::BLACK);
@@ -202,13 +220,25 @@ pub fn kmain(boot_info: &'static bootloader::bootinfo::BootInfo) -> ! {
     //   col 4..21  = static prefix (17 chars)
     //   col 21..23 = 2-char number field (updated each tick)
     //   col 23..   = " seconds  " static suffix
-    vga::write_at(15, 4,  b"Powering off in:    seconds  ", vga::YELLOW, vga::BLACK);
+    vga::write_at(
+        15,
+        4,
+        b"Powering off in:    seconds  ",
+        vga::YELLOW,
+        vga::BLACK,
+    );
     for remaining in (1_usize..=10).rev() {
         vga::write_at(15, 21, b"  ", vga::YELLOW, vga::BLACK); // clear 2-char field
         vga::write_usize_at(15, 21, remaining, vga::YELLOW, vga::BLACK);
         arch::wait_secs(1);
     }
-    vga::write_at(15, 4, b"Powering off...              ", vga::YELLOW, vga::BLACK);
+    vga::write_at(
+        15,
+        4,
+        b"Powering off...              ",
+        vga::YELLOW,
+        vga::BLACK,
+    );
 
     arch::acpi_poweroff();
     arch::halt_forever()
