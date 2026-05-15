@@ -160,10 +160,10 @@ unsafe fn inl(port: u16) -> u32 {
 #[inline]
 unsafe fn pci_cfg_read32(bus: u8, dev: u8, func: u8, off: u8) -> u32 {
     let addr: u32 = 0x8000_0000
-        | ((bus as u32) << 16)
-        | ((dev as u32) << 11)
-        | ((func as u32) << 8)
-        | ((off & 0xFC) as u32);
+        | (u32::from(bus) << 16)
+        | (u32::from(dev) << 11)
+        | (u32::from(func) << 8)
+        | u32::from(off & 0xFC);
     unsafe {
         outl(0xCF8, addr);
         inl(0xCFC)
@@ -172,21 +172,23 @@ unsafe fn pci_cfg_read32(bus: u8, dev: u8, func: u8, off: u8) -> u32 {
 
 /// Trigger ACPI S5 (soft power-off).
 ///
-/// Scans PCI bus 0 for the Intel PIIX4 PM controller (vendor 0x8086,
-/// device 0x7113, always at function 3), reads PMBASE from config offset
-/// 0x40, and writes the SeaBIOS S5 sleep value (SLP_TYP=5, SLP_EN=1 →
-/// 0x3400) to PM1a_CNT (PMBASE + 4).
+/// Scans PCI bus 0 for the Intel PIIX4 PM controller (vendor `0x8086`,
+/// device `0x7113`, always at function 3), reads `PMBASE` from config offset
+/// `0x40`, and writes the `SeaBIOS` S5 sleep value (`SLP_TYP=5`, `SLP_EN=1` →
+/// `0x3400`) to `PM1a_CNT` (`PMBASE + 4`).
 ///
-/// Falls back to the VirtualBox/QEMU default hardcoded address (PMBASE =
-/// 0x4000, PM1a_CNT = 0x4004) if the PIIX4 is not found on the scanned
+/// Falls back to the `VirtualBox`/QEMU default hardcoded address (`PMBASE =
+/// 0x4000`, `PM1a_CNT = 0x4004`) if the PIIX4 is not found on the scanned
 /// device slots.
 ///
-/// Uses **only I/O-port accesses** (0xCF8/0xCFC/PM1a_CNT) — no memory
+/// Uses **only I/O-port accesses** (`0xCF8`/`0xCFC`/`PM1a_CNT`) — no memory
 /// reads — so it cannot trigger a page fault in the identity-mapped
 /// long-mode environment that bootloader v0.9 provides.
 pub fn acpi_poweroff() {
     let pmbase = unsafe { find_piix4_pmbase() }.unwrap_or(0x4000_u32);
     // PIIX4 PMBA bits [31:6] are the base address; bit 0 = I/O space type.
+    // Truncation is intentional: PMBASE is always a 16-bit I/O port address.
+    #[allow(clippy::cast_possible_truncation)]
     let pm1a_cnt = (pmbase & !1_u32) as u16 + 4;
     // SeaBIOS \_S5: SLP_TYP_A = 5 → PM1_CNT bits[12:10]=5, SLP_EN=bit[13]
     // → (5 << 10) | (1 << 13) = 0x1400 | 0x2000 = 0x3400
@@ -195,11 +197,11 @@ pub fn acpi_poweroff() {
     // halt_forever.
 }
 
-/// Scan PCI bus 0 for the PIIX4 PM controller and return its PMBASE.
+/// Scan PCI bus 0 for the PIIX4 PM controller and return its `PMBASE`.
 ///
-/// VirtualBox places the PIIX4 at bus=0, device=1 (or device=7 in some
+/// `VirtualBox` places the PIIX4 at bus=0, device=1 (or device=7 in some
 /// configurations), function=3. Scanning all 32 devices is safe because
-/// reading a non-existent device returns 0xFFFF_FFFF (no device present).
+/// reading a non-existent device returns `0xFFFF_FFFF` (no device present).
 unsafe fn find_piix4_pmbase() -> Option<u32> {
     for dev in 0_u8..32 {
         // PIIX4 PM controller: Intel (0x8086), device ID 0x7113.
@@ -220,7 +222,7 @@ unsafe fn find_piix4_pmbase() -> Option<u32> {
 /// The RTC seconds register advances once per second regardless of
 /// interrupt state, making it safe to call after `interrupts::disable`.
 /// Accuracy: ±1 second (single-second resolution of the RTC register).
-/// Works on QEMU `pc` and `q35` machine types and on VirtualBox.
+/// Works on QEMU `pc` and `q35` machine types and on `VirtualBox`.
 pub fn wait_secs(secs: u32) {
     if secs == 0 {
         return;
@@ -232,9 +234,9 @@ pub fn wait_secs(secs: u32) {
 
     let decode = |raw: u8| -> u32 {
         if is_binary {
-            raw as u32
+            u32::from(raw)
         } else {
-            ((raw >> 4) as u32) * 10 + (raw & 0x0F) as u32
+            u32::from(raw >> 4) * 10 + u32::from(raw & 0x0F)
         }
     };
 
