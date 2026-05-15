@@ -55,3 +55,11 @@ pub unsafe fn outb(_port: u16, _value: u8) {
 pub unsafe fn inb(_port: u16) -> u8 {
     0
 }
+
+/// No-op wait stub for non-x86 host builds.
+#[inline(always)]
+pub fn wait_secs(_secs: u32) {}
+
+/// No-op ACPI power-off stub for non-x86 host builds.
+#[inline(always)]
+pub fn acpi_poweroff() {}
