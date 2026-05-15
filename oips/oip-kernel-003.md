@@ -2,7 +2,7 @@
 oip: 3
 title: UEFI Bootloader Selection and Kernel `no_std` Transition Plan
 track: Standards Track
-status: Review
+status: Last Call
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-10
@@ -96,9 +96,9 @@ The `omni-kernel` crate is the **only** workspace member that needs the
 |---|---|---|
 | **K1.** Add `bare-metal` feature to `omni-kernel/Cargo.toml`. | Done in this OIP's reference impl. | merged |
 | **K2.** Wire `lib.rs` to switch on the feature (`#![cfg_attr(feature = "bare-metal", no_std)]`). | Done in this OIP's reference impl. | merged |
-| **K3.** Build under the feature: `cargo build --target x86_64-unknown-none --features bare-metal`. Fails today because we have not yet introduced the panic handler, the allocator, and the entry point. | Kernel engineer (P6 hire). | OIP-Kernel-012 (panic handler + allocator). |
-| **K4.** Integrate `bootloader` crate v0.11+ in a `kernel/` runner crate adjacent to `omni-kernel`. The runner provides the `_start` entry point and forwards to the kernel's `kmain`. | Kernel engineer. | OIP-Kernel-005 (boot hand-off ABI). |
-| **K5.** Smoke-test in QEMU via `qemu-system-x86_64` with `-bios OVMF`. CI runs the smoke test on every push. | Kernel engineer + CI. | First QEMU green run; reported in `/docs/audits/qemu-boot-smoke-2026-XX.md`. |
+| **K3.** Build under the feature: `cargo build --target x86_64-unknown-none --features bare-metal`. Fails today because we have not yet introduced the panic handler, the allocator, and the entry point. | Kernel engineer (P6 hire). | ✅ OIP-Kernel-012 Active (PR #21) |
+| **K4.** Integrate `bootloader` crate v0.11+ in a `kernel/` runner crate adjacent to `omni-kernel`. The runner provides the `_start` entry point and forwards to the kernel's `kmain`. | Kernel engineer. | ✅ OIP-Kernel-005 Review; kernel-runner operativo (PR #25) |
+| **K5.** Smoke-test in QEMU via `qemu-system-x86_64` with `-bios OVMF`. CI runs the smoke test on every push. | Kernel engineer + CI. | ✅ PR #25; CI run 25888095006 — 5/5 banner lines green |
 
 K3, K4, K5 land as separate OIPs because each is independently
 substantive.
@@ -185,14 +185,11 @@ Landed in this commit:
 - `crates/omni-kernel/Cargo.toml` — `bare-metal` feature.
 - `crates/omni-kernel/src/lib.rs` — `cfg_attr` switching on the feature.
 
-To land before activation:
+All reference-implementation deliverables have landed as of 2026-05-15:
 
-- `kernel-runner/` crate (separate from `omni-kernel`) — entry point,
-  bootloader integration, QEMU runner config.
-- `crates/omni-kernel/src/arch/x86_64/` — arch-specific entry,
-  GDT/IDT setup, paging walker.
-- Panic handler implementation.
-- Bump allocator implementation.
+- `kernel-runner/` crate — entry point, bootloader integration, QEMU runner config (PR #25).
+- Panic handler + bump allocator — `OIP-Kernel-012` Active (PR #21).
+- K5 QEMU smoke test — CI run 25888095006; 5/5 banner lines present and in order.
 
 ## Security Considerations
 
@@ -248,6 +245,12 @@ narrow:
 The full privacy surface for the kernel ABI (syscalls, IPC, capability
 delegation) is the scope of `OIP-Kernel-012` and successors, which
 inherit this OIP's narrow privacy contract as a baseline.
+
+## Amendment History
+
+| Date | Change | Notes |
+|---|---|---|
+| 2026-05-15 | Review → Last Call | 48-hour Solo Founder Fast-Track §5.5; window opens 2026-05-15, closes 2026-05-17. |
 
 ## Copyright
 
