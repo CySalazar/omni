@@ -78,6 +78,11 @@ signed commits — not in marketing copy that can be quietly walked back.
 
 ## Status
 
+> **K4 boot demo — running on real hardware (VirtualBox, 2026-05-15).**
+> The kernel boots bare-metal, writes a VGA banner, counts down, and powers off via ACPI S5.
+
+![OMNI OS K4 boot demo — VGA banner on VirtualBox](./docs/assets/k4-boot-demo.png)
+
 OMNI OS is currently in **Phase 0 (Foundation)**. The v0.1 design is complete and the foundational layer of the workspace is implemented:
 
 | Layer | Crates | State |
