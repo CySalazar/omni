@@ -197,10 +197,20 @@ pub fn kmain(boot_info: &'static bootloader::bootinfo::BootInfo) -> ! {
     vga::write_at(12, 4, b"Serial:", vga::LIGHT_CYAN, vga::BLACK);
     vga::write_at(12, 20, b"COM1 @ 115200 8N1", vga::WHITE, vga::BLACK);
 
-    // Halt notice.
-    vga::write_at(15, 4, b"System halting in 10 seconds...", vga::YELLOW, vga::BLACK);
+    // Countdown: update display once per second so the user can see the timer.
+    // Row 15 layout: "Powering off in: XX seconds  "
+    //   col 4..21  = static prefix (17 chars)
+    //   col 21..23 = 2-char number field (updated each tick)
+    //   col 23..   = " seconds  " static suffix
+    vga::write_at(15, 4,  b"Powering off in:    seconds  ", vga::YELLOW, vga::BLACK);
+    for remaining in (1_usize..=10).rev() {
+        vga::write_at(15, 21, b"  ", vga::YELLOW, vga::BLACK); // clear 2-char field
+        vga::write_usize_at(15, 21, remaining, vga::YELLOW, vga::BLACK);
+        arch::wait_secs(1);
+    }
+    vga::write_at(15, 4, b"Powering off...              ", vga::YELLOW, vga::BLACK);
 
-    arch::wait_secs(10);
+    arch::acpi_poweroff();
     arch::halt_forever()
 }
 
