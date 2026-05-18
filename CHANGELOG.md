@@ -15,6 +15,50 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ## [Unreleased]
 
+### Added
+
+- **Kernel — kernel stack isolation, Track B MB10 (2026-05-18).** Each kernel
+  task now owns a dedicated 4 KiB VA slot in the kernel-only range
+  `[0xFFFF_C000_0000_0000, 0xFFFF_C800_0000_0000)` (8 TiB capacity ≈ 1 G slots),
+  with a 4 KiB guard page directly below the writable stack page. Stack
+  overflow → `#PF` not-present with `CR2` = guard VA, deterministically caught
+  by the IDT handler from MB3. Replaces the previous "physical frame + bootloader
+  direct-map offset" stack VA that lived in the bootloader's RW window.
+  Implemented on branch `feat/kernel-mb10-stack-isolation` per
+  [`docs/adr/0002-mb10-kernel-stack-isolation.md`](./docs/adr/0002-mb10-kernel-stack-isolation.md):
+
+  - **`scheduling.rs` constants**: `KERNEL_STACK_VA_BASE`,
+    `KERNEL_STACK_VA_END`, `KERNEL_STACK_SIZE = 0x1000`, `KERNEL_STACK_STRIDE
+    = 0x2000`. Walking the range by `KERNEL_STACK_STRIDE` gives the guard VA
+    of each slot; adding `KERNEL_STACK_SIZE` gives the writable base.
+  - **`RoundRobinScheduler::next_kernel_stack_slot`** bump allocator
+    (`usize`); slots never reused (task-exit dealloc arrives with the
+    process model in MB11+).
+  - **`TaskControlBlock::kernel_stack_va`** new field alongside the existing
+    `kernel_stack_phys`, retained for debug logs and future free-list.
+  - **`spawn_kernel_task` new signature**:
+    `(entry, kernel_stack_phys, mapper: &mut PageMapper,
+      alloc: &mut BitmapFrameAllocator<N>, priority)`. Drops `phys_offset`
+    (no longer needed — stack VA comes from the isolated range, not from the
+    direct-map). Calls `mapper.map_4k(va, phys, PRESENT|WRITABLE|NX, alloc)`
+    for the writable page; the guard page is deliberately NOT mapped.
+  - **`kmain` / `bare_metal::mb8_smoke::run`**: call sites updated.
+    `pager` is now `mut` so `map_4k` can extend the kernel page tables;
+    the diagnostic line `[stack] kernel stack VA range = 0xFFFF_C000_… ..
+    0xFFFF_C800_… (slot 0)` appears alongside the idle-task spawn.
+  - **Bootstrap caveat invariant**: `spawn_bootstrap_task` continues to
+    reuse the boot stack with sentinel `kernel_stack_phys = 0,
+    kernel_stack_va = 0`; the first timer tick still overwrites
+    `context.rsp` with the real boot-stack RSP. MB10 does not change the
+    bootstrap path.
+  - **`omni_context_switch` and `setup_task_frame`**: untouched — they
+    operate on `stack_top: u64` and are agnostic to the VA's origin.
+  - **Tests**: 4 new unit tests in `scheduling::tests` exercise the
+    range-membership, stride-disjointness, guard-offset-below-stack,
+    and range-arithmetic invariants. Full `cargo test -p omni-kernel
+    --features bare-metal` → 79 unit + 21 integration green (was 75 +
+    21).
+
 ## [0.2.0] — 2026-05-18
 
 Closes the Track A desktop cycle (M1–M5 + M3b) and the Track B kernel-core cycle (MB1–MB9). The `omni-kernel` bare-metal binary now boots end-to-end on QEMU+OVMF, VirtualBox, and Proxmox VMID 103 with a full paging/IDT/syscall/scheduler/LAPIC/preemption stack and a graphical desktop demo. No public-API breakage versus `0.1.0` — versioning is bumped from `0.1.0` to `0.2.0` because of the new kernel capability surface (minor under SemVer 2.0.0). See `progress-omni.md` § 2 for the per-track milestone matrix and § 3 for the test/build evidence (`cargo test --workspace` → 273 pass, `cargo test -p omni-kernel --features bare-metal` → 75 unit + 21 integration).

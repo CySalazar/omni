@@ -382,7 +382,9 @@ pub fn kmain(
     // -------------------------------------------------------------------------
     let phys_offset_mb2 = boot_info.physical_memory_offset.into_option().unwrap_or(0);
     let cr3_raw = arch::read_cr3();
-    let pager = paging::PageMapper::new(phys_offset_mb2, memory::PhysAddr(cr3_raw & !0xFFF));
+    // `mut` because MB10's `spawn_kernel_task` will call `pager.map_4k` to
+    // map each task's kernel stack into the isolated VA range.
+    let mut pager = paging::PageMapper::new(phys_offset_mb2, memory::PhysAddr(cr3_raw & !0xFFF));
     early_console::write_str("[paging] mapper ready  CR3=");
     early_console::write_usize((cr3_raw & !0xFFF) as usize);
     early_console::write_str("\n");
@@ -456,7 +458,8 @@ pub fn kmain(
     // frame at `phys + phys_offset` cannot fault.
     // -------------------------------------------------------------------------
     // SAFETY: single-CPU, non-preemptive; SCHEDULER and FRAME_ALLOC are not
-    // aliased anywhere else at this point.
+    // aliased anywhere else at this point. `pager` was constructed above in
+    // this same function and is exclusively borrowed across this block.
     #[cfg(target_arch = "x86_64")]
     unsafe {
         let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
@@ -465,10 +468,18 @@ pub fn kmain(
             match sched.spawn_kernel_task(
                 idle_task,
                 phys.0,
-                phys_offset_mb2,
+                &mut pager,
+                fa,
                 scheduling::PriorityClass::Idle,
             ) {
-                Ok(_) => early_console::write_str("[sched] scheduler init  idle task spawned\n"),
+                Ok(_) => {
+                    early_console::write_str("[sched] scheduler init  idle task spawned\n");
+                    early_console::write_str("[stack] kernel stack VA range = ");
+                    early_console::write_usize(scheduling::KERNEL_STACK_VA_BASE as usize);
+                    early_console::write_str(" .. ");
+                    early_console::write_usize(scheduling::KERNEL_STACK_VA_END as usize);
+                    early_console::write_str(" (slot 0)\n");
+                }
                 Err(_) => early_console::write_str("[sched] scheduler init  idle spawn FAILED\n"),
             }
         } else {
@@ -526,7 +537,7 @@ pub fn kmain(
         feature = "mb8-smoke",
         not(test)
     ))]
-    bare_metal::mb8_smoke::run(phys_offset_mb2);
+    bare_metal::mb8_smoke::run(&mut pager);
 
     // ELF64 parser probe (MB5): parse a minimal embedded test binary to verify
     // the parser is functional before any real userspace binary arrives.

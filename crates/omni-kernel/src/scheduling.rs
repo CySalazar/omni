@@ -168,7 +168,37 @@ pub struct TaskControlBlock {
     /// Physical base address of this task's kernel stack (4 KiB frame).
     /// Retained for deallocation in `TaskExit` (MB7+).
     pub kernel_stack_phys: u64,
+    /// Virtual base address of the task's kernel stack (MB10): the *bottom*
+    /// of the writable 4 KiB page (its *top* is `kernel_stack_va +
+    /// KERNEL_STACK_SIZE`). `0` is the sentinel used by
+    /// `spawn_bootstrap_task` — the bootstrap kmain task re-uses the boot
+    /// stack and has no entry in the isolated VA range.
+    pub kernel_stack_va: u64,
 }
+
+// -----------------------------------------------------------------------------
+// MB10 — Kernel stack isolation constants
+// -----------------------------------------------------------------------------
+
+/// Base of the kernel-only VA range that holds kernel-task stacks.
+/// `0xFFFF_C000_0000_0000` is half-canonical kernel-half on x86_64 long mode;
+/// disjoint from the bootloader's direct-map (`0xFFFF_8800_…` on
+/// `bootloader 0.11`) and from the future user-space range planned for MB11
+/// (`0x0000_0040_…`). See `docs/adr/0002-mb10-kernel-stack-isolation.md`.
+pub const KERNEL_STACK_VA_BASE: u64 = 0xFFFF_C000_0000_0000;
+
+/// Exclusive upper bound of the kernel-stack VA range — 8 TiB of address
+/// space (`~1 G slots`), ample for Phase 1.
+pub const KERNEL_STACK_VA_END: u64 = 0xFFFF_C800_0000_0000;
+
+/// Writable kernel-stack size per task, in bytes (4 KiB single frame).
+pub const KERNEL_STACK_SIZE: u64 = 0x1000;
+
+/// Address-space stride per slot — 4 KiB guard page (not mapped) + 4 KiB
+/// stack page (mapped). Walking the range by `KERNEL_STACK_STRIDE` gives
+/// the *guard* VA of each slot; adding `KERNEL_STACK_SIZE` (= guard size)
+/// gives the writable stack base.
+pub const KERNEL_STACK_STRIDE: u64 = 0x2000;
 
 // -----------------------------------------------------------------------------
 // RoundRobinScheduler — MB6 concrete implementation
@@ -192,6 +222,16 @@ pub struct RoundRobinScheduler {
     /// Read only in cfg-gated code (bare-metal + test); suppress the lint.
     #[allow(dead_code)]
     next_id: u64,
+    /// MB10 — index of the next kernel-stack slot to hand out from the
+    /// isolated VA range `[KERNEL_STACK_VA_BASE, KERNEL_STACK_VA_END)`.
+    /// Pure bump allocator: slots are never reused (task-exit dealloc
+    /// arrives with the process model in MB11+).
+    ///
+    /// Read only by `allocate_stack_slot`, which itself is cfg-gated for
+    /// the bare-metal x86_64 spawn path and the host-side unit tests.
+    /// Suppress dead-code lint on non-x86_64 host clippy runs.
+    #[allow(dead_code)]
+    next_kernel_stack_slot: usize,
 }
 
 impl RoundRobinScheduler {
@@ -211,7 +251,31 @@ impl RoundRobinScheduler {
             ],
             current: None,
             next_id: 1,
+            next_kernel_stack_slot: 0,
         }
+    }
+
+    /// MB10 — returns the next kernel-stack VA slot, advancing the bump
+    /// allocator. Returns `None` if the isolated range is exhausted
+    /// (would require ~1 G task spawns).
+    ///
+    /// Called only by `spawn_kernel_task` (bare-metal x86_64) and by the
+    /// host-side unit tests; suppress dead-code lint on non-x86_64
+    /// `cargo clippy --workspace` runs.
+    #[allow(dead_code)]
+    fn allocate_stack_slot(&mut self) -> Option<u64> {
+        let slot = self.next_kernel_stack_slot as u64;
+        let slot_base = KERNEL_STACK_VA_BASE.checked_add(slot.checked_mul(KERNEL_STACK_STRIDE)?)?;
+        // Guard page sits at slot_base; stack page sits at slot_base +
+        // KERNEL_STACK_SIZE; stack top (the value used for the initial RSP)
+        // is slot_base + KERNEL_STACK_STRIDE — must remain inside the range.
+        let stack_top = slot_base.checked_add(KERNEL_STACK_STRIDE)?;
+        if stack_top > KERNEL_STACK_VA_END {
+            return None;
+        }
+        self.next_kernel_stack_slot = self.next_kernel_stack_slot.checked_add(1)?;
+        // Return the writable stack base (i.e. the guard page is right *below* it).
+        Some(slot_base + KERNEL_STACK_SIZE)
     }
 
     /// Return the `TaskId` of the task currently running on this CPU.
@@ -220,30 +284,65 @@ impl RoundRobinScheduler {
     }
 
     /// Spawn a kernel-mode task from a function pointer and a pre-allocated
-    /// kernel stack frame.
+    /// physical kernel stack frame, mapping the frame into the isolated
+    /// kernel-stack VA range introduced in MB10 (ADR-0002).
     ///
-    /// `kernel_stack_phys` is the physical base of a 4 KiB frame from
-    /// `BitmapFrameAllocator`. `phys_offset` is the bootloader direct-map
-    /// window base used to compute the virtual address.
+    /// Layout per slot (one slot = `KERNEL_STACK_STRIDE` bytes of VA):
+    ///
+    /// ```text
+    ///   slot_base                          ┐ 4 KiB guard page — NOT mapped
+    ///   slot_base + KERNEL_STACK_SIZE      ┤ stack bottom — PRESENT|WRITABLE|NX
+    ///   slot_base + KERNEL_STACK_STRIDE    ┘ stack top (initial RSP target)
+    /// ```
+    ///
+    /// Stack overflow past `KERNEL_STACK_SIZE` bytes triggers `#PF` on the
+    /// guard page with `CR2` = guard VA — caught by the IDT handler from
+    /// MB3.
+    ///
+    /// `kernel_stack_phys` is the physical base of a 4 KiB frame already
+    /// allocated from `alloc` by the caller (so `spawn_kernel_task` itself
+    /// can stay infallible w.r.t. physical exhaustion: the caller already
+    /// surfaced that case). `mapper` and `alloc` are required by the inner
+    /// `PageMapper::map_4k` call.
     ///
     /// # Safety
     ///
     /// `kernel_stack_phys` must be the base of a valid, exclusively owned
-    /// 4 KiB kernel stack frame. `phys_offset` must match the bootloader's
-    /// direct-map offset.
+    /// 4 KiB frame. `mapper` and `alloc` must point at the kernel's active
+    /// `PageMapper` / `BitmapFrameAllocator` — calling this from any
+    /// non-kernel context corrupts the bootloader page tables.
     #[cfg(all(feature = "bare-metal", target_arch = "x86_64"))]
-    pub unsafe fn spawn_kernel_task(
+    pub unsafe fn spawn_kernel_task<const N: usize>(
         &mut self,
         entry: fn() -> !,
         kernel_stack_phys: u64,
-        phys_offset: u64,
+        mapper: &mut crate::bare_metal::paging::PageMapper,
+        alloc: &mut crate::memory::BitmapFrameAllocator<N>,
         priority: PriorityClass,
     ) -> KernelResult<TaskId> {
         use crate::bare_metal::context_switch::setup_task_frame;
+        use crate::bare_metal::paging::{PTE_NO_EXEC, PTE_PRESENT, PTE_WRITABLE};
+        use crate::memory::{PhysAddr, VirtAddr};
 
-        // Stack grows downward; virtual top of the 4 KiB frame = base + 4096.
-        let stack_virt_top = kernel_stack_phys + phys_offset + 4096;
-        // SAFETY: stack_virt_top is the top of a valid, writable kernel stack frame.
+        let kernel_stack_va = self
+            .allocate_stack_slot()
+            .ok_or(KernelError::ResourceExhausted)?;
+
+        // Map the writable stack page; deliberately leave the guard page
+        // (kernel_stack_va - KERNEL_STACK_SIZE) un-mapped.
+        if !mapper.map_4k(
+            VirtAddr(kernel_stack_va),
+            PhysAddr(kernel_stack_phys),
+            PTE_PRESENT | PTE_WRITABLE | PTE_NO_EXEC,
+            alloc,
+        ) {
+            return Err(KernelError::ResourceExhausted);
+        }
+
+        // Stack grows downward; initial RSP = top of the writable page.
+        let stack_virt_top = kernel_stack_va + KERNEL_STACK_SIZE;
+        // SAFETY: stack_virt_top is the top of a 4 KiB writable kernel
+        // stack page that we just mapped exclusively for this task.
         let initial_rsp = unsafe { setup_task_frame(stack_virt_top, entry as u64) };
 
         let id = TaskId(self.next_id);
@@ -255,6 +354,7 @@ impl RoundRobinScheduler {
             priority,
             context: CpuContext { rsp: initial_rsp },
             kernel_stack_phys,
+            kernel_stack_va,
         });
         self.run_queues[priority as usize].push(id.0);
         Ok(id)
@@ -286,6 +386,9 @@ impl RoundRobinScheduler {
             context: CpuContext { rsp: 0 },
             // No owned stack frame; the boot stack is used in-place.
             kernel_stack_phys: 0,
+            // Sentinel: bootstrap kmain task lives on the boot stack, not in
+            // the MB10 isolated VA range.
+            kernel_stack_va: 0,
         });
         // CRUCIAL: timer's `kernel_check_need_resched` would early-return
         // without this; the placeholder must be the current task already.
@@ -304,6 +407,7 @@ impl RoundRobinScheduler {
             priority,
             context: CpuContext::default(),
             kernel_stack_phys: 0,
+            kernel_stack_va: 0,
         });
         self.run_queues[priority as usize].push(id.0);
         id
@@ -465,6 +569,59 @@ mod tests {
         let mut sched = RoundRobinScheduler::new();
         let t = sched.mock_enqueue(PriorityClass::RealTime);
         assert!(sched.preempt(t).is_ok());
+    }
+
+    // -------------------------------------------------------------------------
+    // MB10 — kernel-stack VA range invariants
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn mb10_first_slot_starts_after_guard_page() {
+        let mut sched = RoundRobinScheduler::new();
+        let va = sched.allocate_stack_slot().expect("first slot");
+        // Slot 0: guard at BASE, stack at BASE + KERNEL_STACK_SIZE.
+        assert_eq!(va, KERNEL_STACK_VA_BASE + KERNEL_STACK_SIZE);
+        // The guard page sits one stack-size BELOW the writable stack base.
+        assert_eq!(va - KERNEL_STACK_SIZE, KERNEL_STACK_VA_BASE);
+    }
+
+    #[test]
+    fn mb10_consecutive_slots_advance_by_stride() {
+        let mut sched = RoundRobinScheduler::new();
+        let va0 = sched.allocate_stack_slot().expect("slot 0");
+        let va1 = sched.allocate_stack_slot().expect("slot 1");
+        let va2 = sched.allocate_stack_slot().expect("slot 2");
+        assert_eq!(va1 - va0, KERNEL_STACK_STRIDE);
+        assert_eq!(va2 - va1, KERNEL_STACK_STRIDE);
+        // All stay inside the dedicated range.
+        for va in [va0, va1, va2] {
+            assert!(va >= KERNEL_STACK_VA_BASE + KERNEL_STACK_SIZE);
+            assert!(va + KERNEL_STACK_SIZE <= KERNEL_STACK_VA_END);
+        }
+    }
+
+    #[test]
+    fn mb10_guard_page_layout_is_below_each_stack() {
+        let mut sched = RoundRobinScheduler::new();
+        for expected_slot in 0u64..4 {
+            let va = sched.allocate_stack_slot().expect("slot");
+            let slot_base = KERNEL_STACK_VA_BASE + expected_slot * KERNEL_STACK_STRIDE;
+            // Guard page is the 4 KiB ABOVE slot_base; stack page is the next 4 KiB.
+            assert_eq!(va, slot_base + KERNEL_STACK_SIZE);
+        }
+    }
+
+    #[test]
+    fn mb10_constants_fit_their_arithmetic_invariants() {
+        // 8 TiB total range (BASE = 0xFFFF_C000_…, END = 0xFFFF_C800_…).
+        assert_eq!(KERNEL_STACK_VA_END - KERNEL_STACK_VA_BASE, 8u64 << 40);
+        // Stride = 2 × stack page (guard + stack).
+        assert_eq!(KERNEL_STACK_STRIDE, KERNEL_STACK_SIZE * 2);
+        // Stack page = 4 KiB.
+        assert_eq!(KERNEL_STACK_SIZE, 0x1000);
+        // Range capacity ≈ 1 G slots — much more than Phase 1 needs.
+        let slots = (KERNEL_STACK_VA_END - KERNEL_STACK_VA_BASE) / KERNEL_STACK_STRIDE;
+        assert!(slots >= 1_000_000_000);
     }
 
     #[test]
