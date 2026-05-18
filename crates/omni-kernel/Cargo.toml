@@ -63,7 +63,7 @@ serde           = { workspace = true }
 # `cargo bootimage` CLI used by the K5 QEMU smoke test. We gate it
 # under `bare-metal` so default `cargo build -p omni-kernel` (host, no
 # bare-metal feature) does not pull it in. OIP-Kernel-005 § S3 / § S4.
-bootloader  = { version = "0.9", optional = true }
+bootloader  = { version = "0.11", optional = true }
 
 [features]
 default     = []
