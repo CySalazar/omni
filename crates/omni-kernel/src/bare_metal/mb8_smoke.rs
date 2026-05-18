@@ -53,10 +53,10 @@ fn task_b_body() -> ! {
 /// between the bootstrap (kmain) task, Task A, and Task B from this
 /// point on.
 ///
-/// `phys_offset` is the bootloader's direct-map offset, used by
-/// `spawn_kernel_task` to convert frame physical addresses into kernel
-/// virtual addresses.
-pub fn run(phys_offset: u64) -> ! {
+/// `mapper` is the kernel's active `PageMapper`, used by
+/// `spawn_kernel_task` to map each task's kernel stack into the MB10
+/// isolated VA range (`0xFFFF_C000_…`).
+pub fn run(mapper: &mut super::paging::PageMapper) -> ! {
     early_console::write_str("[mb8-smoke] starting two-task preemption test\n");
 
     // SAFETY: single-CPU, no SMP. The static muts are not aliased — kmain
@@ -70,7 +70,8 @@ pub fn run(phys_offset: u64) -> ! {
             match sched.spawn_kernel_task(
                 task_a_body,
                 phys.0,
-                phys_offset,
+                mapper,
+                fa,
                 PriorityClass::Interactive,
             ) {
                 Ok(_) => early_console::write_str("[mb8-smoke] task A spawned\n"),
@@ -85,7 +86,8 @@ pub fn run(phys_offset: u64) -> ! {
             match sched.spawn_kernel_task(
                 task_b_body,
                 phys.0,
-                phys_offset,
+                mapper,
+                fa,
                 PriorityClass::Interactive,
             ) {
                 Ok(_) => early_console::write_str("[mb8-smoke] task B spawned\n"),
