@@ -1,11 +1,21 @@
 //! Kernel Global Descriptor Table (`GDT`) for `x86_64` long mode.
 //!
+//!
 //! Installs a minimal 3-entry GDT under kernel control, replacing the
 //! bootloader's temporary GDT. Segments: null (0x00), kernel code (0x08),
 //! kernel data (0x10). All kernel-mode (DPL=0); user-mode segments and
 //! TSS are deferred to P6.3 (ring-3 enablement).
 //!
 //! Call [`gdt_init`] once from `kmain`, before any other subsystem.
+
+#![allow(
+    unsafe_code,
+    reason = "lgdt + segment-register loads via inline asm; SAFETY per call site"
+)]
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "GDT byte-size limit fits u16 by construction"
+)]
 
 // -----------------------------------------------------------------------------
 // GDT entry descriptors (x86_64 long mode)

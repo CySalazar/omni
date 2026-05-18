@@ -5,6 +5,31 @@
 //! raw inline assembly — every other module reaches port I/O and
 //! control-flow termination through this module.
 
+#![allow(
+    unsafe_code,
+    reason = "module is the inline-asm gateway; every fn wraps `unsafe { asm!(...) }`"
+)]
+#![allow(
+    clippy::doc_markdown,
+    reason = "module references ACPI/FADT/PCI/PIIX4/ICH9 acronyms in prose"
+)]
+#![allow(
+    clippy::ptr_as_ptr,
+    reason = "FADT byte-table walks reinterpret *const u8 to read u16/u32 fields"
+)]
+#![allow(
+    clippy::similar_names,
+    reason = "ACPI/FADT field names (PM1a_CNT, SLP_TYPa, etc.) are SDM-canonical"
+)]
+#![allow(
+    clippy::integer_division,
+    reason = "ACPI register offsets are byte-aligned; truncation in offset math is intended"
+)]
+#![allow(
+    clippy::too_long_first_doc_paragraph,
+    reason = "ACPI poweroff fallback chain is documented in a single descriptive paragraph"
+)]
+
 use core::arch::asm;
 
 /// Interrupt control primitives.

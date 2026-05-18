@@ -28,6 +28,16 @@
 //! table, a pseudo-descriptor struct (`Idtr` / `Gdtr`), and an `_init()`
 //! function that loads the table via a privileged instruction.
 
+#![allow(
+    unsafe_code,
+    reason = "lidt + raw handler pointer construction; SAFETY per call site"
+)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::indexing_slicing,
+    reason = "IDT byte-size limit fits u16; vector indexing bounded by IDT_SIZE = 256"
+)]
+
 use super::early_console;
 
 // -----------------------------------------------------------------------

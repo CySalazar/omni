@@ -54,30 +54,6 @@
 #![cfg_attr(all(feature = "bare-metal", not(test)), no_std)]
 #![cfg_attr(all(feature = "bare-metal", not(test)), no_main)]
 #![warn(missing_docs)]
-// The kernel crate is intrinsically unsafe: page-table writes, MSR setup,
-// IDT load, GDT load, LAPIC mmio, `asm!("sti")`, syscall trampolines, and
-// raw-pointer construction from `BootInfo` all require `unsafe`. Each
-// `unsafe` block in this crate carries an inline `// SAFETY:` comment; the
-// workspace-level `unsafe_code = "warn"` lint is suppressed here, mirroring
-// the pattern already adopted in `bare_metal/{mod,lapic,context_switch,
-// virtio_tablet,graphics,vga,input,mb8_smoke}.rs`.
-#![allow(unsafe_code)]
-// `clippy::pedantic` was lifted in Step 7.3; `clippy::nursery` and
-// `clippy::cargo` in Step 7.4 (this PR). The crate-root surface now
-// carries no pedantic/nursery/cargo blanket — the only remaining
-// crate-root suppression is `unsafe_code`, which Step 7.2 will remove.
-// Restriction lints kept active globally are workspace-wide policy
-// (`unwrap_used`, `expect_used`, `panic`, `disallowed_methods`,
-// `disallowed_types`, `disallowed_macros`). Three further restriction
-// lints — `indexing_slicing`, `integer_division`, and
-// `new_without_default` — fire heavily on kernel code that lives at the
-// ABI / register / page-table boundary: `self.windows[idx]` after a
-// hit-test bound check, `vsz / 2` for cursor centering, `Self::new()`
-// for `static mut SCHEDULER`-style singletons. These are intentional and
-// audited; disabled here at the crate boundary rather than scattering
-// ~60 line-level `#[allow]` annotations. The audited-good pattern is
-// preserved (every indexing site has a precondition comment); the
-// follow-up cleanup pass will tighten this back down where applicable.
 // `#[cfg(test)]` modules in this crate (arena fixtures in `paging.rs`,
 // `elf_loader.rs`, and `memory.rs`) construct synthetic page tables and
 // ELF blobs through `std::alloc::Layout`; the assertions themselves rely
@@ -85,6 +61,7 @@
 // invariant breaks. `clippy::unwrap_used`, `clippy::expect_used`,
 // `clippy::panic`, and `clippy::doc_markdown` are silenced for test
 // targets only — production code keeps them at workspace-level "warn".
+// This `cfg_attr(test, allow(...))` is explicitly whitelisted by ADR-0003.
 #![cfg_attr(
     test,
     allow(
@@ -94,16 +71,12 @@
         clippy::doc_markdown
     )
 )]
-// NOTE: per ADR-0003 (no blanket #![allow] in production crates), the
-// following lint groups previously suppressed at crate root have been
-// lifted as part of Step 7 (PR 7.1):
-//   - clippy::indexing_slicing, clippy::integer_division,
-//     clippy::new_without_default, clippy::fn_to_numeric_cast,
-//     clippy::doc_lazy_continuation, clippy::implicit_saturating_sub
-//   - clippy::missing_errors_doc
-//   - rustdoc::broken_intra_doc_links, rustdoc::private_intra_doc_links
-// Each remaining intentional violation now carries a localized
-// `#[allow(<lint>, reason = "...")]` attribute at the offending item.
+// NOTE: per ADR-0003 (no blanket #![allow] in production crates), every
+// `pedantic` / `nursery` / `cargo` / `unsafe_code` blanket previously
+// suppressed at crate root has been lifted across Step 7.1–7.4. Each
+// remaining intentional violation carries a localised
+// `#[allow(<lint>, reason = "...")]` attribute at the offending item or
+// — for widespread unsafe-density `bare_metal/` modules — at module level.
 
 // `alloc` is available even in `no_std` mode (the bare-metal kernel
 // provides its own allocator). In `std` builds, `alloc` is re-exported
@@ -208,6 +181,7 @@ fn idle_task() -> ! {
         // SAFETY: bare-metal ring-0; hlt suspends the CPU until the next
         // interrupt (none enabled in MB6, so this effectively halts forever
         // unless a future milestone enables the LAPIC timer).
+        #[allow(unsafe_code, reason = "bare-metal ring-0 hlt; SAFETY comment above")]
         unsafe {
             core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
         }
@@ -286,6 +260,10 @@ fn register_direct_mapped_regions(
 // the desktop demo + power-off tail unreachable (and `framebuffer` unused).
 // Both are intended under that feature.
 #[cfg_attr(feature = "mb8-smoke", allow(unreachable_code, unused_variables))]
+#[allow(
+    clippy::too_many_lines,
+    reason = "kmain is the boot orchestrator; subsystem init must stay in single flow"
+)]
 pub fn kmain(
     boot_info: &'static bootloader_api::BootInfo,
     framebuffer: Option<bare_metal::graphics::FrameBuffer>,
@@ -340,6 +318,10 @@ pub fn kmain(
     // map each task's kernel stack into the isolated VA range.
     let mut pager = paging::PageMapper::new(phys_offset_mb2, memory::PhysAddr(cr3_raw & !0xFFF));
     early_console::write_str("[paging] mapper ready  CR3=");
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "x86_64 only; usize is u64 on target_os = none x86_64-unknown-none"
+    )]
     early_console::write_usize((cr3_raw & !0xFFF) as usize);
     early_console::write_str("\n");
 
@@ -354,6 +336,10 @@ pub fn kmain(
     // keeping the single-core safety invariant explicit.
     // -------------------------------------------------------------------------
     // SAFETY: single-core bare-metal, FRAME_ALLOC is not aliased anywhere.
+    #[allow(
+        unsafe_code,
+        reason = "single-core bare-metal aliasing invariant; SAFETY comment above"
+    )]
     let alloc = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_ALLOC) };
     let (validated_bytes, skipped_bytes) =
         register_direct_mapped_regions(alloc, &pager, phys_offset_mb2, boot_info);
@@ -366,22 +352,26 @@ pub fn kmain(
 
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "MiB value always fits u32 for any realistic RAM size"
+        clippy::integer_division,
+        reason = "MiB value always fits u32; truncation to whole MiB is intentional"
     )]
     let free_mib = (alloc.free_bytes() / (1024 * 1024)) as u32;
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "MiB value always fits u32 for any realistic RAM size"
+        clippy::integer_division,
+        reason = "MiB value always fits u32; truncation to whole MiB is intentional"
     )]
     let total_mib = (alloc.total_bytes() / (1024 * 1024)) as u32;
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "MiB value always fits u32 for any realistic RAM size"
+        clippy::integer_division,
+        reason = "MiB value always fits u32; truncation to whole MiB is intentional"
     )]
     let validated_mib = (validated_bytes / (1024 * 1024)) as u32;
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "MiB value always fits u32 for any realistic RAM size"
+        clippy::integer_division,
+        reason = "MiB value always fits u32; truncation to whole MiB is intentional"
     )]
     let skipped_mib = (skipped_bytes / (1024 * 1024)) as u32;
 
@@ -415,6 +405,10 @@ pub fn kmain(
     // aliased anywhere else at this point. `pager` was constructed above in
     // this same function and is exclusively borrowed across this block.
     #[cfg(target_arch = "x86_64")]
+    #[allow(
+        unsafe_code,
+        reason = "single-core static-mut deref; aliasing invariant in SAFETY comment"
+    )]
     unsafe {
         let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
         let fa = &mut *core::ptr::addr_of_mut!(FRAME_ALLOC);
@@ -429,8 +423,16 @@ pub fn kmain(
                 Ok(_) => {
                     early_console::write_str("[sched] scheduler init  idle task spawned\n");
                     early_console::write_str("[stack] kernel stack VA range = ");
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "x86_64 only; usize is u64 on target_os = none"
+                    )]
                     early_console::write_usize(scheduling::KERNEL_STACK_VA_BASE as usize);
                     early_console::write_str(" .. ");
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "x86_64 only; usize is u64 on target_os = none"
+                    )]
                     early_console::write_usize(scheduling::KERNEL_STACK_VA_END as usize);
                     early_console::write_str(" (slot 0)\n");
                 }
@@ -449,6 +451,10 @@ pub fn kmain(
     // the first `omni_context_switch`.
     // -------------------------------------------------------------------------
     #[cfg(target_arch = "x86_64")]
+    #[allow(
+        unsafe_code,
+        reason = "single-core static-mut deref; aliasing invariant in SAFETY comment"
+    )]
     unsafe {
         let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
         match sched.spawn_bootstrap_task(scheduling::PriorityClass::System) {
@@ -467,6 +473,7 @@ pub fn kmain(
             early_console::write_str("[lapic] timer started  vector=0x20\n");
             // Enable maskable interrupts — timer can fire from this point on.
             // SAFETY: LAPIC is configured; IDT vector 0x20 handler is installed.
+            #[allow(unsafe_code, reason = "sti enable interrupts; SAFETY comment above")]
             unsafe {
                 core::arch::asm!("sti", options(nomem, nostack));
             }
@@ -512,6 +519,10 @@ pub fn kmain(
         ];
         if let Ok(elf) = elf_loader::Elf64::parse(&TEST_ELF) {
             early_console::write_str("[elf] probe OK  entry=");
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "x86_64 only; usize is u64 on target_os = none"
+            )]
             early_console::write_usize(elf.entry_point() as usize);
             early_console::write_str("\n");
         } else {
@@ -542,7 +553,13 @@ pub fn kmain(
         (Some(rsdp_phys), Some(offset)) => {
             // SAFETY: bootloader maps all physical memory at `offset`;
             // RSDP and ACPI tables are within that window.
-            unsafe { arch::acpi_poweroff_from_fadt(rsdp_phys, offset) };
+            #[allow(
+                unsafe_code,
+                reason = "ACPI table walk via bootloader direct map; SAFETY above"
+            )]
+            unsafe {
+                arch::acpi_poweroff_from_fadt(rsdp_phys, offset);
+            }
         }
         _ => arch::acpi_poweroff(),
     }

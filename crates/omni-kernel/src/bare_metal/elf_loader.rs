@@ -21,6 +21,20 @@
 //! `map_and_load` is gated `#[cfg(target_arch = "x86_64")]` because it
 //! calls into the x86_64-only `PageMapper` and `BitmapFrameAllocator`.
 
+#![allow(
+    unsafe_code,
+    reason = "ELF segment loader copies file bytes via raw ptr::copy_nonoverlapping"
+)]
+#![allow(
+    clippy::integer_division,
+    reason = "ELF page math uses 4 KiB byte-aligned truncation by design"
+)]
+#![allow(
+    clippy::indexing_slicing,
+    clippy::doc_markdown,
+    reason = "byte-offset slicing has explicit bounds check; ELF acronyms in prose"
+)]
+
 // ---------------------------------------------------------------------------
 // ELF constants
 // ---------------------------------------------------------------------------

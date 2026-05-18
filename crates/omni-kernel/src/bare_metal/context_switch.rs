@@ -1,4 +1,4 @@
-//! x86_64 cooperative context switch — MB6 deliverable + MB8 trampoline.
+//! `x86_64` cooperative context switch — MB6 deliverable + MB8 trampoline.
 //!
 //! Provides three items used by [`crate::scheduling::RoundRobinScheduler`]:
 //!
@@ -156,8 +156,8 @@ unsafe extern "C" {
 ///
 /// 1. `entry` — popped by the trampoline's `ret`, becomes the task's first RIP.
 /// 2. `omni_task_entry_trampoline` address — popped by `context_switch`'s `ret`.
-/// 3..=8. Six zero-initialised callee-saved registers (RBP, RBX, R12–R15)
-///    in the order `context_switch` pops them.
+/// 3. Six zero-initialised callee-saved registers (RBP, RBX, R12, R13, R14, R15)
+///    in the order `context_switch` pops them (words 3 through 8 of the frame).
 ///
 /// Returns the initial RSP value to store in the task's [`CpuContext`].
 ///

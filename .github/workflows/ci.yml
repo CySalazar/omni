@@ -162,15 +162,12 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # blanket-allow-guard — enforce ADR-0003: no blanket #![allow(<group>)]
-  # at crate root in scoped production crates. Cheap (~2 s) early gate.
-  # NOTE: ramped-in across Step 7 PRs. Currently runs as a non-blocking
-  # warning until the last blanket (unsafe_code, PR 7.2) is lifted. The
-  # `continue-on-error: true` line is flipped to `false` (blocking) in PR 7.2.
+  # at crate root in scoped production crates. Cheap (~2 s) early gate that
+  # blocks before the heavier cargo clippy matrix.
   # ---------------------------------------------------------------------------
   blanket-allow-guard:
     name: blanket #![allow] guard (ADR-0003)
     runs-on: ubuntu-24.04
-    continue-on-error: true  # flipped to blocking in PR 7.2
     steps:
       - uses: actions/checkout@v4
       - name: scripts/check-no-blanket-allow.sh

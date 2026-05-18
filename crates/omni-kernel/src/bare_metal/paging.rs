@@ -30,6 +30,11 @@
 //! that need to override a huge-page-backed region must split it
 //! externally (out of scope for MB9).
 
+#![allow(
+    unsafe_code,
+    reason = "page-table walker reads/writes raw frame pointers; SAFETY per fn"
+)]
+
 use crate::memory::{BitmapFrameAllocator, PhysAddr, VirtAddr};
 
 // -----------------------------------------------------------------------
@@ -412,12 +417,14 @@ impl PageMapper {
             return false;
         }
 
-        unsafe { (*pt).entry_mut(virt_index(virt, PageLevel::Pt)).clear() };
+        unsafe {
+            (*pt).entry_mut(virt_index(virt, PageLevel::Pt)).clear();
+        }
         // Invalidate TLB — only meaningful on bare-metal; no-op on non-x86 hosts.
         #[cfg(all(target_arch = "x86_64", not(test)))]
         unsafe {
-            super::arch::invlpg(virt.0)
-        };
+            super::arch::invlpg(virt.0);
+        }
         true
     }
 

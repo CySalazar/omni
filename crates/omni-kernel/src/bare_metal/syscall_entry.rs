@@ -24,6 +24,15 @@
 //!
 //! Return value is in RAX. `u64::MAX` is the error sentinel.
 
+#![allow(
+    unsafe_code,
+    reason = "MSR R/W + naked asm syscall stubs; SAFETY per fn"
+)]
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "RAX number is u64 by ABI but the dispatch enum tag fits u32"
+)]
+
 use crate::syscall::{SyscallDispatcher, SyscallNumber};
 use crate::{KernelError, KernelResult};
 

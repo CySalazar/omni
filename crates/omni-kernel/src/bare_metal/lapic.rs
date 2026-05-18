@@ -140,7 +140,7 @@ unsafe fn disable_legacy_pic() {
 /// Initialise the xAPIC and start a periodic timer at IDT vector 0x20.
 ///
 /// Returns `true` on success, `false` if the CPU reports a zero LAPIC base
-/// (should not happen on any x86_64 hardware or QEMU VM).
+/// (should not happen on any `x86_64` hardware or QEMU VM).
 ///
 /// Must be called after:
 /// - [`super::idt::idt_init`] (IDT must be loaded before registering 0x20).

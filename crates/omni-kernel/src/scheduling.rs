@@ -331,6 +331,10 @@ impl RoundRobinScheduler {
     /// `PageMapper` / `BitmapFrameAllocator` — calling this from any
     /// non-kernel context corrupts the bootloader page tables.
     #[cfg(all(feature = "bare-metal", target_arch = "x86_64"))]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "priority as usize < NUM_PRIORITY_CLASSES by enum repr"
+    )]
     pub unsafe fn spawn_kernel_task<const N: usize>(
         &mut self,
         entry: fn() -> !,
@@ -362,6 +366,10 @@ impl RoundRobinScheduler {
         let stack_virt_top = kernel_stack_va + KERNEL_STACK_SIZE;
         // SAFETY: stack_virt_top is the top of a 4 KiB writable kernel
         // stack page that we just mapped exclusively for this task.
+        #[allow(
+            clippy::fn_to_numeric_cast,
+            reason = "canonical kernel-task RSP packing — entry RIP must be u64"
+        )]
         let initial_rsp = unsafe { setup_task_frame(stack_virt_top, entry as u64) };
 
         let id = TaskId(self.next_id);
@@ -520,6 +528,10 @@ impl Scheduler for RoundRobinScheduler {
         // SAFETY: single-CPU, non-preemptive; both stack frames are valid
         // kernel memory established by spawn_kernel_task or a prior switch.
         #[cfg(all(feature = "bare-metal", target_arch = "x86_64"))]
+        #[allow(
+            clippy::borrow_as_ptr,
+            reason = "raw *mut u64 deliberately passed by FFI to context_switch asm"
+        )]
         unsafe {
             let to_rsp_val = self.tasks[next_idx].context.rsp;
             let from_rsp_ptr: *mut u64 = &mut self.tasks[cur_idx].context.rsp as *mut u64;

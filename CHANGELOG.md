@@ -17,6 +17,37 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Changed
 
+- **Kernel — lift `unsafe_code` blanket allow on `omni-kernel` (Step 7.2,
+  2026-05-18).** Final Step 7 PR. Removes the last crate-root blanket
+  `#![allow(unsafe_code)]` from
+  [`lib.rs:64`](./crates/omni-kernel/src/lib.rs#L64); the crate now carries
+  **zero** non-whitelisted crate-root suppressions. The `cfg_attr(test,
+  allow(...))` line at `lib.rs:88` is the only remaining inner attribute,
+  explicitly whitelisted by ADR-0003 § Escape hatches.
+
+  - Bare-metal target build surfaces ~40 cfg-gated lint violations (the
+    host build path had them masked behind `target_os = "none"`); each
+    handled with site- or module-level allow + reason, or fixed:
+    - 6 `unsafe_code` sites in `lib.rs` (kmain orchestrator) — site-level
+      allow citing single-core static-mut aliasing invariant.
+    - Module-level allows added on `bare_metal/{arch/x86_64, elf_loader,
+      gdt, idt, paging, syscall_entry}.rs` for the lints that fire most
+      densely (`unsafe_code`, `doc_markdown`, `ptr_as_ptr`, `similar_names`,
+      `cast_possible_truncation`, `integer_division`).
+    - Fixed: `paging.rs` 3 trailing-semicolon style; `context_switch.rs`
+      list-item indentation; `lapic.rs` `x86_64` backtick.
+  - `scripts/check-no-blanket-allow.sh` flipped to **blocking** in CI
+    (`continue-on-error: true` removed). Guardrail script now reports
+    `ok (scanned 12 crate-root files)`.
+
+  Verification:
+  - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+    clean.
+  - `cargo clippy -p omni-kernel --target x86_64-unknown-none
+    --no-default-features --features bare-metal -- -D warnings` clean.
+  - `cargo test --workspace` 277 pass / 0 fail (unchanged).
+  - `bash scripts/check-no-blanket-allow.sh` exits 0.
+
 - **Kernel — lift `clippy::nursery` + `clippy::cargo` blanket allows on
   `omni-kernel` (Step 7.4, 2026-05-18).** Third of four Step 7 PRs. Removes
   the residual `#![allow(clippy::nursery, clippy::cargo)]` from
