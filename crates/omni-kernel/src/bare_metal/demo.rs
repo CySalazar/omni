@@ -140,10 +140,18 @@ pub fn run_desktop(
                         clippy::cast_possible_truncation,
                         reason = "fb dimensions are u32; scaled product divided by 0x7FFF fits in u32"
                     )]
+                    #[allow(
+                        clippy::integer_division,
+                        reason = "abs coord scaling truncates to pixel; sub-pixel accuracy unwanted"
+                    )]
                     let px = (u64::from(state.abs_x) * u64::from(fb.width) / 0x7FFF) as u32;
                     #[allow(
                         clippy::cast_possible_truncation,
                         reason = "fb dimensions are u32; scaled product divided by 0x7FFF fits in u32"
+                    )]
+                    #[allow(
+                        clippy::integer_division,
+                        reason = "abs coord scaling truncates to pixel; sub-pixel accuracy unwanted"
                     )]
                     let py = (u64::from(state.abs_y) * u64::from(fb.height) / 0x7FFF) as u32;
                     if let Some(c) = &mut cursor_state {
@@ -267,6 +275,10 @@ pub fn run_desktop(
                         if let Some(c) = &cursor_state {
                             c.hide(fb);
                         }
+                        #[allow(
+                            clippy::implicit_saturating_sub,
+                            reason = "explicit form documents intent for security audit"
+                        )]
                         if echo_len > 0 {
                             echo_len -= 1;
                         }
@@ -284,7 +296,13 @@ pub fn run_desktop(
                             c.hide(fb);
                         }
                         if echo_len < 40 {
-                            echo_buf[echo_len] = byte;
+                            #[allow(
+                                clippy::indexing_slicing,
+                                reason = "echo_len < 40 <= echo_buf.len() guarded above"
+                            )]
+                            {
+                                echo_buf[echo_len] = byte;
+                            }
                             echo_len += 1;
                         }
                         render_echo(fb, &wm_state, &echo_buf, echo_len);
@@ -380,6 +398,10 @@ pub fn run_desktop(
 // =============================================================================
 
 /// Render the RTC clock (HH:MM:SS) centred in the taskbar.
+#[allow(
+    clippy::integer_division,
+    reason = "pixel and clock digit math; integer truncation is intentional"
+)]
 fn render_clock(fb: &FrameBuffer, h: u8, m: u8, s: u8) {
     let y0 = fb.height.saturating_sub(wm::TASKBAR_H);
     let time_w = 64_u32; // 8 chars × 8px

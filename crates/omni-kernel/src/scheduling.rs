@@ -238,6 +238,10 @@ impl RoundRobinScheduler {
     /// Create an empty scheduler.
     ///
     /// `const fn` so it can initialise a `static mut` without a lazy wrapper.
+    #[allow(
+        clippy::new_without_default,
+        reason = "const fn required for static mut SCHEDULER init; Default cannot be const"
+    )]
     pub const fn new() -> Self {
         Self {
             tasks: Vec::new(),
@@ -398,6 +402,10 @@ impl RoundRobinScheduler {
 
     /// Test helper: create a minimal TCB with a zeroed context and enqueue it.
     #[cfg(test)]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "priority as usize < NUM_PRIORITY_CLASSES by enum repr"
+    )]
     pub fn mock_enqueue(&mut self, priority: PriorityClass) -> TaskId {
         let id = TaskId(self.next_id);
         self.next_id += 1;
@@ -415,6 +423,10 @@ impl RoundRobinScheduler {
 }
 
 impl Scheduler for RoundRobinScheduler {
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "priority as usize < NUM_PRIORITY_CLASSES by enum repr"
+    )]
     fn enqueue(&mut self, task: TaskId, priority: PriorityClass) -> KernelResult<()> {
         let tcb = self
             .tasks
@@ -449,6 +461,10 @@ impl Scheduler for RoundRobinScheduler {
         None
     }
 
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "cur_idx/next_idx derived from Vec::position; priority<NUM_PRIORITY_CLASSES"
+    )]
     fn yield_current(&mut self, current: TaskId, new_state: TaskState) -> KernelResult<()> {
         let cur_idx = self
             .tasks
@@ -620,6 +636,10 @@ mod tests {
         // Stack page = 4 KiB.
         assert_eq!(KERNEL_STACK_SIZE, 0x1000);
         // Range capacity ≈ 1 G slots — much more than Phase 1 needs.
+        #[allow(
+            clippy::integer_division,
+            reason = "STRIDE divides END-BASE evenly by const construction"
+        )]
         let slots = (KERNEL_STACK_VA_END - KERNEL_STACK_VA_BASE) / KERNEL_STACK_STRIDE;
         assert!(slots >= 1_000_000_000);
     }

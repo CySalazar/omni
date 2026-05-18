@@ -134,6 +134,10 @@ pub fn ps2_mouse_poll() -> Option<MouseEvent> {
         let byte = unsafe { arch::inb(PS2_DATA) };
 
         let idx = MOUSE_IDX.load(Ordering::Relaxed) as usize;
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "MOUSE_IDX always wraps mod 3 below; idx < MOUSE_PKT.len() = 3"
+        )]
         MOUSE_PKT[idx].store(byte, Ordering::Relaxed);
         let next = (idx + 1) % 3;
         MOUSE_IDX.store(next as u8, Ordering::Relaxed);

@@ -10,7 +10,7 @@
 //!   without copying any data.
 //! - [`Elf64::load_segments`] yields a [`LoadSegment`] for every `PT_LOAD`
 //!   entry; the caller decides whether to map or inspect the segment.
-//! - [`Elf64::map_and_load`] allocates physical frames, maps each segment
+//! - `Elf64::map_and_load` allocates physical frames, maps each segment
 //!   into the page tables, and copies the segment's file image; BSS
 //!   (memsz > filesz) is zeroed.
 //!
@@ -18,7 +18,7 @@
 //!
 //! The parser (`parse`, `load_segments`, `entry_point`) compiles on every
 //! target so that host-side unit tests run on the developer machine.
-//! [`map_and_load`] is gated `#[cfg(target_arch = "x86_64")]` because it
+//! `map_and_load` is gated `#[cfg(target_arch = "x86_64")]` because it
 //! calls into the x86_64-only `PageMapper` and `BitmapFrameAllocator`.
 
 // ---------------------------------------------------------------------------
@@ -393,6 +393,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing, reason = "segs.len() == 1 asserted above")]
     fn one_load_segment_found() {
         let elf = Elf64::parse(&TEST_ELF).unwrap();
         let segs: Vec<_> = elf.load_segments().collect();

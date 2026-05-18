@@ -311,6 +311,10 @@ unsafe fn find_pm1a_cnt_from_fadt(rsdp_phys: u64, phys_offset: u64) -> Option<u1
 ///
 /// Same as [`find_pm1a_cnt_from_fadt`]: caller ensures both addresses
 /// are valid and the physical-memory window covers all ACPI tables.
+#[allow(
+    rustdoc::private_intra_doc_links,
+    reason = "links to the private FADT walker; preserved for --document-private-items"
+)]
 pub unsafe fn acpi_poweroff_from_fadt(rsdp_phys: u64, phys_offset: u64) {
     if let Some(pm1a_cnt) = unsafe { find_pm1a_cnt_from_fadt(rsdp_phys, phys_offset) } {
         if pm1a_cnt != 0 {

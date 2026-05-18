@@ -73,6 +73,10 @@ pub struct WindowManager {
 
 impl WindowManager {
     /// Create an empty window manager with no windows and focus on slot 0.
+    #[allow(
+        clippy::new_without_default,
+        reason = "const fn enables construction in static context; Default cannot be const"
+    )]
     pub const fn new() -> Self {
         Self {
             windows: [None, None, None, None, None, None, None, None],
@@ -86,7 +90,13 @@ impl WindowManager {
         if self.count >= 8 {
             return false;
         }
-        self.windows[self.count] = Some(window);
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "self.count < 8 guaranteed by guard above"
+        )]
+        {
+            self.windows[self.count] = Some(window);
+        }
         self.count += 1;
         true
     }
@@ -96,7 +106,10 @@ impl WindowManager {
         if idx >= 8 {
             return None;
         }
-        self.windows[idx].as_ref()
+        #[allow(clippy::indexing_slicing, reason = "idx < 8 guaranteed by guard above")]
+        {
+            self.windows[idx].as_ref()
+        }
     }
 
     /// Draw all windows. The focused window gets a cyan border; others get
@@ -112,6 +125,10 @@ impl WindowManager {
     /// If `(px, py)` falls inside any window's title bar, shift focus to that
     /// window and redraw the two affected borders. Returns `true` if focus
     /// changed.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "i < self.count <= 8 and self.focused_idx < 8 by invariants"
+    )]
     pub fn click_hit_test(&mut self, fb: &FrameBuffer, px: u32, py: u32) -> bool {
         let mut hit = None;
         for i in 0..self.count {
@@ -144,6 +161,10 @@ impl WindowManager {
     }
 
     /// Rotate focus to the next window and redraw only the two affected borders.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "self.focused_idx < self.count <= 8 by invariants"
+    )]
     pub fn tab_focus(&mut self, fb: &FrameBuffer) {
         if self.count == 0 {
             return;
@@ -180,10 +201,15 @@ pub fn draw_window(fb: &FrameBuffer, window: &Window, focused: bool) {
     // Title bar background.
     fb.draw_rect_filled(window.x, window.y, x1, title_bottom, graphics::DARK_NAVY);
     // Title text (left-padded 6 px, vertically centred in title bar).
+    #[allow(
+        clippy::integer_division,
+        reason = "integer pixel coords; truncation in vertical centering is intentional"
+    )]
+    let title_y = window.y + (TITLEBAR_H.saturating_sub(8)) / 2;
     font::render_str(
         fb,
         window.x + 6,
-        window.y + (TITLEBAR_H.saturating_sub(8)) / 2,
+        title_y,
         window.title,
         graphics::LIGHT_CYAN,
         graphics::DARK_NAVY,

@@ -146,6 +146,10 @@ impl FrameBuffer {
                 _ => {}
             },
             PixelFormat::U8 => {
+                #[allow(
+                    clippy::integer_division,
+                    reason = "ITU-R BT.601 luma; integer truncation in 0..=255 range is intended"
+                )]
                 let gray = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
                 #[allow(
                     clippy::cast_possible_truncation,
@@ -237,6 +241,10 @@ impl FrameBuffer {
     /// (`buf[(row * 16 + col) * 4 ..]`). Out-of-bounds pixels are saved
     /// as all-zero bytes. Used by the software cursor to restore the
     /// underlying pixels when the cursor moves.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "buf_off + 4 <= 16*16*4 = 1024 = buf.len() by row/col bounds"
+    )]
     pub fn save_16x16(&self, cx: u32, cy: u32, buf: &mut [u8; 1024]) {
         let bpp = self.bytes_per_px as usize;
         for row in 0_u32..16 {
@@ -261,9 +269,13 @@ impl FrameBuffer {
         }
     }
 
-    /// Restore a 16×16 block previously saved with [`save_16x16`].
+    /// Restore a 16×16 block previously saved with `save_16x16`.
     ///
     /// Out-of-bounds pixels are silently skipped.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "buf_off + 4 <= 16*16*4 = 1024 = buf.len() by row/col bounds"
+    )]
     pub fn restore_16x16(&self, cx: u32, cy: u32, buf: &[u8; 1024]) {
         let bpp = self.bytes_per_px as usize;
         for row in 0_u32..16 {

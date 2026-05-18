@@ -161,6 +161,22 @@ jobs:
           retention-days: 14
 
   # ---------------------------------------------------------------------------
+  # blanket-allow-guard — enforce ADR-0003: no blanket #![allow(<group>)]
+  # at crate root in scoped production crates. Cheap (~2 s) early gate.
+  # NOTE: ramped-in across Step 7 PRs. Currently runs as a non-blocking
+  # warning until the last blanket (unsafe_code, PR 7.2) is lifted. The
+  # `continue-on-error: true` line is flipped to `false` (blocking) in PR 7.2.
+  # ---------------------------------------------------------------------------
+  blanket-allow-guard:
+    name: blanket #![allow] guard (ADR-0003)
+    runs-on: ubuntu-24.04
+    continue-on-error: true  # flipped to blocking in PR 7.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: scripts/check-no-blanket-allow.sh
+        run: bash scripts/check-no-blanket-allow.sh
+
+  # ---------------------------------------------------------------------------
   # tbd-guard — fail if the merge target contains TBD/TODO placeholders that
   # were intentionally allowed in P0 docs but should never reach `main` after
   # Stichting incorporation. Today, this only WARNS so we can ship the P0

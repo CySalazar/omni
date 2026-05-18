@@ -15,6 +15,38 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ## [Unreleased]
 
+### Changed
+
+- **Kernel — lift restriction + rustdoc blanket allows on `omni-kernel` (Step 7.1,
+  2026-05-18).** First of four PRs that close the v0.2.0 kernel CI debt
+  described in `progress-omni.md` § 4.5. Removes crate-root blanket
+  suppressions for `clippy::indexing_slicing`, `clippy::integer_division`,
+  `clippy::new_without_default`, `clippy::fn_to_numeric_cast`,
+  `clippy::doc_lazy_continuation`, `clippy::implicit_saturating_sub`,
+  `clippy::missing_errors_doc`, `rustdoc::broken_intra_doc_links`, and
+  `rustdoc::private_intra_doc_links` from
+  [`crates/omni-kernel/src/lib.rs:107-152`](./crates/omni-kernel/src/lib.rs#L107).
+  Each intentional violation now carries a localized `#[allow(<lint>, reason
+  = "…")]` attribute at the offending item, mirroring the pattern already
+  in `memory.rs:278,302,342,346` and `lib.rs:413-432`. Rationale, scope, and
+  enforcement formalised in [`docs/adr/0003-no-blanket-allows-in-production-crates.md`](./docs/adr/0003-no-blanket-allows-in-production-crates.md).
+
+  - 39 sites annotated across `wm.rs`, `widget.rs`, `font.rs`, `input.rs`,
+    `graphics.rs`, `demo.rs`, `scheduling.rs`, `elf_loader.rs`, `arch/x86_64.rs`.
+  - 2 broken intra-doc links rewritten as code spans in `elf_loader.rs` (module
+    doc) and `graphics.rs` (`restore_16x16` doc).
+  - Workspace test count unchanged (277 pass / 0 fail).
+  - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+    clean post-lift.
+
+- **Tooling — `scripts/check-no-blanket-allow.sh` (2026-05-18).** Bash
+  guardrail script that enforces ADR-0003 against `crates/<scoped>/src/{lib,main}.rs`
+  (12 scoped crates). Whitelists doc URL, `warn(...)`, `cfg_attr(test,
+  allow(...))`, and `cfg_attr(all(feature = "bare-metal", ...))` only.
+  Wired into `.github/workflows/ci.yml` as the `blanket-allow-guard` job
+  (`continue-on-error: true` until PR 7.2 lifts the final `unsafe_code`
+  blanket; flipped to blocking then).
+
 ### Added
 
 - **Kernel — kernel stack isolation, Track B MB10 (2026-05-18).** Each kernel

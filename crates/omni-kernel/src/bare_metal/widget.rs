@@ -82,7 +82,15 @@ pub fn draw_button(fb: &FrameBuffer, content_x: u32, content_y: u32, btn: &Butto
 
     // Centre label horizontally and vertically within the button.
     let label_w = btn.label.len() as u32 * 8;
+    #[allow(
+        clippy::integer_division,
+        reason = "integer pixel coords; truncation in label centering is intentional"
+    )]
     let tx = x0 + btn.width.saturating_sub(label_w) / 2;
+    #[allow(
+        clippy::integer_division,
+        reason = "integer pixel coords; truncation in label centering is intentional"
+    )]
     let ty = y0 + btn.height.saturating_sub(8) / 2;
     font::render_str(fb, tx, ty, btn.label, text_fg, fill);
 }

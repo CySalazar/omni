@@ -104,52 +104,16 @@
         clippy::doc_markdown
     )
 )]
-#![allow(
-    clippy::indexing_slicing,
-    clippy::integer_division,
-    clippy::new_without_default,
-    // `fn() -> ! as u64` is the canonical way to pack a kernel-task entry
-    // point into the initial RSP frame (scheduling.rs::spawn_kernel_task).
-    clippy::fn_to_numeric_cast,
-    // Decimal-numbered list items in doc-comments (`1.`, `2.`, `3..=8.`)
-    // intentionally span multiple wrapped lines; the four-space "indented"
-    // restyle clippy wants makes the rendered HTML uglier than the source.
-    clippy::doc_lazy_continuation,
-    // `if n > 0 { n -= 1; }` is more readable than `n = n.saturating_sub(1);`
-    // in the few hot loops where it occurs (PS/2 backspace, countdown
-    // tick, scroll bounce). Both compile identically; the explicit form
-    // documents intent for security audit.
-    clippy::implicit_saturating_sub
-)]
-// Trait scaffolds in `memory`, `scheduling`, `ipc`, `capabilities`,
-// and `syscall` currently expose `Result`-returning methods whose
-// concrete error contracts are settled per-subsystem in P6.3+. Until
-// the corresponding impls land, the per-method `# Errors` sections
-// would all read "returns `NotYetImplemented`", which is noise. The
-// allow is removed in the OIP that activates the corresponding
-// subsystem.
-#![allow(clippy::missing_errors_doc)]
-// Several module doc-comments reference items that are gated behind
-// `#[cfg(target_arch = "x86_64")]` or `#[cfg(feature = "bare-metal")]`
-// (e.g. `[CpuContext]`, `[map_and_load]`, `[save_16x16]`). On
-// `cargo doc --workspace --no-deps --all-features` for host (Linux)
-// builds, the items resolve correctly inside their gated modules but
-// rustdoc evaluates intra-doc links against the active item set, so
-// links from out-of-scope module docs trip `broken_intra_doc_links`
-// under `RUSTDOCFLAGS=-D warnings`. The links are correct on the
-// in-scope x86_64 build; suppressing here only affects rustdoc lint
-// reporting on host builds.
-#![allow(rustdoc::broken_intra_doc_links)]
-// `arch/x86_64.rs::acpi_poweroff_from_fadt` is a `pub` ACPI poweroff
-// helper whose doc-comment intra-links its private peer
-// `find_pm1a_cnt_from_fadt` (the FADT-walker that extracts
-// `PM1a_CNT_BLK` + `SLP_TYPa`). The peer is intentionally private —
-// it's a leaf utility consumed only by the public function — so the
-// link triggers `rustdoc::private_intra_doc_links` under
-// `RUSTDOCFLAGS=-D warnings`. Suppressing here rather than inlining
-// the docs preserves the cross-reference for `--document-private-items`
-// runs (which our internal kernel-runner docs builds use).
-#![allow(rustdoc::private_intra_doc_links)]
+// NOTE: per ADR-0003 (no blanket #![allow] in production crates), the
+// following lint groups previously suppressed at crate root have been
+// lifted as part of Step 7 (PR 7.1):
+//   - clippy::indexing_slicing, clippy::integer_division,
+//     clippy::new_without_default, clippy::fn_to_numeric_cast,
+//     clippy::doc_lazy_continuation, clippy::implicit_saturating_sub
+//   - clippy::missing_errors_doc
+//   - rustdoc::broken_intra_doc_links, rustdoc::private_intra_doc_links
+// Each remaining intentional violation now carries a localized
+// `#[allow(<lint>, reason = "...")]` attribute at the offending item.
 
 // `alloc` is available even in `no_std` mode (the bare-metal kernel
 // provides its own allocator). In `std` builds, `alloc` is re-exported

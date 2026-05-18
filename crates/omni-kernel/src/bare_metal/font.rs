@@ -28,6 +28,10 @@ use super::graphics::FrameBuffer;
 /// Characters outside 0x00–0x7F (and control chars) fall back to a blank
 /// cell so the renderer never panics on non-ASCII input.
 #[inline]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "ch < BASIC_LEGACY.len() guarded; ASCII space (0x20) always in range"
+)]
 fn glyph(ch: u8) -> &'static [u8; 8] {
     if (ch as usize) < BASIC_LEGACY.len() {
         &BASIC_LEGACY[ch as usize]
@@ -118,6 +122,10 @@ pub fn render_usize_scaled(
         #[allow(
             clippy::cast_possible_truncation,
             reason = "n % 10 is always 0..=9, fits u8"
+        )]
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "i is decremented from buf.len() within while n>0; bounded"
         )]
         {
             buf[i] = b'0' + (n % 10) as u8;
