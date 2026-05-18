@@ -30,6 +30,7 @@
 use crate::{
     KernelResult,
     bare_metal::paging::PageMapper,
+    capabilities::KernelPrincipal,
     memory::{BitmapFrameAllocator, PhysAddr},
     process::ProcessControlBlock,
     scheduling::{PriorityClass, RoundRobinScheduler, TaskId},
@@ -146,6 +147,11 @@ pub unsafe fn spawn_userprobe<const N: usize>(
             alloc,
             scheduler,
             PriorityClass::Interactive,
+            // MB11 user-probe is a kernel-spawned developer smoke test;
+            // no userspace authority has minted it a token. The zero
+            // principal is the conventional "unauthenticated kernel
+            // task" identity used in dev mode.
+            KernelPrincipal::ZERO,
         )
     }
 }

@@ -275,8 +275,285 @@ fn write_console(ptr: u64, len: u64) -> KernelResult<u64> {
     }
 }
 
-/// MB11 — terminate the calling user-process task. Bare-metal halts;
-/// host build returns `Ok(0)` for testability.
+/// MB12 — IPC syscall handlers. All four operate on the kernel-global
+/// `IPC_REGISTRY` (only present on bare-metal) and return raw `u64`
+/// values per the SysV-style syscall ABI.
+///
+/// Host builds short-circuit to `Err(NotYetImplemented)` because the
+/// IPC singleton is `cfg(target_os = "none")` only; the registry is
+/// exercised directly in `cargo test` via [`crate::ipc::KernelIpcRegistry`].
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+mod ipc_handlers {
+    use super::SYSCALL_ERROR;
+    use crate::capabilities::KernelPrincipal;
+    use crate::ipc::{
+        BackpressurePolicy, ChannelId, ChannelPolicy, MessageEnvelope, MessageKind, WakeAction,
+        ipc_registry_mut,
+    };
+    use crate::scheduling::{PriorityClass, Scheduler, TaskId, TaskState};
+
+    use alloc::vec::Vec;
+
+    /// Bound the per-message payload at 4 KiB for Phase 1. Bigger
+    /// messages are a future `SharedMemoryGrant` concern (MB13+).
+    const MAX_PAYLOAD: u64 = 4096;
+
+    /// Decode the backpressure code passed via syscall arg.
+    fn parse_backpressure(v: u64) -> Option<BackpressurePolicy> {
+        match v {
+            0 => Some(BackpressurePolicy::Block),
+            1 => Some(BackpressurePolicy::Drop),
+            2 => Some(BackpressurePolicy::EvictOldest),
+            _ => None,
+        }
+    }
+
+    fn parse_kind(v: u64) -> Option<MessageKind> {
+        match v {
+            1 => Some(MessageKind::Request),
+            2 => Some(MessageKind::Reply),
+            3 => Some(MessageKind::Notification),
+            4 => Some(MessageKind::CapabilityHandoff),
+            5 => Some(MessageKind::SharedMemoryGrant),
+            _ => None,
+        }
+    }
+
+    /// Validate that `[ptr, ptr + len)` lies in the canonical user half.
+    /// Hardware PT walks during the subsequent copy will fault on any
+    /// non-present or non-user-flagged page, so this is sufficient at
+    /// the ABI boundary (same pattern `write_console` uses).
+    fn user_range_ok(ptr: u64, len: u64) -> bool {
+        use crate::bare_metal::usermode::USER_HALF_END;
+        if len == 0 {
+            return true;
+        }
+        let Some(end) = ptr.checked_add(len) else {
+            return false;
+        };
+        end <= USER_HALF_END
+    }
+
+    /// Look up the current task's PCB-derived principal. Falls back to
+    /// `KernelPrincipal::ZERO` for tasks without a user-space identity
+    /// (idle, bootstrap).
+    unsafe fn current_principal_and_task() -> (TaskId, KernelPrincipal) {
+        // SAFETY: single-core; SCHEDULER not aliased.
+        unsafe {
+            let sched = &*core::ptr::addr_of!(crate::SCHEDULER);
+            let id = sched.current_task_id().unwrap_or(TaskId(0));
+            let principal = sched
+                .process(id)
+                .map_or(KernelPrincipal::ZERO, |pcb| pcb.principal);
+            (id, principal)
+        }
+    }
+
+    fn current_priority(task: TaskId) -> PriorityClass {
+        // SAFETY: single-core; SCHEDULER read-only here.
+        unsafe {
+            let sched = &*core::ptr::addr_of!(crate::SCHEDULER);
+            sched
+                .process(task)
+                .map_or(PriorityClass::Interactive, |pcb| pcb.task.priority)
+        }
+    }
+
+    /// Park the calling task as `BlockedOnIpc`. The next runnable task
+    /// takes over; this call returns when the scheduler dispatches us
+    /// back (i.e. when some counterpart issued `WakeAction::Wake(self)`).
+    unsafe fn park_until_woken(task: TaskId) {
+        // SAFETY: single-core; SCHEDULER not aliased.
+        unsafe {
+            let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+            let _ = sched.yield_current(task, TaskState::BlockedOnIpc);
+        }
+    }
+
+    /// Enqueue `task` back onto its priority queue, restoring it to
+    /// `Runnable`. Called when a `WakeAction::Wake` was returned by
+    /// the registry.
+    unsafe fn unpark(task: TaskId) {
+        // SAFETY: single-core; SCHEDULER not aliased.
+        unsafe {
+            let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+            let prio = current_priority(task);
+            let _ = sched.enqueue(task, prio);
+        }
+    }
+
+    /// `IpcCreateChannel (20)` — `(queue_depth, backpressure, tee_bound, _, _, _) -> channel_id`.
+    ///
+    /// MB12 syscall ABI does not yet carry capability tokens (deferred
+    /// to MB13 with omni-capability integration). Channels created via
+    /// this path are unauthenticated on both directions.
+    pub(super) fn ipc_create_channel(args: [u64; 6]) -> u64 {
+        let Some(bp) = parse_backpressure(args[1]) else {
+            return SYSCALL_ERROR;
+        };
+        let policy = ChannelPolicy {
+            queue_depth: args[0] as usize,
+            backpressure: bp,
+            tee_bound: args[2] != 0,
+        };
+        // SAFETY: SYSCALL path masks interrupts; single-CPU.
+        let (current, _) = unsafe { current_principal_and_task() };
+        // SAFETY: same as above; IPC_REGISTRY not aliased.
+        let res = unsafe {
+            ipc_registry_mut().create_channel(
+                current,
+                policy,
+                None,
+                None,
+                &crate::capabilities::StubCapabilityProvider,
+            )
+        };
+        res.map_or(SYSCALL_ERROR, |ch| ch.0)
+    }
+
+    /// `IpcDestroyChannel (21)` — `(channel_id, _, _, _, _, _) -> 0 | u64::MAX`.
+    pub(super) fn ipc_destroy_channel(args: [u64; 6]) -> u64 {
+        // SAFETY: same as ipc_create_channel.
+        let (current, _) = unsafe { current_principal_and_task() };
+        let res = unsafe {
+            ipc_registry_mut().destroy_channel(ChannelId(args[0]), current)
+        };
+        match res {
+            Ok(()) => 0,
+            Err(_) => SYSCALL_ERROR,
+        }
+    }
+
+    /// `IpcSend (22)` — `(channel_id, kind, payload_ptr, payload_len, _, _) -> 0 | u64::MAX`.
+    ///
+    /// On `BackpressurePolicy::Block` with a full queue, the calling
+    /// task parks and the syscall re-tries on wake. The kernel never
+    /// returns `u64::MAX` for a blocked-then-completed send — only for
+    /// hard errors (validation failure, capability mismatch, no such
+    /// channel, `Drop` policy on full queue).
+    pub(super) fn ipc_send(args: [u64; 6]) -> u64 {
+        let channel = ChannelId(args[0]);
+        let Some(kind) = parse_kind(args[1]) else {
+            return SYSCALL_ERROR;
+        };
+        let payload_ptr = args[2];
+        let payload_len = args[3];
+        if payload_len > MAX_PAYLOAD || !user_range_ok(payload_ptr, payload_len) {
+            return SYSCALL_ERROR;
+        }
+        // Copy the payload into a kernel buffer up front so that
+        // `Block`-policy waits don't strand a reference to user memory.
+        let mut payload: Vec<u8> = Vec::with_capacity(payload_len as usize);
+        if payload_len > 0 {
+            // SAFETY: user_range_ok verified the range; hardware PT walk
+            // faults on missing pages. CR3 is the sender's own AS.
+            unsafe {
+                let src = payload_ptr as *const u8;
+                payload.set_len(payload_len as usize);
+                core::ptr::copy_nonoverlapping(
+                    src,
+                    payload.as_mut_ptr(),
+                    payload_len as usize,
+                );
+            }
+        }
+
+        // SAFETY: SYSCALL path; single-CPU.
+        let (current, principal) = unsafe { current_principal_and_task() };
+
+        loop {
+            let envelope = MessageEnvelope {
+                sender: current,
+                channel,
+                kind,
+                payload: payload.clone(),
+            };
+            // SAFETY: IPC_REGISTRY not aliased; single-CPU.
+            let res = unsafe { ipc_registry_mut().send(envelope, current, principal) };
+            match res {
+                Ok(WakeAction::None) => return 0,
+                Ok(WakeAction::Wake(t)) => {
+                    // SAFETY: scheduler not aliased; single-CPU.
+                    unsafe { unpark(t) };
+                    return 0;
+                }
+                Ok(WakeAction::Block(_)) => {
+                    // SAFETY: single-CPU; scheduler not aliased.
+                    unsafe { park_until_woken(current) };
+                    // Wake-up: retry the send. The previous attempt
+                    // pushed `current` into the channel's waiters_send
+                    // queue; that bookkeeping is consumed by whatever
+                    // path issued the wake-up. We start the loop fresh.
+                    continue;
+                }
+                Err(_) => return SYSCALL_ERROR,
+            }
+        }
+    }
+
+    /// `IpcReceive (23)` — `(channel_id, dst_ptr, dst_cap, blocking, _, _) -> bytes_received | u64::MAX`.
+    ///
+    /// Blocking semantics: if the queue is empty and `blocking != 0`,
+    /// the calling task parks and the syscall re-tries on wake. Returns
+    /// the actual number of payload bytes copied to `dst_ptr`. Returns
+    /// `0` for a non-blocking empty receive.
+    pub(super) fn ipc_receive(args: [u64; 6]) -> u64 {
+        let channel = ChannelId(args[0]);
+        let dst_ptr = args[1];
+        let dst_cap = args[2];
+        let blocking = args[3] != 0;
+        if !user_range_ok(dst_ptr, dst_cap) {
+            return SYSCALL_ERROR;
+        }
+        // SAFETY: SYSCALL path; single-CPU.
+        let (current, principal) = unsafe { current_principal_and_task() };
+
+        loop {
+            // SAFETY: IPC_REGISTRY not aliased; single-CPU.
+            let res = unsafe {
+                ipc_registry_mut().receive(channel, current, principal, blocking)
+            };
+            match res {
+                Ok((Some(env), wake)) => {
+                    // Wake any blocked sender first; the order does not
+                    // matter for correctness but mirrors send-side.
+                    if let WakeAction::Wake(t) = wake {
+                        // SAFETY: scheduler not aliased; single-CPU.
+                        unsafe { unpark(t) };
+                    }
+                    let to_copy = core::cmp::min(env.payload.len() as u64, dst_cap);
+                    if to_copy > 0 {
+                        // SAFETY: user_range_ok verified `[dst_ptr, dst_ptr + dst_cap)`;
+                        // hardware PT walk faults on any missing user page.
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                env.payload.as_ptr(),
+                                dst_ptr as *mut u8,
+                                to_copy as usize,
+                            );
+                        }
+                    }
+                    return to_copy;
+                }
+                Ok((None, WakeAction::Block(_))) => {
+                    // SAFETY: scheduler not aliased; single-CPU.
+                    unsafe { park_until_woken(current) };
+                    continue;
+                }
+                Ok((None, _)) => return 0,
+                Err(_) => return SYSCALL_ERROR,
+            }
+        }
+    }
+}
+
+/// MB11/MB12 — terminate the calling user-process task.
+///
+/// MB11 single-task: dequeue self + `halt_forever`. MB12 multi-task:
+/// dequeue self + `yield_current(Terminated)`; the scheduler picks the
+/// next runnable task and switches into it. Only when the run queue is
+/// empty do we fall through to `halt_forever` — that path remains the
+/// "kernel idle terminator" of last resort.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "signature parity with other SyscallDispatcher arms"
@@ -284,7 +561,7 @@ fn write_console(ptr: u64, len: u64) -> KernelResult<u64> {
 fn task_exit(code: u64) -> KernelResult<u64> {
     #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
     {
-        use crate::scheduling::Scheduler;
+        use crate::scheduling::{Scheduler, TaskState};
         super::early_console::write_str("[user] exit=");
         // SAFETY: single-core; SCHEDULER not aliased.
         unsafe {
@@ -293,6 +570,14 @@ fn task_exit(code: u64) -> KernelResult<u64> {
             let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
             if let Some(current) = sched.current_task_id() {
                 let _ = sched.dequeue(current);
+                // MB12: if another task is still runnable, hand the CPU
+                // over to it. `yield_current(Terminated)` keeps the
+                // current task off-queue (it stays Terminated) and the
+                // scheduler picks the next one, doing the CR3+TSS swap
+                // through the MB12.0a/b path. When everyone is gone,
+                // `pick_next` returns `None` and we fall through to
+                // `halt_forever`.
+                let _ = sched.yield_current(current, TaskState::Terminated);
             }
         }
         super::arch::halt_forever()
@@ -353,6 +638,64 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                 // per-process bump allocator owns its user-VA cursor.
                 let _ = args;
                 Err(KernelError::NotYetImplemented)
+            }
+
+            // MB12 — IPC syscalls. The handlers themselves marshal
+            // their return values (success → 0 / bytes / channel id;
+            // error → SYSCALL_ERROR), so we wrap with `Ok` here to
+            // satisfy the `KernelResult<u64>` dispatcher contract.
+            //
+            // Host builds do not link the IPC handlers (no static
+            // `IPC_REGISTRY` on `cfg(test)`); they fall through to
+            // `NotYetImplemented` so the existing test surface keeps
+            // exercising the dispatcher trait shape without the
+            // bare-metal singleton.
+            SyscallNumber::IpcCreateChannel => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(ipc_handlers::ipc_create_channel(args))
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::IpcDestroyChannel => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(ipc_handlers::ipc_destroy_channel(args))
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::IpcSend => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(ipc_handlers::ipc_send(args))
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::IpcReceive => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(ipc_handlers::ipc_receive(args))
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
             }
 
             // All other syscalls are scaffolded but not yet implemented.

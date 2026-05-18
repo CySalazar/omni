@@ -571,6 +571,68 @@ impl Scheduler for RoundRobinScheduler {
         self.tasks[next_idx].state = TaskState::Running;
         self.current = Some(next.0);
 
+        // MB12.0a + MB12.0b — if the incoming task owns a userspace PCB,
+        // load its TSS.rsp0 (so the next Ring 3 → Ring 0 transition lands
+        // on this task's kernel stack) and reload CR3 (so user-half VAs
+        // resolve in this process's PML4). The kernel half is mirrored
+        // by reference across every per-process PML4, so the trampoline
+        // and the rest of this function stay mapped after the CR3 reload.
+        //
+        // The process metadata is captured by Copy *before* the mutable
+        // borrow of `self.tasks` for `from_rsp_ptr`; this avoids a
+        // simultaneous immutable + mutable borrow of `self`.
+        #[cfg(all(feature = "bare-metal", target_arch = "x86_64"))]
+        let process_dispatch: Option<(u64, u64, u64, u64, u64)> = self
+            .processes
+            .iter()
+            .find(|p| p.task.id.0 == next.0)
+            .map(|p| {
+                (
+                    p.task.kernel_stack_va,
+                    p.address_space.pml4_phys.0,
+                    p.user_entry,
+                    p.user_stack_top,
+                    self.tasks[next_idx].context.rsp,
+                )
+            });
+
+        #[cfg(all(feature = "bare-metal", target_arch = "x86_64"))]
+        if let Some((kernel_stack_va, cr3_phys, user_entry, user_stack_top, saved_rsp)) =
+            process_dispatch
+        {
+            let kernel_stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
+            crate::bare_metal::tss::set_rsp0(kernel_stack_top);
+            // SAFETY: per-process PML4 owned by this PCB; kernel half is
+            // mirrored from boot CR3 so subsequent instructions stay mapped.
+            unsafe {
+                core::arch::asm!(
+                    "mov cr3, {}",
+                    in(reg) cr3_phys,
+                    options(nostack, preserves_flags)
+                );
+            }
+            // MB12 first-dispatch detection: a freshly-spawned user task
+            // has `context.rsp = 0` (the sentinel from `spawn_from_elf`).
+            // It has no saved register frame on its kernel stack — the
+            // context_switch asm would pop garbage. Enter Ring 3 directly
+            // via the iretq trampoline instead; the previous task already
+            // saved its own state during the kernel-side `yield_current`
+            // path that landed us here.
+            if saved_rsp == 0 {
+                // SAFETY: user_entry + user_stack_top are validated by
+                // `spawn_from_elf` to reside in the user half and be
+                // user-accessible in this AS. CR3 is already loaded.
+                unsafe {
+                    crate::bare_metal::usermode::enter_user_mode(
+                        user_entry,
+                        user_stack_top,
+                        crate::bare_metal::usermode::USER_RFLAGS,
+                        cr3_phys,
+                    );
+                }
+            }
+        }
+
         // SAFETY: single-CPU, non-preemptive; both stack frames are valid
         // kernel memory established by spawn_kernel_task or a prior switch.
         #[cfg(all(feature = "bare-metal", target_arch = "x86_64"))]

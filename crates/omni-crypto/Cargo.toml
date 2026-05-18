@@ -24,12 +24,48 @@ readme.workspace       = true
 workspace = true
 
 # -----------------------------------------------------------------------------
+# Features
+# -----------------------------------------------------------------------------
+# `rng` (default-on) gates everything that pulls in `getrandom`,
+# `rand_core::OsRng`, or `argon2` — i.e. every code path that needs the
+# platform CSPRNG. Disabling it (e.g. via `--no-default-features` or via
+# the kernel's `bare-metal` propagation) yields a verify-only build of
+# the crate that compiles on `x86_64-unknown-none`. Mint/generate paths
+# remain present but compile out.
+#
+# `bare-metal` is an alias semantic forwarded from `omni-capability` and
+# `omni-kernel`: it explicitly disables the `rng` feature transitively
+# through the workspace. It does *not* add behaviour; it is only here so
+# downstream crates can say `omni-crypto/bare-metal` and get a
+# verify-only build.
+[features]
+default    = ["rng"]
+# `rng` brings in the platform CSPRNG path. It also propagates to
+# `omni-types/id-generation` because UUIDv4 minting (`CapabilityId`,
+# `AgentId`) shares the same getrandom dep — keeping them unified at
+# the feature boundary means a single `--no-default-features` switch
+# turns *every* getrandom site off across the workspace crypto stack.
+rng        = [
+    "dep:getrandom",
+    "dep:rand_core",
+    "dep:argon2",
+    "omni-types/id-generation",
+]
+bare-metal = []
+
+# -----------------------------------------------------------------------------
 # Dependencies — RustCrypto family only.
 # -----------------------------------------------------------------------------
 # Decision recorded 2026-05-10: `ring` is intentionally NOT used. See
 # /docs/09-tech-specifications.md § "Cryptography" for the rationale.
 [dependencies]
-omni-types       = { workspace = true }
+# Direct path-based declaration (instead of workspace-inherited) so we
+# can set `default-features = false`. The workspace root entry for
+# `omni-types` does not pin `default-features`, and Cargo refuses to
+# override it from a downstream `workspace = true` member. omni-crypto's
+# `rng` feature re-enables `omni-types/id-generation` for userspace
+# builds; bare-metal builds (`--no-default-features`) leave it off.
+omni-types       = { path = "../omni-types", version = "0.2.0", default-features = false }
 ed25519-dalek    = { workspace = true }
 x25519-dalek     = { workspace = true }
 chacha20poly1305 = { workspace = true }
@@ -37,11 +73,15 @@ sha2             = { workspace = true }
 sha3             = { workspace = true }
 blake3           = { workspace = true }
 hkdf             = { workspace = true }
-argon2           = { workspace = true }
+# `argon2` is RNG-adjacent (KDF for password hashing) — keep it behind
+# the `rng` feature for bare-metal builds that do not need it.
+argon2           = { workspace = true, optional = true }
 # CSPRNG: `rand_core` is the trait surface, `getrandom` is the platform
 # bridge. Together they back ephemeral key generation and nonce minting.
-rand_core        = { workspace = true }
-getrandom        = { workspace = true }
+# Both are gated behind the `rng` feature so verify-only builds (kernel
+# bare-metal) can opt out of pulling in a platform RNG.
+rand_core        = { workspace = true, optional = true }
+getrandom        = { workspace = true, optional = true }
 # Constant-time equality + key-material zeroization.
 subtle           = { workspace = true }
 zeroize          = { workspace = true }

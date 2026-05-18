@@ -65,11 +65,15 @@ impl OmniAeadKey {
 
     /// Generate a fresh AEAD key from the platform CSPRNG.
     ///
+    /// Gated behind the `rng` feature; bare-metal builds use
+    /// [`Self::from_bytes`] with a kernel-provided seed instead.
+    ///
     /// # Panics
     ///
     /// Panics if `getrandom` fails to produce entropy. See
     /// `omni_types::identity::random_uuid_bytes` for the rationale on
     /// why this is unrecoverable.
+    #[cfg(feature = "rng")]
     #[must_use]
     pub fn generate() -> Self {
         let mut key = [0u8; KEY_LEN];
@@ -389,8 +393,9 @@ mod tests {
         assert_eq!(&pt[..], RFC8439_PT);
     }
 
-    // ---- Round-trip ---------------------------------------------------------
+    // ---- Round-trip (gated behind `rng` feature) ----------------------------
 
+    #[cfg(feature = "rng")]
     #[test]
     fn round_trip_with_random_key() {
         let key = OmniAeadKey::generate();
@@ -402,8 +407,9 @@ mod tests {
         assert_eq!(&recovered[..], pt);
     }
 
-    // ---- Negative tests -----------------------------------------------------
+    // ---- Negative tests (gated behind `rng` feature) ------------------------
 
+    #[cfg(feature = "rng")]
     #[test]
     fn tampered_ciphertext_fails_to_decrypt() {
         let key = OmniAeadKey::generate();
@@ -421,6 +427,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rng")]
     #[test]
     fn wrong_key_fails_to_decrypt() {
         let key = OmniAeadKey::generate();
@@ -436,6 +443,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rng")]
     #[test]
     fn tampered_aad_fails_to_decrypt() {
         let key = OmniAeadKey::generate();

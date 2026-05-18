@@ -90,6 +90,14 @@ mb8-smoke   = ["bare-metal"]
 # The kernel halts after `TaskExit`; the desktop demo is unreachable
 # under this feature. Gated like `mb8-smoke` for the same reasons.
 mb11-userprobe = ["bare-metal"]
+# `mb12-userprobe` enables the MB12 IPC cross-process smoke: spawns
+# two Ring 3 processes (sender + receiver) that exchange a "ping"
+# message through channel 1 with capability gating disabled (open
+# channel — capability check is exercised in the integration tests).
+# Mutually exclusive with `mb11-userprobe` at the boot wiring level:
+# `kmain` takes the first available userprobe feature and ignores the
+# rest. Gated like `mb8-smoke` for the same reasons.
+mb12-userprobe = ["bare-metal"]
 
 [dev-dependencies]
 proptest = { workspace = true }

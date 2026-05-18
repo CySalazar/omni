@@ -42,6 +42,14 @@ use super::paging::{PTE_PRESENT, PTE_USER, PageMapper};
 /// the lower 128 TiB of x86_64 long mode (PML4 indices 0..256).
 pub const USER_HALF_END: u64 = 0x0000_8000_0000_0000;
 
+/// Default RFLAGS for a Ring 3 first-dispatch via `iretq`.
+///
+/// `0x202`: IF=1 (bit 9 = 0x200) so the LAPIC timer can preempt the
+/// user task; bit 1 is the architecturally-reserved "always 1" flag.
+/// MB12 first-dispatch path (scheduler) and MB11 boot trampoline both
+/// use this value.
+pub const USER_RFLAGS: u64 = 0x202;
+
 /// Construct an `iretq` frame and execute it to enter Ring 3 for the
 /// first time.
 ///

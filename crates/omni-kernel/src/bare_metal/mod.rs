@@ -67,6 +67,7 @@ pub mod tss;
 pub mod user_stack;
 pub mod usermode;
 pub mod userprobe;
+pub mod userprobe_mb12;
 pub mod vga;
 pub mod virtio_tablet;
 pub mod widget;

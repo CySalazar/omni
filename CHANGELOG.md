@@ -17,6 +17,147 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB12: real message-passing IPC + multi-task user-space
+  (Track B MB12.0a–MB12.9, 2026-05-18).** Closes the Phase 1 deliverable
+  "IPC primitives operational (typed message passing)" from the roadmap.
+  Two Ring 3 processes (sender + receiver) now exchange a payload
+  through a kernel-mediated channel, with capability gating and
+  scheduler-driven dispatch (TSS.rsp0 + CR3 reload + first-dispatch via
+  `enter_user_mode`).
+
+  - **Scheduler multi-task user (MB12.0a/b)** — `RoundRobinScheduler::yield_current`
+    ([`scheduling.rs`](./crates/omni-kernel/src/scheduling.rs)) now
+    updates `TSS.rsp0` and reloads CR3 when dispatching a user task,
+    and detects the first-dispatch sentinel (`context.rsp == 0`) to
+    transition directly to Ring 3 via `enter_user_mode` instead of the
+    `context_switch` asm path. `USER_RFLAGS = 0x202` exported as a
+    shared constant from [`usermode.rs`](./crates/omni-kernel/src/bare_metal/usermode.rs).
+  - **`omni-crypto` feature gating (MB12.0c)** — introduces
+    `default = ["rng"]` + `rng = ["dep:getrandom", "dep:rand_core",
+    "dep:argon2", "omni-types/id-generation"]` + `bare-metal = []` in
+    [`omni-crypto/Cargo.toml`](./crates/omni-crypto/Cargo.toml). All
+    `generate()` methods on `OmniSigningKey`, `OmniAeadKey`,
+    `OmniEphemeralSecret`, `OmniStaticSecret`, plus `generate_ephemeral`
+    and the `argon2id_*` family, are now `#[cfg(feature = "rng")]`. The
+    verify-only path (`OmniVerifyingKey::verify`,
+    `domain_separated_hash`, HKDF) remains always available. Userspace
+    consumers see no change with default features. Bare-metal compile
+    on `x86_64-unknown-none` is partially unblocked — see *Known
+    Limitations* below.
+  - **Kernel capability check (MB12.0c')** —
+    [`capabilities.rs`](./crates/omni-kernel/src/capabilities.rs)
+    introduces `KernelPrincipal([u8; 32])`, `KernelAction::IpcSend/IpcRecv`,
+    `KernelResource::IpcChannel(u64)`, `KernelCapabilityToken`,
+    `CapabilityVerdict`, the `KernelCapabilityCheck` trait, and the
+    `StubCapabilityProvider` MB12 implementation (action/resource
+    shape-matching, no Ed25519 yet). Trait shape designed to swap in
+    MB13 with a real provider when `omni-crypto` builds bare-metal.
+  - **`KernelIpcRegistry` (MB12.1+2)** — concrete IPC backend in
+    [`ipc.rs`](./crates/omni-kernel/src/ipc.rs). `BTreeMap<u64, Channel>`
+    storage (no `HashMap` — `hashbrown::ahash` requires `getrandom`,
+    conflict with MB12.0c). `Channel` carries
+    `{policy, owner, send_subject, recv_subject, queue, waiters_send,
+    waiters_recv}` — wait queues live inside the channel for O(1)
+    lookup. `WakeAction { None, Wake(TaskId), Block(TaskId) }` is the
+    contract between the registry and the syscall layer. Capability
+    check is two-tiered: `verifier.verify()` at `create_channel`,
+    byte-equality at `send`/`receive`.
+  - **`PendingReceive` slot + `principal` in PCB (MB12.3)** —
+    [`process.rs`](./crates/omni-kernel/src/process.rs) extends
+    `ProcessControlBlock` with `principal: KernelPrincipal` (defaults
+    to `KernelPrincipal::ZERO` for kernel-spawned tasks) and
+    `pending_receive: Option<PendingReceive>` (reserved for MB13
+    drain-at-dispatch / SharedMemoryGrant). `spawn_from_elf` takes
+    `principal` as its last parameter.
+  - **IPC syscall handlers 20-23 (MB12.5)** — `bare_metal/syscall_entry.rs`
+    adds the `ipc_handlers` submodule (gated `cfg(all(feature =
+    "bare-metal", target_os = "none", not(test)))`):
+    - `IpcCreateChannel(20)` — `(queue_depth, backpressure, tee_bound,
+      _, _, _) -> channel_id`. Open channels for MB12 (capability
+      tokens via syscall deferred to MB13).
+    - `IpcDestroyChannel(21)` — `(channel_id, _, _, _, _, _) -> 0 | u64::MAX`.
+    - `IpcSend(22)` — `(channel_id, kind, payload_ptr, payload_len, _,
+      _) -> 0 | u64::MAX`. Retry-loop on `WakeAction::Block`: parks via
+      `yield_current(BlockedOnIpc)`, resumes on wake. `MAX_PAYLOAD = 4096`.
+    - `IpcReceive(23)` — `(channel_id, dst_ptr, dst_cap, blocking, _,
+      _) -> bytes_received | u64::MAX`. Same retry-loop pattern.
+    - All four use `validate_user_buffer`-style range guards;
+      hardware PT walks during `copy_nonoverlapping` enforce
+      page-presence + `PTE_USER` semantics.
+  - **`task_exit` now yields instead of halting** when other tasks are
+    runnable — required for multi-task IPC. The fallback to
+    `halt_forever` remains for the empty-run-queue terminator.
+  - **MB12 user binaries (MB12.0f)** —
+    [`bare_metal/userprobe_mb12.rs`](./crates/omni-kernel/src/bare_metal/userprobe_mb12.rs)
+    embeds two hand-crafted ELFs (pattern mirroring MB11.7):
+    - `USERPROBE_SENDER_ELF` (179 bytes, R+X 59-byte code segment):
+      `IpcSend(ch=1, kind=Notification, "ping", 4) → TaskExit(0)`.
+    - `USERPROBE_RECEIVER_ELF` (197 bytes file, 141 in-mem with 64-byte
+      BSS scratch; R+W+X segment for Phase 1):
+      `IpcReceive(ch=1, buf, 64, blocking=1) → WriteConsole(buf, n) → TaskExit(0)`.
+
+    `spawn_userprobe_mb12(...)` pre-creates channel 1 (open, no
+    capability subject set) + spawns both tasks `Runnable` on the
+    scheduler.
+  - **Boot wiring `mb12-userprobe` (MB12.6)** —
+    [`lib.rs::kmain`](./crates/omni-kernel/src/lib.rs) under
+    `#[cfg(feature = "mb12-userprobe")]`. Calls
+    `spawn_userprobe_mb12`, registers a bootstrap task for `kmain`
+    itself, then `yield_current(kmain, Terminated)` hands the CPU over
+    to the scheduler. The scheduler's MB12.0a/b path dispatches the
+    user processes via `enter_user_mode`. Mutually exclusive with
+    `mb11-userprobe` at the boot wiring level. Forwarded as
+    `mb12-userprobe` feature by
+    [`kernel-runner/Cargo.toml`](./kernel-runner/Cargo.toml) (bootable
+    image ready for QEMU+OVMF / Proxmox smoke).
+  - **Integration tests `mb12_ipc_cross_process` (MB12.7)** —
+    [`tests/mb12_ipc_cross_process.rs`](./crates/omni-kernel/tests/mb12_ipc_cross_process.rs):
+    8 host-side end-to-end checks covering both ELFs loading into
+    distinct address spaces, the happy-path send→receive round-trip,
+    the receiver-parks-then-wakes-on-send sequence, `Block`-policy
+    sender parking + wake on drain, send/recv capability subject
+    mismatch denial, owner-only destroy, and the no-id-reuse invariant.
+  - **Smoke output expected (manual QEMU+OVMF / Proxmox run):**
+    ```
+    [mb12] receiver task_id=N
+    [mb12] sender   task_id=M
+    [mb12] channel 1 pre-created
+    [mb12] handing off to user tasks
+    ping
+    [user] exit=0
+    [user] exit=0
+    ```
+  - **ADR-0005**
+    ([`docs/adr/0005-mb12-ipc-message-passing.md`](./docs/adr/0005-mb12-ipc-message-passing.md))
+    captures the architecture decisions (BTreeMap vs HashMap,
+    drain-at-syscall vs at-dispatch, capability stub vs full
+    omni-capability, hand-crafted ELFs vs separate user crate), the
+    `omni-crypto` SIMD-ICE discovery, and the MB13 migration plan
+    toward a real Ed25519 capability provider.
+
+  **Known limitations:**
+  - **Capability check is a stub** — `StubCapabilityProvider::verify`
+    matches `action`/`resource` shape but does not verify Ed25519
+    signatures. MB13 swaps it once `omni-crypto` builds bare-metal.
+  - **`omni-crypto` does not build on `x86_64-unknown-none` today** —
+    LLVM ICE on SIMD intrinsics in `sha2`, `poly1305`,
+    `curve25519-dalek`. ADR-0005 § *Migration* + § *Alternative A*
+    document the MB13 work (≈ 1-2 days of `force-soft` feature gating
+    or `omni-crypto-verify` extraction).
+  - **`mb11-userprobe` and `mb12-userprobe` are mutually exclusive at
+    boot wiring level** — when both features are enabled in the same
+    build, the MB11 block runs first. CI matrix should run them as
+    separate jobs.
+  - **No automatic QEMU smoke for `[mb12]` yet** — the existing
+    `qemu-boot-smoke` job validates MB1–MB10 + MB11; an MB12 variant
+    with `EXPECTED_LINES` extended for `[mb12]` + `ping` is tracked as
+    follow-up.
+
+  **Test delta:** workspace test count **393 → 426** (+33).
+  (`+4` capability, `+17` IPC registry, `+10` userprobe MB12, `+8`
+  cross-process integration, `+3` PCB tests, minus the trait-scaffold
+  baseline that the concrete impl replaces.)
+
 - **Kernel — MB11 closure: real user-probe ELF, kmain boot wiring,
   integration tests (Track B MB11.7–MB11.9, 2026-05-18).** Closes the
   MB11 milestone started by the foundation commit; the kernel now spawns

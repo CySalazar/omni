@@ -54,9 +54,14 @@ pub struct OmniSigningKey {
 impl OmniSigningKey {
     /// Generate a fresh `Ed25519` signing key from the platform CSPRNG.
     ///
+    /// Gated behind the `rng` feature; bare-metal builds use
+    /// [`Self::from_bytes`] with a kernel-provided seed. Verify-only
+    /// paths (`OmniVerifyingKey::verify`) remain available without it.
+    ///
     /// # Panics
     ///
     /// Panics if `getrandom` fails to produce entropy.
+    #[cfg(feature = "rng")]
     #[must_use]
     pub fn generate() -> Self {
         let mut secret = [0u8; SIGNING_KEY_LEN];
@@ -304,8 +309,9 @@ mod tests {
         vk.verify(b"", &sig).unwrap();
     }
 
-    // ---- Round-trip ---------------------------------------------------------
+    // ---- Round-trip (gated behind `rng` feature) ----------------------------
 
+    #[cfg(feature = "rng")]
     #[test]
     fn round_trip_random_key() {
         let sk = OmniSigningKey::generate();
@@ -315,8 +321,9 @@ mod tests {
         vk.verify(msg, &sig).unwrap();
     }
 
-    // ---- Negative tests -----------------------------------------------------
+    // ---- Negative tests (gated behind `rng` feature) ------------------------
 
+    #[cfg(feature = "rng")]
     #[test]
     fn wrong_message_fails_verification() {
         let sk = OmniSigningKey::generate();
@@ -329,6 +336,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rng")]
     #[test]
     fn wrong_key_fails_verification() {
         let sk = OmniSigningKey::generate();
@@ -341,6 +349,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rng")]
     #[test]
     fn tampered_signature_fails_verification() {
         let sk = OmniSigningKey::generate();

@@ -14,6 +14,7 @@
 use core::fmt;
 
 use omni_types::error::{CryptoErrorKind, OmniError, Result};
+#[cfg(feature = "rng")]
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
@@ -49,6 +50,12 @@ pub struct OmniEphemeralSecret {
 
 impl OmniEphemeralSecret {
     /// Generate a fresh ephemeral secret from the platform CSPRNG.
+    ///
+    /// Gated behind the `rng` feature; bare-metal builds use
+    /// [`Self::from_bytes`]-style construction with a kernel-provided
+    /// seed instead (when one is needed at all — the kernel currently
+    /// does not perform key exchange).
+    #[cfg(feature = "rng")]
     #[must_use]
     pub fn generate() -> Self {
         Self {
@@ -97,6 +104,9 @@ pub struct OmniStaticSecret {
 
 impl OmniStaticSecret {
     /// Generate a fresh static secret from the platform CSPRNG.
+    ///
+    /// Gated behind the `rng` feature.
+    #[cfg(feature = "rng")]
     #[must_use]
     pub fn generate() -> Self {
         Self {
@@ -255,6 +265,9 @@ impl fmt::Debug for OmniSharedSecret {
 /// Convenience wrapper used by the mesh handshake. Equivalent to
 /// `let s = OmniEphemeralSecret::generate(); let p = s.public_key();`
 /// then returning the pair.
+///
+/// Gated behind the `rng` feature.
+#[cfg(feature = "rng")]
 #[must_use]
 pub fn generate_ephemeral() -> (OmniEphemeralSecret, OmniPublicKey) {
     let secret = OmniEphemeralSecret::generate();
@@ -387,6 +400,7 @@ mod tests {
         assert_eq!(s.as_bytes(), &expected);
     }
 
+    #[cfg(feature = "rng")]
     #[test]
     fn dh_is_symmetric() {
         let (a_sec, a_pub) = generate_ephemeral();
@@ -406,6 +420,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rng")]
     #[test]
     fn random_public_key_passes_validation() {
         let (_, pk) = generate_ephemeral();
@@ -413,6 +428,7 @@ mod tests {
         let _ok = validate_peer_public_key(bytes).unwrap();
     }
 
+    #[cfg(feature = "rng")]
     #[test]
     fn debug_does_not_leak_secret() {
         let s = OmniEphemeralSecret::generate();

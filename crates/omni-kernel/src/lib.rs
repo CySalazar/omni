@@ -584,13 +584,10 @@ pub fn kmain(
                         )]
                         early_console::write_usize(pcb.user_entry as usize);
                         early_console::write_str("\n");
-                        // RFLAGS: IF = 1 (bit 9 = 0x200) so the timer can
-                        // preempt the user task; all other bits clear.
-                        let rflags: u64 = 0x202;
                         bare_metal::usermode::enter_user_mode(
                             pcb.user_entry,
                             pcb.user_stack_top,
-                            rflags,
+                            bare_metal::usermode::USER_RFLAGS,
                             pcb.address_space.pml4_phys.0,
                         );
                     } else {
@@ -603,9 +600,107 @@ pub fn kmain(
     }
 
     // -------------------------------------------------------------------------
+    // MB12-userprobe — cross-process IPC smoke (Track B MB12)
+    //
+    // Spawns two Ring 3 processes:
+    //   - receiver: `IpcReceive(ch=1, buf, 64, blocking=1)` → `WriteConsole` → `TaskExit`
+    //   - sender:   `IpcSend(ch=1, kind=3, "ping", 4)` → `TaskExit`
+    //
+    // The channel is pre-created (open, no capability subject set) by
+    // `spawn_userprobe_mb12`. After registering both tasks, `kmain` spawns
+    // a bootstrap TCB for itself and `yield_current(Terminated)` to hand
+    // the CPU over to the scheduler — the scheduler's MB12.0a/b path then
+    // does the CR3 + TSS.rsp0 + iretq trampoline into the first
+    // user-vergine task.
+    //
+    // Expected serial trace (interleaving depends on FIFO order):
+    //   [mb12] receiver task_id=N + sender task_id=M + channel id pre-created
+    //   ping              (receiver writes after IpcReceive completes)
+    //   [user] exit=0     (sender)
+    //   [user] exit=0     (receiver)
+    //
+    // Mutually exclusive with `mb11-userprobe`: when both features are
+    // enabled in the same build, the MB11 block above runs first and
+    // halts before reaching this code (TaskExit + halt_forever).
+    // -------------------------------------------------------------------------
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_os = "none",
+        feature = "mb12-userprobe",
+        not(feature = "mb11-userprobe"),
+        not(test)
+    ))]
+    #[allow(
+        unsafe_code,
+        reason = "single-core static-mut deref + Ring 3 entry; SAFETY in block"
+    )]
+    {
+        use bare_metal::userprobe_mb12;
+        use scheduling::{PriorityClass, Scheduler, TaskState};
+        // SAFETY: single-core; SCHEDULER/FRAME_ALLOC not aliased.
+        unsafe {
+            let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+            let fa = &mut *core::ptr::addr_of_mut!(FRAME_ALLOC);
+            match userprobe_mb12::spawn_userprobe_mb12(&mut pager, fa, sched) {
+                Ok((receiver_id, sender_id)) => {
+                    early_console::write_str("[mb12] receiver task_id=");
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "x86_64 only; usize is u64 on target_os = none"
+                    )]
+                    early_console::write_usize(receiver_id.0 as usize);
+                    early_console::write_str("\n[mb12] sender   task_id=");
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "x86_64 only; usize is u64 on target_os = none"
+                    )]
+                    early_console::write_usize(sender_id.0 as usize);
+                    early_console::write_str("\n[mb12] channel 1 pre-created\n");
+
+                    // Register the currently-executing `kmain` flow as a
+                    // bootstrap task so `yield_current` has a `current` to
+                    // save context for. The yield to `Terminated` keeps
+                    // kmain off the run queue forever; the scheduler then
+                    // dispatches the first user process via the MB12.0a/b
+                    // first-dispatch path.
+                    let _ = sched.spawn_bootstrap_task(PriorityClass::System);
+                    if let Some(kmain_id) = sched.current_task_id() {
+                        early_console::write_str("[mb12] handing off to user tasks\n");
+                        let _ = sched.yield_current(kmain_id, TaskState::Terminated);
+                    }
+                    // If we ever return here (no runnable task picked),
+                    // fall through to halt_forever below.
+                    early_console::write_str("[mb12] all user tasks finished\n");
+                }
+                Err(_) => early_console::write_str("[mb12] spawn FAILED\n"),
+            }
+        }
+        // Silence the desktop-demo arguments — when `mb12-userprobe`
+        // is enabled the desktop never runs, so its inputs would
+        // otherwise trip unused-variable warnings.
+        let _ = framebuffer;
+        let _ = region_count;
+        let _ = free_mib;
+        let _ = total_mib;
+        let _ = phys_offset_mb2;
+        // After both user processes terminate (or on spawn failure),
+        // park the kernel. `halt_forever` diverges (`-> !`) so the
+        // subsequent desktop block becomes unreachable on this build.
+        bare_metal::arch::halt_forever();
+    }
+
+    // -------------------------------------------------------------------------
     // Graphical desktop — blocks until the user requests power-off, then
     // draws the power-off overlay before returning.
+    //
+    // Unreachable when `mb12-userprobe` is on (the MB12 block above
+    // ends in `halt_forever` / `-> !`); silence the lint locally so
+    // the rest of the kmain body stays warning-clean.
     // -------------------------------------------------------------------------
+    #[allow(
+        unreachable_code,
+        reason = "mb12-userprobe path diverges before reaching the desktop"
+    )]
     demo::run_desktop(
         framebuffer,
         region_count,

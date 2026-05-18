@@ -38,6 +38,36 @@
 
 #[cfg(feature = "bare-metal")]
 use crate::bare_metal::address_space::AddressSpace;
+#[cfg(feature = "bare-metal")]
+use crate::capabilities::KernelPrincipal;
+#[cfg(feature = "bare-metal")]
+use crate::ipc::ChannelId;
+
+/// Outstanding `IpcReceive` that this process issued before parking.
+///
+/// MB12 drain-at-dispatch: when an `IpcReceive` with `blocking = true`
+/// hits an empty queue, the syscall handler stores this record on the
+/// receiver PCB and parks the task. When a counterpart `IpcSend` later
+/// arrives and the scheduler dispatches the receiver, the entry-into-
+/// user-mode trampoline reads the slot, copies the message payload from
+/// the kernel's IPC buffer into `dst_ptr`, clears the slot, and resumes
+/// Ring 3 with the byte count in `rax`.
+///
+/// The kernel completes the copy itself (rather than re-issuing the
+/// syscall on wake-up) because at that moment the receiver's CR3 is
+/// active and `dst_ptr` is directly addressable. Re-issuing would
+/// require the user code to retry, which neither MB11 nor MB12 model
+/// (the user expects `IpcReceive` to return once).
+#[cfg(feature = "bare-metal")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingReceive {
+    /// Channel the task is waiting on.
+    pub channel: ChannelId,
+    /// User-space VA where the payload should be deposited.
+    pub dst_ptr: u64,
+    /// Maximum number of bytes the user buffer can hold.
+    pub dst_cap: u64,
+}
 
 /// A userspace process (`Ring 3`).
 #[cfg(feature = "bare-metal")]
@@ -55,6 +85,17 @@ pub struct ProcessControlBlock {
     /// Per-process counter for [`super::bare_metal::user_stack`]
     /// slot allocation. Phase 1 single-thread → always 1 after spawn.
     pub next_user_stack_slot: usize,
+    /// Authority identifier (32-byte opaque hash). MB12 capability
+    /// check compares this against `Channel::send_subject` /
+    /// `recv_subject`. Defaults to [`KernelPrincipal::ZERO`] for
+    /// processes spawned without a token (developer mode / smoke
+    /// tests).
+    pub principal: KernelPrincipal,
+    /// MB12 drain-at-dispatch slot. `Some` means the process issued
+    /// a blocking `IpcReceive` that has not yet delivered. The
+    /// scheduler dispatch path clears this and copies the message
+    /// payload before returning to Ring 3.
+    pub pending_receive: Option<PendingReceive>,
 }
 
 #[cfg(feature = "bare-metal")]
@@ -86,6 +127,7 @@ impl ProcessControlBlock {
         alloc: &mut crate::memory::BitmapFrameAllocator<N>,
         scheduler: &mut crate::scheduling::RoundRobinScheduler,
         priority: crate::scheduling::PriorityClass,
+        principal: KernelPrincipal,
     ) -> crate::KernelResult<crate::scheduling::TaskId> {
         use crate::KernelError;
         use crate::bare_metal::elf_loader::Elf64;
@@ -177,6 +219,8 @@ impl ProcessControlBlock {
                 user_entry,
                 user_stack_top,
                 next_user_stack_slot,
+                principal,
+                pending_receive: None,
             },
         );
 
@@ -188,12 +232,12 @@ impl ProcessControlBlock {
 mod tests {
     use super::*;
     use crate::bare_metal::address_space::AddressSpace;
+    use crate::ipc::ChannelId;
     use crate::memory::PhysAddr;
     use crate::scheduling::{PriorityClass, TaskId};
 
-    #[test]
-    fn pcb_fields_round_trip() {
-        let pcb = ProcessControlBlock {
+    fn make_pcb() -> ProcessControlBlock {
+        ProcessControlBlock {
             task: crate::scheduling::TaskControlBlock {
                 id: TaskId(42),
                 state: crate::scheduling::TaskState::Runnable,
@@ -208,12 +252,39 @@ mod tests {
             user_entry: 0x4000_0000,
             user_stack_top: 0x0000_0040_0000_8000,
             next_user_stack_slot: 1,
-        };
+            principal: KernelPrincipal::ZERO,
+            pending_receive: None,
+        }
+    }
 
+    #[test]
+    fn pcb_fields_round_trip() {
+        let pcb = make_pcb();
         assert_eq!(pcb.task.id, TaskId(42));
         assert_eq!(pcb.user_entry, 0x4000_0000);
         assert_eq!(pcb.user_stack_top, 0x0000_0040_0000_8000);
         assert_eq!(pcb.address_space.pml4_phys.0, 0xBEEF_0000);
         assert_eq!(pcb.next_user_stack_slot, 1);
+    }
+
+    #[test]
+    fn pcb_defaults_to_zero_principal_and_no_pending_receive() {
+        let pcb = make_pcb();
+        assert_eq!(pcb.principal, KernelPrincipal::ZERO);
+        assert_eq!(pcb.pending_receive, None);
+    }
+
+    #[test]
+    fn pending_receive_holds_userspace_destination() {
+        let mut pcb = make_pcb();
+        pcb.pending_receive = Some(PendingReceive {
+            channel: ChannelId(7),
+            dst_ptr: 0x4000_4000,
+            dst_cap: 256,
+        });
+        let pr = pcb.pending_receive.unwrap();
+        assert_eq!(pr.channel, ChannelId(7));
+        assert_eq!(pr.dst_ptr, 0x4000_4000);
+        assert_eq!(pr.dst_cap, 256);
     }
 }

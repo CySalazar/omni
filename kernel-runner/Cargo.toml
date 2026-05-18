@@ -55,6 +55,13 @@ mb8-smoke   = ["omni-kernel/mb8-smoke"]
 # embedded Ring 3 user-probe (`WriteConsole("hello\n") + TaskExit(0)`).
 # Track B MB11 (2026-05-18).
 mb11-userprobe = ["omni-kernel/mb11-userprobe"]
+# Forward the kernel's `mb12-userprobe` feature so the QEMU image runs
+# the cross-process IPC smoke: a sender + receiver pair exchanging a
+# "ping" message through a kernel-pre-created channel. Mutually
+# exclusive with `mb11-userprobe` at the boot wiring level — when both
+# features are enabled in the same build, the MB11 block runs first.
+# Track B MB12 (2026-05-18).
+mb12-userprobe = ["omni-kernel/mb12-userprobe"]
 
 # The runner is its own profile: it always builds with link-time
 # optimization in release (we ship the kernel as a single ELF, then

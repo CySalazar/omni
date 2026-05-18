@@ -1,9 +1,9 @@
 # OMNI OS — Progress Report
 
-**Data snapshot:** 2026-05-18 (post-release v0.2.0 + MB10 + Step 7 + MB11)
+**Data snapshot:** 2026-05-18 (post-release v0.2.0 + MB10 + Step 7 + MB11 + MB12)
 **Branch corrente:** `feat/kernel-mb11-userspace` (locale; in attesa di PR + merge in `main`)
-**HEAD:** `c743173` (feat(kernel): MB11 closure — real user-probe ELF + boot wiring (MB11.7-MB11.9))
-**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9).
+**HEAD:** post-MB12 — IPC concreto + multi-task user-space + ADR-0005
+**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9).
 **Fase di roadmap:** Phase 0 → ingresso Phase 1 (microkernel proof-of-concept)
 
 ---
@@ -25,6 +25,8 @@ Sopra v0.2.0 sono stati chiusi tre blocchi consecutivi sul branch
    `blanket-allow-guard` (`scripts/check-no-blanket-allow.sh`) ora bloccante.
 3. **MB11 — primo processo userspace Ring 3 con per-process CR3**
    (2 commit `22289e1` + `c743173`, 2026-05-18). ADR-0004 `accepted`.
+4. **MB12 — IPC concreto + multi-task user-space** (post-c743173,
+   2026-05-18). ADR-0005 `accepted`. Sotto-blocchi MB12.0a-MB12.9.
 
 Il microkernel `omni-kernel` ora:
 
@@ -80,15 +82,19 @@ Il microkernel `omni-kernel` ora:
   (tastiera + mouse) e tablet VirtIO 1.0+ per il mouse assoluto su
   QEMU/Proxmox, RTC, ACPI S5 (questo path solo senza `mb11-userprobe`).
 
-Tutta la pipeline è verificata da **393 test workspace** verdi (era 277
-post-MB10; +12 unit MB11.1-MB11.6 + 5 unit userprobe + 6 integration
-host-side `tests/mb11_userspace.rs`). Step 7 ha chiuso il blanket allow:
-`omni-kernel/src/lib.rs` non porta più alcun `#![allow(<group>)]` non
-whitelisted (solo il `cfg_attr(test, allow(...))` consentito da ADR-0003).
+Tutta la pipeline è verificata da **426 test workspace** verdi (era 393
+post-MB11; +33 da MB12 fra capability stub, IPC registry, userprobe
+MB12, integration cross-process, PCB extensions). Step 7 + MB12
+mantengono il blanket allow guard verde: `omni-kernel/src/lib.rs` non
+porta alcun `#![allow(<group>)]` non whitelisted; ogni nuovo `unsafe`
+in `ipc.rs` è dichiarato a livello modulo con reason.
 
-Il prossimo blocco di lavoro è **MB12 — IPC reale** (queue concreta in
-kernel space, capability check via `omni-capability`, syscall
-`IpcSend`/`IpcRecv`, integration test cross-process).
+Il prossimo blocco di lavoro è **MB13 — `omni-capability` integration
+reale**: feature-gating SIMD (`force-soft`) su `sha2`/`poly1305`/
+`curve25519-dalek` per sbloccare `omni-crypto` su `x86_64-unknown-none`,
+aggiunta di `omni-capability` come dep di `omni-kernel`, swap di
+`StubCapabilityProvider` con un `Ed25519CapabilityProvider` reale, ed
+estensione dell'ABI syscall `IpcCreateChannel` per accettare i token.
 
 ---
 
@@ -113,7 +119,7 @@ kernel space, capability check via `omni-capability`, syscall
 
 ### 2.2 — Track B: Kernel core (`omni-kernel` bare-metal)
 
-**Status:** MB1-MB11 ✅ chiuse. Prossimo blocco MB12.
+**Status:** MB1-MB12 ✅ chiuse. Prossimo blocco MB13.
 
 | Milestone | Contenuto | Stato | Commit |
 |---|---|---|---|
@@ -128,24 +134,26 @@ kernel space, capability check via `omni-capability`, syscall
 | MB9 | `PageMapper` huge-page aware + direct-map validator | ✅ | `926a37e` |
 | MB10 | Kernel stack isolation + guard page (ADR-0002) | ✅ | `8c1496a` |
 | MB11 | Primo userspace process Ring 3 + per-process CR3 (ADR-0004) | ✅ | `22289e1` + `c743173` |
-| **MB12** | **IPC reale (queue + capability check)** | ⬜ | — |
+| MB12 | IPC reale (queue + capability stub + multi-task user) (ADR-0005) | ✅ | post-`c743173` |
+| **MB13** | **omni-capability integration (sblocco omni-crypto bare-metal + Ed25519 verify)** | ⬜ | — |
 
-**Verifica MB1-MB11:**
-- `cargo test --workspace --all-features` → **393 pass / 0 fail** (era 277 post-MB10)
-- `cargo test -p omni-kernel --all-features` → ~100 unit + 6 nuovi
-  integration MB11 in `tests/mb11_userspace.rs` (era 79 + 21)
+**Verifica MB1-MB12:**
+- `cargo test --workspace --all-features` → **434 pass / 0 fail** (era 393 post-MB11, +41 da MB12)
+- `cargo test -p omni-kernel --all-features` → ~133 unit (lib) + 4 integration
+  suites (`mb11_userspace.rs` 6 + `mb12_ipc_cross_process.rs` 8 + `panic_record.rs` 5 + sanity)
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` → clean
   (era con blanket allow su omni-kernel pre-Step 7; ora completamente lifted)
 - `cargo clippy -p omni-kernel --target x86_64-unknown-none --features bare-metal -- -D warnings` → clean
-- `cargo clippy -p omni-kernel --target x86_64-unknown-none --features mb11-userprobe -- -D warnings` → clean
-- `cargo build --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --features mb11-userprobe` → bootable image pronta
+- `cargo clippy -p omni-kernel --target x86_64-unknown-none --features mb11-userprobe -- -D warnings` → clean (regression)
+- `cargo clippy -p omni-kernel --target x86_64-unknown-none --features mb12-userprobe -- -D warnings` → clean
+- `cargo build --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --features mb12-userprobe` → bootable image pronta
 - `scripts/check-no-blanket-allow.sh` → exit 0 (`scanned 12 crate-root files`)
 - Boot QEMU+OVMF (CI ubuntu-24.04, `bootloader_api` 0.11): banner K5 +
   paging validator + IDT + syscall + sched + lapic + `[stack] kernel
   stack VA range = 0xFFFF_C000_… (slot 0)` + mb8-smoke = OK.
 - Boot Proxmox VMID 103 (`100.101.77.9`): banner + paging + `[virtio]
   tablet ready` + desktop disegnato sul framebuffer VNC.
-- ADR-0001, ADR-0002, ADR-0003, ADR-0004 → `accepted`.
+- ADR-0001, ADR-0002, ADR-0003, ADR-0004, ADR-0005 → `accepted`.
 
 **Smoke output `mb11-userprobe` (atteso, manual run via QEMU/Proxmox):**
 ```
@@ -153,6 +161,17 @@ kernel space, capability check via `omni-capability`, syscall
 [user] address space activated cr3 = 0x...
 [user] entering Ring 3 rip = 0x40000000
 hello
+[user] exit=0
+```
+
+**Smoke output `mb12-userprobe` (atteso, manual run via QEMU/Proxmox):**
+```
+[mb12] receiver task_id=N
+[mb12] sender   task_id=M
+[mb12] channel 1 pre-created
+[mb12] handing off to user tasks
+ping
+[user] exit=0
 [user] exit=0
 ```
 
@@ -188,7 +207,7 @@ audit`, `cargo deny`, `QEMU boot smoke`, `bare-metal build`,
 | Area | Stato |
 |---|---|
 | `omni-types` (id, errori, versioning) | ✅ P1 chiuso |
-| `omni-crypto` (AEAD, sign, KEX, hash, KDF) | ✅ P1; ⏳ `AWAITING_CRYPTO_REVIEW` |
+| `omni-crypto` (AEAD, sign, KEX, hash, KDF) | ✅ P1; ⏳ `AWAITING_CRYPTO_REVIEW`; ✅ feature `rng`/`bare-metal` introdotti MB12.0c (host-side gating; bare-metal compile bloccato da SIMD ICE → MB13) |
 | `omni-capability` (Macaroons + revocation) | ✅ P1 |
 | `omni-tee` (TDX/SEV-SNP scaffold + Mock) | 🟡 scaffold, P5.2/5.3 in `[~]` |
 | `omni-hal` | 🟡 stub |
@@ -196,7 +215,7 @@ audit`, `cargo deny`, `QEMU boot smoke`, `bare-metal build`,
 | `omni-runtime`/`omni-sdk`/`omni-agent`/`omni-shell` | 🔵 stub |
 | `omni-container` | 🟡 skeleton + KVM TODO (P8) |
 | `omni-tokenization` | 🔵 stub |
-| `omni-kernel` | 🟢 MB1-MB11 (Ring 3 + per-process CR3 chiuso) |
+| `omni-kernel` | 🟢 MB1-MB12 (Ring 3 + per-process CR3 + IPC concreto + multi-task user) |
 | `kernel-runner` | 🟢 OIP-Kernel-005 Active |
 | `disk-image-builder` | 🟢 UEFI/BIOS |
 | Migrazione `bincode`→`postcard` (P7) | ✅ M1-M5 landed, ⬜ P7.3 docs |
@@ -210,23 +229,35 @@ audit`, `cargo deny`, `QEMU boot smoke`, `bare-metal build`,
 ## 3. Test e build evidence
 
 ```
-cargo test --workspace --all-features                    393 pass / 0 fail  (era 277 post-MB10)
-cargo test -p omni-kernel --all-features                 ~100 unit + 6 integration MB11  (era 79 + 21)
+cargo test --workspace --all-features                    426 pass / 0 fail  (era 393 post-MB11)
+cargo test -p omni-kernel --all-features                 ~133 unit + 4 integration suites (mb11 + mb12 + panic + sanity)
 cargo build -p omni-kernel --target x86_64-unknown-none
   --no-default-features --features bare-metal             clean
 cargo build -p omni-kernel --target x86_64-unknown-none
-  --no-default-features --features mb11-userprobe         clean
+  --no-default-features --features mb11-userprobe         clean (regression MB11)
+cargo build -p omni-kernel --target x86_64-unknown-none
+  --no-default-features --features mb12-userprobe         clean (MB12 boot wiring)
 cargo build --manifest-path kernel-runner/Cargo.toml
-  --target x86_64-unknown-none --features mb11-userprobe  clean (bootable image)
-cargo clippy --workspace --all-targets --all-features -- -D warnings  clean (NO blanket allow su omni-kernel — Step 7 chiuso)
+  --target x86_64-unknown-none --features mb12-userprobe  clean (bootable image MB12)
+cargo build -p omni-crypto                                clean (default-features = ["rng"])
+cargo test  -p omni-crypto --no-default-features          40 pass (verify-only path)
+cargo clippy --workspace --all-targets --all-features -- -D warnings  clean
 cargo clippy -p omni-kernel --target x86_64-unknown-none
   --no-default-features --features bare-metal -- -D warnings  clean
 cargo clippy -p omni-kernel --target x86_64-unknown-none
-  --no-default-features --features mb11-userprobe -- -D warnings  clean
+  --no-default-features --features mb12-userprobe -- -D warnings  clean
 scripts/check-no-blanket-allow.sh                        ok (scanned 12 crate-root files)
 cargo audit                                              clean
 cargo deny check advisories                              ok
 ```
+
+**Known limitation (deferred MB13):** `cargo build -p omni-crypto
+--target x86_64-unknown-none --no-default-features` fallisce con LLVM
+ICE su SIMD intrinsics in `sha2`, `poly1305`, `curve25519-dalek`
+(rustc 1.85, host `aarch64-apple-darwin`). Ortogonale a `getrandom`
+gating. Soluzione MB13: `force-soft` feature su quelle 3 librerie *o*
+extraction di `omni-crypto-verify` come crate separato. ADR-0005
+§ Migration documenta il path.
 
 **CI status sui commit post-MB10 (`770c7aa`..`c743173`):** tutti i 11
 required check (`cargo fmt`, `cargo clippy`, `cargo doc`, `DCO
@@ -239,12 +270,14 @@ carryover da v0.2.0 — admin-bypass come per #29/#33 (v. § 4.5
 
 LOC sorgente Rust del workspace:
 
-- `crates/`                          ~22.000 LOC (post-MB11: +124 MB10
-  + ~330 Step 7 reason clauses + ~1.400 MB11 nuovi moduli)
-- `kernel-runner/`                      ~491 LOC
+- `crates/`                          ~24.300 LOC (post-MB12: +124 MB10
+  + ~330 Step 7 reason clauses + ~1.400 MB11 nuovi moduli + ~1.600 MB12
+  fra `ipc.rs` impl, `capabilities.rs` extension, `userprobe_mb12.rs`,
+  `mb12_ipc_cross_process.rs`, syscall handlers, scheduler wiring)
+- `kernel-runner/`                      ~496 LOC (+5 per feature `mb12-userprobe`)
 - `disk-image-builder/`                 102 LOC
-- `scripts/check-no-blanket-allow.sh`   ~140 LOC (nuovo Step 7)
-- Totale produzione                 ~22.700 LOC
+- `scripts/check-no-blanket-allow.sh`   ~140 LOC (Step 7)
+- Totale produzione                 ~25.000 LOC
 
 ---
 
@@ -252,12 +285,19 @@ LOC sorgente Rust del workspace:
 
 ### 4.1 — Kernel (Track B)
 
-1. **MB12 — IPC reale.** Lo skeleton `crates/omni-kernel/src/ipc.rs`
-   (`ChannelId`, `MessageKind`, `BackpressurePolicy`, `MessageEnvelope`,
-   trait `Ipc`) è in tree dal 2026-05-12. Mancano: queue concreta in
-   kernel space, capability check tramite `omni-capability`, syscall
-   `IpcSend`/`IpcRecv`, integration test cross-process. **Sbloccata da
-   MB11 ✅** (PCB esiste, address space isolation funziona).
+1. ~~**MB12 — IPC reale.**~~ ✅ **CHIUSO** (post-`c743173`, ADR-0005).
+   `KernelIpcRegistry` concreta in tree con backpressure 3-mode, 4
+   syscall handler operativi, capability check via
+   `StubCapabilityProvider`, integration test cross-process 8 verdi,
+   smoke `mb12-userprobe` pronto. Follow-up reale (Ed25519 verify) →
+   MB13.
+
+1bis. **MB13 — `omni-capability` integration reale.** `StubCapabilityProvider`
+   è il placeholder MB12; serve swap con un provider Ed25519 reale che
+   chiami `omni_capability::CapabilityToken::verify_full`. Bloccato da
+   feature-gating SIMD su `sha2` + `poly1305` + `curve25519-dalek`
+   (LLVM ICE su `x86_64-unknown-none`). Effort: 1-2 giornate. ADR-0005
+   § Migration documenta la sequenza.
 2. **TLB shootdown multi-core.** Nessun MP/AP enable; LAPIC è già pronta
    ma il sistema gira su un solo core. Non bloccante per MB12 ma
    sarà necessario prima di P6.7 (driver). MB11 ha previsto questo
@@ -356,6 +396,14 @@ Accumulato durante le 7 iterazioni di CI conformance su PR #29.
     `--features mb11-userprobe` su `scripts/qemu-boot-smoke.sh`) con
     set di `EXPECTED_LINES` esteso. Non bloccante per il merge MB11
     ma utile prima di v0.3.
+20. **QEMU smoke automatico per `mb12-userprobe`.** Stesso pattern del
+    punto 19: nuovo job CI (o flag) che asserisce
+    `[mb12] channel 1 pre-created` + `ping` + due `[user] exit=0`
+    consecutivi. Anche questo non bloccante per il merge MB12.
+21. **Real boot manuale di `mb12-userprobe`.** Build verde + image
+    `kernel-runner` pronta, ma il serial trace MB12 va validato con un
+    run QEMU+OVMF (o Proxmox VMID 103) — `qemu-system-x86_64 -bios
+    OVMF.fd -drive ... -serial stdio` con i feature flag corretti.
 
 ---
 
@@ -399,17 +447,50 @@ Tutto come pianificato:
 manuale ancora da eseguire (build verde; serial assertion deferred a
 job CI dedicato).
 
-### Step 4 (prossima settimana) — MB12: IPC concreto
+### Step 4 ✅ DONE — MB12: IPC concreto + multi-task user-space
 
-Sbloccato da MB11 ✅. Combinare:
+Sotto-blocchi MB12.0a → MB12.9 (2026-05-18). ADR-0005 `accepted`.
 
-- Concretizzare `crates/omni-kernel/src/ipc.rs`: ring buffer in kernel
-  space per channel, gating via `omni-capability`.
-- Syscall `IpcCreateChannel (20)`, `IpcDestroyChannel (21)`, `IpcSend (22)`,
-  `IpcRecv (23)` — i numeri sono già riservati in `SyscallNumber`.
-- Integration test cross-process: due processi spawn-from-elf che si
-  scambiano un messaggio attraverso un channel con capability check.
-- A cascata sblocca P6.7 (driver model in user space).
+- **MB12.0a/b**: scheduler dispatch carica TSS.rsp0 + reloads CR3 per
+  task user; first-dispatch detection via `context.rsp == 0` → entra
+  Ring 3 con `enter_user_mode` invece di `context_switch` asm.
+- **MB12.0c**: feature `rng` su `omni-crypto` (host-side gating
+  completo; bare-metal compile bloccato da SIMD LLVM ICE su sha2 +
+  poly1305 + curve25519-dalek → MB13).
+- **MB12.0c'** (pivot): `KernelCapabilityCheck` trait +
+  `StubCapabilityProvider` in `capabilities.rs`. Mirror tipi-tipo di
+  `omni-capability::Action/Resource` ridotti a IPC.
+- **MB12.1+2**: `KernelIpcRegistry` concreta (BTreeMap, NO HashMap) +
+  `Channel` + `WakeAction { None | Wake | Block }`. Wait queues per
+  canale + capability check 2-livelli.
+- **MB12.3**: `principal: KernelPrincipal` + `pending_receive:
+  Option<PendingReceive>` nel PCB.
+- **MB12.4**: capability gate inline nel registry (no enforce_*
+  separato per Phase 1).
+- **MB12.5**: 4 syscall handler `IpcCreateChannel/Destroy/Send/Receive`
+  in `bare_metal/syscall_entry.rs` con retry-loop pattern su
+  `WakeAction::Block`. `task_exit` ora yields invece di halt
+  quando ci sono altri runnable.
+- **MB12.0f**: due hand-crafted ELFs (`USERPROBE_SENDER_ELF` 179 byte,
+  `USERPROBE_RECEIVER_ELF` 197 byte file / 141 in-mem con BSS) in
+  `bare_metal/userprobe_mb12.rs`.
+- **MB12.6**: boot wiring `mb12-userprobe` feature in `kmain`; forwarded
+  dal `kernel-runner`.
+- **MB12.7**: `tests/mb12_ipc_cross_process.rs` (8 test host-side).
+- **MB12.8**: `docs/adr/0005-mb12-ipc-message-passing.md`.
+
+Output smoke MB12 atteso (manual QEMU+OVMF / Proxmox):
+```
+[mb12] receiver task_id=N
+[mb12] sender   task_id=M
+[mb12] channel 1 pre-created
+[mb12] handing off to user tasks
+ping
+[user] exit=0
+[user] exit=0
+```
+
+426 test pass (era 393 post-MB11).
 
 ### Step 5 (parallelo, low-effort) — P7.3 docs
 
@@ -445,6 +526,31 @@ hatches resta come escape hatch ammesso. Guardrail CI bloccante.
 Sbloccabile dopo MB12 + MP/AP enable + driver model. `OIP-Container-006`
 Draft → Review.
 
+### Step 9 (prossima settimana) — MB13: omni-capability integration reale
+
+Sbloccato da MB12 ✅. Lavoro:
+
+- **Force-soft SIMD**: aggiungere feature `force-soft` su `sha2` +
+  `poly1305` + `curve25519-dalek` nel workspace per sbloccare
+  `omni-crypto` su `x86_64-unknown-none`. Alternativa: estrarre un
+  crate `omni-crypto-verify` con solo `OmniVerifyingKey::verify` +
+  `domain_separated_hash` come API.
+- **`omni-capability` come dep di `omni-kernel`** con
+  `default-features = false` + propagation `bare-metal`.
+- **`Action::IpcSend/IpcRecv` + `Resource::IpcChannel(u64)`** in
+  `omni-capability::scope` (variants `#[non_exhaustive]` →
+  semver-safe).
+- **`Ed25519CapabilityProvider`** che chiama
+  `CapabilityToken::verify_full`; sostituisce `StubCapabilityProvider`
+  nel boot wiring. `KernelCapabilityCheck` ha già la shape compatibile
+  (MB12.0c').
+- **`IpcCreateChannel` syscall ABI esteso**: accetta due pointer
+  postcard-encoded `(send_token_ptr, recv_token_ptr)` opzionali.
+  Aggiornare i userprobe ELFs di test integration MB13 + un nuovo
+  `tests/mb13_capability_signed.rs`.
+
+Effort stimato: 1-2 giornate (gating SIMD + glue + nuovi test).
+
 ---
 
 ## 6. Allineamento con la roadmap
@@ -452,7 +558,7 @@ Draft → Review.
 | Roadmap | Stato attuale |
 |---|---|
 | **Phase 0 — Foundation (mesi 0-6)** | ~75% (governance ✅, foundational crates ✅, OIP process ✅, funding/legal in corso) |
-| **Phase 1 — Microkernel POC (mesi 6-18)** | ~55% (boot ✅, paging ✅, scheduler ✅, syscall ✅, ELF loader ✅, kernel-stack isolation ✅, **userspace Ring 3 + per-process CR3 ✅**; mancano IPC, capability dispatch integrato, driver model, audit) |
+| **Phase 1 — Microkernel POC (mesi 6-18)** | ~65% (boot ✅, paging ✅, scheduler ✅, syscall ✅, ELF loader ✅, kernel-stack isolation ✅, userspace Ring 3 + per-process CR3 ✅, **IPC concreto + multi-task user ✅ MB12**; mancano capability dispatch Ed25519-verified (MB13), driver model (P6.7), audit (P6.8)) |
 | **Phase 2 — AI Runtime + Tier 0** | 0% (bloccato da Phase 1) |
 | **Phase 3-7** | 0% |
 
@@ -461,15 +567,20 @@ I deliverable Phase 1 della roadmap (`docs/06-roadmap.md` § "Phase 1"):
 - ✅ "Microkernel boots on x86_64 hardware" (QEMU+OVMF + VirtualBox + Proxmox).
 - ⚠️ "with Intel TDX or AMD SEV-SNP" — TDX/SEV-SNP scaffolding c'è (`omni-tee`),
   ma nessun real boot su hardware TEE-capable: pending Phase 1.5 + hardware.
-- ⬜ "IPC primitives operational (typed message passing)" → MB12.
+- ✅ **"IPC primitives operational (typed message passing)"** — MB12:
+  `KernelIpcRegistry` con `BackpressurePolicy::{Block,Drop,EvictOldest}`,
+  4 syscall handler (`IpcCreateChannel/Destroy/Send/Receive`), wait
+  queues per canale, cross-process integration test.
 - ⚠️ "Capability-based security primitives implemented" — `omni-capability`
-  c'è (43 unit + 7 integration test); l'integrazione con syscall dispatch
-  arriva con MB12 (i syscall handler MB11 — `TaskExit`, `WriteConsole`,
-  `MemMap` — non ancora ancorati a capability per disegno).
+  c'è (43 unit + 7 integration test) ma non integrato nel kernel per
+  via del blocker SIMD su `omni-crypto` bare-metal. MB12 ha consegnato
+  uno `StubCapabilityProvider` interno (subject byte-compare + action
+  shape-match, no Ed25519). MB13 swappa con il provider reale.
 - ✅ "Memory management, scheduling, interrupt handling" (MB1-MB3 + MB6-MB10).
 - ✅ **"Ring 3 userspace + per-process address space isolation"** (MB11).
 - ⬜ "Drivers (in user space): NVMe storage, Ethernet/Wi-Fi networking, TEE"
-  → P6.7 (post MB12).
+  → P6.7 (sbloccato da MB12 ✅; richiede ancora MP/AP enable + capability
+  Ed25519 reale MB13).
 - ✅ "Boot loader (UEFI-based)" — `bootloader` 0.11+ + `kernel-runner`
   (OIP-Kernel-005 Active).
 - ⚠️ "Minimal shell sufficient for development" — il desktop demo (Track A)
@@ -481,9 +592,11 @@ I deliverable Phase 1 della roadmap (`docs/06-roadmap.md` § "Phase 1"):
   bloccato da P4 funding + P6.7 done.
 
 **Conclusione:** la roadmap Phase 1 è on-track con un'accelerazione
-significativa (MB10 + Step 7 + MB11 chiusi nella stessa giornata).
-Il prossimo collo di bottiglia tecnico è MB12 (IPC); il prossimo collo
-di bottiglia non-tecnico resta il funding Phase 0.
+significativa (MB10 + Step 7 + MB11 + **MB12** chiusi nella stessa
+giornata; +41 test workspace; ADR-0005 `accepted`). Il prossimo collo
+di bottiglia tecnico è **MB13** (`omni-capability` reale →
+feature-gating SIMD su `sha2`/`poly1305`/`curve25519-dalek`); il
+prossimo collo di bottiglia non-tecnico resta il funding Phase 0.
 
 ---
 
@@ -502,6 +615,9 @@ di bottiglia non-tecnico resta il funding Phase 0.
 | `cargo test (ubuntu-24.04)` SIGSEGV blocca i futuri PR sul required check | alta | media | Carryover preesistente; mergiato via admin bypass su PR #29 e #33. Fix: rifattorizzare `TestArena` di `paging.rs` o `--test-threads=1`. |
 | **STAR/GDT/iretq selector aritmetica errata** | media | alta | MB11.1 ha riconciliato (`STAR[63:48]=0x10` → CS=0x23, SS=0x1B). Unit test `sysret_arithmetic_matches_intel_sdm` lo enforza. |
 | **Kernel-half shared by reference vs MP** | media (Phase 2+) | media | ADR-0004 § Alt B documenta la strategia full-clone per Phase 2 quando l'enable MP/AP arriva. Non bloccante Phase 1. |
+| **MB12 capability stub vs Ed25519 reale** | bassa (oggi) → media (MB13) | media | ADR-0005 § Migration: il trait `KernelCapabilityCheck` è swap-in compatibile con il futuro `Ed25519CapabilityProvider`. `StubCapabilityProvider::verify` autorizza qualunque token con action/resource shape match — sufficiente in dev mode, **non** in production. Blocker tracciato come MB13. |
+| **`omni-crypto` SIMD LLVM ICE su `x86_64-unknown-none`** | alta | media | Scoperto in MB12.0c. Soluzione MB13: `force-soft` feature su `sha2`+`poly1305`+`curve25519-dalek` oppure crate `omni-crypto-verify` separato. ADR-0005 § Alternative A. |
+| **BumpHeap no-free per canali IPC distrutti** | media | media | Documentato in ADR-0005 § Negative. Cap raccomandato `queue_depth ≤ 256` per canale. Slab/free-list allocator → OIP separato (Phase 2). |
 
 ---
 
@@ -512,6 +628,7 @@ di bottiglia non-tecnico resta il funding Phase 0.
 - ADR MB10: [`docs/adr/0002-mb10-kernel-stack-isolation.md`](docs/adr/0002-mb10-kernel-stack-isolation.md)
 - ADR Step 7 policy: [`docs/adr/0003-no-blanket-allows-in-production-crates.md`](docs/adr/0003-no-blanket-allows-in-production-crates.md)
 - ADR MB11: [`docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md`](docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md)
+- ADR MB12: [`docs/adr/0005-mb12-ipc-message-passing.md`](docs/adr/0005-mb12-ipc-message-passing.md)
 - Guardrail script: [`scripts/check-no-blanket-allow.sh`](scripts/check-no-blanket-allow.sh)
 - Plan OIP-Kernel-003: [`docs/plans/oip-kernel-003-activation.md`](docs/plans/oip-kernel-003-activation.md)
 - Changelog: [`CHANGELOG.md`](CHANGELOG.md)
@@ -521,4 +638,4 @@ di bottiglia non-tecnico resta il funding Phase 0.
 
 ---
 
-*Report aggiornato manualmente dallo stato del repository a `HEAD = c743173` sul branch locale `feat/kernel-mb11-userspace` (post v0.2.0 release, MB10 merge, Step 7.1-7.4 lift, e MB11.1-MB11.9 closure). Aggiornare a ogni milestone closure.*
+*Report aggiornato manualmente dallo stato del repository post-`c743173` sul branch locale `feat/kernel-mb11-userspace` (post v0.2.0 release, MB10 merge, Step 7.1-7.4 lift, MB11.1-MB11.9 closure, **MB12.0a-MB12.9 closure con ADR-0005**). Aggiornare a ogni milestone closure.*

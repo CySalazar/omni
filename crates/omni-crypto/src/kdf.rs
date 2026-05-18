@@ -16,6 +16,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+#[cfg(feature = "rng")]
 use argon2::{Algorithm, Argon2, Params, Version};
 use hkdf::Hkdf;
 use omni_types::error::{CryptoErrorKind, OmniError, Result};
@@ -96,11 +97,13 @@ pub fn hkdf_extract_and_expand(
 }
 
 // =============================================================================
-// Argon2id
+// Argon2id (gated behind the `rng` feature — argon2 is RNG-adjacent and
+// excluded from bare-metal builds)
 // =============================================================================
 
 /// `Argon2id` output: a 32-byte hash plus the parameters used to
 /// produce it. Wipes itself on `Drop`.
+#[cfg(feature = "rng")]
 #[derive(Clone, PartialEq, Eq, Debug, Zeroize, ZeroizeOnDrop)]
 pub struct Argon2idHash {
     /// The 32-byte digest.
@@ -126,6 +129,7 @@ pub struct Argon2idHash {
 /// adjacent contexts; if it ever did fire, that would mean the
 /// upstream `argon2` crate changed its validation rules and this
 /// function needs to be revisited.
+#[cfg(feature = "rng")]
 #[must_use]
 pub fn argon2id_default_params() -> Params {
     // Argon2's `Params::new` is fallible only on out-of-range arguments;
@@ -146,6 +150,7 @@ pub fn argon2id_default_params() -> Params {
 ///
 /// Returns [`OmniError::Crypto`] with [`CryptoErrorKind::KdfFailure`]
 /// on any underlying error (salt too short, params invalid).
+#[cfg(feature = "rng")]
 pub fn argon2id_hash(password: &[u8], salt: &[u8]) -> Result<Argon2idHash> {
     if salt.len() < 16 {
         return Err(OmniError::crypto(
@@ -227,8 +232,9 @@ mod tests {
         }
     }
 
-    // ---- Argon2id sanity ----------------------------------------------------
+    // ---- Argon2id sanity (gated behind `rng` feature) ------------------------
 
+    #[cfg(feature = "rng")]
     #[test]
     fn argon2id_is_deterministic_given_same_inputs() {
         let salt = [0xAB; 16];
@@ -237,6 +243,7 @@ mod tests {
         assert_eq!(h1.hash, h2.hash);
     }
 
+    #[cfg(feature = "rng")]
     #[test]
     fn argon2id_different_passwords_produce_different_hashes() {
         let salt = [0xCD; 16];
@@ -245,6 +252,7 @@ mod tests {
         assert_ne!(h1.hash, h2.hash);
     }
 
+    #[cfg(feature = "rng")]
     #[test]
     fn argon2id_different_salts_produce_different_hashes() {
         let s1 = [0x11u8; 16];
@@ -254,6 +262,7 @@ mod tests {
         assert_ne!(h1.hash, h2.hash);
     }
 
+    #[cfg(feature = "rng")]
     #[test]
     fn argon2id_rejects_short_salt() {
         let salt = [0xFFu8; 8];
