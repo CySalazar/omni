@@ -229,6 +229,14 @@ impl PageMapper {
         }
     }
 
+    /// Direct-map offset (`BootInfo.physical_memory_offset`). Used by
+    /// `super::address_space::AddressSpace` to read/write raw page-table
+    /// frames through the bootloader's direct map.
+    #[must_use]
+    pub const fn phys_offset(&self) -> u64 {
+        self.phys_offset
+    }
+
     /// Translates a virtual address to a physical address by walking the
     /// active 4-level page tables.
     ///
@@ -281,7 +289,26 @@ impl PageMapper {
         Some(PhysAddr(pte.phys_addr().0 + page_offset))
     }
 
-    /// Maps the 4 KiB page at `virt` to physical frame `phys` with `flags`.
+    /// Maps the 4 KiB page at `virt` to physical frame `phys` with `flags`,
+    /// using `self.root_phys` as the root PML4. Thin wrapper around
+    /// [`Self::map_4k_into`] for the common case of mapping into the
+    /// active address space.
+    pub fn map_4k<const N: usize>(
+        &mut self,
+        virt: VirtAddr,
+        phys: PhysAddr,
+        flags: u64,
+        alloc: &mut BitmapFrameAllocator<N>,
+    ) -> bool {
+        let root = self.root_phys;
+        self.map_4k_into(root, virt, phys, flags, alloc)
+    }
+
+    /// Maps the 4 KiB page at `virt` to physical frame `phys` with `flags`
+    /// in the page-table tree rooted at `root_phys`.
+    ///
+    /// MB11: required by [`super::address_space::AddressSpace`] to map
+    /// pages into per-process PML4s without mutating `self.root_phys`.
     ///
     /// Intermediate page-table frames (PDPT, PD, PT) are allocated from
     /// `alloc` as needed; they are always mapped with PRESENT | WRITABLE.
@@ -293,8 +320,9 @@ impl PageMapper {
         clippy::similar_names,
         reason = "page-table level variable names are intentionally terse"
     )]
-    pub fn map_4k<const N: usize>(
+    pub fn map_4k_into<const N: usize>(
         &mut self,
+        root_phys: PhysAddr,
         virt: VirtAddr,
         phys: PhysAddr,
         flags: u64,
@@ -306,7 +334,7 @@ impl PageMapper {
         let pt_idx = virt_index(virt, PageLevel::Pt);
 
         // PML4 → PDPT
-        let pml4 = self.table_ptr_mut(self.root_phys);
+        let pml4 = self.table_ptr_mut(root_phys);
         let pdpt_phys = {
             let e = unsafe { (*pml4).entry(pml4_idx) };
             if e.is_present() {

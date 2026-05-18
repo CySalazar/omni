@@ -86,6 +86,12 @@ pub enum SyscallNumber {
     // ----- Time -----
     /// Get monotonic time (nanoseconds since boot).
     TimeMonotonicNanos = 50,
+
+    // ----- I/O (MB11) -----
+    /// Write a user-supplied byte slice to the kernel console. ABI:
+    /// `(ptr: u64, len: u64) -> u64`. Returns `len` on success or
+    /// `u64::MAX` on a validation failure.
+    WriteConsole = 60,
 }
 
 // -----------------------------------------------------------------------------

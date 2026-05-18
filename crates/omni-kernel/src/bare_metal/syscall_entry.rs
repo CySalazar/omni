@@ -211,10 +211,103 @@ unsafe extern "C" {
 // Concrete dispatcher
 // -----------------------------------------------------------------------
 
+/// MB11 — write a user-supplied buffer to the early console.
+/// ABI: `(ptr, len) -> u64`. Returns the number of bytes emitted, or
+/// `u64::MAX` if the buffer fails validation.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature parity with other SyscallDispatcher arms"
+)]
+fn write_console(ptr: u64, len: u64) -> KernelResult<u64> {
+    if len == 0 {
+        return Ok(0);
+    }
+    #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+    {
+        use super::usermode::USER_HALF_END;
+        // Pointer-range guard. The full PT walk happens implicitly: user
+        // pages can only be present here because the running CR3 has
+        // PTE_USER set on them. A non-mapped page triggers a #PF before
+        // we reach the copy.
+        let Some(end) = ptr.checked_add(len) else {
+            return Ok(u64::MAX);
+        };
+        if end > USER_HALF_END {
+            return Ok(u64::MAX);
+        }
+        // SAFETY: ptr + len ≤ USER_HALF_END verified above; user pages
+        // are guaranteed by paging hardware to fault if not mapped.
+        unsafe {
+            let mut copied: u64 = 0;
+            let mut buf = [0u8; 256];
+            while copied < len {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "buf.len() = 256 fits u64 trivially; chunk fits usize"
+                )]
+                let chunk = core::cmp::min(buf.len() as u64, len - copied);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "chunk ≤ 256 fits usize on every target"
+                )]
+                let chunk_usize = chunk as usize;
+                core::ptr::copy_nonoverlapping(
+                    (ptr + copied) as *const u8,
+                    buf.as_mut_ptr(),
+                    chunk_usize,
+                );
+                #[allow(
+                    clippy::indexing_slicing,
+                    reason = "chunk_usize ≤ 256 = buf.len() by min above"
+                )]
+                {
+                    super::early_console::emit(&buf[..chunk_usize]);
+                }
+                copied += chunk;
+            }
+            Ok(copied)
+        }
+    }
+    #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+    {
+        let _ = ptr;
+        Ok(len)
+    }
+}
+
+/// MB11 — terminate the calling user-process task. Bare-metal halts;
+/// host build returns `Ok(0)` for testability.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature parity with other SyscallDispatcher arms"
+)]
+fn task_exit(code: u64) -> KernelResult<u64> {
+    #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+    {
+        use crate::scheduling::Scheduler;
+        super::early_console::write_str("[user] exit=");
+        // SAFETY: single-core; SCHEDULER not aliased.
+        unsafe {
+            super::early_console::write_usize(code as usize);
+            super::early_console::write_str("\n");
+            let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+            if let Some(current) = sched.current_task_id() {
+                let _ = sched.dequeue(current);
+            }
+        }
+        super::arch::halt_forever()
+    }
+    #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+    {
+        let _ = code;
+        Ok(0)
+    }
+}
+
 struct KernelSyscallDispatcher;
 
 impl SyscallDispatcher for KernelSyscallDispatcher {
-    fn dispatch(&mut self, number: SyscallNumber, _args: [u64; 6]) -> KernelResult<u64> {
+    fn dispatch(&mut self, number: SyscallNumber, args: [u64; 6]) -> KernelResult<u64> {
         match number {
             SyscallNumber::TimeMonotonicNanos => {
                 // Approximate monotonic time from the CMOS RTC seconds register.
@@ -237,6 +330,29 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                     }
                 }
                 Ok(0)
+            }
+
+            SyscallNumber::TaskExit => task_exit(args[0]),
+
+            SyscallNumber::WriteConsole => {
+                // MB11: validate the user buffer + emit via the early console.
+                // ABI: (ptr: u64, len: u64) -> u64. Returns `len` on success.
+                let ptr = args[0];
+                let len = args[1];
+                if len == 0 {
+                    return Ok(0);
+                }
+                write_console(ptr, len)
+            }
+
+            SyscallNumber::MemMap => {
+                // MB11: minimal `mmap` — allocate an anonymous user-VA region.
+                // ABI: (size: u64, _flags: u64, _flags2: u64, ...) -> u64.
+                // Returns a fresh user VA on success or `u64::MAX` on failure.
+                // Placeholder: a full implementation lands in MB12 once the
+                // per-process bump allocator owns its user-VA cursor.
+                let _ = args;
+                Err(KernelError::NotYetImplemented)
             }
 
             // All other syscalls are scaffolded but not yet implemented.
@@ -286,6 +402,7 @@ extern "C" fn kernel_syscall_dispatch(
         42 => SyscallNumber::TeeSeal,
         43 => SyscallNumber::TeeUnseal,
         50 => SyscallNumber::TimeMonotonicNanos,
+        60 => SyscallNumber::WriteConsole,
         _ => return SYSCALL_ERROR,
     };
 
@@ -306,15 +423,21 @@ extern "C" fn kernel_syscall_dispatch(
 #[cfg(target_arch = "x86_64")]
 pub fn syscall_init() {
     // SAFETY: MSR accesses are ring-0-only. We only set the SCE bit in EFER
-    // (harmless on any x86_64 CPU since P6 targets) and write well-defined
-    // GDT segment selectors to STAR (kernel CS=0x08, user placeholder=0x1B).
+    // (harmless on any x86_64 CPU since P6 targets) and write GDT-correct
+    // STAR selector bases per ADR-0004 § 2.
     unsafe {
         // Enable SYSCALL/SYSRET in the Extended Feature Enable Register.
         wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_SCE);
 
-        // STAR: bits [47:32] = kernel CS (0x08), bits [63:48] = user CS placeholder.
-        // The CPU derives SS selectors from these by adding 8 (CS+8 = SS in our GDT).
-        let star_val = (0x001B_u64 << 48) | (0x0008_u64 << 32);
+        // STAR encoding (ADR-0004 § 2):
+        //   bits [47:32] = STAR_KERNEL_BASE = 0x08
+        //     SYSCALL CS = 0x08          (slot 1 kcode64)
+        //     SYSCALL SS = 0x08 + 8      = 0x10 (slot 2 kdata64)
+        //   bits [63:48] = STAR_USER_BASE = 0x10
+        //     SYSRET q CS = 0x10 + 16 | 3 = 0x23 (slot 4 ucode64)
+        //     SYSRET q SS = 0x10 +  8 | 3 = 0x1B (slot 3 udata64)
+        let star_val = (u64::from(super::gdt::STAR_USER_BASE) << 48)
+            | (u64::from(super::gdt::STAR_KERNEL_BASE) << 32);
         wrmsr(MSR_STAR, star_val);
 
         // Point LSTAR at our SYSCALL entry stub.

@@ -86,6 +86,8 @@ extern crate alloc;
 pub mod capabilities;
 pub mod ipc;
 pub mod memory;
+#[cfg(feature = "bare-metal")]
+pub mod process;
 pub mod scheduling;
 pub mod syscall;
 

@@ -15,6 +15,73 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ## [Unreleased]
 
+### Added
+
+- **Kernel — MB11 foundation: per-process address space, user stacks,
+  Ring 3 trampoline, TaskExit/WriteConsole syscalls (Track B MB11.1–MB11.6,
+  2026-05-18).** First slice of the userspace-Ring-3 milestone per
+  [`docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md`](./docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md).
+  Lands all the kernel-side infrastructure; the embedded user-probe ELF +
+  `kmain` boot wiring + QEMU smoke close in a follow-up.
+
+  - **GDT extended 3 → 7 slots** ([`bare_metal/gdt.rs`](./crates/omni-kernel/src/bare_metal/gdt.rs)):
+    user-data (0x1B, DPL=3), user-code64 (0x23, DPL=3), TSS at 0x28.
+    New constants `USER_CS`, `USER_SS`, `KERNEL_CS`, `KERNEL_SS`,
+    `STAR_USER_BASE`, `STAR_KERNEL_BASE`.
+  - **TSS module** ([`bare_metal/tss.rs`](./crates/omni-kernel/src/bare_metal/tss.rs)):
+    104-byte `Tss` (rsp0..rsp2, ist1..ist7, iomap_base = 104), GDT
+    descriptor builder (`tss_descriptor`), `ltr_load`, `set_rsp0`.
+    `gdt_init` now also installs the TSS descriptor at slots 5–6.
+  - **STAR fix** ([`bare_metal/syscall_entry.rs:308`](./crates/omni-kernel/src/bare_metal/syscall_entry.rs#L308)):
+    placeholder `0x001B << 48` replaced with `STAR_USER_BASE = 0x10`,
+    yielding SDM-correct SYSRET selectors (CS=0x23, SS=0x1B) and
+    SYSCALL selectors (CS=0x08, SS=0x10).
+  - **`AddressSpace` module** ([`bare_metal/address_space.rs`](./crates/omni-kernel/src/bare_metal/address_space.rs)):
+    per-process PML4 with kernel-half **clone-by-reference** (memcpy
+    of entries 256..512 from boot CR3 — shared sub-PDPTs). Methods
+    `new_with_kernel_half`, `map_user_4k`, `activate` (wrcr3), `invlpg`.
+  - **`PageMapper::map_4k_into`** ([`bare_metal/paging.rs:319`](./crates/omni-kernel/src/bare_metal/paging.rs#L319)):
+    explicit-root variant required by `AddressSpace`; `map_4k` becomes
+    a thin wrapper. ELF loader gains `Elf64::map_and_load_into` mirror.
+  - **User stack allocator** ([`bare_metal/user_stack.rs`](./crates/omni-kernel/src/bare_metal/user_stack.rs)):
+    range `[0x0000_0040_0000_0000, 0x0000_0040_8000_0000)` (2 GiB),
+    16 KiB stack + 16 KiB guard per slot. Per-process bump counter.
+  - **`ProcessControlBlock`** ([`crates/omni-kernel/src/process.rs`](./crates/omni-kernel/src/process.rs)):
+    wraps the MB10 `TaskControlBlock` with `AddressSpace`, `user_entry`,
+    `user_stack_top`, `next_user_stack_slot`. `spawn_from_elf` is the
+    high-level entry point: parses ELF, builds AS, allocates user stack,
+    registers the PCB with the scheduler.
+  - **Scheduler integration** ([`scheduling.rs`](./crates/omni-kernel/src/scheduling.rs)):
+    new `processes: Vec<ProcessControlBlock>`, `allocate_task_id`,
+    `register_process`, `attach_process`, `process(id)` lookup.
+    `allocate_stack_slot` promoted to `pub(crate)` so the user-process
+    spawn path can grab a kernel stack from the MB10 isolated range.
+  - **iretq trampoline** ([`bare_metal/usermode.rs::enter_user_mode`](./crates/omni-kernel/src/bare_metal/usermode.rs)):
+    builds the 5-word Ring 3 stack frame (SS, RSP, RFLAGS, CS, RIP)
+    and `iretq`-jumps after a `mov cr3` to the per-process PML4. Safe
+    mid-instruction because kernel-half is identical by-reference.
+  - **User pointer validation** ([`bare_metal/usermode.rs::validate_user_buffer`](./crates/omni-kernel/src/bare_metal/usermode.rs)):
+    range guard `< 0x0000_8000_0000_0000` + 4-level page-table walk
+    confirming `PTE_PRESENT | PTE_USER` on every page in the buffer.
+  - **Syscall handlers** ([`bare_metal/syscall_entry.rs`](./crates/omni-kernel/src/bare_metal/syscall_entry.rs)):
+    `TaskExit (11)` (dequeue + halt), `WriteConsole (60)` (validated
+    copy to `early_console::emit`), `MemMap (1)` stub. Dispatch table
+    extended; `SyscallNumber::WriteConsole = 60` added.
+  - **User-probe scaffold** ([`bare_metal/userprobe.rs`](./crates/omni-kernel/src/bare_metal/userprobe.rs)):
+    `spawn_userprobe` helper + placeholder `USERPROBE_ELF` (parseable
+    but no code yet). The real `omni-userprobe-helloworld` crate +
+    `kmain` boot wiring close MB11.7–MB11.9 in a follow-up.
+
+  Verification:
+  - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+    clean.
+  - `cargo clippy -p omni-kernel --target x86_64-unknown-none
+    --no-default-features --features bare-metal -- -D warnings` clean.
+  - `cargo test --workspace --all-features` → 381 pass / 0 fail
+    (was 369 pre-MB11; +12 new unit tests across `tss`, `gdt`,
+    `address_space`, `user_stack`, `usermode`, `process`).
+  - `bash scripts/check-no-blanket-allow.sh` exits 0.
+
 ### Changed
 
 - **Kernel — lift `unsafe_code` blanket allow on `omni-kernel` (Step 7.2,

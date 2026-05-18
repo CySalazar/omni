@@ -280,7 +280,8 @@ impl<'a> Elf64<'a> {
     }
 
     /// Allocate physical frames, map each `PT_LOAD` segment, and copy the
-    /// file image. BSS bytes (`memsz > filesz`) are zeroed.
+    /// file image. BSS bytes (`memsz > filesz`) are zeroed. Maps into the
+    /// active address space (`mapper.root_phys`).
     ///
     /// Returns the entry-point virtual address on success.
     ///
@@ -294,6 +295,28 @@ impl<'a> Elf64<'a> {
     #[cfg(target_arch = "x86_64")]
     pub fn map_and_load<const N: usize>(
         &self,
+        mapper: &mut super::paging::PageMapper,
+        alloc: &mut crate::memory::BitmapFrameAllocator<N>,
+        phys_offset: u64,
+    ) -> Result<u64, ElfError> {
+        let root = mapper.root_phys;
+        self.map_and_load_into(root, mapper, alloc, phys_offset)
+    }
+
+    /// Variant of [`Self::map_and_load`] that maps into an explicit
+    /// page-table root (e.g. a per-process PML4 owned by an
+    /// [`super::address_space::AddressSpace`]).
+    ///
+    /// MB11: required to load a user ELF into a per-process CR3 without
+    /// mutating the live `mapper.root_phys`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::map_and_load`].
+    #[cfg(target_arch = "x86_64")]
+    pub fn map_and_load_into<const N: usize>(
+        &self,
+        root_phys: crate::memory::PhysAddr,
         mapper: &mut super::paging::PageMapper,
         alloc: &mut crate::memory::BitmapFrameAllocator<N>,
         phys_offset: u64,
@@ -312,7 +335,7 @@ impl<'a> Elf64<'a> {
                 let virt = crate::memory::VirtAddr(page_base + page_i as u64 * 4096);
                 let frame = alloc.alloc_frame().ok_or(ElfError::OutOfFrames)?;
 
-                if !mapper.map_4k(virt, frame, pte_flags(seg.flags), alloc) {
+                if !mapper.map_4k_into(root_phys, virt, frame, pte_flags(seg.flags), alloc) {
                     return Err(ElfError::MappingFailed);
                 }
 

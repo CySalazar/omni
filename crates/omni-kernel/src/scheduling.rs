@@ -229,6 +229,11 @@ const NUM_PRIORITY_CLASSES: usize = 6;
 pub struct RoundRobinScheduler {
     /// All task control blocks (searched by `TaskId`).
     tasks: Vec<TaskControlBlock>,
+    /// MB11 — user-process control blocks, parallel to `tasks` by
+    /// `TaskId`. A task with a matching PCB entry is a userspace
+    /// process; absence means a kernel-only task (idle, bootstrap).
+    #[cfg(feature = "bare-metal")]
+    processes: Vec<crate::process::ProcessControlBlock>,
     /// Per-priority run queues storing `TaskId.0` values.
     run_queues: [Vec<u64>; NUM_PRIORITY_CLASSES],
     /// `TaskId.0` of the task currently on-CPU (`None` until first switch).
@@ -260,6 +265,8 @@ impl RoundRobinScheduler {
     pub const fn new() -> Self {
         Self {
             tasks: Vec::new(),
+            #[cfg(feature = "bare-metal")]
+            processes: Vec::new(),
             run_queues: [
                 Vec::new(),
                 Vec::new(),
@@ -274,6 +281,45 @@ impl RoundRobinScheduler {
         }
     }
 
+    /// MB11 — allocate a fresh `TaskId` without enqueuing anything.
+    /// Used by `ProcessControlBlock::spawn_from_elf` to reserve an ID
+    /// before fully constructing the PCB.
+    pub fn allocate_task_id(&mut self) -> TaskId {
+        let id = TaskId(self.next_id);
+        self.next_id += 1;
+        id
+    }
+
+    /// MB11 — register a constructed `TaskControlBlock` with the
+    /// scheduler at the given priority and enqueue it as Runnable.
+    /// Mirror of `mock_enqueue` for the user-process spawn path.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "priority as usize < NUM_PRIORITY_CLASSES by enum repr"
+    )]
+    pub fn register_process(&mut self, tcb: TaskControlBlock, priority: PriorityClass) {
+        let id_u64 = tcb.id.0;
+        self.tasks.push(tcb);
+        self.run_queues[priority as usize].push(id_u64);
+    }
+
+    /// MB11 — attach the per-process page-table + user stack metadata.
+    /// The `task` field inside the PCB is a defensive duplicate of the
+    /// TCB registered in `tasks`; the scheduler uses the PCB only when
+    /// it needs CR3 / user_entry / user_stack_top context.
+    #[cfg(feature = "bare-metal")]
+    pub fn attach_process(&mut self, _id: TaskId, pcb: crate::process::ProcessControlBlock) {
+        self.processes.push(pcb);
+    }
+
+    /// MB11 — look up the PCB for the given `TaskId`, if any.
+    /// Returns `None` for kernel-only tasks (idle, bootstrap).
+    #[cfg(feature = "bare-metal")]
+    #[must_use]
+    pub fn process(&self, id: TaskId) -> Option<&crate::process::ProcessControlBlock> {
+        self.processes.iter().find(|p| p.task.id.0 == id.0)
+    }
+
     /// MB10 — returns the next kernel-stack VA slot, advancing the bump
     /// allocator. Returns `None` if the isolated range is exhausted
     /// (would require ~1 G task spawns).
@@ -282,7 +328,7 @@ impl RoundRobinScheduler {
     /// host-side unit tests; suppress dead-code lint on non-x86_64
     /// `cargo clippy --workspace` runs.
     #[allow(dead_code)]
-    fn allocate_stack_slot(&mut self) -> Option<u64> {
+    pub(crate) fn allocate_stack_slot(&mut self) -> Option<u64> {
         let slot = self.next_kernel_stack_slot as u64;
         let slot_base = KERNEL_STACK_VA_BASE.checked_add(slot.checked_mul(KERNEL_STACK_STRIDE)?)?;
         // Guard page sits at slot_base; stack page sits at slot_base +
