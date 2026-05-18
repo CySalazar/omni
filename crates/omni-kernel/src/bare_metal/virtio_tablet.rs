@@ -51,6 +51,18 @@
     clippy::cast_possible_truncation,
     reason = "VirtIO queue indices are bounded by QCAP (=64); truncation is structurally safe"
 )]
+#![allow(
+    clippy::doc_markdown,
+    reason = "module references hex offsets, register names, and PCI vendor IDs without ticks"
+)]
+#![allow(
+    clippy::cast_ptr_alignment,
+    reason = "MMIO BAR base + byte offset is naturally aligned per VirtIO 1.0 §4.1.4 layout"
+)]
+#![allow(
+    clippy::ptr_as_ptr,
+    reason = "mut/const raw pointer reinterpretation across MMIO regions is idiomatic here"
+)]
 
 use super::arch;
 use super::paging::PageMapper;

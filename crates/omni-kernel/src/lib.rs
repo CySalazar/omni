@@ -62,20 +62,12 @@
 // the pattern already adopted in `bare_metal/{mod,lapic,context_switch,
 // virtio_tablet,graphics,vga,input,mb8_smoke}.rs`.
 #![allow(unsafe_code)]
-// Clippy `pedantic`, `nursery`, and `cargo` lint groups are deliberately
-// suppressed at the kernel-crate boundary. They surface ~200 stylistic
-// findings (`similar_names`, `doc_markdown`, `cast_possible_truncation`,
-// `missing_const_for_fn`, …) that are intentional in low-level kernel
-// code: register-level identifiers, fixed-width casts at the ABI boundary,
-// and inline asm wrappers all idiomatically violate `pedantic`. The
-// workspace-level `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`,
-// `integer_division`, and `disallowed_methods` lints remain active — those
-// catch real bugs and stay in force throughout the kernel.
+// Clippy `nursery` and `cargo` lint groups are deliberately suppressed
+// at the kernel-crate boundary. `pedantic` was lifted in Step 7.3 (this
+// PR); `nursery` and `cargo` follow in Step 7.4.
 //
-// Tracking: a follow-up cleanup pass (post-v0.2.0) will lift the blanket
-// suppression by addressing pedantic findings file-by-file and only the
-// truly intentional ones will get a localised `#[allow]` + `reason`.
-#![allow(clippy::pedantic, clippy::nursery, clippy::cargo)]
+// Tracking: ADR-0003 mandates lift; this is the post-v0.2.0 cleanup.
+#![allow(clippy::nursery, clippy::cargo)]
 // Restriction lints kept active globally are workspace-wide policy
 // (`unwrap_used`, `expect_used`, `panic`, `disallowed_methods`,
 // `disallowed_types`, `disallowed_macros`). Three further restriction

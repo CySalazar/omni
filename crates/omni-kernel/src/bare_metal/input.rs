@@ -140,6 +140,10 @@ pub fn ps2_mouse_poll() -> Option<MouseEvent> {
         )]
         MOUSE_PKT[idx].store(byte, Ordering::Relaxed);
         let next = (idx + 1) % 3;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "(idx + 1) % 3 ∈ {0,1,2} always fits u8"
+        )]
         MOUSE_IDX.store(next as u8, Ordering::Relaxed);
 
         if next != 0 {

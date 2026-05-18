@@ -17,6 +17,31 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Changed
 
+- **Kernel — lift `clippy::pedantic` blanket allow on `omni-kernel` (Step 7.3,
+  2026-05-18).** Second of four Step 7 PRs. Removes `clippy::pedantic` from
+  the crate-root suppression at [`lib.rs:78`](./crates/omni-kernel/src/lib.rs#L78);
+  `clippy::nursery` and `clippy::cargo` follow in PR 7.4. ~68 sites split
+  across `bare_metal/{cursor,demo,graphics,gdt,idt,input,paging,virtio_tablet,
+  widget,wm}.rs`, `scheduling.rs`, and the trait-scaffold modules
+  (`capabilities.rs`, `ipc.rs`, `memory.rs`, `syscall.rs`).
+
+  - **Trait scaffold modules**: each got a module-level
+    `#![allow(clippy::missing_errors_doc, reason = "trait scaffold methods
+    return NotYetImplemented until ...")]`. Mandatory per ADR-0003 § Escape
+    hatches (module-level allows are not blanket crate-root allows).
+  - **`virtio_tablet.rs`**: module-level allow for `doc_markdown`,
+    `cast_ptr_alignment`, `ptr_as_ptr` — MMIO BAR layout per VirtIO 1.0 §4.1.4
+    requires raw pointer reinterpretation that's structurally safe.
+  - **`demo.rs`**: module-level allow for `doc_markdown`, `similar_names`,
+    `map_unwrap_or`, `too_many_lines`, `cast_possible_truncation`,
+    `needless_pass_by_value` — orchestrator-level idioms for the desktop demo.
+  - **Fixed** rather than allowed: `redundant_closure` in `scheduling.rs:662`
+    (`|q| q.is_empty()` → `Vec::is_empty`), `cast_lossless` in
+    `graphics.rs:153` (replaced `as u32` with `u32::from`), three
+    `semicolon_if_nothing_returned` in `paging.rs:317/339/361`, and three
+    `unsafe { … };` style fixes.
+  - **Tests still 277 pass / 0 fail.**
+
 - **Kernel — lift restriction + rustdoc blanket allows on `omni-kernel` (Step 7.1,
   2026-05-18).** First of four PRs that close the v0.2.0 kernel CI debt
   described in `progress-omni.md` § 4.5. Removes crate-root blanket

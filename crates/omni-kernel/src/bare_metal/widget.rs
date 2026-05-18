@@ -81,6 +81,10 @@ pub fn draw_button(fb: &FrameBuffer, content_x: u32, content_y: u32, btn: &Butto
     }
 
     // Centre label horizontally and vertically within the button.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "button label length fits u32 for any realistic UI"
+    )]
     let label_w = btn.label.len() as u32 * 8;
     #[allow(
         clippy::integer_division,

@@ -280,6 +280,10 @@ pub fn update_taskbar_time(fb: &FrameBuffer, remaining_secs: usize) {
     // "ESC=off  Xs" — only show when countdown is active.
     if remaining_secs > 0 {
         let label = "ESC=off  ";
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "static label length fits u32 trivially"
+        )]
         let label_px = label.len() as u32 * 8;
         let x0 = right_start + 4;
         font::render_str(

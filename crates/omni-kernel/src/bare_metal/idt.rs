@@ -361,7 +361,12 @@ mod tests {
         assert_eq!(e.type_and_attr, 0);
         assert_eq!(e.offset_mid, 0);
         assert_eq!(e.offset_high, 0);
-        assert_eq!(e._reserved, 0);
+        #[allow(
+            clippy::used_underscore_binding,
+            reason = "_reserved is the literal field name in the x86_64 SDM IDT layout"
+        )]
+        let r = e._reserved;
+        assert_eq!(r, 0);
     }
 
     #[test]
@@ -375,7 +380,12 @@ mod tests {
         assert_eq!(entry.selector, 0x08);
         assert_eq!(entry.type_and_attr, 0x8E);
         assert_eq!(entry.ist_and_zero, 0x00);
-        assert_eq!(entry._reserved, 0);
+        #[allow(
+            clippy::used_underscore_binding,
+            reason = "_reserved is the literal field name in the x86_64 SDM IDT layout"
+        )]
+        let r = entry._reserved;
+        assert_eq!(r, 0);
     }
 
     #[test]

@@ -310,12 +310,14 @@ impl PageMapper {
                 let Some(f) = alloc.alloc_frame() else {
                     return false;
                 };
-                unsafe { self.zero_table(f) };
+                unsafe {
+                    self.zero_table(f);
+                }
                 unsafe {
                     (*pml4)
                         .entry_mut(pml4_idx)
-                        .set_frame(f, PTE_PRESENT | PTE_WRITABLE)
-                };
+                        .set_frame(f, PTE_PRESENT | PTE_WRITABLE);
+                }
                 f
             }
         };
@@ -330,12 +332,14 @@ impl PageMapper {
                 let Some(f) = alloc.alloc_frame() else {
                     return false;
                 };
-                unsafe { self.zero_table(f) };
+                unsafe {
+                    self.zero_table(f);
+                }
                 unsafe {
                     (*pdpt)
                         .entry_mut(pdpt_idx)
-                        .set_frame(f, PTE_PRESENT | PTE_WRITABLE)
-                };
+                        .set_frame(f, PTE_PRESENT | PTE_WRITABLE);
+                }
                 f
             }
         };
@@ -350,12 +354,14 @@ impl PageMapper {
                 let Some(f) = alloc.alloc_frame() else {
                     return false;
                 };
-                unsafe { self.zero_table(f) };
+                unsafe {
+                    self.zero_table(f);
+                }
                 unsafe {
                     (*pd)
                         .entry_mut(pd_idx)
-                        .set_frame(f, PTE_PRESENT | PTE_WRITABLE)
-                };
+                        .set_frame(f, PTE_PRESENT | PTE_WRITABLE);
+                }
                 f
             }
         };
@@ -456,6 +462,10 @@ mod tests {
     // 64 frames of fake physical memory (256 KiB).
     // Using heap allocation to guarantee 4096-byte alignment.
     const ARENA_FRAMES: u64 = 64;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "64 fits usize on every supported target"
+    )]
     const ARENA_SIZE: usize = ARENA_FRAMES as usize * 4096;
     const PHYS_BASE: u64 = 0x0100_0000; // 16 MiB — arbitrary "physical" base
 

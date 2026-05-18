@@ -23,6 +23,11 @@
 //!   are encrypted with a key sealed to the recipient's TEE measurement.
 //!   The kernel does not see the plaintext; it routes ciphertext.
 
+#![allow(
+    clippy::missing_errors_doc,
+    reason = "trait scaffold methods return NotYetImplemented until MB12 activates IPC"
+)]
+
 use alloc::vec::Vec;
 
 use crate::{KernelResult, scheduling::TaskId};

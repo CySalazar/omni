@@ -25,6 +25,14 @@
 // kernel-task spawn path also relies on raw pointer arithmetic over the
 // bootloader direct-map. Each `unsafe` block carries a `// SAFETY:` comment.
 #![allow(unsafe_code)]
+#![allow(
+    clippy::missing_errors_doc,
+    reason = "trait scaffold methods return NotYetImplemented until full scheduler activates"
+)]
+#![allow(
+    clippy::doc_markdown,
+    reason = "module references inline asm symbols (`omni_context_switch`) without ticks in prose"
+)]
 
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicBool;
@@ -379,6 +387,10 @@ impl RoundRobinScheduler {
     /// which pushes kmain's callee-saved registers onto the boot stack and
     /// stores the real RSP in this TCB. From that moment kmain is a regular
     /// preemptible task.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "signature parity with future fallible spawn paths (MB11+ user-process)"
+    )]
     pub fn spawn_bootstrap_task(&mut self, priority: PriorityClass) -> KernelResult<TaskId> {
         let id = TaskId(self.next_id);
         self.next_id += 1;
@@ -659,7 +671,7 @@ mod tests {
         assert_eq!(tcb.kernel_stack_phys, 0);
         // Bootstrap task is *not* enqueued on a run queue: it is already
         // executing. The first `yield_current` will re-queue it as Runnable.
-        assert!(sched.run_queues.iter().all(|q| q.is_empty()));
+        assert!(sched.run_queues.iter().all(Vec::is_empty));
         assert_eq!(tcb.state, TaskState::Running);
     }
 }

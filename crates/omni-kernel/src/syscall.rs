@@ -20,6 +20,11 @@
 //!   provided by userspace services reached via IPC, not by direct
 //!   syscall.
 
+#![allow(
+    clippy::missing_errors_doc,
+    reason = "trait scaffold dispatch returns NotYetImplemented until MB11/MB12 wire handlers"
+)]
+
 use crate::KernelResult;
 
 // -----------------------------------------------------------------------------

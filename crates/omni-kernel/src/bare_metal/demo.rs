@@ -20,6 +20,31 @@
 //! └──────────────────────────────────────────────────────────────┘
 //! ```
 
+#![allow(
+    clippy::doc_markdown,
+    reason = "module doc references ASCII box drawing, register names, hex offsets without ticks"
+)]
+#![allow(
+    clippy::similar_names,
+    reason = "(cx0, cy0), (cpx, cpy) are pixel coord pairs by convention; renaming hurts clarity"
+)]
+#![allow(
+    clippy::map_unwrap_or,
+    reason = "Option::map(...).unwrap_or(...) reads more naturally for default-value chains"
+)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "run_desktop is the orchestrator event loop; splitting hides the polling structure"
+)]
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "framebuffer/echo-buf indices fit u32 by design"
+)]
+#![allow(
+    clippy::needless_pass_by_value,
+    reason = "framebuffer ownership transfer is intentional for the run_desktop top-level"
+)]
+
 use super::cursor::Cursor;
 use super::early_console;
 use super::graphics::FrameBuffer;

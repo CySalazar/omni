@@ -150,14 +150,14 @@ impl FrameBuffer {
                     clippy::integer_division,
                     reason = "ITU-R BT.601 luma; integer truncation in 0..=255 range is intended"
                 )]
-                let gray = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
+                let gray = (u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114) / 1000;
                 #[allow(
                     clippy::cast_possible_truncation,
                     reason = "weighted sum / 1000 always fits u8"
                 )]
                 unsafe {
-                    ptr::write_volatile(base, gray as u8)
-                };
+                    ptr::write_volatile(base, gray as u8);
+                }
             }
             PixelFormat::Other => {}
         }

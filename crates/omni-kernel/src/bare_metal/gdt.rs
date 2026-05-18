@@ -1,4 +1,4 @@
-//! Kernel Global Descriptor Table (GDT) for x86_64 long mode.
+//! Kernel Global Descriptor Table (`GDT`) for `x86_64` long mode.
 //!
 //! Installs a minimal 3-entry GDT under kernel control, replacing the
 //! bootloader's temporary GDT. Segments: null (0x00), kernel code (0x08),

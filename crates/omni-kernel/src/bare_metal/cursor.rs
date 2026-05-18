@@ -121,6 +121,11 @@ impl Cursor {
     ///
     /// Erases the cursor at the old position, updates the hotspot, then saves
     /// the background and draws at the new position.
+    #[allow(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        reason = "framebuffer dims < i32::MAX; clamp keeps result in u32 range"
+    )]
     pub fn move_by(&mut self, fb: &FrameBuffer, dx: i32, dy: i32) {
         self.hide(fb);
         self.cx = (self.cx as i32 + dx).clamp(0, fb.width as i32 - 1) as u32;
@@ -132,7 +137,7 @@ impl Cursor {
     /// Move the cursor to absolute pixel position `(x, y)`, clamped to the
     /// framebuffer bounds.
     ///
-    /// Used by the VirtIO tablet driver, which delivers absolute coordinates
+    /// Used by the `VirtIO` tablet driver, which delivers absolute coordinates
     /// already scaled into framebuffer pixel space.
     pub fn move_to(&mut self, fb: &FrameBuffer, x: u32, y: u32) {
         self.hide(fb);

@@ -19,6 +19,11 @@
 //!   capability authorizing the requested allocation class; the kernel
 //!   refuses ambient allocation entirely.
 
+#![allow(
+    clippy::missing_errors_doc,
+    reason = "trait scaffold methods return NotYetImplemented until P6.3 activates allocator"
+)]
+
 use crate::{KernelResult, bitflags_simple};
 
 // -----------------------------------------------------------------------------

@@ -23,6 +23,11 @@
 //!   against. The kernel cross-checks the calling TEE measurement on
 //!   every validation.
 
+#![allow(
+    clippy::missing_errors_doc,
+    reason = "trait scaffold methods return NotYetImplemented until OIP activates P6.5+"
+)]
+
 use crate::KernelResult;
 
 // -----------------------------------------------------------------------------
