@@ -136,6 +136,28 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
     toward a real Ed25519 capability provider.
 
   **Known limitations:**
+  - **MB12 bare-metal smoke triple-faults on Proxmox VMID 103 / QEMU
+    OVMF** (validated 2026-05-18 post-merge). The receiver task spawns,
+    the channel is pre-created, `[sched] entering Ring 3 via iretq` is
+    emitted on the serial port — then the VM transitions to `stopped`.
+    Root cause: Rust's `x86_64-unknown-none` target spec generates
+    `ET_EXEC` ELFs with the kernel image at `p_vaddr = 0x200000` (PML4
+    index 0); `bootloader 0.11` cannot relocate `ET_EXEC` (the
+    `BootloaderConfig::mappings.dynamic_range_start` override is
+    silently ignored), so the kernel ends up in the low half. The
+    per-process `AddressSpace::new_with_kernel_half` clones only PML4
+    indices 256..511, so when the scheduler dispatch path issues
+    `mov cr3 → per-process PML4` inside `enter_user_mode`, the next
+    instruction fetch lands on an unmapped page → page-fault → IDT
+    handler also unmapped → triple fault. The same bug is latent in
+    `mb11-userprobe`; the MB11 smoke was never manually validated.
+    Host tests are not affected. **MB13 follow-up**: either (a) force
+    the kernel ELF to `ET_DYN` (PIE) so the bootloader honours
+    `dynamic_range_start`, (b) write a linker script that hard-codes
+    the kernel image at an upper-half VA, or (c) install a cross-AS
+    trampoline page mapped at the same VA in every PML4. Diagnosis
+    captured in [`kernel-runner/src/main.rs`](./kernel-runner/src/main.rs)'s
+    `BootloaderConfig` doc-comment.
   - **Capability check is a stub** — `StubCapabilityProvider::verify`
     matches `action`/`resource` shape but does not verify Ed25519
     signatures. MB13 swaps it once `omni-crypto` builds bare-metal.

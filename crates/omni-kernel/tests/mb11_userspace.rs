@@ -106,6 +106,13 @@ fn make_alloc() -> BitmapFrameAllocator<1> {
 
 #[test]
 fn address_space_clones_kernel_half_only() {
+    // MB12 invariant — `new_with_kernel_half` clones PML4 entries
+    // 256..511. The boot configuration (`BootloaderConfig::
+    // dynamic_range_start = 0xFFFF_8000_0000_0000` in `kernel-runner`)
+    // keeps every boot-installed mapping in the upper half so this
+    // partial clone is sufficient: per-process PML4s see the kernel
+    // image / stack / framebuffer / direct map by reference, and the
+    // user half stays private.
     let arena = Arena::new();
     let phys_offset = arena.phys_offset();
     let boot_cr3 = PhysAddr(ARENA_PHYS_BASE);
@@ -129,12 +136,12 @@ fn address_space_clones_kernel_half_only() {
 
     unsafe {
         let new_pml4 = phys_offset.wrapping_add(addr_space.pml4_phys.0) as *const u64;
-        // User half (0..256) MUST be all zero.
+        // User half (0..256) MUST be zero.
         for i in 0..256 {
             assert_eq!(
                 core::ptr::read(new_pml4.add(i)),
                 0,
-                "user-half entry {} should be zero",
+                "user-half entry {} should be zero (boot mappings live in upper half)",
                 i
             );
         }

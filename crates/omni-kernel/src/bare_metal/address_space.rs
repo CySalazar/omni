@@ -30,6 +30,7 @@ use super::paging::PageMapper;
 /// indices at or above are kernel space. On x86_64 long mode the
 /// canonical split is 256 entries → 256 entries, mapping the lower
 /// 128 TiB to user and the upper 128 TiB (kernel half) to the kernel.
+///
 const KERNEL_PML4_START: usize = 256;
 
 /// Total number of u64 entries in a PML4 (4 KiB / 8 bytes = 512).
@@ -48,6 +49,13 @@ pub struct AddressSpace {
 impl AddressSpace {
     /// Allocate a fresh PML4 frame and populate the kernel half by
     /// memcpy from the boot PML4 at `boot_cr3`.
+    ///
+    /// Only entries 256..511 (the canonical kernel half) are cloned;
+    /// the user half (0..255) is initialised to zero so per-process
+    /// user mappings remain private. The boot-time configuration
+    /// (`kernel-runner` `BootloaderConfig::dynamic_range_start =
+    /// 0xFFFF_8000_…`) keeps every boot-installed mapping in the
+    /// kernel half so this clone is sufficient.
     ///
     /// Returns `None` if the allocator cannot provide a 4 KiB frame.
     pub fn new_with_kernel_half<const N: usize>(
@@ -268,7 +276,7 @@ mod tests {
                 assert_eq!(
                     core::ptr::read(p.add(i)),
                     0,
-                    "user-half entry {i} must be zero"
+                    "user-half entry {i} must be zero (boot pushes mappings to upper half)"
                 );
             }
         }

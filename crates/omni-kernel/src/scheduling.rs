@@ -602,26 +602,29 @@ impl Scheduler for RoundRobinScheduler {
         {
             let kernel_stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
             crate::bare_metal::tss::set_rsp0(kernel_stack_top);
-            // SAFETY: per-process PML4 owned by this PCB; kernel half is
-            // mirrored from boot CR3 so subsequent instructions stay mapped.
-            unsafe {
-                core::arch::asm!(
-                    "mov cr3, {}",
-                    in(reg) cr3_phys,
-                    options(nostack, preserves_flags)
-                );
-            }
+
             // MB12 first-dispatch detection: a freshly-spawned user task
             // has `context.rsp = 0` (the sentinel from `spawn_from_elf`).
             // It has no saved register frame on its kernel stack — the
             // context_switch asm would pop garbage. Enter Ring 3 directly
             // via the iretq trampoline instead; the previous task already
             // saved its own state during the kernel-side `yield_current`
-            // path that landed us here.
+            // path that landed us here. `enter_user_mode` performs its
+            // own `mov cr3` so we don't duplicate it here.
+            //
+            // **MB12 bare-metal limitation:** the CR3 reload inside
+            // `enter_user_mode` triple-faults on real hardware today
+            // because the kernel ELF is `ET_EXEC` at `0x200000` (PML4
+            // index 0) and `new_with_kernel_half` only clones the
+            // upper half. See `kernel-runner/src/main.rs` doc-comment
+            // for the full diagnosis. Host tests are not affected
+            // (no `mov cr3` in test mode); MB12 bare-metal smoke is
+            // tracked as an MB13 follow-up.
             if saved_rsp == 0 {
                 // SAFETY: user_entry + user_stack_top are validated by
-                // `spawn_from_elf` to reside in the user half and be
-                // user-accessible in this AS. CR3 is already loaded.
+                // `spawn_from_elf` to reside in the user half of this
+                // AS; `enter_user_mode` reloads CR3 atomically with the
+                // iretq frame build.
                 unsafe {
                     crate::bare_metal::usermode::enter_user_mode(
                         user_entry,
@@ -630,6 +633,21 @@ impl Scheduler for RoundRobinScheduler {
                         cr3_phys,
                     );
                 }
+            }
+
+            // Resume path: the incoming task is a user task that previously
+            // saved its kernel context (`saved_rsp != 0`). Reload CR3 here
+            // before the `context_switch` asm restores the callee-saved
+            // registers from `to_rsp_val`.
+            //
+            // SAFETY: per-process PML4 owned by this PCB; kernel half is
+            // mirrored from boot CR3 so subsequent instructions stay mapped.
+            unsafe {
+                core::arch::asm!(
+                    "mov cr3, {}",
+                    in(reg) cr3_phys,
+                    options(nostack, preserves_flags)
+                );
             }
         }
 

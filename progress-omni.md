@@ -400,10 +400,22 @@ Accumulato durante le 7 iterazioni di CI conformance su PR #29.
     punto 19: nuovo job CI (o flag) che asserisce
     `[mb12] channel 1 pre-created` + `ping` + due `[user] exit=0`
     consecutivi. Anche questo non bloccante per il merge MB12.
-21. **Real boot manuale di `mb12-userprobe`.** Build verde + image
-    `kernel-runner` pronta, ma il serial trace MB12 va validato con un
-    run QEMU+OVMF (o Proxmox VMID 103) — `qemu-system-x86_64 -bios
-    OVMF.fd -drive ... -serial stdio` con i feature flag corretti.
+21. ~~**Real boot manuale di `mb12-userprobe`.**~~ ⚠️ **DEPLOYED on
+    Proxmox VMID 103, smoke triple-faulted** (2026-05-18 post-merge).
+    Serial log si ferma a `[sched] entering Ring 3 via iretq` e VM va
+    in stato `stopped`. Root cause diagnosticata: il kernel ELF è
+    `ET_EXEC` con `p_vaddr = 0x200000` (PML4 index 0) per via del
+    target spec Rust `x86_64-unknown-none` che forza `--no-pie`
+    (kernel-runner/.cargo/config.toml legacy da `bootloader 0.9`).
+    `bootloader 0.11` non rilocca `ET_EXEC` → kernel ends up in PML4[0]
+    → `AddressSpace::new_with_kernel_half` clona solo upper half (256..511)
+    → al `mov cr3` dentro `enter_user_mode` la pagina con la istruzione
+    successiva è non-mappata → triple fault. La build di default
+    (desktop demo, no userprobe) BOOTS correttamente sulla VM (verificato
+    2026-05-18). Il bug è LATENTE anche in MB11 (`mb11-userprobe`) ma
+    nessuno aveva mai validato il smoke manuale. Fix MB13: vedi ADR-0005
+    § Migration — opzioni (a) ET_DYN/PIE kernel, (b) linker script
+    upper-half, (c) trampoline page cross-AS aliased.
 
 ---
 
@@ -550,6 +562,13 @@ Sbloccato da MB12 ✅. Lavoro:
   `tests/mb13_capability_signed.rs`.
 
 Effort stimato: 1-2 giornate (gating SIMD + glue + nuovi test).
+
+Inoltre **MB13 deve includere il fix per il triple-fault smoke MB12**
+(vedi gap analysis § 21). Approccio raccomandato: forzare `ET_DYN`
+sul kernel-runner ELF (`relocation-model=pic` + `-pie` + verificare che
+`bootloader 0.11` applichi `dynamic_range_start = 0xFFFF_8000_0000_0000`).
+Se non praticabile, fallback con linker script che imposta `p_vaddr`
+del kernel ELF in upper half.
 
 ---
 

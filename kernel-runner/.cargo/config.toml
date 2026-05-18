@@ -2,20 +2,23 @@
 # kernel-runner — Cargo target configuration
 # =============================================================================
 # Rust 1.83+ x86_64-unknown-none has `position_independent_executables = true`
-# in the target spec.  This causes rustc to:
-#   1. Generate RIP-relative code for globals (relocation model = static-pie)
-#   2. Pass `-pie` to the linker → ELF type ET_DYN + DYNAMIC segment
+# in the target spec, generating ET_DYN binaries with RIP-relative code.
 #
-# bootloader 0.9's second-stage ELF loader expects ET_EXEC (static,
-# fixed-address executable).  When it receives ET_DYN it calls its error
-# handler which panics at an infinite `jmp $` loop — confirmed by local
-# QEMU in_asm trace (bootloader panics at virtual address 0xBEC0).
+# Historically (pre-MB12) this crate forced ET_EXEC via
+# `-C relocation-model=static` + `-C link-arg=--no-pie` because the
+# previous `bootloader 0.9` second-stage loader rejected ET_DYN. With
+# `bootloader 0.11` (currently pinned in `kernel-runner/Cargo.toml`)
+# ET_DYN is fully supported — and **required** for MB12: the bootloader
+# applies RIP-relative relocations to honour
+# `BootloaderConfig::mappings.kernel_base`, which we use to push the
+# kernel image into the upper half (PML4 indices ≥ 256). The upper-half
+# kernel mapping is what makes the per-process `AddressSpace`'s
+# kernel-half clone (256..511) sufficient for the post-`mov cr3`
+# instruction fetch in `enter_user_mode` to land on a mapped page.
 #
-# Two flags are required to produce ET_EXEC:
-#   1. `-C relocation-model=static`   → absolute addressing, no GOT/PLT
-#   2. `-C link-arg=--no-pie`         → cancels the `-pie` rustc passes
-#                                        to LLD due to the target spec;
-#                                        last flag wins in LLD → ET_EXEC
+# Leaving the target spec defaults intact (PIE) keeps the kernel ELF
+# `ET_DYN`, which `bootloader 0.11` happily relocates to the dynamic
+# range starting at `dynamic_range_start = 0xFFFF_8000_0000_0000`.
 # =============================================================================
 
 [target.x86_64-unknown-none]

@@ -23,6 +23,21 @@ mod early_console;
 /// Framebuffer resolution is configured in the `disk-image` builder
 /// (via `bootloader::UefiBoot`) rather than here; `bootloader_api 0.11`
 /// moved that concern to the host-side build step.
+///
+/// **MB12 bare-metal limitation:** the kernel ELF is linked as
+/// `ET_EXEC` with `p_vaddr = 0x200000` (PML4 index 0). The
+/// `BootloaderConfig::mappings.dynamic_range_start` field only honours
+/// `ET_DYN` kernels, which Rust's `x86_64-unknown-none` target spec
+/// does not currently produce (`-C relocation-model=static` +
+/// `--no-pie` remain mandatory to keep the bootloader happy on the
+/// build path). Consequence: the kernel image lives in the low half,
+/// so the per-process `AddressSpace::new_with_kernel_half` clone
+/// (which mirrors only PML4 indices 256..511) loses the kernel image
+/// when `mov cr3` switches to a per-process PML4. The first instruction
+/// fetch after the CR3 reload triple-faults, which manifests as the VM
+/// going to `stopped` after the `[sched] entering Ring 3 via iretq`
+/// trace line under `mb12-userprobe`. Tracked as the headline MB13
+/// follow-up alongside the SIMD ICE on `omni-crypto`.
 static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut cfg = BootloaderConfig::new_default();
     cfg.mappings.physical_memory = Some(Mapping::Dynamic);
