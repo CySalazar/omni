@@ -51,27 +51,39 @@ workspace = true
 # because `id-generation` (default-enabled) pulls `uuid` + `getrandom`,
 # neither of which build on `x86_64-unknown-none`. Pin path + version
 # directly with `default-features = false` to opt out cleanly.
-omni-types      = { path = "../omni-types", version = "0.1.0", default-features = false }
+omni-types      = { path = "../omni-types", version = "0.2.0", default-features = false }
 # `serde` is required by `bare_metal::panic::PanicRecord` (derive
 # Serialize). The workspace pins `default-features = false` + `derive`
 # + `alloc`, so the kernel pulls `serde` without `std`. OIP-Kernel-012
 # § S1.
 serde           = { workspace = true }
-# `bootloader` (0.9) provides `BootInfo`, `MemoryMap`, and the
-# `entry_point!` macro consumed by `bare_metal::heap::pick_region` and
-# `kmain`. Version 0.9 is compatible with stable Rust and with the
-# `cargo bootimage` CLI used by the K5 QEMU smoke test. We gate it
-# under `bare-metal` so default `cargo build -p omni-kernel` (host, no
-# bare-metal feature) does not pull it in. OIP-Kernel-005 § S3 / § S4.
-bootloader  = { version = "0.9", optional = true }
+# `bootloader_api` 0.11 provides `BootInfo`, `MemoryRegions`, `FrameBuffer`,
+# and the `entry_point!` macro consumed by `bare_metal::heap::pick_region`
+# and `kmain`. The split between `bootloader_api` (kernel-side, no_std) and
+# `bootloader` (host-side builder) is the 0.11 design; we only need the
+# kernel-side half here. OIP-Kernel-005 § S3 / § S4 (updated for 0.11).
+bootloader_api = { version = "0.11", optional = true, default-features = false }
+# `font8x8` provides a no_std-compatible 8×8 monospace bitmap font used by
+# `bare_metal::font` to render text on the GOP framebuffer. Zero dependencies,
+# zero allocation. Gated under `bare-metal` so host builds are unaffected.
+font8x8        = { version = "0.3", optional = true, default-features = false }
 
 [features]
 default     = []
 # `bare-metal` switches the crate to `no_std + no_main` (gated in
 # `lib.rs`) and enables the `bare_metal` module + its
-# `bootloader`-dependent surface (`kmain`, `pick_region`).
-# OIP-Kernel-012 § S5 K3.a; OIP-Kernel-005 § S3 K4.b.
-bare-metal  = ["dep:bootloader"]
+# `bootloader_api`-dependent surface (`kmain`, `pick_region`) and the
+# `font8x8` bitmap renderer used by the GOP framebuffer banner.
+# OIP-Kernel-012 § S5 K3.a; OIP-Kernel-005 § S3 K4.b (updated 0.11).
+bare-metal  = ["dep:bootloader_api", "dep:font8x8"]
+# `mb8-smoke` enables the two-task preemption smoke (Track B MB8):
+# spawns Task A and Task B that print 'A' and 'B' in tight loops and
+# never yield, so any interleaved output on serial proves that the
+# LAPIC timer is preempting them. The whole module is `#[cfg]`-gated
+# out of the production build, so VirtualBox / Proxmox deploys are
+# unaffected unless the flag is explicitly passed. Implies `bare-metal`
+# because the smoke uses the bare-metal SCHEDULER and FRAME_ALLOC.
+mb8-smoke   = ["bare-metal"]
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -11,6 +11,7 @@
 # them explicitly so a future workspace-excluded crate must add itself
 # here — the wildcard `**/target/` would also catch unrelated paths.
 /kernel-runner/target/
+/disk-image/target/
 **/*.rs.bk
 *.pdb
 

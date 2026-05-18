@@ -56,10 +56,88 @@ pub unsafe fn inb(_port: u16) -> u8 {
     0
 }
 
+/// 16-bit out stub — see [`outb`].
+///
+/// # Safety
+///
+/// Host no-op; never reaches a real port.
+#[inline(always)]
+pub unsafe fn outw(_port: u16, _value: u16) {}
+
+/// 32-bit out stub — see [`outb`].
+///
+/// # Safety
+///
+/// Host no-op; never reaches a real port.
+#[inline(always)]
+pub unsafe fn outl(_port: u16, _value: u32) {}
+
+/// 16-bit in stub — see [`outb`].
+///
+/// # Safety
+///
+/// Host no-op; never reaches a real port.
+#[inline]
+pub unsafe fn inw(_port: u16) -> u16 {
+    0
+}
+
+/// 32-bit in stub — see [`outb`].
+///
+/// # Safety
+///
+/// Host no-op; never reaches a real port.
+#[inline]
+pub unsafe fn inl(_port: u16) -> u32 {
+    0
+}
+
+/// PCI config read stub — returns the "no device" sentinel (`0xFFFF_FFFF`).
+///
+/// # Safety
+///
+/// Host no-op; never reaches a real port.
+#[inline]
+pub unsafe fn pci_cfg_read32(_bus: u8, _dev: u8, _func: u8, _off: u8) -> u32 {
+    0xFFFF_FFFF
+}
+
+/// No-op RTC seconds stub for non-x86 host builds.
+#[inline]
+pub fn rtc_seconds() -> u32 {
+    0
+}
+
 /// No-op wait stub for non-x86 host builds.
 #[inline(always)]
 pub fn wait_secs(_secs: u32) {}
 
+/// RTC time stub for non-x86 host builds — returns midnight (00:00:00).
+#[inline]
+pub fn rtc_time() -> (u8, u8, u8) {
+    (0, 0, 0)
+}
+
 /// No-op ACPI power-off stub for non-x86 host builds.
 #[inline(always)]
 pub fn acpi_poweroff() {}
+
+/// Returns 0 as CR3 stub for non-x86 host builds.
+#[inline]
+pub fn read_cr3() -> u64 {
+    0
+}
+
+/// Returns 0 as CR2 stub for non-x86 host builds.
+#[inline]
+pub fn read_cr2() -> u64 {
+    0
+}
+
+/// No-op TLB invalidation stub for non-x86 host builds.
+///
+/// # Safety
+///
+/// This stub is a no-op and always safe to call.
+#[inline(always)]
+pub unsafe fn invlpg(_virt: u64) {}

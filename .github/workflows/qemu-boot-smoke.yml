@@ -1,19 +1,19 @@
 # =============================================================================
 # OMNI OS — QEMU boot smoke test (K5 gate of OIP-Kernel-003 § 3)
 # =============================================================================
-# Boots the `kernel-runner` ELF under QEMU+OVMF and asserts the canonical
-# banner sequence appears on the serial console. This is the K5 deliverable
-# for OIP-Kernel-003 § 3; OIP-Kernel-005 § S11 K4.e requires this job to
-# stay green for 7 consecutive calendar days before the OIP transitions
-# to `Final` (currently dormant per § 7 — Active is the terminal state
-# until mesh telemetry exists in Phase 4+).
+# Boots the `kernel-runner` ELF under QEMU+OVMF (UEFI, bootloader 0.11)
+# and asserts the canonical banner sequence appears on the serial console.
+#
+# Build pipeline:
+#   1. cargo build  → kernel-runner ELF (x86_64-unknown-none, stable Rust)
+#   2. disk-image   → UEFI disk image via bootloader::UefiBoot
+#   3. QEMU+OVMF   → UEFI boot, serial output captured and asserted
 #
 # The workflow runs:
 #   - on every PR touching kernel/runner code or this workflow itself
 #   - on every push to main
 #   - on manual dispatch
 #   - daily on a cron schedule (07:00 UTC) to detect upstream regressions
-#     in `bootimage`, `bootloader`, or the Rust toolchain.
 # =============================================================================
 
 name: qemu-boot-smoke
@@ -24,6 +24,7 @@ on:
     paths:
       - 'crates/omni-kernel/**'
       - 'kernel-runner/**'
+      - 'disk-image/**'
       - 'scripts/qemu-boot-smoke.sh'
       - '.github/workflows/qemu-boot-smoke.yml'
   push:
@@ -46,29 +47,30 @@ env:
 
 jobs:
   smoke:
-    name: QEMU boot smoke (x86_64-unknown-none)
+    name: QEMU boot smoke (x86_64-unknown-none, UEFI)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install rust toolchain (pinned via rust-toolchain.toml)
+      - name: Install rust toolchain (stable, pinned via rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.85"
           targets: x86_64-unknown-none
           components: llvm-tools-preview
 
+      - name: Install nightly toolchain (disk-image builder requires -Z build-std)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools-preview
+
       - uses: Swatinem/rust-cache@v2
         with:
-          # Workspace-excluded crate has its own target/ — cache it
-          # separately so kernel-runner rebuilds don't invalidate the
-          # main workspace cache.
-          workspaces: ". -> target\nkernel-runner -> kernel-runner/target"
+          workspaces: |
+            . -> target
+            kernel-runner -> kernel-runner/target
+            disk-image -> disk-image/target
 
-      # GitHub Actions ubuntu-24.04 exposes /dev/kvm but the runner user
-      # is not in the kvm group by default.  The udev rule makes the
-      # device world-writable so `qemu-system-x86_64 -machine accel=kvm`
-      # works without sudo.  Falls back to TCG if KVM is unavailable.
       - name: Enable KVM acceleration for QEMU
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -84,29 +86,20 @@ jobs:
               qemu-system-x86 \
               ovmf
 
-      - name: Install bootimage CLI
-        run: cargo install bootimage --version "^0.10"
-
-      # `bootloader = "0.9"` (bootimage's bootloader stage) uses a custom
-      # JSON target (`x86_64-bootloader.json`) that has no pre-compiled
-      # `core`, so bootimage passes `-Z build-std=core` internally when it
-      # builds that stage. That flag requires nightly cargo. The kernel
-      # itself and kernel-runner still compile on stable 1.85; nightly is
-      # needed only for the disk-image packaging step.
-      - name: Install nightly toolchain for bootimage disk-image step
-        run: rustup toolchain install nightly --target x86_64-unknown-none --component rust-src,llvm-tools-preview --no-self-update
-
       - name: Run smoke test
         run: bash scripts/qemu-boot-smoke.sh --release
         env:
           SMOKE_TIMEOUT_SECS: "120"
-          OMNI_BOOTIMAGE_BIN: "cargo +nightly bootimage"
+          OVMF_PATH: "/usr/share/ovmf/OVMF.fd"
 
-      - name: Upload boot artifact
+      - name: Upload boot artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bootimage-kernel-runner
-          path: kernel-runner/target/x86_64-unknown-none/release/bootimage-kernel-runner.bin
+          name: boot-images
+          path: |
+            kernel-runner/target/x86_64-unknown-none/release/kernel-runner
+            kernel-runner/target/x86_64-unknown-none/release/boot-uefi.img
+            kernel-runner/target/x86_64-unknown-none/release/boot-bios.img
           if-no-files-found: warn
           retention-days: 7
