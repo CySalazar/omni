@@ -84,6 +84,12 @@ bare-metal  = ["dep:bootloader_api", "dep:font8x8"]
 # unaffected unless the flag is explicitly passed. Implies `bare-metal`
 # because the smoke uses the bare-metal SCHEDULER and FRAME_ALLOC.
 mb8-smoke   = ["bare-metal"]
+# `mb11-userprobe` enables the Ring 3 user-probe smoke (Track B MB11):
+# spawns the embedded `WriteConsole("hello\n") + TaskExit(0)` ELF as a
+# Ring 3 process, then transfers to user mode via `enter_user_mode`.
+# The kernel halts after `TaskExit`; the desktop demo is unreachable
+# under this feature. Gated like `mb8-smoke` for the same reasons.
+mb11-userprobe = ["bare-metal"]
 
 [dev-dependencies]
 proptest = { workspace = true }

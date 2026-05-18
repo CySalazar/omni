@@ -66,7 +66,6 @@ pub mod syscall_entry;
 pub mod tss;
 pub mod user_stack;
 pub mod usermode;
-#[cfg(target_arch = "x86_64")]
 pub mod userprobe;
 pub mod vga;
 pub mod virtio_tablet;

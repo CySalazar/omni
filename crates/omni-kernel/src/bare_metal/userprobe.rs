@@ -21,6 +21,10 @@
     unsafe_code,
     reason = "wraps ProcessControlBlock::spawn_from_elf which is itself unsafe"
 )]
+#![allow(
+    clippy::doc_markdown,
+    reason = "module references ELF, PT_LOAD, p_offset and x86_64 register names in prose"
+)]
 
 #[cfg(target_arch = "x86_64")]
 use crate::{
@@ -31,31 +35,84 @@ use crate::{
     scheduling::{PriorityClass, RoundRobinScheduler, TaskId},
 };
 
-/// Placeholder ELF for the user probe.
+/// Hand-crafted ELF64 + machine code for the MB11 user probe.
 ///
-/// To be replaced by the real `omni-userprobe-helloworld` output. The
-/// current bytes parse but contain no executable code; the real probe
-/// binary embeds a `syscall(WriteConsole, "hello\n")` followed by
-/// `syscall(TaskExit, 0)` sequence.
+/// Issues two syscalls from Ring 3 then loops on itself:
 ///
-/// Until the real probe replaces these bytes, [`spawn_userprobe`] is a
-/// dry-run that exercises the full spawn flow without producing any
-/// observable Ring 3 output.
+/// ```text
+///   mov rax, 60          ; WriteConsole
+///   lea rdi, [rip+0x1b]  ; ptr → msg
+///   mov rsi, 6           ; len
+///   syscall
+///   mov rax, 11          ; TaskExit
+///   mov rdi, 0           ; exit code
+///   syscall              ; (never returns — kernel halts)
+///   jmp $                ; safety loop
+///   msg: "hello\n"
+/// ```
+///
+/// ELF layout (167 bytes total):
+/// - Offset 0x00..0x3F — ELF64 header (e_entry = 0x4000_0000)
+/// - Offset 0x40..0x77 — single PT_LOAD program header
+///     (p_offset = 0x78, p_vaddr = 0x4000_0000, p_filesz = p_memsz = 47)
+/// - Offset 0x78..0xA6 — 47 bytes of x86_64 code + "hello\n" data
+///
+/// The 0x4000_0000 entry point matches the convention used by MB5's
+/// `TEST_ELF` and `omni-userprobe-helloworld`'s linker layout. The
+/// `lea rdi, [rip+disp]` displacement is `msg_va - (lea_va + 7) =
+/// 0x4000_0029 - 0x4000_000E = 0x1B`.
+///
+/// This ELF is a 1:1 representation of what a hypothetical
+/// `omni-userprobe-helloworld` no_std crate would assemble; embedding
+/// the bytes directly avoids a recursive cargo build in `build.rs`
+/// (closes MB11.7 without the build-script complexity).
 pub const USERPROBE_ELF: &[u8] = &[
-    // ELF64 header (e_ident + e_type + e_machine + e_version)
-    0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x3E, 0x00, 0x01, 0x00,
-    0x00, 0x00, // e_entry = 0x4000_0000
-    0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
-    // e_phoff = 0x40, e_shoff = 0, e_flags = 0, e_ehsize = 0x40, e_phentsize = 0x38,
-    // e_phnum = 1, e_shentsize = 0, e_shnum = 0, e_shstrndx = 0
-    0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x38, 0x00, 0x01, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,
-    // Program header: PT_LOAD, PF_R | PF_X, p_offset = 0, p_vaddr = 0x4000_0000,
-    // p_paddr = 0x4000_0000, p_filesz = 0, p_memsz = 0x1000, p_align = 0x1000
-    0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // -------------------------------------------------------------------
+    // ELF64 header — 64 bytes
+    // -------------------------------------------------------------------
+    // e_ident[0..16]: magic + class64 + LE + version + osabi + padding
+    0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, // e_type = ET_EXEC (2)
+    0x02, 0x00, // e_machine = EM_X86_64 (62)
+    0x3e, 0x00, // e_version = 1
+    0x01, 0x00, 0x00, 0x00, // e_entry = 0x4000_0000
+    0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, // e_phoff = 0x40
+    0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // e_shoff = 0
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // e_flags = 0, e_ehsize = 64, e_phentsize = 56, e_phnum = 1
+    0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x38, 0x00, 0x01, 0x00,
+    // e_shentsize = 0, e_shnum = 0, e_shstrndx = 0
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // -------------------------------------------------------------------
+    // Program header — 56 bytes (PT_LOAD)
+    // -------------------------------------------------------------------
+    // p_type = PT_LOAD (1)
+    0x01, 0x00, 0x00, 0x00, // p_flags = PF_R | PF_X (5)
+    0x05, 0x00, 0x00, 0x00, // p_offset = 0x78 (immediately after the program header)
+    0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // p_vaddr = 0x4000_0000
+    0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, // p_paddr = 0x4000_0000
+    0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, // p_filesz = 47 bytes
+    0x2f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // p_memsz = 47 bytes (no BSS)
+    0x2f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // p_align = 0x1000 (4 KiB)
     0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    // -------------------------------------------------------------------
+    // Code + data at file offset 0x78, mapped to VA 0x4000_0000 — 47 bytes
+    // -------------------------------------------------------------------
+    // mov rax, 60                                — 7 bytes
+    0x48, 0xc7, 0xc0, 0x3c, 0x00, 0x00, 0x00,
+    // lea rdi, [rip + 0x1b]   (→ "hello\n")     — 7 bytes
+    0x48, 0x8d, 0x3d, 0x1b, 0x00, 0x00, 0x00,
+    // mov rsi, 6                                 — 7 bytes
+    0x48, 0xc7, 0xc6, 0x06, 0x00, 0x00, 0x00,
+    // syscall  (WriteConsole)                    — 2 bytes
+    0x0f, 0x05, // mov rax, 11                                — 7 bytes
+    0x48, 0xc7, 0xc0, 0x0b, 0x00, 0x00, 0x00,
+    // mov rdi, 0                                 — 7 bytes
+    0x48, 0xc7, 0xc7, 0x00, 0x00, 0x00, 0x00,
+    // syscall  (TaskExit)                        — 2 bytes
+    0x0f, 0x05,
+    // jmp $   (loop on self — TaskExit halts kernel; this is belt+suspenders) — 2 bytes
+    0xeb, 0xfe, // "hello\n"                                  — 6 bytes
+    b'h', b'e', b'l', b'l', b'o', b'\n',
 ];
 
 /// Spawn the embedded user-probe binary as a Ring 3 process.
@@ -90,5 +147,73 @@ pub unsafe fn spawn_userprobe<const N: usize>(
             scheduler,
             PriorityClass::Interactive,
         )
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "tests assert on fixed-offset slices of a static ELF blob"
+)]
+mod tests {
+    extern crate alloc;
+    use super::*;
+    use crate::bare_metal::elf_loader::{Elf64, PF_R, PF_X};
+
+    #[test]
+    fn elf_parses_cleanly() {
+        Elf64::parse(USERPROBE_ELF).expect("userprobe ELF should parse");
+    }
+
+    #[test]
+    fn elf_entry_is_0x4000_0000() {
+        let elf = Elf64::parse(USERPROBE_ELF).unwrap();
+        assert_eq!(elf.entry_point(), 0x4000_0000);
+    }
+
+    #[test]
+    fn single_load_segment_with_rx_flags() {
+        let elf = Elf64::parse(USERPROBE_ELF).unwrap();
+        let segs: alloc::vec::Vec<_> = elf.load_segments().collect();
+        assert_eq!(segs.len(), 1);
+        let seg = segs[0].expect("PT_LOAD must parse");
+        assert_eq!(seg.virt_addr, 0x4000_0000);
+        assert_eq!(seg.mem_size, 47);
+        assert_eq!(seg.flags & PF_X, PF_X);
+        assert_eq!(seg.flags & PF_R, PF_R);
+    }
+
+    #[test]
+    fn code_carries_hello_message() {
+        let elf = Elf64::parse(USERPROBE_ELF).unwrap();
+        let seg = elf.load_segments().next().unwrap().unwrap();
+        // "hello\n" lives at the end of the segment (offset 0x29 .. 0x2F).
+        assert_eq!(&seg.file_data[0x29..0x2F], b"hello\n");
+    }
+
+    #[test]
+    fn code_opens_with_syscall_setup() {
+        let elf = Elf64::parse(USERPROBE_ELF).unwrap();
+        let seg = elf.load_segments().next().unwrap().unwrap();
+        // mov rax, 60 — first 7 bytes.
+        assert_eq!(
+            &seg.file_data[0..7],
+            &[0x48, 0xc7, 0xc0, 0x3c, 0x00, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    fn lea_displacement_points_at_message() {
+        let elf = Elf64::parse(USERPROBE_ELF).unwrap();
+        let seg = elf.load_segments().next().unwrap().unwrap();
+        // lea rdi, [rip+0x1b] — bytes 7..14: 48 8d 3d 1b 00 00 00
+        assert_eq!(
+            &seg.file_data[7..14],
+            &[0x48, 0x8d, 0x3d, 0x1b, 0x00, 0x00, 0x00]
+        );
+        // The displacement (0x1b at byte 10) plus the lea-instruction end
+        // (byte 14 = lea_va + 7) must point at the "hello\n" message
+        // start (byte 0x29 = 41). 14 + 0x1B = 41. ✓
+        assert_eq!(14 + 0x1B, 0x29);
     }
 }

@@ -51,6 +51,10 @@ default     = []
 # image built from this crate exercises the MB8 two-task preemption demo.
 # Track B MB8 (2026-05-17).
 mb8-smoke   = ["omni-kernel/mb8-smoke"]
+# Forward the kernel's `mb11-userprobe` feature so the QEMU image runs the
+# embedded Ring 3 user-probe (`WriteConsole("hello\n") + TaskExit(0)`).
+# Track B MB11 (2026-05-18).
+mb11-userprobe = ["omni-kernel/mb11-userprobe"]
 
 # The runner is its own profile: it always builds with link-time
 # optimization in release (we ship the kernel as a single ELF, then

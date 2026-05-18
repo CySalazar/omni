@@ -533,6 +533,76 @@ pub fn kmain(
     }
 
     // -------------------------------------------------------------------------
+    // MB11 user-probe (feature-gated): spawn a Ring 3 process that issues
+    // `WriteConsole("hello\n")` + `TaskExit(0)`, then transfer to user mode
+    // via the `iretq` trampoline. `TaskExit` halts the CPU, so the desktop
+    // demo below is unreachable under this feature.
+    //
+    // Smoke output expected (in addition to existing K5/LAPIC/sched lines):
+    //   [user] address space activated cr3 = 0x...
+    //   [user] entering Ring 3 rip = 0x40000000
+    //   hello
+    //   [user] exit=0
+    // -------------------------------------------------------------------------
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_os = "none",
+        feature = "mb11-userprobe",
+        not(test)
+    ))]
+    #[allow(
+        unsafe_code,
+        reason = "single-core static-mut deref + Ring 3 entry; SAFETY in block"
+    )]
+    {
+        use bare_metal::userprobe;
+        // SAFETY: single-core; SCHEDULER/FRAME_ALLOC not aliased.
+        unsafe {
+            let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+            let fa = &mut *core::ptr::addr_of_mut!(FRAME_ALLOC);
+            match userprobe::spawn_userprobe(&mut pager, fa, sched) {
+                Ok(task_id) => {
+                    early_console::write_str("[user] userprobe spawned  task_id=");
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "x86_64 only; usize is u64 on target_os = none"
+                    )]
+                    early_console::write_usize(task_id.0 as usize);
+                    early_console::write_str("\n");
+                    if let Some(pcb) = sched.process(task_id) {
+                        early_console::write_str("[user] address space activated cr3 = ");
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "x86_64 only; usize is u64 on target_os = none"
+                        )]
+                        early_console::write_usize(pcb.address_space.pml4_phys.0 as usize);
+                        early_console::write_str("\n");
+                        early_console::write_str("[user] entering Ring 3 rip = ");
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "x86_64 only; usize is u64 on target_os = none"
+                        )]
+                        early_console::write_usize(pcb.user_entry as usize);
+                        early_console::write_str("\n");
+                        // RFLAGS: IF = 1 (bit 9 = 0x200) so the timer can
+                        // preempt the user task; all other bits clear.
+                        let rflags: u64 = 0x202;
+                        bare_metal::usermode::enter_user_mode(
+                            pcb.user_entry,
+                            pcb.user_stack_top,
+                            rflags,
+                            pcb.address_space.pml4_phys.0,
+                        );
+                    } else {
+                        early_console::write_str("[user] PCB lookup FAILED\n");
+                    }
+                }
+                Err(_) => early_console::write_str("[user] userprobe spawn FAILED\n"),
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Graphical desktop — blocks until the user requests power-off, then
     // draws the power-off overlay before returning.
     // -------------------------------------------------------------------------

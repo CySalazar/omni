@@ -17,6 +17,67 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB11 closure: real user-probe ELF, kmain boot wiring,
+  integration tests (Track B MB11.7–MB11.9, 2026-05-18).** Closes the
+  MB11 milestone started by the foundation commit; the kernel now spawns
+  a real Ring 3 process that issues `WriteConsole("hello\n")` then
+  `TaskExit(0)`, under the new `mb11-userprobe` feature.
+
+  - **Hand-crafted user ELF** ([`bare_metal/userprobe.rs::USERPROBE_ELF`](./crates/omni-kernel/src/bare_metal/userprobe.rs)):
+    167 bytes — 64-byte ELF64 header + 56-byte PT_LOAD program header +
+    47 bytes of `x86_64` machine code & data at file offset 0x78,
+    mapped to VA `0x4000_0000`. The code does:
+    ```
+    mov rax, 60          ; WriteConsole
+    lea rdi, [rip+0x1b]  ; ptr → msg
+    mov rsi, 6           ; len
+    syscall
+    mov rax, 11          ; TaskExit
+    mov rdi, 0           ; exit code
+    syscall              ; never returns
+    jmp $                ; safety loop
+    msg: "hello\n"
+    ```
+    Embedding the bytes directly avoids a recursive cargo build in
+    `build.rs` and removes the linker-script + target-spec complexity
+    a separate `omni-userprobe-helloworld` crate would have introduced.
+  - **kmain boot wiring** ([`lib.rs`](./crates/omni-kernel/src/lib.rs))
+    under `#[cfg(feature = "mb11-userprobe")]`: reads CR3, calls
+    `userprobe::spawn_userprobe`, looks up the resulting `PCB`, prints
+    diagnostic lines (`[user] userprobe spawned`, `[user] address
+    space activated cr3 = …`, `[user] entering Ring 3 rip = …`), then
+    transfers to Ring 3 via `usermode::enter_user_mode(rip, rsp,
+    rflags=0x202, cr3)`. The user code's `TaskExit` then writes
+    `[user] exit=0\n` and halts the CPU.
+  - **`mb11-userprobe` feature flag** in
+    [`crates/omni-kernel/Cargo.toml`](./crates/omni-kernel/Cargo.toml)
+    and forwarded by [`kernel-runner/Cargo.toml`](./kernel-runner/Cargo.toml).
+    Mirrors the `mb8-smoke` pattern: gated out of production builds
+    (VirtualBox / Proxmox unaffected) and never on by default.
+  - **Integration test**
+    [`tests/mb11_userspace.rs`](./crates/omni-kernel/tests/mb11_userspace.rs):
+    6 host-side end-to-end checks — userprobe ELF parses with the
+    correct entry + flags + "hello\n" payload; `AddressSpace` clones
+    only the kernel half of a synthetic boot PML4; user-stack slots
+    are disjoint with guard pages; `validate_user_buffer` rejects
+    kernel-half buffers and accepts zero-length anywhere.
+  - **Unit tests on userprobe** (5 new): ELF parses, entry point is
+    `0x4000_0000`, single PT_LOAD with RX flags, code carries
+    "hello\n", lea displacement points at the message. Plus the
+    6 integration tests above.
+  - **QEMU smoke**: feature-gated path documented; running
+    `cargo build --manifest-path kernel-runner/Cargo.toml --target
+    x86_64-unknown-none --features mb11-userprobe` produces a bootable
+    image that exercises the full Ring 3 round trip. Expected serial
+    output sequence (in addition to the existing K5/LAPIC/sched lines):
+    ```
+    [user] userprobe spawned  task_id=N
+    [user] address space activated cr3 = 0x...
+    [user] entering Ring 3 rip = 0x40000000
+    hello
+    [user] exit=0
+    ```
+
 - **Kernel — MB11 foundation: per-process address space, user stacks,
   Ring 3 trampoline, TaskExit/WriteConsole syscalls (Track B MB11.1–MB11.6,
   2026-05-18).** First slice of the userspace-Ring-3 milestone per
