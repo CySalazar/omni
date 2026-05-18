@@ -17,6 +17,24 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Changed
 
+- **Kernel — lift `clippy::nursery` + `clippy::cargo` blanket allows on
+  `omni-kernel` (Step 7.4, 2026-05-18).** Third of four Step 7 PRs. Removes
+  the residual `#![allow(clippy::nursery, clippy::cargo)]` from
+  [`lib.rs:78`](./crates/omni-kernel/src/lib.rs#L78); only `unsafe_code`
+  remains, lifted by PR 7.2. Seven nursery findings handled across
+  `scheduling.rs`, `wm.rs`, `demo.rs`:
+
+  - 4 `clippy::too_long_first_doc_paragraph` in `scheduling.rs` — fixed by
+    promoting the long first paragraph into a one-line summary + detail
+    blank-line + body.
+  - 2 `clippy::use_self` in `wm.rs:52` — `pub const DEFAULT: Window = ...`
+    rewritten as `Self = Self { ... }`.
+  - 1 `clippy::cognitive_complexity` (52/20) on
+    `bare_metal/demo.rs::run_desktop` — allow + reason "event loop
+    orchestrator: branches mirror input sources".
+  - No `cargo` lint warnings fired (workspace deps already coherent).
+  - Tests still 277 pass / 0 fail.
+
 - **Kernel — lift `clippy::pedantic` blanket allow on `omni-kernel` (Step 7.3,
   2026-05-18).** Second of four Step 7 PRs. Removes `clippy::pedantic` from
   the crate-root suppression at [`lib.rs:78`](./crates/omni-kernel/src/lib.rs#L78);

@@ -49,7 +49,7 @@ pub struct Window {
 
 impl Window {
     /// A zero-sized placeholder used when an index slot is empty.
-    pub const DEFAULT: Window = Window {
+    pub const DEFAULT: Self = Self {
         x: 0,
         y: 0,
         width: 0,

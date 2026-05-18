@@ -43,6 +43,8 @@ use crate::{KernelError, KernelResult};
 // MB8 preemption signaling — atomic flags used by the LAPIC timer path
 // -----------------------------------------------------------------------------
 
+/// LAPIC quantum-expired flag.
+///
 /// Set to `true` by the LAPIC timer tick when the current task's quantum has
 /// expired. Consumed by `kernel_check_need_resched` (bare_metal::lapic) at the
 /// safe tail of the timer interrupt, just before `iretq`.
@@ -55,6 +57,8 @@ use crate::{KernelError, KernelResult};
 /// works.
 pub static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
 
+/// Scheduler-recursion guard.
+///
 /// Set to `true` for the duration of any call into `RoundRobinScheduler::yield_current`
 /// (or `preempt`). The timer interrupt's `check_need_resched` consults this to
 /// avoid recursing into the scheduler if the previous yield (e.g. from a
@@ -189,23 +193,26 @@ pub struct TaskControlBlock {
 // -----------------------------------------------------------------------------
 
 /// Base of the kernel-only VA range that holds kernel-task stacks.
+///
 /// `0xFFFF_C000_0000_0000` is half-canonical kernel-half on x86_64 long mode;
 /// disjoint from the bootloader's direct-map (`0xFFFF_8800_…` on
 /// `bootloader 0.11`) and from the future user-space range planned for MB11
 /// (`0x0000_0040_…`). See `docs/adr/0002-mb10-kernel-stack-isolation.md`.
 pub const KERNEL_STACK_VA_BASE: u64 = 0xFFFF_C000_0000_0000;
 
-/// Exclusive upper bound of the kernel-stack VA range — 8 TiB of address
-/// space (`~1 G slots`), ample for Phase 1.
+/// Exclusive upper bound of the kernel-stack VA range.
+///
+/// 8 TiB of address space (`~1 G slots`), ample for Phase 1.
 pub const KERNEL_STACK_VA_END: u64 = 0xFFFF_C800_0000_0000;
 
 /// Writable kernel-stack size per task, in bytes (4 KiB single frame).
 pub const KERNEL_STACK_SIZE: u64 = 0x1000;
 
-/// Address-space stride per slot — 4 KiB guard page (not mapped) + 4 KiB
-/// stack page (mapped). Walking the range by `KERNEL_STACK_STRIDE` gives
-/// the *guard* VA of each slot; adding `KERNEL_STACK_SIZE` (= guard size)
-/// gives the writable stack base.
+/// Address-space stride per slot.
+///
+/// 4 KiB guard page (not mapped) + 4 KiB stack page (mapped). Walking the
+/// range by `KERNEL_STACK_STRIDE` gives the *guard* VA of each slot; adding
+/// `KERNEL_STACK_SIZE` (= guard size) gives the writable stack base.
 pub const KERNEL_STACK_STRIDE: u64 = 0x2000;
 
 // -----------------------------------------------------------------------------

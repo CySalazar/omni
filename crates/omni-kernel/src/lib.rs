@@ -62,12 +62,10 @@
 // the pattern already adopted in `bare_metal/{mod,lapic,context_switch,
 // virtio_tablet,graphics,vga,input,mb8_smoke}.rs`.
 #![allow(unsafe_code)]
-// Clippy `nursery` and `cargo` lint groups are deliberately suppressed
-// at the kernel-crate boundary. `pedantic` was lifted in Step 7.3 (this
-// PR); `nursery` and `cargo` follow in Step 7.4.
-//
-// Tracking: ADR-0003 mandates lift; this is the post-v0.2.0 cleanup.
-#![allow(clippy::nursery, clippy::cargo)]
+// `clippy::pedantic` was lifted in Step 7.3; `clippy::nursery` and
+// `clippy::cargo` in Step 7.4 (this PR). The crate-root surface now
+// carries no pedantic/nursery/cargo blanket — the only remaining
+// crate-root suppression is `unsafe_code`, which Step 7.2 will remove.
 // Restriction lints kept active globally are workspace-wide policy
 // (`unwrap_used`, `expect_used`, `panic`, `disallowed_methods`,
 // `disallowed_types`, `disallowed_macros`). Three further restriction

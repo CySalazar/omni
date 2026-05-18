@@ -85,6 +85,10 @@ const POWEROFF_BTN: widget::Button = widget::Button {
 /// - `phys_offset` — bootloader's `physical_memory_offset`. Required by the
 ///   VirtIO tablet driver to translate `static mut` virtual addresses into
 ///   physical addresses via the page-table walker.
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "event loop orchestrator: branches mirror input sources (keyboard/mouse/RTC)"
+)]
 pub fn run_desktop(
     framebuffer: Option<graphics::FrameBuffer>,
     region_count: usize,
