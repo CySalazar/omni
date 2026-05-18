@@ -57,6 +57,12 @@ exclude = [
     #              --target x86_64-unknown-none --release`
     # See `kernel-runner/README.md` for the full build + QEMU run flow.
     "kernel-runner",
+    # `disk-image` is the host-side UEFI/BIOS disk image builder.
+    # It depends on the heavy `bootloader 0.11` crate (which embeds
+    # pre-compiled bootloader binary blobs) and only needs to run on CI
+    # or developer machines that have OVMF installed. Excluded from the
+    # default workspace to keep `cargo build --workspace` lightweight.
+    "disk-image",
 ]
 
 # -----------------------------------------------------------------------------
@@ -65,7 +71,7 @@ exclude = [
 # All crates inherit these fields. They can be referenced via
 # `field.workspace = true` inside each crate's Cargo.toml.
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 # Authors: project pseudonym `cySalazar` is used until Stichting OMNI is
@@ -90,16 +96,16 @@ categories = ["os", "embedded", "cryptography"]
 # /docs/09-tech-specifications.md.
 [workspace.dependencies]
 # --- Internal crates (path-based, version-tracked) ---
-omni-types        = { path = "crates/omni-types",        version = "0.1.0" }
-omni-crypto       = { path = "crates/omni-crypto",       version = "0.1.0" }
-omni-capability   = { path = "crates/omni-capability",   version = "0.1.0" }
-omni-tee          = { path = "crates/omni-tee",          version = "0.1.0" }
-omni-hal          = { path = "crates/omni-hal",          version = "0.1.0" }
-omni-runtime      = { path = "crates/omni-runtime",      version = "0.1.0" }
-omni-mesh         = { path = "crates/omni-mesh",         version = "0.1.0" }
-omni-tokenization = { path = "crates/omni-tokenization", version = "0.1.0" }
-omni-sdk          = { path = "crates/omni-sdk",          version = "0.1.0" }
-omni-agent        = { path = "crates/omni-agent",        version = "0.1.0" }
+omni-types        = { path = "crates/omni-types",        version = "0.2.0" }
+omni-crypto       = { path = "crates/omni-crypto",       version = "0.2.0" }
+omni-capability   = { path = "crates/omni-capability",   version = "0.2.0" }
+omni-tee          = { path = "crates/omni-tee",          version = "0.2.0" }
+omni-hal          = { path = "crates/omni-hal",          version = "0.2.0" }
+omni-runtime      = { path = "crates/omni-runtime",      version = "0.2.0" }
+omni-mesh         = { path = "crates/omni-mesh",         version = "0.2.0" }
+omni-tokenization = { path = "crates/omni-tokenization", version = "0.2.0" }
+omni-sdk          = { path = "crates/omni-sdk",          version = "0.2.0" }
+omni-agent        = { path = "crates/omni-agent",        version = "0.2.0" }
 
 # --- Async runtime ---
 tokio        = { version = "1.52", features = ["full"] }

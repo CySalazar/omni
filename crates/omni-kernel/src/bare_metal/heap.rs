@@ -265,7 +265,7 @@ pub const MIN_HEAP_BYTES: usize = 4 * 1024 * 1024;
 /// The selection algorithm (per `OIP-Kernel-005` § S5):
 ///
 /// 1. Iterate `regions` in order.
-/// 2. Filter to entries with `region_type == MemoryRegionType::Usable`.
+/// 2. Filter to entries with `kind == MemoryRegionKind::Usable`.
 /// 3. Pick the **largest** filtered entry whose length is at least
 ///    [`MIN_HEAP_BYTES`].
 /// 4. Tie-break on equal length by **lowest start address**
@@ -286,18 +286,15 @@ pub const MIN_HEAP_BYTES: usize = 4 * 1024 * 1024;
 /// exists in `regions`.
 #[cfg(feature = "bare-metal")]
 #[must_use]
-pub fn pick_region(regions: &[bootloader::bootinfo::MemoryRegion]) -> (*mut u8, usize) {
-    use bootloader::bootinfo::MemoryRegionType;
+pub fn pick_region(regions: &[bootloader_api::info::MemoryRegion]) -> (*mut u8, usize) {
+    use bootloader_api::info::MemoryRegionKind;
 
     let mut best: Option<(u64, u64)> = None; // (start, length)
     for region in regions {
-        if region.region_type != MemoryRegionType::Usable {
+        if region.kind != MemoryRegionKind::Usable {
             continue;
         }
-        let length = region
-            .range
-            .end_addr()
-            .saturating_sub(region.range.start_addr());
+        let length = region.end.saturating_sub(region.start);
         // x86_64 is 64-bit; `u64 → usize` is lossless on the kernel
         // target. The cast lint also fires on 32-bit hosts during
         // host tests, where the actual u64 values are bounded to
@@ -310,7 +307,7 @@ pub fn pick_region(regions: &[bootloader::bootinfo::MemoryRegion]) -> (*mut u8, 
         if length_us < MIN_HEAP_BYTES {
             continue;
         }
-        let region_start = region.range.start_addr();
+        let region_start = region.start;
         match best {
             None => best = Some((region_start, length)),
             Some((cur_start, cur_len)) => {

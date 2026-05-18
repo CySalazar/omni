@@ -38,7 +38,31 @@
 #![allow(unsafe_code)]
 
 pub mod arch;
+#[cfg(target_arch = "x86_64")]
+pub mod context_switch;
+pub mod cursor;
+pub mod demo;
 pub mod early_console;
+pub mod elf_loader;
+pub mod font;
+pub mod gdt;
+pub mod graphics;
 pub mod heap;
+pub mod idt;
+pub mod input;
+#[cfg(target_arch = "x86_64")]
+pub mod lapic;
+#[cfg(all(
+    target_arch = "x86_64",
+    target_os = "none",
+    feature = "mb8-smoke",
+    not(test)
+))]
+pub mod mb8_smoke;
+pub mod paging;
 pub mod panic;
+pub mod syscall_entry;
 pub mod vga;
+pub mod virtio_tablet;
+pub mod widget;
+pub mod wm;

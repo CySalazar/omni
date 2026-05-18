@@ -159,10 +159,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "bootloader"
-version = "0.9.34"
+name = "bootloader_api"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13f6a8a495d2f93fe3d6eb3a224f9aa749a63cfd746ed03eb5ddcbd00ade7d8f"
+checksum = "5c074a3d1075b26ed77e502d6af8ab1263abbdc3d026c166e46480f973287293"
 
 [[package]]
 name = "bumpalo"
@@ -492,6 +492,12 @@ name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
+
+[[package]]
+name = "font8x8"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875488b8711a968268c7cf5d139578713097ca4635a76044e8fe8eedf831d07e"
 
 [[package]]
 name = "fragile"
@@ -844,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "omni-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "omni-capability",
@@ -859,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "omni-capability"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "omni-crypto",
@@ -871,7 +877,7 @@ dependencies = [
 
 [[package]]
 name = "omni-container"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "mockall",
@@ -886,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "omni-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "blake3",
@@ -909,7 +915,7 @@ dependencies = [
 
 [[package]]
 name = "omni-hal"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "omni-tee",
@@ -920,9 +926,10 @@ dependencies = [
 
 [[package]]
 name = "omni-kernel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "bootloader",
+ "bootloader_api",
+ "font8x8",
  "omni-types",
  "proptest",
  "serde",
@@ -930,7 +937,7 @@ dependencies = [
 
 [[package]]
 name = "omni-mesh"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "mockall",
@@ -949,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "omni-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "mockall",
@@ -967,7 +974,7 @@ dependencies = [
 
 [[package]]
 name = "omni-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "omni-capability",
@@ -979,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "omni-shell"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "omni-sdk",
@@ -990,7 +997,7 @@ dependencies = [
 
 [[package]]
 name = "omni-tee"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "mockall",
@@ -1004,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "omni-tokenization"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "omni-crypto",
  "omni-tee",
@@ -1018,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "omni-types"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "getrandom 0.2.17",
  "hex",

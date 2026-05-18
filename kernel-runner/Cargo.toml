@@ -37,14 +37,20 @@ name = "kernel-runner"
 path = "src/main.rs"
 
 [dependencies]
-# `bootloader` 0.9 is the stable-Rust-compatible BIOS bootloader crate.
-# It provides `BootInfo`, the `entry_point!` macro, and the `cargo
-# bootimage` toolchain integration used by the K5 QEMU smoke test. K4
-# scope does not use `physical_memory_offset` so the `map_physical_memory`
-# feature is omitted; it will be re-enabled under OIP-Kernel-006 when
-# the K6+ page-table walker lands. OIP-Kernel-005 § S3 / § S4.
-bootloader  = { version = "0.9" }
-omni-kernel = { path = "../crates/omni-kernel", features = ["bare-metal"] }
+# `bootloader_api` 0.11 is the kernel-side companion to the `bootloader`
+# crate. It provides `BootInfo`, the `entry_point!` macro, `BootloaderConfig`,
+# and `FrameBuffer` / `FrameBufferInfo` for GOP framebuffer access. The
+# host-side disk-image builder lives in the separate `../disk-image` crate.
+# OIP-Kernel-005 § S3 / § S4 (updated for bootloader 0.11).
+bootloader_api = { version = "0.11", default-features = false }
+omni-kernel    = { path = "../crates/omni-kernel", features = ["bare-metal"] }
+
+[features]
+default     = []
+# Forward the kernel's `mb8-smoke` feature through the runner so the QEMU
+# image built from this crate exercises the MB8 two-task preemption demo.
+# Track B MB8 (2026-05-17).
+mb8-smoke   = ["omni-kernel/mb8-smoke"]
 
 # The runner is its own profile: it always builds with link-time
 # optimization in release (we ship the kernel as a single ELF, then

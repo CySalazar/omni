@@ -5,6 +5,10 @@
 //! `[MemoryRegion]` slices and assert the selection algorithm's
 //! invariants: largest-region wins, lowest-start tie-break, and the
 //! "no Usable region of ≥ `MIN_HEAP_BYTES`" panic path.
+//!
+//! Ported from bootloader 0.9 types to bootloader_api 0.11 types
+//! (`MemoryRegion { start, end, kind }` instead of
+//! `MemoryRegion { range: FrameRange, region_type }`).
 
 #![cfg(feature = "bare-metal")]
 #![allow(
@@ -12,36 +16,28 @@
     clippy::unwrap_used,
     clippy::missing_docs_in_private_items,
     clippy::uninlined_format_args,
-    // `start / 4096` and `(start + len) / 4096` compute page-frame numbers
-    // from byte addresses. Floor division is intentional; floats are wrong here.
-    clippy::integer_division
+    clippy::doc_markdown
 )]
 
-use bootloader::bootinfo::{FrameRange, MemoryRegion, MemoryRegionType};
+use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 use omni_kernel::bare_metal::heap::{MIN_HEAP_BYTES, pick_region};
 
-/// Build a `MemoryRegion` from raw `(start, len, kind)` — local
-/// helper that hides the field-name boilerplate.
-///
-/// `start` and `len` must be 4 KiB-aligned; the v0.9 `FrameRange`
-/// stores frame numbers, so unaligned bytes are truncated.
-fn region(start: u64, len: u64, kind: MemoryRegionType) -> MemoryRegion {
+/// Build a `MemoryRegion` from raw `(start, len, kind)`.
+fn region(start: u64, len: u64, kind: MemoryRegionKind) -> MemoryRegion {
     MemoryRegion {
-        range: FrameRange {
-            start_frame_number: start / 4096,
-            end_frame_number: (start + len) / 4096,
-        },
-        region_type: kind,
+        start,
+        end: start + len,
+        kind,
     }
 }
 
 #[test]
 fn picks_largest_usable_region() {
     let regions = [
-        region(0x0000_0000, 0x0010_0000, MemoryRegionType::Bootloader), // 1 MiB, reserved
-        region(0x0010_0000, 0x0040_0000, MemoryRegionType::Usable),     // 4 MiB
-        region(0x0050_0000, 0x0100_0000, MemoryRegionType::Usable),     // 16 MiB <- winner
-        region(0x0150_0000, 0x0020_0000, MemoryRegionType::Usable),     // 2 MiB (< MIN)
+        region(0x0000_0000, 0x0010_0000, MemoryRegionKind::Bootloader), // 1 MiB, reserved
+        region(0x0010_0000, 0x0040_0000, MemoryRegionKind::Usable),     // 4 MiB
+        region(0x0050_0000, 0x0100_0000, MemoryRegionKind::Usable),     // 16 MiB <- winner
+        region(0x0150_0000, 0x0020_0000, MemoryRegionKind::Usable),     // 2 MiB (< MIN)
     ];
     let (ptr, len) = pick_region(&regions);
     assert_eq!(ptr as u64, 0x0050_0000);
@@ -53,8 +49,8 @@ fn tie_breaks_on_lowest_start_address() {
     // Two Usable regions of identical (>= MIN) length: the lower start
     // wins for determinism across boots on identical hardware.
     let regions = [
-        region(0x0200_0000, 0x0040_0000, MemoryRegionType::Usable), // 4 MiB at 32 MiB
-        region(0x0100_0000, 0x0040_0000, MemoryRegionType::Usable), // 4 MiB at 16 MiB <- winner
+        region(0x0200_0000, 0x0040_0000, MemoryRegionKind::Usable), // 4 MiB at 32 MiB
+        region(0x0100_0000, 0x0040_0000, MemoryRegionKind::Usable), // 4 MiB at 16 MiB <- winner
     ];
     let (ptr, len) = pick_region(&regions);
     assert_eq!(ptr as u64, 0x0100_0000);
@@ -67,9 +63,9 @@ fn skips_regions_below_min_heap_bytes() {
         region(
             0x0010_0000,
             MIN_HEAP_BYTES as u64 - 1,
-            MemoryRegionType::Usable,
+            MemoryRegionKind::Usable,
         ),
-        region(0x0100_0000, MIN_HEAP_BYTES as u64, MemoryRegionType::Usable), // = MIN <- winner
+        region(0x0100_0000, MIN_HEAP_BYTES as u64, MemoryRegionKind::Usable), // = MIN <- winner
     ];
     let (_, len) = pick_region(&regions);
     assert_eq!(len, MIN_HEAP_BYTES);
@@ -78,9 +74,9 @@ fn skips_regions_below_min_heap_bytes() {
 #[test]
 fn skips_non_usable_regions() {
     let regions = [
-        region(0x0010_0000, 0x0100_0000, MemoryRegionType::Bootloader),
-        region(0x0200_0000, 0x0100_0000, MemoryRegionType::Reserved),
-        region(0x0300_0000, 0x0080_0000, MemoryRegionType::Usable), // 8 MiB <- only Usable
+        region(0x0010_0000, 0x0100_0000, MemoryRegionKind::Bootloader),
+        region(0x0200_0000, 0x0100_0000, MemoryRegionKind::UnknownUefi(0)),
+        region(0x0300_0000, 0x0080_0000, MemoryRegionKind::Usable), // 8 MiB <- only Usable
     ];
     let (ptr, _) = pick_region(&regions);
     assert_eq!(ptr as u64, 0x0300_0000);
@@ -93,9 +89,9 @@ fn panics_when_no_region_meets_minimum() {
         region(
             0x0010_0000,
             MIN_HEAP_BYTES as u64 - 1,
-            MemoryRegionType::Usable,
+            MemoryRegionKind::Usable,
         ),
-        region(0x0200_0000, 0x0010_0000, MemoryRegionType::Bootloader),
+        region(0x0200_0000, 0x0010_0000, MemoryRegionKind::Bootloader),
     ];
     let _ = pick_region(&regions);
 }
@@ -110,9 +106,9 @@ fn panics_on_empty_regions_slice() {
 #[test]
 fn deterministic_across_repeat_calls() {
     let regions = [
-        region(0x0010_0000, MIN_HEAP_BYTES as u64, MemoryRegionType::Usable),
-        region(0x0100_0000, 0x0080_0000, MemoryRegionType::Usable),
-        region(0x0200_0000, 0x0080_0000, MemoryRegionType::Usable),
+        region(0x0010_0000, MIN_HEAP_BYTES as u64, MemoryRegionKind::Usable),
+        region(0x0100_0000, 0x0080_0000, MemoryRegionKind::Usable),
+        region(0x0200_0000, 0x0080_0000, MemoryRegionKind::Usable),
     ];
     let a = pick_region(&regions);
     let b = pick_region(&regions);

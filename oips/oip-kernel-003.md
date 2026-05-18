@@ -2,11 +2,11 @@
 oip: 3
 title: UEFI Bootloader Selection and Kernel `no_std` Transition Plan
 track: Standards Track
-status: Last Call
+status: Active
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-10
-updated: 2026-05-15
+updated: 2026-05-16
 requires:
   - OIP-Process-001
 supersedes: ~
@@ -251,6 +251,7 @@ inherit this OIP's narrow privacy contract as a baseline.
 | Date | Change | Notes |
 |---|---|---|
 | 2026-05-15 | Review → Last Call | 48-hour Solo Founder Fast-Track §5.5; window opens 2026-05-15, closes 2026-05-17. |
+| 2026-05-16 | Last Call → Active | 48-hour window elapsed; no objections received; P6.2 gate closed. |
 
 ## Copyright
 

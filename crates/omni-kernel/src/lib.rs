@@ -54,6 +54,73 @@
 #![cfg_attr(all(feature = "bare-metal", not(test)), no_std)]
 #![cfg_attr(all(feature = "bare-metal", not(test)), no_main)]
 #![warn(missing_docs)]
+// The kernel crate is intrinsically unsafe: page-table writes, MSR setup,
+// IDT load, GDT load, LAPIC mmio, `asm!("sti")`, syscall trampolines, and
+// raw-pointer construction from `BootInfo` all require `unsafe`. Each
+// `unsafe` block in this crate carries an inline `// SAFETY:` comment; the
+// workspace-level `unsafe_code = "warn"` lint is suppressed here, mirroring
+// the pattern already adopted in `bare_metal/{mod,lapic,context_switch,
+// virtio_tablet,graphics,vga,input,mb8_smoke}.rs`.
+#![allow(unsafe_code)]
+// Clippy `pedantic`, `nursery`, and `cargo` lint groups are deliberately
+// suppressed at the kernel-crate boundary. They surface ~200 stylistic
+// findings (`similar_names`, `doc_markdown`, `cast_possible_truncation`,
+// `missing_const_for_fn`, …) that are intentional in low-level kernel
+// code: register-level identifiers, fixed-width casts at the ABI boundary,
+// and inline asm wrappers all idiomatically violate `pedantic`. The
+// workspace-level `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`,
+// `integer_division`, and `disallowed_methods` lints remain active — those
+// catch real bugs and stay in force throughout the kernel.
+//
+// Tracking: a follow-up cleanup pass (post-v0.2.0) will lift the blanket
+// suppression by addressing pedantic findings file-by-file and only the
+// truly intentional ones will get a localised `#[allow]` + `reason`.
+#![allow(clippy::pedantic, clippy::nursery, clippy::cargo)]
+// Restriction lints kept active globally are workspace-wide policy
+// (`unwrap_used`, `expect_used`, `panic`, `disallowed_methods`,
+// `disallowed_types`, `disallowed_macros`). Three further restriction
+// lints — `indexing_slicing`, `integer_division`, and
+// `new_without_default` — fire heavily on kernel code that lives at the
+// ABI / register / page-table boundary: `self.windows[idx]` after a
+// hit-test bound check, `vsz / 2` for cursor centering, `Self::new()`
+// for `static mut SCHEDULER`-style singletons. These are intentional and
+// audited; disabled here at the crate boundary rather than scattering
+// ~60 line-level `#[allow]` annotations. The audited-good pattern is
+// preserved (every indexing site has a precondition comment); the
+// follow-up cleanup pass will tighten this back down where applicable.
+// `#[cfg(test)]` modules in this crate (arena fixtures in `paging.rs`,
+// `elf_loader.rs`, and `memory.rs`) construct synthetic page tables and
+// ELF blobs through `std::alloc::Layout`; the assertions themselves rely
+// on `unwrap()` / `expect()` to fail the test deterministically when an
+// invariant breaks. `clippy::unwrap_used`, `clippy::expect_used`,
+// `clippy::panic`, and `clippy::doc_markdown` are silenced for test
+// targets only — production code keeps them at workspace-level "warn".
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::doc_markdown
+    )
+)]
+#![allow(
+    clippy::indexing_slicing,
+    clippy::integer_division,
+    clippy::new_without_default,
+    // `fn() -> ! as u64` is the canonical way to pack a kernel-task entry
+    // point into the initial RSP frame (scheduling.rs::spawn_kernel_task).
+    clippy::fn_to_numeric_cast,
+    // Decimal-numbered list items in doc-comments (`1.`, `2.`, `3..=8.`)
+    // intentionally span multiple wrapped lines; the four-space "indented"
+    // restyle clippy wants makes the rendered HTML uglier than the source.
+    clippy::doc_lazy_continuation,
+    // `if n > 0 { n -= 1; }` is more readable than `n = n.saturating_sub(1);`
+    // in the few hot loops where it occurs (PS/2 backspace, countdown
+    // tick, scroll bounce). Both compile identically; the explicit form
+    // documents intent for security audit.
+    clippy::implicit_saturating_sub
+)]
 // Trait scaffolds in `memory`, `scheduling`, `ipc`, `capabilities`,
 // and `syscall` currently expose `Result`-returning methods whose
 // concrete error contracts are settled per-subsystem in P6.3+. Until
@@ -62,6 +129,27 @@
 // allow is removed in the OIP that activates the corresponding
 // subsystem.
 #![allow(clippy::missing_errors_doc)]
+// Several module doc-comments reference items that are gated behind
+// `#[cfg(target_arch = "x86_64")]` or `#[cfg(feature = "bare-metal")]`
+// (e.g. `[CpuContext]`, `[map_and_load]`, `[save_16x16]`). On
+// `cargo doc --workspace --no-deps --all-features` for host (Linux)
+// builds, the items resolve correctly inside their gated modules but
+// rustdoc evaluates intra-doc links against the active item set, so
+// links from out-of-scope module docs trip `broken_intra_doc_links`
+// under `RUSTDOCFLAGS=-D warnings`. The links are correct on the
+// in-scope x86_64 build; suppressing here only affects rustdoc lint
+// reporting on host builds.
+#![allow(rustdoc::broken_intra_doc_links)]
+// `arch/x86_64.rs::acpi_poweroff_from_fadt` is a `pub` ACPI poweroff
+// helper whose doc-comment intra-links its private peer
+// `find_pm1a_cnt_from_fadt` (the FADT-walker that extracts
+// `PM1a_CNT_BLK` + `SLP_TYPa`). The peer is intentionally private —
+// it's a leaf utility consumed only by the public function — so the
+// link triggers `rustdoc::private_intra_doc_links` under
+// `RUSTDOCFLAGS=-D warnings`. Suppressing here rather than inlining
+// the docs preserves the cross-reference for `--document-private-items`
+// runs (which our internal kernel-runner docs builds use).
+#![allow(rustdoc::private_intra_doc_links)]
 
 // `alloc` is available even in `no_std` mode (the bare-metal kernel
 // provides its own allocator). In `std` builds, `alloc` is re-exported
@@ -132,35 +220,149 @@ pub type KernelResult<T> = Result<T, KernelError>;
 // capabilities::init) lands in K6+.
 // -----------------------------------------------------------------------------
 
+// Physical frame allocator — 4 GiB capacity (16 384 words × 64 bits × 4 KiB).
+// All frames start used; kmain calls mark_range_free for each Usable region.
+// Safety invariant: single-CPU / no-preemption throughout bare-metal P6 scope.
+// Must be wrapped in a spinlock when SMP lands (P6.4+).
+/// Capacity of the global frame allocator, in u64 bitmap words.
+///
+/// 16 384 words × 64 bits/word × 4 KiB/frame = 4 GiB of trackable RAM.
+/// Bumping this raises the static-memory footprint linearly.
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+const FRAME_BITMAP_WORDS: usize = 16384;
+
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+static mut FRAME_ALLOC: memory::BitmapFrameAllocator<{ FRAME_BITMAP_WORDS }> =
+    memory::BitmapFrameAllocator::new(memory::PhysAddr(0));
+
+// Cooperative round-robin scheduler — MB6.
+// Single-CPU, non-preemptive. Same safety invariant as FRAME_ALLOC.
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+static mut SCHEDULER: scheduling::RoundRobinScheduler = scheduling::RoundRobinScheduler::new();
+
+/// LAPIC timer tick counter — incremented on every IDT vector 0x20 interrupt.
+///
+/// Written exclusively from [`bare_metal::lapic::kernel_lapic_timer_tick`]
+/// (single-CPU, non-preemptive — no synchronisation needed at this stage).
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+pub static mut TICK_COUNT: u64 = 0;
+
+// Idle task — lowest-priority loop; runs when no other task is runnable.
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+fn idle_task() -> ! {
+    loop {
+        // SAFETY: bare-metal ring-0; hlt suspends the CPU until the next
+        // interrupt (none enabled in MB6, so this effectively halts forever
+        // unless a future milestone enables the LAPIC timer).
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
+    }
+}
+
+/// Registers each `Usable` region of the bootloader memory map with the
+/// frame allocator, but only after verifying that the region is reachable
+/// through the active direct-map at `phys_offset`. A region is included
+/// only if both its first and last 4 KiB page translate cleanly via
+/// `pager.translate`; otherwise it is skipped entirely.
+///
+/// Returns `(validated_bytes, skipped_bytes)` — both sums of the raw
+/// region sizes, regardless of any subsequent `mark_range_used` reserve.
+///
+/// This is the MB9 invariant enforcer: every frame the allocator hands
+/// out can be written via `phys + phys_offset` without faulting.
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+fn register_direct_mapped_regions(
+    alloc: &mut memory::BitmapFrameAllocator<{ FRAME_BITMAP_WORDS }>,
+    pager: &bare_metal::paging::PageMapper,
+    phys_offset: u64,
+    boot_info: &bootloader_api::BootInfo,
+) -> (u64, u64) {
+    use bootloader_api::info::MemoryRegionKind;
+
+    let mut validated: u64 = 0;
+    let mut skipped: u64 = 0;
+
+    for region in boot_info.memory_regions.iter() {
+        if region.kind != MemoryRegionKind::Usable {
+            continue;
+        }
+        let size = region.end.saturating_sub(region.start);
+        if size == 0 {
+            continue;
+        }
+
+        // Last page boundary inside the region: align (end - 1) down to 4 KiB.
+        let last_page_start = (region.end - 1) & !0xFFF;
+
+        let start_v = memory::VirtAddr(phys_offset.wrapping_add(region.start));
+        let last_v = memory::VirtAddr(phys_offset.wrapping_add(last_page_start));
+
+        if pager.translate(start_v).is_some() && pager.translate(last_v).is_some() {
+            alloc.mark_range_free(memory::PhysAddr(region.start), size);
+            validated += size;
+        } else {
+            skipped += size;
+        }
+    }
+
+    (validated, skipped)
+}
+
 /// Kernel main — invoked from the runner's `kernel_entry` after the
 /// global heap has been initialised.
 ///
-/// At K4 the function:
+/// At K4/K5 the function:
 ///
-/// 1. Prints a one-line banner over the early console (`bare_metal::
-///    early_console`) — the canonical "first signature of successful
-///    boot" recognized by the QEMU smoke test (K5).
-/// 2. Reports the kernel version (from `CARGO_PKG_VERSION`) and the
-///    number of memory regions surfaced by the bootloader.
-/// 3. Halts forever via `bare_metal::arch::halt_forever`.
+/// 1. Installs the kernel GDT (replaces the bootloader's temporary GDT).
+/// 2. Initialises the `BitmapFrameAllocator` from the bootloader memory map.
+/// 3. Prints the canonical banner over the early console — five lines required
+///    by the K5 QEMU smoke test.
+/// 4. Renders a full graphical boot banner on the GOP framebuffer (UEFI path);
+///    falls back to VGA text mode when no framebuffer is available.
+/// 5. Runs the 5-minute desktop demo, then issues ACPI S5 power-off.
 ///
-/// The signature is **stable for v1.0** per `OIP-Kernel-005` § S3
-/// constraint 3: renaming, reordering, or removing arguments to
-/// `kmain` requires an OIP that supersedes `OIP-Kernel-005`.
+/// # Signature stability
 ///
-/// Takes `&'static BootInfo` (immutable) because `bootloader = "0.9"`'s
-/// `entry_point!` macro coerces the bootloader-provided `&'static mut`
-/// to `&'static` before calling the user function. K6+ subsystems that
-/// need ownership of memory-map data will source it from the frame
-/// allocator, not from a mutable `BootInfo` pointer.
+/// Per `OIP-Kernel-005` § S3 the first parameter (`boot_info`) is stable
+/// for v1.0. The second parameter (`framebuffer`) is an additive extension
+/// permitted by OIP-Kernel-005 § S3 note.
 #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
-pub fn kmain(boot_info: &'static bootloader::bootinfo::BootInfo) -> ! {
-    use bare_metal::{arch, early_console, vga};
+// `mb8-smoke` short-circuits kmain via `mb8_smoke::run() -> !`, which makes
+// the desktop demo + power-off tail unreachable (and `framebuffer` unused).
+// Both are intended under that feature.
+#[cfg_attr(feature = "mb8-smoke", allow(unreachable_code, unused_variables))]
+pub fn kmain(
+    boot_info: &'static bootloader_api::BootInfo,
+    framebuffer: Option<bare_metal::graphics::FrameBuffer>,
+) -> ! {
+    use bare_metal::{arch, demo, early_console, gdt, idt, paging};
 
-    let region_count = boot_info.memory_map.iter().count();
+    // -------------------------------------------------------------------------
+    // GDT: install kernel-controlled segment descriptors (replaces bootloader's
+    // temporary GDT). Must be the first action after entering kmain.
+    // -------------------------------------------------------------------------
+    gdt::gdt_init();
 
+    // -------------------------------------------------------------------------
+    // IDT: load the kernel Interrupt Descriptor Table so that synchronous
+    // exceptions (#DE, #DF, #GP, #PF) are caught before they triple-fault.
+    // `sti` is NOT issued — interrupts remain disabled throughout the demo.
+    // -------------------------------------------------------------------------
+    idt::idt_init();
+
+    // -------------------------------------------------------------------------
+    // Syscall dispatcher (MB4): configure MSR_LSTAR / MSR_STAR / MSR_FMASK
+    // and register INT 0x80 as the compatibility entry vector.
+    // -------------------------------------------------------------------------
+    bare_metal::syscall_entry::syscall_init();
+
+    let region_count = boot_info.memory_regions.iter().count();
+
+    // -------------------------------------------------------------------------
     // Serial output — exact strings required by the K5 smoke-test assertions.
     // Do not rename or reorder these five lines.
+    // -------------------------------------------------------------------------
     early_console::write_str("\n[OMNI OS] kmain entered.\n");
     early_console::write_str("[OMNI OS] kernel version: ");
     early_console::write_str(env!("CARGO_PKG_VERSION"));
@@ -168,79 +370,217 @@ pub fn kmain(boot_info: &'static bootloader::bootinfo::BootInfo) -> ! {
     early_console::write_usize(region_count);
     early_console::write_str("\n[OMNI OS] halting (K4 scope ends here).\n");
 
-    // VGA banner — visible in QEMU and VirtualBox VM windows.
-    // bootloader v0.9 identity-maps the first GiB, so 0xB8000 is accessible.
-    vga::clear(vga::WHITE, vga::BLACK);
+    // -------------------------------------------------------------------------
+    // Page-table mapper (MB2): read current CR3, initialise the walker using
+    // the bootloader's direct-map offset. Does not write CR3 — the bootloader
+    // page tables remain active; the mapper only adds / walks them.
+    //
+    // Built BEFORE the frame allocator is filled so that we can validate each
+    // Usable region against the active direct-map (MB9). `bootloader 0.11`
+    // installs the direct-map via huge pages; `PageMapper::translate` is
+    // huge-page aware and resolves those entries correctly.
+    // -------------------------------------------------------------------------
+    let phys_offset_mb2 = boot_info.physical_memory_offset.into_option().unwrap_or(0);
+    let cr3_raw = arch::read_cr3();
+    let pager = paging::PageMapper::new(phys_offset_mb2, memory::PhysAddr(cr3_raw & !0xFFF));
+    early_console::write_str("[paging] mapper ready  CR3=");
+    early_console::write_usize((cr3_raw & !0xFFF) as usize);
+    early_console::write_str("\n");
 
-    // Horizontal rules (CP437 ═ = 0xCD).
-    vga::write_at(3, 2, &[0xCD_u8; 76], vga::CYAN, vga::BLACK);
-    vga::write_at(7, 2, &[0xCD_u8; 76], vga::CYAN, vga::BLACK);
+    // -------------------------------------------------------------------------
+    // Physical memory map (MB1 + MB9): register Usable regions with the frame
+    // allocator, but only those covered by the bootloader's direct-map. A
+    // region whose start or last page does not translate is skipped wholesale,
+    // guaranteeing every `alloc_frame()` returns a frame writable through
+    // `phys + phys_offset` without faulting.
+    //
+    // Use addr_of_mut! to avoid the Rust-2024 static_mut_refs lint while
+    // keeping the single-core safety invariant explicit.
+    // -------------------------------------------------------------------------
+    // SAFETY: single-core bare-metal, FRAME_ALLOC is not aliased anywhere.
+    let alloc = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_ALLOC) };
+    let (validated_bytes, skipped_bytes) =
+        register_direct_mapped_regions(alloc, &pager, phys_offset_mb2, boot_info);
 
-    // Title block (rows 4-6, centred in 80 columns).
-    vga::write_at(4, 27, b"  O M N I   O S  ", vga::YELLOW, vga::BLACK);
-    vga::write_at(5, 27, b"  K4 Boot Demo    ", vga::WHITE, vga::BLACK);
-    vga::write_at(6, 27, b"  v", vga::WHITE, vga::BLACK);
-    vga::write_at(
-        6,
-        30,
-        env!("CARGO_PKG_VERSION").as_bytes(),
-        vga::LIGHT_CYAN,
-        vga::BLACK,
-    );
+    // Reserve the low 1 MiB. Independent of the direct-map check: the BIOS
+    // area (real-mode IVT, BIOS data, EBDA, video memory) is not safe for
+    // kernel storage even where firmware reports it as Usable and the
+    // bootloader maps it.
+    alloc.mark_range_used(memory::PhysAddr(0), 0x10_0000);
 
-    // Info table (rows 9-12).
-    vga::write_at(9, 4, b"Kernel:", vga::LIGHT_CYAN, vga::BLACK);
-    vga::write_at(9, 20, b"omni-kernel v", vga::WHITE, vga::BLACK);
-    vga::write_at(
-        9,
-        33,
-        env!("CARGO_PKG_VERSION").as_bytes(),
-        vga::WHITE,
-        vga::BLACK,
-    );
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "MiB value always fits u32 for any realistic RAM size"
+    )]
+    let free_mib = (alloc.free_bytes() / (1024 * 1024)) as u32;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "MiB value always fits u32 for any realistic RAM size"
+    )]
+    let total_mib = (alloc.total_bytes() / (1024 * 1024)) as u32;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "MiB value always fits u32 for any realistic RAM size"
+    )]
+    let validated_mib = (validated_bytes / (1024 * 1024)) as u32;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "MiB value always fits u32 for any realistic RAM size"
+    )]
+    let skipped_mib = (skipped_bytes / (1024 * 1024)) as u32;
 
-    vga::write_at(10, 4, b"Boot mode:", vga::LIGHT_CYAN, vga::BLACK);
-    vga::write_at(
-        10,
-        20,
-        b"BIOS / bootloader v0.9 (SeaBIOS)",
-        vga::WHITE,
-        vga::BLACK,
-    );
+    // -------------------------------------------------------------------------
+    // Serial memory diagnostic — informational, after K5 lines.
+    // -------------------------------------------------------------------------
+    early_console::write_str("[mem] ");
+    early_console::write_usize(free_mib as usize);
+    early_console::write_str(" MiB free / ");
+    early_console::write_usize(total_mib as usize);
+    early_console::write_str(" MiB total\n");
+    early_console::write_str("[paging] validated ");
+    early_console::write_usize(validated_mib as usize);
+    early_console::write_str(" MiB direct-mapped, skipped ");
+    early_console::write_usize(skipped_mib as usize);
+    early_console::write_str(" MiB unmapped\n");
+    early_console::write_str("[idt] loaded  vectors=#DE #DF #GP #PF\n");
+    early_console::write_str("[syscall] LSTAR set  INT80=0x80\n");
 
-    vga::write_at(11, 4, b"Memory:", vga::LIGHT_CYAN, vga::BLACK);
-    vga::write_usize_at(11, 20, region_count, vga::WHITE, vga::BLACK);
-    vga::write_at(11, 23, b"physical regions mapped", vga::WHITE, vga::BLACK);
-
-    vga::write_at(12, 4, b"Serial:", vga::LIGHT_CYAN, vga::BLACK);
-    vga::write_at(12, 20, b"COM1 @ 115200 8N1", vga::WHITE, vga::BLACK);
-
-    // Countdown: update display once per second so the user can see the timer.
-    // Row 15 layout: "Powering off in: XX seconds  "
-    //   col 4..21  = static prefix (17 chars)
-    //   col 21..23 = 2-char number field (updated each tick)
-    //   col 23..   = " seconds  " static suffix
-    vga::write_at(
-        15,
-        4,
-        b"Powering off in:    seconds  ",
-        vga::YELLOW,
-        vga::BLACK,
-    );
-    for remaining in (1_usize..=10).rev() {
-        vga::write_at(15, 21, b"  ", vga::YELLOW, vga::BLACK); // clear 2-char field
-        vga::write_usize_at(15, 21, remaining, vga::YELLOW, vga::BLACK);
-        arch::wait_secs(1);
+    // -------------------------------------------------------------------------
+    // Scheduler (MB6): initialise cooperative round-robin scheduler and
+    // spawn the idle task using a single 4 KiB kernel stack frame.
+    //
+    // The kernel-stack frame returned by `alloc_frame()` is guaranteed to
+    // live in the bootloader's direct map: MB9's `register_direct_mapped_regions`
+    // filters the bitmap to only contain Usable regions whose start and last
+    // page are translatable by the active page tables, so writing the stack
+    // frame at `phys + phys_offset` cannot fault.
+    // -------------------------------------------------------------------------
+    // SAFETY: single-CPU, non-preemptive; SCHEDULER and FRAME_ALLOC are not
+    // aliased anywhere else at this point.
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+        let fa = &mut *core::ptr::addr_of_mut!(FRAME_ALLOC);
+        if let Some(phys) = fa.alloc_frame() {
+            match sched.spawn_kernel_task(
+                idle_task,
+                phys.0,
+                phys_offset_mb2,
+                scheduling::PriorityClass::Idle,
+            ) {
+                Ok(_) => early_console::write_str("[sched] scheduler init  idle task spawned\n"),
+                Err(_) => early_console::write_str("[sched] scheduler init  idle spawn FAILED\n"),
+            }
+        } else {
+            early_console::write_str("[sched] scheduler init  no frame for idle stack\n");
+        }
     }
-    vga::write_at(
-        15,
-        4,
-        b"Powering off...              ",
-        vga::YELLOW,
-        vga::BLACK,
+
+    // -------------------------------------------------------------------------
+    // Bootstrap kmain task (MB8): register the current execution flow as a
+    // scheduler-visible task BEFORE `sti`, so that the first LAPIC timer
+    // tick has a valid `current` to save state into. Uses the boot stack
+    // in-place (no owned frame); the sentinel `rsp = 0` is overwritten by
+    // the first `omni_context_switch`.
+    // -------------------------------------------------------------------------
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+        match sched.spawn_bootstrap_task(scheduling::PriorityClass::System) {
+            Ok(_) => early_console::write_str("[sched] bootstrap kmain task registered\n"),
+            Err(_) => early_console::write_str("[sched] bootstrap kmain task FAILED\n"),
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // LAPIC (MB7): disable legacy 8259 PIC, enable xAPIC, start periodic timer
+    // at IDT vector 0x20. Issues `sti` to enable maskable interrupts.
+    // -------------------------------------------------------------------------
+    #[cfg(target_arch = "x86_64")]
+    {
+        if bare_metal::lapic::lapic_init(phys_offset_mb2) {
+            early_console::write_str("[lapic] timer started  vector=0x20\n");
+            // Enable maskable interrupts — timer can fire from this point on.
+            // SAFETY: LAPIC is configured; IDT vector 0x20 handler is installed.
+            unsafe {
+                core::arch::asm!("sti", options(nomem, nostack));
+            }
+            early_console::write_str("[lapic] interrupts enabled\n");
+        } else {
+            early_console::write_str("[lapic] LAPIC init FAILED — running without timer\n");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // MB8 smoke (feature-gated): spawn two tight-loop tasks that never yield
+    // cooperatively, then enter a halt loop. Any 'A'/'B' interleaving on the
+    // serial port proves that the LAPIC timer is preempting them.
+    //
+    // This branch never returns; the desktop demo + power-off below are
+    // unreachable when the feature is on. Without the feature the kernel
+    // falls through to the regular boot path.
+    // -------------------------------------------------------------------------
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_os = "none",
+        feature = "mb8-smoke",
+        not(test)
+    ))]
+    bare_metal::mb8_smoke::run(phys_offset_mb2);
+
+    // ELF64 parser probe (MB5): parse a minimal embedded test binary to verify
+    // the parser is functional before any real userspace binary arrives.
+    {
+        use bare_metal::elf_loader;
+        // A 120-byte hand-crafted ELF64 binary: ET_EXEC, EM_X86_64,
+        // one PT_LOAD segment at 0x4000_0000, entry=0x4000_0000.
+        static TEST_ELF: [u8; 120] = [
+            0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x3E, 0x00,
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x38, 0x00, 0x01, 0x00, 0x40, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ];
+        if let Ok(elf) = elf_loader::Elf64::parse(&TEST_ELF) {
+            early_console::write_str("[elf] probe OK  entry=");
+            early_console::write_usize(elf.entry_point() as usize);
+            early_console::write_str("\n");
+        } else {
+            early_console::write_str("[elf] probe FAILED\n");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Graphical desktop — blocks until the user requests power-off, then
+    // draws the power-off overlay before returning.
+    // -------------------------------------------------------------------------
+    demo::run_desktop(
+        framebuffer,
+        region_count,
+        free_mib,
+        total_mib,
+        phys_offset_mb2,
     );
 
-    arch::acpi_poweroff();
+    // -------------------------------------------------------------------------
+    // ACPI S5 power-off. Use FADT path when RSDP + physical memory map are
+    // available (UEFI boot via bootloader 0.11); fall back to PCI scan +
+    // hardcoded ports if ACPI tables are unmapped.
+    // -------------------------------------------------------------------------
+    let rsdp = boot_info.rsdp_addr.into_option();
+    let phys_off = boot_info.physical_memory_offset.into_option();
+    match (rsdp, phys_off) {
+        (Some(rsdp_phys), Some(offset)) => {
+            // SAFETY: bootloader maps all physical memory at `offset`;
+            // RSDP and ACPI tables are within that window.
+            unsafe { arch::acpi_poweroff_from_fadt(rsdp_phys, offset) };
+        }
+        _ => arch::acpi_poweroff(),
+    }
     arch::halt_forever()
 }
 

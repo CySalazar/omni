@@ -2,7 +2,7 @@
 
 > An AI-native operating system. Local-first, privacy-by-construction, decentralized by design.
 
-**Status:** Phase 0 — `v0.1-draft` — May 2026 — **P0 (repo hygiene) closed 2026-05-09**, **P1 (foundational crates) closed 2026-05-10**.
+**Status:** Phase 0 → Phase 1 — `v0.1-draft` — May 2026 — **P0 (repo hygiene) closed 2026-05-09**, **P1 (foundational crates) closed 2026-05-10**, **P6.2 (bare-metal kernel + graphical desktop demo) active on `feat/kernel-vga-wait` — Track A M1–M5 and Track B MB1–MB5 complete (2026-05-16)**.
 
 OMNI OS reimagines the operating system around AI as a first-class citizen. Inference, model orchestration, and intelligent agents are built into the kernel and runtime — not bolted on as cloud services. Privacy is enforced cryptographically, not by policy. The system can leverage other OMNI OS instances as a peer-to-peer compute mesh, scaling computational power collectively without depending on commercial AI providers.
 
@@ -78,19 +78,32 @@ signed commits — not in marketing copy that can be quietly walked back.
 
 ## Status
 
-> **K4 boot demo — running on real hardware (VirtualBox, 2026-05-15).**
-> The kernel boots bare-metal, writes a VGA banner, counts down, and powers off via ACPI S5.
+> **Graphical desktop demo — running on real hardware (VirtualBox + OVMF, 2026-05-16).**
+> The kernel boots bare-metal via UEFI, renders a full interactive desktop (4 windows, live clock,
+> PS/2 mouse + keyboard, terminal echo, system info), and powers off cleanly via ACPI S5.
+> Physical-memory management, 4-level page-table walker, and IDT exception handlers are operational.
 
 ![OMNI OS K4 boot demo — VGA banner on VirtualBox](./docs/assets/k4-boot-demo.png)
 
-OMNI OS is currently in **Phase 0 (Foundation)**. The v0.1 design is complete and the foundational layer of the workspace is implemented:
+OMNI OS is currently in **Phase 0 → Phase 1 (Foundation → Microkernel PoC)**. The v0.1 design is complete, the foundational layer is implemented, and the kernel bare-metal track is in active development:
 
 | Layer | Crates | State |
 |---|---|---|
 | Foundational | `omni-types`, `omni-crypto`, `omni-capability` | **Implemented** (P1 closed 2026-05-10) — `no_std + alloc`, 131 tests green, RFC test vectors for every cryptographic primitive, `cargo clippy -D warnings` and `cargo doc -D warnings` clean. |
-| TEE root of trust | `omni-tee` | Trait surface placeholder in `omni-capability::tee`; concrete backends (Intel TDX, AMD SEV-SNP) land in P5. |
-| Kernel | `omni-kernel` | Stub. Bare-metal transition is Phase 1 (P6). |
+| TEE root of trust | `omni-tee` | Trait surface + `MockTeeBackend` implemented (P5 scaffolding); concrete TDX / SEV-SNP backends land in P5. |
+| **Kernel** | `omni-kernel` | **In progress (P6.2 active, 2026-05-16).** Boots bare-metal on x86_64 via UEFI (`bootloader` 0.11). **Track A complete:** GOP framebuffer, bitmap font, software cursor, PS/2 keyboard + mouse, widget toolkit, desktop WM, RTC clock, ACPI S5 power-off. **Track B MB1–MB5 complete:** `BitmapFrameAllocator<N>`, GDT, x86_64 page-table walker, IDT (4 exception vectors), SYSCALL/SYSRET + INT 0x80 dispatcher, ELF64 loader (parser + segment mapper). **Next:** MB6 scheduler skeleton. `OIP-Kernel-003` Active. |
 | HAL, services, user-facing | `omni-hal`, `omni-runtime`, `omni-mesh`, `omni-tokenization`, `omni-sdk`, `omni-agent`, `omni-shell` | Stubs. |
+
+### Kernel milestone tracker (Phase 1, Track B)
+
+| Milestone | Deliverable | Status |
+|-----------|-------------|--------|
+| MB1 | `BitmapFrameAllocator<N>` + GDT | ✅ 2026-05-16 |
+| MB2 | x86_64 4-level page-table walker | ✅ 2026-05-16 |
+| MB3 | IDT + `#DE` `#DF` `#GP` `#PF` handlers | ✅ 2026-05-16 |
+| MB4 | Syscall dispatcher (`SYSCALL`/`SYSRET` + INT 0x80) | ✅ 2026-05-16 |
+| MB5 | ELF64 loader (parser + segment mapper) | ✅ 2026-05-16 |
+| MB6 | Scheduler skeleton | ⏳ |
 
 > **`omni-crypto` carries an `AWAITING_CRYPTO_REVIEW` marker.** The implementation follows established `RustCrypto`-family APIs with RFC test vectors for every primitive, but no external cryptographer has signed off yet (P3.2 in `/todo.md`, blocked on funding). Do not use the output of this crate in adversarial settings until that review lands.
 

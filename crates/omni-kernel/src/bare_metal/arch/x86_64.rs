@@ -122,8 +122,12 @@ fn rtc_update_in_progress() -> bool {
 // memory above 1 GiB, making it page-fault-safe.
 
 /// Write a 16-bit word to an x86 I/O port (`out dx, ax`).
+///
+/// # Safety
+///
+/// Same caveat as [`outb`].
 #[inline]
-unsafe fn outw(port: u16, value: u16) {
+pub unsafe fn outw(port: u16, value: u16) {
     unsafe {
         asm!("out dx, ax",
              in("dx") port,
@@ -132,9 +136,30 @@ unsafe fn outw(port: u16, value: u16) {
     }
 }
 
-/// Write a 32-bit dword to an x86 I/O port (`out dx, eax`).
+/// Read a 16-bit word from an x86 I/O port (`in ax, dx`).
+///
+/// # Safety
+///
+/// Same caveat as [`outb`].
 #[inline]
-unsafe fn outl(port: u16, value: u32) {
+pub unsafe fn inw(port: u16) -> u16 {
+    let value: u16;
+    unsafe {
+        asm!("in ax, dx",
+             out("ax") value,
+             in("dx") port,
+             options(nomem, nostack, preserves_flags));
+    }
+    value
+}
+
+/// Write a 32-bit dword to an x86 I/O port (`out dx, eax`).
+///
+/// # Safety
+///
+/// Same caveat as [`outb`].
+#[inline]
+pub unsafe fn outl(port: u16, value: u32) {
     unsafe {
         asm!("out dx, eax",
              in("dx") port,
@@ -144,8 +169,12 @@ unsafe fn outl(port: u16, value: u32) {
 }
 
 /// Read a 32-bit dword from an x86 I/O port (`in eax, dx`).
+///
+/// # Safety
+///
+/// Same caveat as [`outb`].
 #[inline]
-unsafe fn inl(port: u16) -> u32 {
+pub unsafe fn inl(port: u16) -> u32 {
     let v: u32;
     unsafe {
         asm!("in eax, dx",
@@ -156,9 +185,30 @@ unsafe fn inl(port: u16) -> u32 {
     v
 }
 
-/// Read 32 bits from PCI configuration space via the CF8/CFC access mechanism.
+/// Write a single byte into PCI configuration space (CF8/CFC mechanism).
 #[inline]
-unsafe fn pci_cfg_read32(bus: u8, dev: u8, func: u8, off: u8) -> u32 {
+unsafe fn pci_cfg_write8(bus: u8, dev: u8, func: u8, off: u8, val: u8) {
+    let addr: u32 = 0x8000_0000
+        | (u32::from(bus) << 16)
+        | (u32::from(dev) << 11)
+        | (u32::from(func) << 8)
+        | u32::from(off & 0xFC);
+    unsafe {
+        outl(0xCF8, addr);
+        // The CFC register is 4 bytes; byte offset within the dword.
+        outb(0xCFC + u16::from(off & 3), val);
+    }
+}
+
+/// Read 32 bits from PCI configuration space via the CF8/CFC access mechanism.
+///
+/// # Safety
+///
+/// Ring-0 only. Reads from PCI configuration space have no side effects on
+/// devices and are safe to issue against any (bus, dev, func, off) triple;
+/// nonexistent devices return `0xFFFF_FFFF`.
+#[inline]
+pub unsafe fn pci_cfg_read32(bus: u8, dev: u8, func: u8, off: u8) -> u32 {
     let addr: u32 = 0x8000_0000
         | (u32::from(bus) << 16)
         | (u32::from(dev) << 11)
@@ -170,31 +220,144 @@ unsafe fn pci_cfg_read32(bus: u8, dev: u8, func: u8, off: u8) -> u32 {
     }
 }
 
-/// Trigger ACPI S5 (soft power-off).
+/// Parse RSDP → RSDT/XSDT → FADT and return the `PM1a_CNT_BLK` I/O port.
 ///
-/// Scans PCI bus 0 for the Intel PIIX4 PM controller (vendor `0x8086`,
-/// device `0x7113`, always at function 3), reads `PMBASE` from config offset
-/// `0x40`, and writes the `SeaBIOS` S5 sleep value (`SLP_TYP=5`, `SLP_EN=1` →
-/// `0x3400`) to `PM1a_CNT` (`PMBASE + 4`).
+/// `rsdp_phys` is the physical address of the RSDP structure (from
+/// `BootInfo.rsdp_addr`). `phys_offset` is the virtual offset at which
+/// the entire physical address space is identity-mapped (from
+/// `BootInfo.physical_memory_offset`).
 ///
-/// Falls back to the `VirtualBox`/QEMU default hardcoded address (`PMBASE =
-/// 0x4000`, `PM1a_CNT = 0x4004`) if the PIIX4 is not found on the scanned
-/// device slots.
+/// Returns `Some(port)` on success, `None` if any step fails (bad
+/// signature, missing table, etc.). Accesses memory only via the
+/// physical-memory window; never touches un-mapped addresses.
 ///
-/// Uses **only I/O-port accesses** (`0xCF8`/`0xCFC`/`PM1a_CNT`) — no memory
-/// reads — so it cannot trigger a page fault in the identity-mapped
-/// long-mode environment that bootloader v0.9 provides.
+/// # Safety
+///
+/// Caller must ensure `phys_offset + rsdp_phys` points to a valid,
+/// readable RSDP and that all ACPI table pointers within it also fall
+/// inside the mapped physical-memory window.
+unsafe fn find_pm1a_cnt_from_fadt(rsdp_phys: u64, phys_offset: u64) -> Option<u16> {
+    // Helper: physical address → virtual pointer.
+    let p2v = |phys: u64| -> *const u8 { (phys_offset.wrapping_add(phys)) as *const u8 };
+
+    // Read 4-byte little-endian value from an unaligned virtual pointer.
+    let read32 = |ptr: *const u8, off: usize| -> u32 {
+        unsafe { (ptr.add(off) as *const u32).read_unaligned() }
+    };
+    let read64 = |ptr: *const u8, off: usize| -> u64 {
+        unsafe { (ptr.add(off) as *const u64).read_unaligned() }
+    };
+
+    // Verify RSDP signature ("RSD PTR ").
+    let rsdp = p2v(rsdp_phys);
+    let sig = unsafe { core::slice::from_raw_parts(rsdp, 8) };
+    if sig != b"RSD PTR " {
+        return None;
+    }
+    let revision = unsafe { *rsdp.add(15) };
+
+    // Helper: iterate RSDT (32-bit entries) or XSDT (64-bit entries),
+    // searching for the FADT ("FACP").
+    let try_rsdt = |rsdt_phys: u64, wide: bool| -> Option<u16> {
+        let rsdt = p2v(rsdt_phys);
+        let sig4 = unsafe { core::slice::from_raw_parts(rsdt, 4) };
+        let expected: &[u8] = if wide { b"XSDT" } else { b"RSDT" };
+        if sig4 != expected {
+            return None;
+        }
+        let len = read32(rsdt, 4) as usize;
+        let entry_size: usize = if wide { 8 } else { 4 };
+        let count = len.saturating_sub(36) / entry_size;
+        for i in 0..count {
+            let entry_phys: u64 = if wide {
+                read64(rsdt, 36 + i * 8)
+            } else {
+                u64::from(read32(rsdt, 36 + i * 4))
+            };
+            let tbl = p2v(entry_phys);
+            let tsig = unsafe { core::slice::from_raw_parts(tbl, 4) };
+            if tsig == b"FACP" {
+                // FADT: PM1a_CNT_BLK at byte offset 64 (4-byte I/O address).
+                // Per ACPI spec § 5.2.9 table, PM1a_CNT_BLK is at FADT+64.
+                // The register width is PM1_CNT_LEN (1 byte) bytes but the
+                // port address fits in 16 bits for x86.
+                #[allow(clippy::cast_possible_truncation)]
+                return Some(read32(tbl, 64) as u16);
+            }
+        }
+        None
+    };
+
+    // Prefer XSDT (ACPI 2.0+); fall back to RSDT.
+    if revision >= 2 {
+        let xsdt_phys = read64(rsdp, 24);
+        if let Some(port) = try_rsdt(xsdt_phys, true) {
+            return Some(port);
+        }
+    }
+    let rsdt_phys = u64::from(read32(rsdp, 16));
+    try_rsdt(rsdt_phys, false)
+}
+
+/// Trigger ACPI S5 via FADT-provided `PM1a_CNT_BLK`.
+///
+/// Preferred path when the RSDP / physical-memory-offset are available
+/// (UEFI boot). Works on VirtualBox EFI, QEMU q35+OVMF, and any other
+/// ACPI-compliant environment regardless of PCI device layout.
+///
+/// Falls through to [`acpi_poweroff`] if table parsing fails.
+///
+/// # Safety
+///
+/// Same as [`find_pm1a_cnt_from_fadt`]: caller ensures both addresses
+/// are valid and the physical-memory window covers all ACPI tables.
+pub unsafe fn acpi_poweroff_from_fadt(rsdp_phys: u64, phys_offset: u64) {
+    if let Some(pm1a_cnt) = unsafe { find_pm1a_cnt_from_fadt(rsdp_phys, phys_offset) } {
+        if pm1a_cnt != 0 {
+            unsafe { outw(pm1a_cnt, 0x3400) };
+            // If we reach here, the write had no effect — fall through.
+        }
+    }
+    // FADT path failed; fall back to PCI/hardcoded scan.
+    acpi_poweroff();
+}
+
+/// Trigger ACPI S5 (soft power-off) via PCI scan + hardcoded fallbacks.
+///
+/// Tries five power-off paths in order, stopping as soon as one succeeds:
+///
+/// 1. **PCI discovery (PIIX4)**: scans bus 0 for vendor `0x8086` / device
+///    `0x7113` (Intel PIIX4 PM, used by VirtualBox BIOS and i440fx QEMU).
+/// 2. **PCI discovery (ICH9 LPC)**: scans bus 0 for vendor `0x8086` / device
+///    `0x2918` (Intel ICH9 LPC bridge, used by QEMU q35), sets ACPI_EN bit.
+/// 3. **QEMU q35 / ICH9 default**: `PM1a_CNT = 0x0604`.
+/// 4. **VirtualBox / i440fx fallback**: `PM1a_CNT = 0x4004`.
+/// 5. **8042 keyboard reset**: with QEMU `-no-reboot` this exits QEMU cleanly.
+///
+/// All ACPI writes use `SLP_TYP_A = 5`, `SLP_EN = 1` → `0x3400`.
 pub fn acpi_poweroff() {
-    let pmbase = unsafe { find_piix4_pmbase() }.unwrap_or(0x4000_u32);
-    // PIIX4 PMBA bits [31:6] are the base address; bit 0 = I/O space type.
-    // Truncation is intentional: PMBASE is always a 16-bit I/O port address.
-    #[allow(clippy::cast_possible_truncation)]
-    let pm1a_cnt = (pmbase & !1_u32) as u16 + 4;
-    // SeaBIOS \_S5: SLP_TYP_A = 5 → PM1_CNT bits[12:10]=5, SLP_EN=bit[13]
-    // → (5 << 10) | (1 << 13) = 0x1400 | 0x2000 = 0x3400
-    unsafe { outw(pm1a_cnt, 0x3400) };
-    // If still executing the write had no effect; caller falls through to
-    // halt_forever.
+    // Attempt 1: PCI scan for PIIX4 (VirtualBox / i440fx QEMU).
+    if let Some(pmbase) = unsafe { find_piix4_pmbase() } {
+        #[allow(clippy::cast_possible_truncation)]
+        let pm1a_cnt = (pmbase & !1_u32) as u16 + 4;
+        unsafe { outw(pm1a_cnt, 0x3400) };
+        // Reaches here only if the write had no effect.
+    }
+    // Attempt 2: PCI scan for ICH9 LPC bridge (QEMU q35).
+    if let Some(pmbase) = unsafe { find_ich9_pmbase() } {
+        #[allow(clippy::cast_possible_truncation)]
+        let pm1a_cnt = (pmbase & !1_u32) as u16 + 4;
+        unsafe { outw(pm1a_cnt, 0x3400) };
+    }
+    // Attempt 3: QEMU q35 + OVMF hardcoded fallback — PM1a_CNT at 0x0604.
+    unsafe { outw(0x0604, 0x3400) };
+    // Attempt 4: VirtualBox / i440fx fallback — PM1a_CNT at 0x4004.
+    unsafe { outw(0x4004, 0x3400) };
+    // Attempt 5: 8042 keyboard controller CPU reset. QEMU converts this to
+    // an exit when launched with `-no-reboot`. Used as a last resort when
+    // the ACPI PM path is unavailable (e.g. ACPI_EN not set by firmware).
+    unsafe { outb(0x64, 0xFE) };
+    // All attempts exhausted; caller falls through to halt_forever.
 }
 
 /// Scan PCI bus 0 for the PIIX4 PM controller and return its `PMBASE`.
@@ -213,9 +376,127 @@ unsafe fn find_piix4_pmbase() -> Option<u32> {
     None
 }
 
+/// Scan PCI bus 0 for the ICH9 LPC bridge and return its `PMBASE`.
+///
+/// QEMU q35 places the ICH9 LPC bridge (vendor `0x8086`, device `0x2918`)
+/// at bus=0, device=31, function=0. PMBASE is at config offset `0x40`.
+/// The PM I/O region is gated by the ACPI_EN bit (bit 7) in the ACPI
+/// Control register at config offset `0x44`; this function sets it if clear.
+/// QEMU's default PMBASE is `0x600`.
+unsafe fn find_ich9_pmbase() -> Option<u32> {
+    for dev in 0_u8..32 {
+        // ICH9 LPC bridge: Intel (0x8086), device ID 0x2918.
+        if unsafe { pci_cfg_read32(0, dev, 0, 0) } == 0x2918_8086 {
+            // Ensure ACPI I/O Enable bit (bit 7 of ACPI_CTRL at config 0x44).
+            let acpi_ctrl_dw = unsafe { pci_cfg_read32(0, dev, 0, 0x44) };
+            #[allow(clippy::cast_possible_truncation)]
+            let acpi_ctrl = acpi_ctrl_dw as u8;
+            if acpi_ctrl & 0x80 == 0 {
+                unsafe { pci_cfg_write8(0, dev, 0, 0x44, acpi_ctrl | 0x80) };
+            }
+            // PMBASE at PCI config offset 0x40.
+            return Some(unsafe { pci_cfg_read32(0, dev, 0, 0x40) });
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // RTC-based busy-wait
 // ---------------------------------------------------------------------------
+
+/// Read the CMOS RTC seconds register (0–59) without blocking for a full
+/// second. Waits only for the Update-In-Progress flag to clear (at most
+/// ~244 µs), then returns the decoded value. Safe to call in a polling
+/// loop without introducing multi-second stalls.
+pub fn rtc_seconds() -> u32 {
+    while rtc_update_in_progress() {
+        core::hint::spin_loop();
+    }
+    let is_binary = unsafe { cmos_read(0x0B) } & 0x04 != 0;
+    let raw = unsafe { cmos_read(0x00) };
+    if is_binary {
+        u32::from(raw)
+    } else {
+        u32::from(raw >> 4) * 10 + u32::from(raw & 0x0F)
+    }
+}
+
+/// Read hours, minutes, and seconds from the CMOS RTC.
+///
+/// Returns `(hours, minutes, seconds)` in 24-hour format. Waits for the
+/// Update-In-Progress flag to clear before reading all three registers.
+/// Note: consecutive register reads may span an RTC tick in rare cases
+/// (~1 in 10⁶ at polling rates used here); accuracy is ±1 second.
+pub fn rtc_time() -> (u8, u8, u8) {
+    while rtc_update_in_progress() {
+        core::hint::spin_loop();
+    }
+    let rb = unsafe { cmos_read(0x0B) };
+    let is_binary = rb & 0x04 != 0;
+    let h_raw = unsafe { cmos_read(0x04) };
+    let m_raw = unsafe { cmos_read(0x02) };
+    let s_raw = unsafe { cmos_read(0x00) };
+    let decode = |v: u8| -> u8 {
+        if is_binary {
+            v
+        } else {
+            (v >> 4) * 10 + (v & 0x0F)
+        }
+    };
+    (decode(h_raw), decode(m_raw), decode(s_raw))
+}
+
+// ---------------------------------------------------------------------------
+// Paging control registers
+// ---------------------------------------------------------------------------
+
+/// Reads the CR3 register (physical base address of the PML4 page table).
+///
+/// Returns the raw CR3 value; bits [11:0] are flags (PCID / ignored in
+/// simple setups). Mask with `!0xFFF` to obtain the PML4 physical address.
+#[inline]
+pub fn read_cr3() -> u64 {
+    let val: u64;
+    // SAFETY: `mov rax, cr3` is a ring-0 read; no memory side effects.
+    unsafe {
+        asm!("mov {0}, cr3", out(reg) val, options(nomem, nostack, preserves_flags));
+    }
+    val
+}
+
+/// Reads the CR2 register (linear address that caused the most recent
+/// page fault).
+///
+/// Valid immediately inside a `#PF` handler before the next memory access
+/// can clobber it. Returns the raw 64-bit linear address.
+#[inline]
+pub fn read_cr2() -> u64 {
+    let val: u64;
+    // SAFETY: `mov rax, cr2` is a ring-0 read; no memory side effects.
+    unsafe {
+        asm!("mov {0}, cr2", out(reg) val, options(nomem, nostack, preserves_flags));
+    }
+    val
+}
+
+/// Invalidates the TLB entry for the virtual address `virt` (`invlpg`).
+///
+/// Must be called after clearing a page-table entry to ensure subsequent
+/// accesses to `virt` are not served from a stale TLB cache line.
+///
+/// # Safety
+///
+/// Must only be called in ring 0. `virt` should be a virtual address that
+/// was previously mapped; calling it on an unmapped address is harmless but
+/// wasteful.
+#[inline]
+pub unsafe fn invlpg(virt: u64) {
+    // SAFETY: forwarded to the caller's safety contract.
+    unsafe {
+        asm!("invlpg [{0}]", in(reg) virt, options(nostack, preserves_flags));
+    }
+}
 
 /// Spin-wait for `secs` seconds using the CMOS Real-Time Clock.
 ///
