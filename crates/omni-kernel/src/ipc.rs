@@ -331,6 +331,89 @@ impl KernelIpcRegistry {
         Ok(id)
     }
 
+    /// Create a channel from signed user-space capability tokens.
+    ///
+    /// MB13.d entry-point used by the `IpcCreateChannel(20)` syscall when
+    /// the caller supplies postcard-encoded
+    /// [`omni_capability::CapabilityToken`] blobs. Each non-`None` slot
+    /// runs full Ed25519 verification (signature + time window + TEE
+    /// binding) via [`crate::capabilities::decode_and_authenticate_token`]
+    /// and extracts the embedded subject as a [`KernelPrincipal`].
+    ///
+    /// When both slots are `None`, this delegates to
+    /// [`Self::create_channel`] with `StubCapabilityProvider` so the
+    /// legacy MB12 open-channel path (used by the `mb12-userprobe`
+    /// boot wiring) keeps working byte-for-byte. Per the MB13.d ABI,
+    /// `(send_token = None, recv_token = None)` is the explicit
+    /// "no capability gating" signal.
+    ///
+    /// `now` is the kernel monotonic timestamp passed to
+    /// [`Ed25519CapabilityProvider::verify_signed_token`]; on bare-metal
+    /// the syscall handler sources it from
+    /// [`crate::bare_metal::arch::rtc_seconds`].
+    ///
+    /// # Errors
+    ///
+    /// - [`KernelError::InvalidArgument`] when `policy.queue_depth` is 0
+    ///   or when token bytes fail to decode.
+    /// - [`KernelError::CapabilityDenied`] when a presented token fails
+    ///   Ed25519 / time / TEE verification, or carries the wrong
+    ///   scope action / resource shape.
+    /// - [`KernelError::ResourceExhausted`] when the monotonic channel-id
+    ///   counter would overflow.
+    pub fn create_channel_signed(
+        &mut self,
+        owner: TaskId,
+        policy: ChannelPolicy,
+        send_token_bytes: Option<&[u8]>,
+        recv_token_bytes: Option<&[u8]>,
+        provider: &crate::capabilities::Ed25519CapabilityProvider,
+        now: u64,
+    ) -> KernelResult<ChannelId> {
+        if send_token_bytes.is_none() && recv_token_bytes.is_none() {
+            return self.create_channel(
+                owner,
+                policy,
+                None,
+                None,
+                &crate::capabilities::StubCapabilityProvider,
+            );
+        }
+
+        if policy.queue_depth == 0 {
+            return Err(KernelError::InvalidArgument);
+        }
+
+        let send_subject = match send_token_bytes {
+            Some(b) => Some(crate::capabilities::decode_and_authenticate_token(
+                b,
+                KernelAction::IpcSend,
+                provider,
+                now,
+            )?),
+            None => None,
+        };
+        let recv_subject = match recv_token_bytes {
+            Some(b) => Some(crate::capabilities::decode_and_authenticate_token(
+                b,
+                KernelAction::IpcRecv,
+                provider,
+                now,
+            )?),
+            None => None,
+        };
+
+        let id_u64 = self.next_id;
+        let id = ChannelId(id_u64);
+        let channel = Channel::new(id, policy, owner, send_subject, recv_subject);
+        self.channels.insert(id_u64, channel);
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(KernelError::ResourceExhausted)?;
+        Ok(id)
+    }
+
     /// Destroy a channel. Only the channel's `owner` may do this.
     ///
     /// Pending messages are dropped. Any task currently blocked on this

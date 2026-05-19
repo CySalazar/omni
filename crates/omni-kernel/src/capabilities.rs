@@ -354,6 +354,68 @@ impl KernelCapabilityCheck for Ed25519CapabilityProvider {
     }
 }
 
+// =============================================================================
+// MB13.d — Signed-token decoding helper
+// =============================================================================
+
+/// Decode a postcard-encoded [`omni_capability::CapabilityToken`] and run
+/// full Ed25519 verification (signature + time window + TEE binding) via
+/// [`Ed25519CapabilityProvider::verify_signed_token`].
+///
+/// Used by [`crate::ipc::KernelIpcRegistry::create_channel_signed`] (and
+/// transitively by the `IpcCreateChannel(20)` syscall handler) to lift
+/// a userspace-presented token into a [`KernelPrincipal`] suitable for
+/// the existing per-IPC `subject == requester` gate.
+///
+/// The kernel does *not* require the embedded `Resource::IpcChannel(_)`
+/// id to match the freshly-allocated channel id: user space cannot
+/// predict the monotonic next id at mint time. The kernel verifies the
+/// token's authenticity (the signature binds it to a specific subject +
+/// node attestation) and rebinds it to whatever channel the call creates.
+/// Per-IPC checks still enforce `send/recv_subject == caller_principal`,
+/// so the attenuation guarantee is preserved.
+///
+/// # Errors
+///
+/// - [`crate::KernelError::InvalidArgument`] when postcard decoding
+///   fails (malformed bytes, truncation, trailing data).
+/// - [`crate::KernelError::CapabilityDenied`] when signature / time /
+///   TEE verification fails, or when the token's scope action does not
+///   match `expected_action`, or its resource is not
+///   `Resource::IpcChannel(_)`.
+pub fn decode_and_authenticate_token(
+    bytes: &[u8],
+    expected_action: KernelAction,
+    provider: &Ed25519CapabilityProvider,
+    now: u64,
+) -> KernelResult<KernelPrincipal> {
+    use crate::KernelError;
+    use omni_capability::CapabilityToken;
+    use omni_capability::scope::{Action, Resource};
+
+    let token: CapabilityToken =
+        omni_types::wire::decode_canonical(bytes).map_err(|_| KernelError::InvalidArgument)?;
+
+    if provider.verify_signed_token(&token, now) != CapabilityVerdict::Authorised {
+        return Err(KernelError::CapabilityDenied);
+    }
+
+    let expected_user_action = match expected_action {
+        KernelAction::IpcSend => Action::IpcSend,
+        KernelAction::IpcRecv => Action::IpcRecv,
+    };
+    if token.payload.scope.action != expected_user_action {
+        return Err(KernelError::CapabilityDenied);
+    }
+
+    if !matches!(token.payload.scope.resource, Resource::IpcChannel(_)) {
+        return Err(KernelError::CapabilityDenied);
+    }
+
+    let subject_bytes = *token.payload.subject.as_bytes();
+    Ok(KernelPrincipal::from_bytes(subject_bytes))
+}
+
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------

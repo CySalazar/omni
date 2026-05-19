@@ -1,10 +1,10 @@
 # OMNI OS — Progress Report
 
-**Data snapshot:** 2026-05-19 (post MB13.c — `omni-capability` integration + `Ed25519CapabilityProvider`)
+**Data snapshot:** 2026-05-19 (post MB13.d — `IpcCreateChannel` syscall ABI extension for postcard-encoded signed tokens)
 **Branch corrente:** `feat/kernel-mb11-userspace` (locale; in attesa di PR + merge in `main`)
-**HEAD:** post-MB13.c — kernel TCB ora include `omni-capability` come verify-only dep + provider Ed25519 reale
-**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a + MB13.b + MB13.c**).
-**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~72% Track B
+**HEAD:** post-MB13.d — kernel syscall path ora autentica `CapabilityToken` Ed25519-signed end-to-end
+**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a + MB13.b + MB13.c + MB13.d**).
+**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~75% Track B
 
 ---
 
@@ -167,13 +167,51 @@ plumbing dei token postcard via `IpcCreateChannel` ABI è MB13.d.
 a MB13.d. **+11 test host-side** (5 in `omni-capability::scope` +
 6 in `omni-kernel::capabilities`), workspace target ≥ 432 pass.
 
-Il prossimo blocco di lavoro è **MB13.d — `IpcCreateChannel` syscall
-ABI extension** (postcard-encoded token via `(send_token_ptr,
-recv_token_ptr)` opzionali, nuovi user ELFs in
-`bare_metal/userprobe_mb13.rs`, integration test
-`tests/mb13_capability_signed.rs`, swap del boot wiring da
-`StubCapabilityProvider` a `Ed25519CapabilityProvider`). A seguire
-MB13.e (PR + tag intermedio).
+Il blocco **MB13.d (`IpcCreateChannel` syscall ABI extension)** è stato
+chiuso il 2026-05-19. Tre cambi atomici:
+
+(i) **`crates/omni-kernel/src/capabilities.rs`** — nuovo helper
+`decode_and_authenticate_token(bytes, expected_action, provider, now)
+-> KernelResult<KernelPrincipal>`. Decodifica i byte postcard via
+`omni_types::wire::decode_canonical::<CapabilityToken>`, esegue
+`Ed25519CapabilityProvider::verify_signed_token` (signature + time
+window + TEE binding), valida che `scope.action` corrisponda allo
+slot send/recv, accetta qualunque `Resource::IpcChannel(_)` (lo user
+non può prevedere l'id monotonico kernel — il kernel rebinda la
+risorsa al canale appena allocato). Il `KernelPrincipal` restituito è
+il `payload.subject` (32 byte NodeId attestation hash). +7 test.
+
+(ii) **`crates/omni-kernel/src/ipc.rs`** + **`bare_metal/syscall_entry.rs`** —
+`KernelIpcRegistry::create_channel_signed(owner, policy,
+send_token_bytes, recv_token_bytes, &provider, now)` espone la nuova
+superfice; entrambi i token `None` → delegate al
+`StubCapabilityProvider` esistente (legacy MB12 path, byte-per-byte
+identico al pre-MB13). Almeno uno presente → decode + verify per slot,
+canale registrato con `send_subject` / `recv_subject` valorizzati dal
+subject del token. La syscall `IpcCreateChannel(20)` ora usa l'ABI a
+6 argomenti: `(queue_depth, backpressure, tee_bound, send_ptr,
+recv_ptr, lens)` con `lens = send_len:u32 | (recv_len:u32 << 32)`;
+cap on-stack di 1 KiB per token (real token ≈ 200 byte). +4 test
+integration `KernelIpcRegistry::create_channel_signed`.
+
+(iii) **`crates/omni-kernel/src/bare_metal/userprobe_mb12.rs`** — il
+pre-create del canale MB12 ora passa attraverso `create_channel_signed`
+con entrambi gli slot `None` e `Ed25519CapabilityProvider::placeholder()`.
+Il behaviour è identico (la registry riconosce no-token e delega al
+stub provider); l'indirezione documenta che `Ed25519CapabilityProvider`
+è ora il provider canonico del boot wiring. `mb12-userprobe` smoke
+build verde a tutti i livelli di clippy.
+
+`tests/mb13_capability_signed.rs` (+11 test, target workspace ≥ 443).
+Build Info panel aggiornato a Active=`MB13.d IpcCreateChannel ABI`,
+Next=`MB13.e PR + intermediate tag`, Phase 1 ≈ 75%.
+
+Il prossimo blocco di lavoro è **MB13.e — chiusura ciclo MB13**:
+apertura della PR `feat/kernel-mb11-userspace` → `main`, conformance
+CI, scelta del tag intermedio (`v0.2.1` patch o `v0.3.0-alpha.1` minor
+— preferenza minor perché c'è una nuova ABI surface), aggiornamento
+finale di `progress-omni.md` § 2 + § 4 + spostamento di MB13 da gap
+analysis a Done.
 
 ---
 
@@ -216,8 +254,9 @@ MB13.e (PR + tag intermedio).
 | MB12 | IPC reale (queue + capability stub + multi-task user) (ADR-0005) | ✅ | post-`c743173` |
 | MB13.a | `omni-crypto` bare-metal unblock (force-soft SIMD) | ✅ | `2398d5c` |
 | MB13.b | Boot-path fix: ET_DYN/PIE kernel + upper-half dynamic mapping | ✅ | `d9a0692` |
-| MB13.c | `omni-capability` integration + `Ed25519CapabilityProvider` | ✅ | (this commit) |
-| **MB13** | **omni-capability integration (Ed25519 verify) — MB13.d/e open** | 🟡 | — |
+| MB13.c | `omni-capability` integration + `Ed25519CapabilityProvider` | ✅ | post-`fd09d1d` |
+| MB13.d | `IpcCreateChannel` syscall ABI extension (postcard-encoded signed tokens) | ✅ | (this commit) |
+| **MB13** | **omni-capability integration (Ed25519 verify) — MB13.e PR open** | 🟡 | — |
 
 **Verifica MB1-MB12:**
 - `cargo test --workspace --all-features` → **426 pass / 0 fail** (era 393 post-MB11, +33 da MB12 — vedi CHANGELOG `[Unreleased] § Added` riga "Test delta")

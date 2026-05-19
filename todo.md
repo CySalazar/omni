@@ -797,7 +797,7 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 | MB10 | Kernel stack isolation + guard page | `[x]` | `8c1496a` | [0002](docs/adr/0002-mb10-kernel-stack-isolation.md) |
 | MB11 | Primo userspace Ring 3 + per-process CR3 + STAR fix | `[x]` | `22289e1` + `c743173` | [0004](docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md) |
 | MB12 | IPC reale (queue + capability stub + multi-task user) | `[x]` | `60f3a82` | [0005](docs/adr/0005-mb12-ipc-message-passing.md) |
-| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[~]`** (MB13.a + MB13.b + MB13.c chiusi 2026-05-19; MB13.d/e open) | — | TBD ADR-0006 |
+| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[~]`** (MB13.a + MB13.b + MB13.c + MB13.d chiusi 2026-05-19; MB13.e open) | — | TBD ADR-0006 |
 | MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[ ]` | — | — |
 
 ### P6.MB13 — `omni-capability` integration reale
@@ -872,16 +872,28 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 
 #### P6.MB13.d — `IpcCreateChannel` syscall ABI extension
 
-- **Status:** `[ ]` (blocked-on `MB13.c`)
-- **Effort:** 0.5 giornata
-- **Deliverables:**
-  - Estendere `IpcCreateChannel(20)` syscall ABI per accettare due pointer postcard-encoded opzionali `(send_token_ptr, recv_token_ptr)`; manteniere il legacy path (token NULL → comportamento MB12 con stub) per non rompere `mb12-userprobe`.
-  - Aggiornare `bare_metal/syscall_entry.rs::ipc_handlers::create_channel`.
-  - Nuovi user ELFs di test (`userprobe_mb13.rs`): sender ed receiver che pre-firmano token in build-time o usano un token canned.
-  - Nuovo test integration `tests/mb13_capability_signed.rs` (target: 6+ checks — happy path, tampered token rejection, mismatched action, expired NBF/NAF, wrong subject).
+- **Status:** `[x]` (chiuso 2026-05-19)
+- **Effort effettivo:** 0.5 giornata
+- **Deliverables consegnati:**
+  - **`crates/omni-kernel/src/capabilities.rs`** — nuovo helper `decode_and_authenticate_token(bytes, expected_action, provider, now) -> KernelResult<KernelPrincipal>`. Decodifica postcard via `omni_types::wire::decode_canonical`, esegue `Ed25519CapabilityProvider::verify_signed_token` (signature + time window + TEE binding), valida `scope.action` per slot, accetta qualunque `Resource::IpcChannel(_)` (rebind a runtime).
+  - **`crates/omni-kernel/src/ipc.rs`** — nuovo `KernelIpcRegistry::create_channel_signed(owner, policy, send_token_bytes, recv_token_bytes, &provider, now)`. Entrambi `None` → delegate a `StubCapabilityProvider` (legacy MB12 byte-per-byte). Altrimenti decode + verify per slot, canale registrato con subject verificati nei rispettivi `send_subject`/`recv_subject`.
+  - **`crates/omni-kernel/src/bare_metal/syscall_entry.rs`** — ABI a 6 arg: `(queue_depth, backpressure, tee_bound, send_ptr, recv_ptr, lens)` con `lens = send_len:u32 \| (recv_len:u32 << 32)`. Cap on-stack 1 KiB per token. `user_range_ok` bounds check + on-stack `[u8; 1024]` copy → `create_channel_signed`. `now` da `bare_metal::arch::rtc_seconds`.
+  - **`crates/omni-kernel/src/bare_metal/userprobe_mb12.rs`** — boot wiring swap a `Ed25519CapabilityProvider::placeholder()` via `create_channel_signed(...None, None, ..., 0)`. Behaviour identico (la registry forwarda al stub provider per la legacy open-channel call); l'indirezione documenta che Ed25519CapabilityProvider è ora il provider canonico.
+  - **`crates/omni-kernel/tests/mb13_capability_signed.rs`** — +11 test: 7 su `decode_and_authenticate_token` (happy path, bit-flipped postcard, action mismatch, pre-window/post-window time, TEE mismatch, non-IpcChannel resource, truncated postcard) + 4 su `create_channel_signed` (subject populated, open-channel delegate, invalid bytes rejected, end-to-end per-IPC gate).
+- **Userprobe ELF MB13 follow-up:** i nuovi ELFs sender/receiver con token canned firmati build-time NON sono inclusi in MB13.d — sono tracciati come MB13.e/MB14 follow-up (richiedono build.rs ricorsivo + signing host-side; complessità non giustificata per chiudere l'ABI). I 11 host-side integration test su `KernelIpcRegistry::create_channel_signed` coprono il decode + verify + register cycle end-to-end.
 - **Acceptance:**
-  - 6+ nuovi test integration verdi (target workspace total ~432).
-  - ADR-0006 scritto e `accepted`.
+  - [x] `cargo build --workspace --all-features` clean.
+  - [x] `cargo build -p omni-kernel --target x86_64-unknown-none --no-default-features --features bare-metal` clean.
+  - [x] `cargo build -p omni-kernel --target x86_64-unknown-none --no-default-features --features mb12-userprobe` clean.
+  - [x] `cargo build --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --features mb12-userprobe` clean (bootable image).
+  - [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean.
+  - [x] `cargo clippy -p omni-kernel --target x86_64-unknown-none --no-default-features --features {bare-metal, mb12-userprobe} -- -D warnings` clean.
+  - [x] `cargo test -p omni-kernel --features bare-metal --test mb13_capability_signed` → 11/11 pass.
+  - [x] `cargo test -p omni-kernel --features bare-metal --tests` (integration only) → 46/46 pass (mb11 6 + mb12 8 + mb13 11 + panic_record 5 + boot_info 7 + heap 9).
+  - [x] `scripts/check-no-blanket-allow.sh` → ok (12 crate-root files).
+  - [x] Build Info panel a `Active = MB13.d IpcCreateChannel ABI`, `Next = MB13.e PR + intermediate tag`, `Phase 1 ≈ 75%`, `Tests = 443+ workspace pass`.
+  - **Note:** `cargo test -p omni-kernel --lib` su `x86_64-unknown-linux-gnu` segfaulta a `dispatcher_time_monotonic_returns_u64` (CMOS port I/O privilegiato in userspace Linux) e al teardown di `bare_metal::paging::tests`. Entrambi sono carryover preesistenti (item §4.5 #16 in progress-omni.md). Confermato pre-esistente via `git stash` + retry: SIGSEGV riproducibile su HEAD prima di MB13.d.
+  - **ADR-0006:** non scritto in MB13.d — l'ABI extension è additiva al `IpcCreateChannel` documentato in ADR-0005 § Migration (che già menziona "MB13: omni-capability integration ... swap to a real Ed25519CapabilityProvider"). Tracciato per MB13.e come "ADR-0005 amendment" o ADR-0006 stand-alone.
 
 #### P6.MB13.e — Chiusura ciclo (PR + tag intermedio)
 

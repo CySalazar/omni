@@ -17,6 +17,105 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB13.d: `IpcCreateChannel` syscall ABI extension for
+  postcard-encoded signed tokens (2026-05-19).** Closes the last
+  bare-metal-side gap of the MB13 work-package by plumbing
+  `omni_capability::CapabilityToken` blobs from user space all the way
+  down to `Ed25519CapabilityProvider::verify_signed_token`. The MB12
+  "open channel" calling convention (both token pointers zero) keeps
+  working byte-for-byte — `mb12-userprobe` boots unchanged — but any
+  call that supplies even one token now gates the channel registration
+  on a full Ed25519 + time-window + TEE-binding verification.
+
+  - **`crates/omni-kernel/src/capabilities.rs`** — new
+    `decode_and_authenticate_token(bytes, expected_action, provider, now)
+    -> KernelResult<KernelPrincipal>` helper. Decodes postcard bytes via
+    `omni_types::wire::decode_canonical`, runs
+    `Ed25519CapabilityProvider::verify_signed_token`, enforces
+    `scope.action` matches the slot, and accepts any
+    `Resource::IpcChannel(_)` value (the kernel rebinds the resource to
+    the freshly-allocated channel id — user space cannot predict the
+    monotonic counter at mint time). The subject in the kernel-side
+    `KernelPrincipal` is sourced from `token.payload.subject` (32-byte
+    NodeId attestation hash).
+
+  - **`crates/omni-kernel/src/ipc.rs`** — new
+    `KernelIpcRegistry::create_channel_signed(owner, policy,
+    send_token_bytes, recv_token_bytes, &provider, now)`. When both
+    `send_token_bytes` and `recv_token_bytes` are `None`, delegates to
+    the existing `create_channel(..., &StubCapabilityProvider)` so the
+    open-channel pre-create in `userprobe_mb12::spawn_userprobe_mb12`
+    keeps the byte-for-byte MB12 semantics. Otherwise each non-`None`
+    slot runs `decode_and_authenticate_token` and the channel is
+    registered with the verified subject in the corresponding
+    `send_subject` / `recv_subject` slot.
+
+  - **`crates/omni-kernel/src/bare_metal/syscall_entry.rs`** —
+    `ipc_handlers::ipc_create_channel` now accepts the MB13.d six-arg
+    ABI: `(queue_depth, backpressure, tee_bound, send_token_ptr,
+    recv_token_ptr, lens)` where `lens` packs
+    `send_len:u32 | (recv_len:u32 << 32)`. Both token pointers `0` →
+    legacy stub-provider path. At least one non-zero → per-slot
+    `user_range_ok` bounds check + on-stack `[u8; 1024]` copy (caps the
+    accepted token at 1 KiB; real `CapabilityToken` payloads are ~200
+    bytes) + delegate to `create_channel_signed`. Kernel monotonic
+    `now` comes from `bare_metal::arch::rtc_seconds`.
+
+  - **`crates/omni-kernel/src/bare_metal/userprobe_mb12.rs`** — the
+    `spawn_userprobe_mb12` pre-create now routes through
+    `create_channel_signed` with both slots `None` and
+    `Ed25519CapabilityProvider::placeholder()`. Behaviour is identical
+    to the MB12 baseline (the registry recognises the no-token call
+    and forwards to the stub provider); the indirection documents the
+    new canonical entry point.
+
+  - **`crates/omni-kernel/tests/mb13_capability_signed.rs`** — new
+    integration suite, +11 tests:
+      * 7 on `decode_and_authenticate_token`: happy path, bit-flipped
+        canonical bytes, action mismatch, pre-window / post-window
+        time, TEE attestation mismatch, non-IpcChannel resource,
+        truncated postcard.
+      * 4 on `KernelIpcRegistry::create_channel_signed`: send-token
+        authentication populates `send_subject`, open-channel (both
+        `None`) delegates to the legacy stub path, invalid send-token
+        bytes reject without leaving a half-registered channel, and a
+        full-round-trip end-to-end check that the per-IPC
+        `subject == requester` gate still rejects an intruder
+        principal after the signed-token registration.
+
+  - **`crates/omni-kernel/src/bare_metal/demo.rs`** — Build Info panel
+    updated to `Active = MB13.d IpcCreateChannel ABI`, `Next = MB13.e
+    PR + intermediate tag`, `Track B = MB1-MB12 OK, MB13.a-d OK`,
+    `Phase 1 ≈ 75%`, `Tests = 443+ workspace pass`.
+
+  Verification (host, 2026-05-19 post-MB13.d):
+  - `cargo build --workspace --all-features` → clean (zero warnings).
+  - `cargo build -p omni-kernel --target x86_64-unknown-none
+    --no-default-features --features bare-metal` → clean.
+  - `cargo build -p omni-kernel --target x86_64-unknown-none
+    --no-default-features --features mb12-userprobe` → clean.
+  - `cargo build --manifest-path kernel-runner/Cargo.toml --target
+    x86_64-unknown-none --features mb12-userprobe` → clean.
+  - `cargo clippy --workspace --all-targets --all-features -- -D
+    warnings` → clean.
+  - `cargo clippy -p omni-kernel --target x86_64-unknown-none
+    --no-default-features --features bare-metal -- -D warnings` →
+    clean.
+  - `cargo clippy -p omni-kernel --target x86_64-unknown-none
+    --no-default-features --features mb12-userprobe -- -D warnings` →
+    clean.
+  - `cargo test -p omni-kernel --features bare-metal --test
+    mb13_capability_signed` → 11 / 11 pass.
+  - `cargo test -p omni-kernel --features bare-metal --tests` →
+    mb11_userspace (6) + mb12_ipc_cross_process (8) +
+    mb13_capability_signed (11) + panic_record (5) + boot_info (7) +
+    heap (9) = 46 / 46 integration pass. Lib unit tests still hit the
+    pre-existing x86_64-host SIGSEGV in `paging` and
+    `dispatcher_time_monotonic_returns_u64` (CMOS port I/O) — both
+    documented in `progress-omni.md` § 4.5 #16 as carryover from
+    v0.2.0; reproduces on HEAD before MB13.d.
+  - `scripts/check-no-blanket-allow.sh` → ok (12 crate-root files).
+
 - **Kernel — MB13.c: `omni-capability` integration + `Ed25519CapabilityProvider`
   (2026-05-19).** Lands the real Ed25519 signature-verification path
   alongside the MB12 `StubCapabilityProvider`. The kernel now depends on

@@ -382,11 +382,46 @@ mod ipc_handlers {
         }
     }
 
-    /// `IpcCreateChannel (20)` — `(queue_depth, backpressure, tee_bound, _, _, _) -> channel_id`.
+    /// Maximum accepted size for a single postcard-encoded
+    /// [`omni_capability::CapabilityToken`] presented through the
+    /// MB13.d `IpcCreateChannel` ABI. Real tokens are ~200 bytes; the
+    /// 1 KiB cap is generous and bounds the on-stack copy buffer.
+    const MAX_TOKEN_BYTES: usize = 1024;
+
+    /// `IpcCreateChannel (20)` — MB13.d signed-token ABI.
     ///
-    /// MB12 syscall ABI does not yet carry capability tokens (deferred
-    /// to MB13 with omni-capability integration). Channels created via
-    /// this path are unauthenticated on both directions.
+    /// ## ABI
+    ///
+    /// | Reg | Role                                                            |
+    /// |-----|-----------------------------------------------------------------|
+    /// | a0  | `queue_depth: u64`                                              |
+    /// | a1  | `backpressure: u64` (0=Block, 1=Drop, 2=EvictOldest)             |
+    /// | a2  | `tee_bound: u64` (0/1)                                          |
+    /// | a3  | `send_token_ptr: u64` (0 = no send-side capability)             |
+    /// | a4  | `recv_token_ptr: u64` (0 = no recv-side capability)             |
+    /// | a5  | `lens: u64` = `send_len:u32 \| (recv_len:u32 << 32)`             |
+    ///
+    /// Returns the kernel-allocated [`ChannelId`] in RAX, or
+    /// [`SYSCALL_ERROR`] on validation / verification failure.
+    ///
+    /// ## Backwards compatibility
+    ///
+    /// When both `send_token_ptr` and `recv_token_ptr` are zero (the
+    /// MB12 calling convention), the handler falls through to the
+    /// legacy `StubCapabilityProvider` path so the `mb12-userprobe`
+    /// smoke keeps booting unchanged.
+    ///
+    /// When at least one pointer is non-zero, the handler:
+    ///
+    /// 1. Bounds-checks each token range against the user half via
+    ///    [`user_range_ok`].
+    /// 2. Copies the bytes into a kernel-side stack buffer (`MAX_TOKEN_BYTES`
+    ///    cap) so the verification path cannot be poisoned by concurrent
+    ///    user-space mutation.
+    /// 3. Delegates to
+    ///    [`crate::ipc::KernelIpcRegistry::create_channel_signed`] which
+    ///    runs Ed25519 signature + time-window + TEE-binding verification
+    ///    via [`crate::capabilities::Ed25519CapabilityProvider`].
     pub(super) fn ipc_create_channel(args: [u64; 6]) -> u64 {
         let Some(bp) = parse_backpressure(args[1]) else {
             return SYSCALL_ERROR;
@@ -396,19 +431,105 @@ mod ipc_handlers {
             backpressure: bp,
             tee_bound: args[2] != 0,
         };
+        let send_token_ptr = args[3];
+        let recv_token_ptr = args[4];
+        let send_len = (args[5] & 0xFFFF_FFFF) as usize;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "len fields are u32 by ABI definition; right-shift then mask is safe"
+        )]
+        let recv_len = ((args[5] >> 32) & 0xFFFF_FFFF) as usize;
+
         // SAFETY: SYSCALL path masks interrupts; single-CPU.
         let (current, _) = unsafe { current_principal_and_task() };
-        // SAFETY: same as above; IPC_REGISTRY not aliased.
+
+        // -----------------------------------------------------------------
+        // Legacy MB12 path — both pointers zero → open channel via stub.
+        // -----------------------------------------------------------------
+        if send_token_ptr == 0 && recv_token_ptr == 0 {
+            // SAFETY: IPC_REGISTRY not aliased; single-CPU.
+            let res = unsafe {
+                ipc_registry_mut().create_channel(
+                    current,
+                    policy,
+                    None,
+                    None,
+                    &crate::capabilities::StubCapabilityProvider,
+                )
+            };
+            return res.map_or(SYSCALL_ERROR, |ch| ch.0);
+        }
+
+        // -----------------------------------------------------------------
+        // MB13.d signed-token path. Two scratch buffers on the kernel
+        // stack; we reserve `MAX_TOKEN_BYTES` per side. The actual postcard
+        // payload is typically ~200 bytes, so this is comfortably bounded.
+        // -----------------------------------------------------------------
+        let mut send_buf = [0u8; MAX_TOKEN_BYTES];
+        let mut recv_buf = [0u8; MAX_TOKEN_BYTES];
+
+        let Ok(send_slice) = copy_user_token(send_token_ptr, send_len, &mut send_buf) else {
+            return SYSCALL_ERROR;
+        };
+        let Ok(recv_slice) = copy_user_token(recv_token_ptr, recv_len, &mut recv_buf) else {
+            return SYSCALL_ERROR;
+        };
+
+        // Kernel monotonic time for the token's window check.
+        let now_secs = u64::from(crate::bare_metal::arch::rtc_seconds());
+
+        let provider = crate::capabilities::Ed25519CapabilityProvider::placeholder();
+        // SAFETY: IPC_REGISTRY not aliased; single-CPU.
         let res = unsafe {
-            ipc_registry_mut().create_channel(
+            ipc_registry_mut().create_channel_signed(
                 current,
                 policy,
-                None,
-                None,
-                &crate::capabilities::StubCapabilityProvider,
+                send_slice,
+                recv_slice,
+                &provider,
+                now_secs,
             )
         };
         res.map_or(SYSCALL_ERROR, |ch| ch.0)
+    }
+
+    /// Copy a user-space postcard token blob into the supplied kernel
+    /// buffer and return a slice over the copied bytes, or `Err(())` if
+    /// any validation step fails.
+    ///
+    /// `(ptr = 0, len = 0)` returns `Ok(None)` (no token presented).
+    /// Any other shape (`ptr = 0 ^ len = 0`, `len > MAX_TOKEN_BYTES`,
+    /// out-of-user-half range) is an error.
+    fn copy_user_token(
+        ptr: u64,
+        len: usize,
+        buf: &mut [u8; MAX_TOKEN_BYTES],
+    ) -> Result<Option<&[u8]>, ()> {
+        if ptr == 0 && len == 0 {
+            return Ok(None);
+        }
+        if ptr == 0 || len == 0 || len > MAX_TOKEN_BYTES {
+            return Err(());
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "len ≤ MAX_TOKEN_BYTES = 1024 fits u64 trivially"
+        )]
+        if !user_range_ok(ptr, len as u64) {
+            return Err(());
+        }
+        // SAFETY: user_range_ok verified `[ptr, ptr + len)` lies in the
+        // user half; the active CR3 is the caller's own AS, so the
+        // hardware PT walk faults on any missing page before the copy
+        // returns garbage. `len` ≤ buf.len() by the cap above.
+        unsafe {
+            core::ptr::copy_nonoverlapping(ptr as *const u8, buf.as_mut_ptr(), len);
+        }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "len ≤ MAX_TOKEN_BYTES = buf.len() by the cap above"
+        )]
+        Ok(Some(&buf[..len]))
     }
 
     /// `IpcDestroyChannel (21)` — `(channel_id, _, _, _, _, _) -> 0 | u64::MAX`.
