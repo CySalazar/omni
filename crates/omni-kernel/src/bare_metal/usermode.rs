@@ -53,10 +53,33 @@ pub const USER_RFLAGS: u64 = 0x202;
 /// Construct an `iretq` frame and execute it to enter Ring 3 for the
 /// first time.
 ///
-/// The CR3 reload is safe even mid-instruction because the per-process
-/// PML4 mirrors the boot CR3's kernel half by reference — the
-/// trampoline itself lives in kernel-half memory that remains mapped
-/// across the CR3 switch.
+/// ## Stack-pointer swap (MB13.f)
+///
+/// Callers can be reached on three different stacks:
+///
+/// 1. The kernel's boot stack (kmain direct dispatch, MB11 path).
+/// 2. A user task's user stack (MB12 first-dispatch issued from inside
+///    a syscall handler — the kernel runs on the calling task's user
+///    stack because `SYSCALL` does not switch SP).
+/// 3. A previously-saved kernel stack (preempt/resume; reached via the
+///    `context_switch` asm path rather than this function).
+///
+/// Case 2 is the one that fails without an explicit fix: as soon as
+/// `mov cr3` swaps to the destination process's PML4, the outgoing
+/// task's user stack is no longer mapped, and the very next `push`
+/// faults on Ring 0 → triple-fault → VM reset.
+///
+/// `kernel_stack_top` is the VA of the destination task's kernel stack
+/// top (TSS.rsp0 target). The trampoline switches RSP to this VA
+/// *before* loading CR3. Kernel stacks live in `[KERNEL_STACK_VA_BASE,
+/// KERNEL_STACK_VA_END)` (PML4 indices ≥ 0x180), so they are mirrored
+/// by reference into every per-process PML4 cloned via
+/// [`AddressSpace::new_with_kernel_half`] and remain mapped across the
+/// CR3 reload.
+///
+/// The current call frame is abandoned (this function diverges anyway);
+/// callers must not rely on any caller-side state surviving past the
+/// `mov rsp` swap.
 ///
 /// # Safety
 ///
@@ -68,28 +91,49 @@ pub const USER_RFLAGS: u64 = 0x202;
 ///   user-accessible in the target address space.
 /// - `user_rflags` MUST have IF=1 (bit 9 = 0x200) — otherwise Ring 3
 ///   runs with interrupts disabled and no preemption can occur.
+/// - `kernel_stack_top` must be the top (highest VA) of a 4 KiB
+///   writable kernel-half page exclusively owned by the destination
+///   task. It must lie in the MB10 isolated range so it is mirrored
+///   into every per-process PML4.
 /// - This function does NOT return: it transfers control to Ring 3 via
 ///   `iretq`.
 #[cfg(target_arch = "x86_64")]
-pub unsafe fn enter_user_mode(user_rip: u64, user_rsp: u64, user_rflags: u64, cr3_phys: u64) -> ! {
+pub unsafe fn enter_user_mode(
+    user_rip: u64,
+    user_rsp: u64,
+    user_rflags: u64,
+    cr3_phys: u64,
+    kernel_stack_top: u64,
+) -> ! {
     use core::arch::asm;
-    // SAFETY: kernel-only CR3 reload + iretq Ring 0 → Ring 3. See doc
-    // comment for the SAFETY invariants the caller must satisfy.
+    // SAFETY: kernel-only stack swap + CR3 reload + iretq Ring 0 → Ring 3.
+    // See doc comment for the SAFETY invariants the caller must satisfy.
     unsafe {
         asm!(
-            // 1. Switch to the per-process address space. Kernel half
+            // 1. Move to the destination task's kernel stack. This must
+            //    happen BEFORE the CR3 reload so that any subsequent
+            //    stack access (including the `push`es below) targets a
+            //    page that is mapped in the new address space. The
+            //    kernel-stack VA range is mirrored across every
+            //    per-process PML4 by reference (kernel-half clone), so
+            //    the swap is safe under both the outgoing and incoming
+            //    CR3.
+            "mov rsp, {kstk}",
+            // 2. Switch to the per-process address space. Kernel half
             //    is identical by-reference, so the next instruction is
-            //    still valid.
+            //    still valid and the just-loaded RSP still points at a
+            //    mapped page.
             "mov cr3, {cr3}",
-            // 2. Build the iretq stack frame (5 × u64, top-down):
+            // 3. Build the iretq stack frame (5 × u64, top-down):
             //    SS, RSP, RFLAGS, CS, RIP.
             "push {ss}",
             "push {rsp_u}",
             "push {rflags}",
             "push {cs}",
             "push {rip}",
-            // 3. Execute. CPU pops 5 u64 and transfers to Ring 3.
+            // 4. Execute. CPU pops 5 u64 and transfers to Ring 3.
             "iretq",
+            kstk    = in(reg) kernel_stack_top,
             cr3     = in(reg) cr3_phys,
             ss      = in(reg) u64::from(USER_SS),
             rsp_u   = in(reg) user_rsp,
@@ -108,7 +152,13 @@ pub unsafe fn enter_user_mode(user_rip: u64, user_rsp: u64, user_rflags: u64, cr
 /// Sentinel signature to keep callers source-compatible on host builds.
 /// Diverges via `core::panic!`; never actually invoked at test time.
 #[cfg(not(target_arch = "x86_64"))]
-pub unsafe fn enter_user_mode(_rip: u64, _rsp: u64, _rflags: u64, _cr3: u64) -> ! {
+pub unsafe fn enter_user_mode(
+    _rip: u64,
+    _rsp: u64,
+    _rflags: u64,
+    _cr3: u64,
+    _kstk: u64,
+) -> ! {
     panic!("enter_user_mode is x86_64-only");
 }
 

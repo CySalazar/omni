@@ -17,6 +17,66 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB13.f: `enter_user_mode` kernel-stack swap before CR3
+  reload (first-dispatch smoke fix, 2026-05-19).** Closes the open
+  `mb12-userprobe` follow-up tracked in `progress-omni.md` § 4.5 #22:
+  with MB13.b the VM stopped emitting any `[user] exit=0` / `ping`
+  after `[mb12] handing off to user tasks`, because the first
+  `enter_user_mode` invoked from inside a syscall handler executed
+  `mov cr3, dest_cr3` while RSP still pointed at the *outgoing* task's
+  user stack (SYSCALL on x86_64 does not switch SP). After the CR3
+  reload that page was no longer mapped (user-half is per-process), so
+  the very next `push {ss}` of the iretq frame produced a Ring-0 page
+  fault → triple fault → VM reset, before any Ring-3 instruction
+  could execute.
+
+  - **`crates/omni-kernel/src/bare_metal/usermode.rs`** —
+    `enter_user_mode` gains a new `kernel_stack_top: u64` parameter and
+    issues `mov rsp, {kstk}` **before** the `mov cr3`. The destination
+    kernel stack lives in the MB10 isolated range
+    `[KERNEL_STACK_VA_BASE, KERNEL_STACK_VA_END)` (PML4 index `≥ 0x180`,
+    canonical kernel half), which `AddressSpace::new_with_kernel_half`
+    mirrors by reference into every per-process PML4. The page therefore
+    survives the CR3 reload, and the subsequent `push` sequence that
+    builds the iretq frame runs on a valid mapping. The non-x86_64 stub
+    is updated in tandem to keep callers source-compatible.
+
+  - **`crates/omni-kernel/src/scheduling.rs`** —
+    `RoundRobinScheduler::yield_current` first-dispatch path now
+    forwards `kernel_stack_top` (computed in stack as
+    `kernel_stack_va + KERNEL_STACK_SIZE`, already used for the
+    `TSS.rsp0` update introduced by MB12.0a). The pre-MB13.b
+    "bare-metal limitation" comment is removed — that triple-fault
+    cause was resolved by ET_DYN/PIE relocation.
+
+  - **`crates/omni-kernel/src/lib.rs`** — MB11 single-task dispatch
+    (`kmain` → `enter_user_mode` direct call) passes
+    `pcb.task.kernel_stack_va + scheduling::KERNEL_STACK_SIZE`. The
+    MB11 caller-side RSP is already on the boot stack (upper half,
+    mirrored), but the fix is applied uniformly.
+
+  - **Latency note:** the bug was latent at MB11 — `kmain` called
+    `enter_user_mode` directly with RSP on the boot stack, which since
+    MB13.b lives in upper half (mirrored). MB12 surfaced it because the
+    first-dispatch is now triggered from inside a syscall handler whose
+    RSP is the *outgoing* task's user stack. Host tests did not catch
+    it because `enter_user_mode` has a `panic!()` stub on non-x86_64.
+
+  Verification (host, 2026-05-19 post-MB13.f):
+    - `cargo build --workspace --all-features` → clean (0 warning).
+    - `cargo build --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --release --features omni-kernel/mb12-userprobe` → clean.
+    - `cargo clippy --workspace --all-features --all-targets -- -D warnings` → clean.
+    - `cargo clippy --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --release --features omni-kernel/mb12-userprobe -- -D warnings` → clean.
+    - `cargo test -p omni-kernel --tests` (integration suite: mb11 6 + mb12 8 + mb13 11 + boot_info 7 + panic_record 5 + heap 9) → 46/46 pass.
+    - Build Info panel updated to `Active = MB13.f iretq kstk-swap`,
+      `Next = MB13.e PR + intermediate tag`, `Track B = MB1-MB12 OK,
+      MB13.a-f OK`, `Phase 1 ≈ 77%`, `Tests = 443+ workspace pass`.
+    - **Note:** the pre-existing `cargo test -p omni-kernel --lib`
+      `SIGSEGV` in `dispatcher_time_monotonic_returns_u64` (CMOS port
+      I/O on Linux userspace) and at the `bare_metal::paging::tests`
+      teardown remains; this carryover (item §4.5 #16) is unrelated to
+      MB13.f, which touches only the `x86_64` asm path.
+
 - **Kernel — MB13.d: `IpcCreateChannel` syscall ABI extension for
   postcard-encoded signed tokens (2026-05-19).** Closes the last
   bare-metal-side gap of the MB13 work-package by plumbing

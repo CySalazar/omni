@@ -1,10 +1,10 @@
 # OMNI OS — Progress Report
 
-**Data snapshot:** 2026-05-19 (post MB13.d — `IpcCreateChannel` syscall ABI extension for postcard-encoded signed tokens)
+**Data snapshot:** 2026-05-19 (post MB13.f — `enter_user_mode` kernel-stack swap, smoke first-dispatch fix)
 **Branch corrente:** `feat/kernel-mb11-userspace` (locale; in attesa di PR + merge in `main`)
-**HEAD:** post-MB13.d — kernel syscall path ora autentica `CapabilityToken` Ed25519-signed end-to-end
-**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a + MB13.b + MB13.c + MB13.d**).
-**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~75% Track B
+**HEAD:** post-MB13.f — il primo dispatch user-side post-CR3 ora atterra su uno stack mirrored in upper-half
+**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a + MB13.b + MB13.c + MB13.d + MB13.f**).
+**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~77% Track B
 
 ---
 
@@ -206,6 +206,52 @@ build verde a tutti i livelli di clippy.
 Build Info panel aggiornato a Active=`MB13.d IpcCreateChannel ABI`,
 Next=`MB13.e PR + intermediate tag`, Phase 1 ≈ 75%.
 
+Il blocco **MB13.f (`enter_user_mode` kernel-stack swap, first-dispatch
+smoke fix)** è stato chiuso il 2026-05-19. La pipeline MB13.b aveva
+risolto il triple-fault del primo `mov cr3` dentro `enter_user_mode`
+spostando il kernel ELF in upper half (PIE/ET_DYN), ma il deploy
+post-MB13.b su Proxmox VMID 103 ha rivelato un secondo bug latente:
+la VM raggiungeva `[mb12] handing off to user tasks` poi si fermava
+senza emettere alcun `[user] exit=0` né `ping`. Indagine: nel path
+MB12 first-dispatch invocato da dentro un syscall handler (lo user
+chiama `IpcReceive`, l'handler kernel-side esegue `park_until_woken`
+→ `yield_current(BlockedOnIpc)` → `enter_user_mode(...)` per
+schedulare il prossimo task), `SYSCALL` su x86_64 non commuta `SP`,
+quindi il kernel girava sullo *user stack del task uscente*.
+`enter_user_mode` eseguiva `mov cr3, dest_cr3` mentre `RSP` puntava
+ancora a quello user stack — pagina lower-half non mappata nel nuovo
+PML4 → il primo `push {ss}` dell'iretq frame produceva un page-fault
+in Ring 0 → triple-fault → VM reset, prima ancora che il sender
+potesse eseguire una qualsiasi istruzione Ring 3.
+
+Fix: `crates/omni-kernel/src/bare_metal/usermode.rs` aggiunge un nuovo
+parametro `kernel_stack_top: u64` a `enter_user_mode` e fa
+`mov rsp, {kstk}` **prima** del `mov cr3`. Lo stack di destinazione
+risiede nel range MB10 isolato `[KERNEL_STACK_VA_BASE,
+KERNEL_STACK_VA_END)` (PML4 index ≥ `0x180`, kernel half), mirrored
+per riferimento in ogni PML4 per-process via la kernel-half clone in
+`AddressSpace::new_with_kernel_half`. La VA resta quindi mappata
+dall'altra parte del CR3 reload e il successivo build dell'iretq
+frame avviene su una pagina valida. Entrambi i call site sono stati
+aggiornati: (i) `scheduling.rs::yield_current` first-dispatch (il
+`kernel_stack_top = kernel_stack_va + KERNEL_STACK_SIZE` era già
+calcolato per il TSS.rsp0 update di MB12.0a, ora viene anche passato
+a `enter_user_mode`); (ii) `lib.rs` MB11 single-task dispatch
+(`pcb.task.kernel_stack_va + scheduling::KERNEL_STACK_SIZE`). Lo stub
+non-x86_64 di `enter_user_mode` è stato aggiornato in tandem.
+
+Il bug era latente già a MB11 in teoria, ma non si manifestava perché
+il caller di `enter_user_mode` nel path MB11 era `kmain` direttamente
+(RSP su boot stack, che con MB13.b è in upper half mirrored). Solo
+MB12 — dove il first-dispatch viene innescato da un syscall handler
+che gira sullo user stack del task uscente — rendeva il path
+patologico raggiungibile. La pre-esistenza non era visibile nei test
+host: `enter_user_mode` ha uno stub `panic!()` su non-x86_64.
+
+Build Info panel aggiornato a Active=`MB13.f iretq kstk-swap`,
+Next=`MB13.e PR + intermediate tag`, Track B=`MB1-MB12 OK, MB13.a-f
+OK`, Phase 1 ≈ 77%.
+
 Il prossimo blocco di lavoro è **MB13.e — chiusura ciclo MB13**:
 apertura della PR `feat/kernel-mb11-userspace` → `main`, conformance
 CI, scelta del tag intermedio (`v0.2.1` patch o `v0.3.0-alpha.1` minor
@@ -255,7 +301,8 @@ analysis a Done.
 | MB13.a | `omni-crypto` bare-metal unblock (force-soft SIMD) | ✅ | `2398d5c` |
 | MB13.b | Boot-path fix: ET_DYN/PIE kernel + upper-half dynamic mapping | ✅ | `d9a0692` |
 | MB13.c | `omni-capability` integration + `Ed25519CapabilityProvider` | ✅ | post-`fd09d1d` |
-| MB13.d | `IpcCreateChannel` syscall ABI extension (postcard-encoded signed tokens) | ✅ | (this commit) |
+| MB13.d | `IpcCreateChannel` syscall ABI extension (postcard-encoded signed tokens) | ✅ | `5cb09fa` |
+| MB13.f | `enter_user_mode` kernel-stack swap (first-dispatch smoke fix) | ✅ | (this commit) |
 | **MB13** | **omni-capability integration (Ed25519 verify) — MB13.e PR open** | 🟡 | — |
 
 **Verifica MB1-MB12:**
@@ -550,23 +597,27 @@ Accumulato durante le 7 iterazioni di CI conformance su PR #29.
     `mb12-userprobe` supera il punto di triple-fault precedente e
     raggiunge `[mb12] handing off to user tasks` (vedi nuovo finding § 22).
 
-22. ⚠️ **`mb12-userprobe` user-side serial output missing** (nuovo,
-    post-MB13.b 2026-05-19). Con MB13.b il smoke `mb12-userprobe` ora
-    boota fino a `[mb12] handing off to user tasks`, poi la VM va in
-    `stopped` senza emettere le righe attese `ping`, `[user] exit=0`,
-    `[user] exit=0`. Il triple-fault precedente è chiuso (era a
-    `[sched] entering Ring 3 via iretq`; ora la transizione Ring 3
-    avviene con successo, evidenziato dal fatto che il kernel stampa
-    "handing off to user tasks" *dopo* il CR3-switch e ritorna senza
-    panic). Ipotesi: (a) il dispatcher scheduler MB12.0a/b non chiama
-    `enter_user_mode` per la prima dispatch dopo aver registrato i
-    due processi (ASsumendo che il path "first-dispatch detection via
-    context.rsp == 0" non sia attivo nel boot path mb12), oppure
-    (b) i due user-task triggerano un fault non printato che termina
-    silenziosamente la VM. Tracciato come **MB13.b.follow-up** in
-    todo.md — fuori scope per MB13.b stricto sensu (che è il fix del
-    CR3 triple-fault), ma deve essere indagato prima della chiusura
-    di MB13 globale.
+22. ~~⚠️ **`mb12-userprobe` user-side serial output missing**~~ ✅
+    **CHIUSO da MB13.f (2026-05-19).** Root cause: `enter_user_mode`
+    eseguiva `mov cr3, dest_cr3` mentre `RSP` puntava ancora allo stack
+    del chiamante. Nel path MB12 first-dispatch invocato da dentro un
+    syscall handler (`SYSCALL` su x86_64 non commuta `SP`), quello stack
+    era lo *user stack del task uscente*: dopo il `mov cr3` la pagina
+    non era più mappata nel nuovo PML4 (l'user half è privato per
+    processo) e il primo `push {ss}` per il build dell'iretq frame
+    produceva un page-fault → triple-fault → VM reset. La diagnostica
+    del 2026-05-19 mostrava `[mb12] handing off to user tasks` (stampato
+    da kmain prima di `yield_current`) seguito da silenzio: il primo
+    `enter_user_mode` veniva eseguito ma faultava all'istante, senza
+    raggiungere alcuna istruzione Ring 3 (quindi nessun `[user] exit=0`
+    né `ping`). **Fix MB13.f:** `enter_user_mode` aggiunge il parametro
+    `kernel_stack_top: u64` e fa `mov rsp, {kstk}` *prima* del `mov cr3`,
+    spostando l'esecuzione su una pagina kernel-half mirrored (range
+    MB10 isolato `[KERNEL_STACK_VA_BASE, KERNEL_STACK_VA_END)`) che
+    resta mappata dall'altra parte del CR3 reload. Entrambi i call site
+    aggiornati: `scheduling.rs::yield_current` first-dispatch e
+    `lib.rs` MB11 single-task path. Pending: smoke validation completa
+    su Proxmox VMID 103 a deploy-time (vedi § "Verifica MB13.f" sotto).
 
 ---
 

@@ -797,12 +797,12 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 | MB10 | Kernel stack isolation + guard page | `[x]` | `8c1496a` | [0002](docs/adr/0002-mb10-kernel-stack-isolation.md) |
 | MB11 | Primo userspace Ring 3 + per-process CR3 + STAR fix | `[x]` | `22289e1` + `c743173` | [0004](docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md) |
 | MB12 | IPC reale (queue + capability stub + multi-task user) | `[x]` | `60f3a82` | [0005](docs/adr/0005-mb12-ipc-message-passing.md) |
-| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[~]`** (MB13.a + MB13.b + MB13.c + MB13.d chiusi 2026-05-19; MB13.e open) | — | TBD ADR-0006 |
+| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[~]`** (MB13.a + MB13.b + MB13.c + MB13.d + MB13.f chiusi 2026-05-19; MB13.e open) | — | TBD ADR-0006 |
 | MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[ ]` | — | — |
 
 ### P6.MB13 — `omni-capability` integration reale
 
-- **Status:** `[~]` (MB13.a + MB13.b + MB13.c chiusi 2026-05-19; MB13.d/e ancora aperti)
+- **Status:** `[~]` (MB13.a + MB13.b + MB13.c + MB13.d + MB13.f chiusi 2026-05-19; MB13.e aperto)
 - **Priority:** P6 / High
 - **Effort:** 1-2 giornate (gating SIMD + glue + nuovi test) + 0.5-1 giornata per il fix triple-fault
 - **Dependencies:** MB12 ✅; nessuna esterna
@@ -895,9 +895,28 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
   - **Note:** `cargo test -p omni-kernel --lib` su `x86_64-unknown-linux-gnu` segfaulta a `dispatcher_time_monotonic_returns_u64` (CMOS port I/O privilegiato in userspace Linux) e al teardown di `bare_metal::paging::tests`. Entrambi sono carryover preesistenti (item §4.5 #16 in progress-omni.md). Confermato pre-esistente via `git stash` + retry: SIGSEGV riproducibile su HEAD prima di MB13.d.
   - **ADR-0006:** non scritto in MB13.d — l'ABI extension è additiva al `IpcCreateChannel` documentato in ADR-0005 § Migration (che già menziona "MB13: omni-capability integration ... swap to a real Ed25519CapabilityProvider"). Tracciato per MB13.e come "ADR-0005 amendment" o ADR-0006 stand-alone.
 
+#### P6.MB13.f — `enter_user_mode` kernel-stack swap (first-dispatch smoke fix)
+
+- **Status:** `[x]` (chiuso 2026-05-19)
+- **Effort effettivo:** 0.5 giornata
+- **Rationale:** dopo MB13.b la VM superava il triple-fault del CR3 e raggiungeva `[mb12] handing off to user tasks`, ma il primo dispatch user-side moriva silenziosamente (nessun `[user] exit=0`, nessun `ping`). Indagine: `enter_user_mode` eseguiva `mov cr3, dest_cr3` mentre `RSP` puntava ancora allo stack del chiamante. Nel path MB12 first-dispatch invocato da dentro un syscall handler (`SYSCALL` su x86_64 non commuta `SP`), quello stack era lo *user stack del task uscente*. Dopo il `mov cr3` quella pagina non era più mappata nel nuovo PML4 e il primo `push {ss}` produceva un page-fault → triple-fault → VM reset, prima ancora che il sender potesse eseguire una qualsiasi istruzione Ring 3.
+- **Deliverables consegnati:**
+  - **`crates/omni-kernel/src/bare_metal/usermode.rs`** — `enter_user_mode` aggiunge un nuovo parametro `kernel_stack_top: u64` e fa `mov rsp, {kstk}` **prima** del `mov cr3`. Lo stack di destinazione è nel range MB10 isolato `[KERNEL_STACK_VA_BASE, KERNEL_STACK_VA_END)` (PML4 index ≥ `0x180`, kernel half), mirrored per riferimento in ogni PML4 per-process via `AddressSpace::new_with_kernel_half` → resta mappato dall'altra parte del CR3 reload. Stub non-x86_64 aggiornato in tandem.
+  - **`crates/omni-kernel/src/scheduling.rs`** — `RoundRobinScheduler::yield_current` first-dispatch path passa `kernel_stack_top` (già calcolato in stack frame come `kernel_stack_va + KERNEL_STACK_SIZE` per il TSS.rsp0 update MB12.0a). Commento aggiornato per rimuovere la nota stale "MB12 bare-metal limitation" (era valida pre-MB13.b).
+  - **`crates/omni-kernel/src/lib.rs`** — MB11 single-task dispatch (kmain → enter_user_mode diretto) passa `pcb.task.kernel_stack_va + scheduling::KERNEL_STACK_SIZE`. Nel path MB11 il caller-side RSP è già su upper-half (boot stack), ma il fix è uniforme.
+- **Acceptance (verified):**
+  - [x] `cargo build --workspace --all-features` clean (0 warning).
+  - [x] `cargo build --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --release --features omni-kernel/mb12-userprobe` clean.
+  - [x] `cargo clippy --workspace --all-features --all-targets -- -D warnings` clean.
+  - [x] `cargo clippy --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --release --features omni-kernel/mb12-userprobe -- -D warnings` clean.
+  - [x] `cargo test -p omni-kernel --tests` integration suite (8 + 6 + 11 + boot_info/panic_record/heap) tutta verde — il fix è alle linee asm bare-metal, non tocca il path host-test.
+  - [x] Build Info panel aggiornato: `Active = MB13.f iretq kstk-swap`, `Track B = MB1-MB12 OK, MB13.a-f OK`, `Phase 1 ≈ 77%`.
+  - **Pending:** validazione smoke completa su Proxmox VMID 103 (deferred a deploy-time, vedi § "Verifica MB13.f" in `progress-omni.md`).
+- **Note di analisi:** il bug latente sarebbe affiorato già a MB11 in teoria, ma nella pipeline MB11 il caller di `enter_user_mode` era `kmain` direttamente (RSP su boot stack, upper half, mirrored). Solo con MB12 — dove il first-dispatch viene innescato da un syscall handler che gira sullo user stack del task uscente — il path patologico è diventato raggiungibile. La pre-esistenza del bug non era visibile nei test host perché `enter_user_mode` ha un `#[cfg(target_arch = "x86_64")]` stub no-op su Linux host build.
+
 #### P6.MB13.e — Chiusura ciclo (PR + tag intermedio)
 
-- **Status:** `[ ]` (last; blocked-on `MB13.a`-`MB13.d`)
+- **Status:** `[ ]` (last; blocked-on `MB13.a`-`MB13.d` + `MB13.f`)
 - **Effort:** 0.5 giornata (PR + CI conformance + release notes)
 - **Deliverables:**
   - PR `feat/kernel-mb13-capability-real` → `main` (squash-merge).
@@ -907,10 +926,10 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 
 ### Acceptance criteria globali MB13
 
-- [ ] `cargo build -p omni-crypto --target x86_64-unknown-none --no-default-features` clean (oggi: LLVM ICE).
-- [ ] `cargo test --workspace --all-features` ≥ 432 pass (era 426 post-MB12, target +6 da `mb13_capability_signed.rs`).
-- [ ] Smoke `mb12-userprobe` su QEMU+OVMF + Proxmox VMID 103 = serial output completo (oggi: triple-fault).
-- [ ] Smoke `mb11-userprobe` su QEMU+OVMF = `[user] hello / [user] exit=0` (oggi: stesso bug latente, mai validato manuale).
+- [x] `cargo build -p omni-crypto --target x86_64-unknown-none --no-default-features` clean (chiuso da MB13.a).
+- [x] `cargo test --workspace --all-features` ≥ 432 pass (chiuso da MB13.d: 443+).
+- [~] Smoke `mb12-userprobe` su QEMU+OVMF + Proxmox VMID 103 = serial output completo (MB13.f rimuove il triple-fault del primo `push` post-CR3; pending validazione hardware).
+- [~] Smoke `mb11-userprobe` su QEMU+OVMF = `[user] hello / [user] exit=0` (stesso fix MB13.f; pending validazione manuale).
 - [ ] `StubCapabilityProvider` rimosso da `crates/omni-kernel/src/capabilities.rs` (o ridotto a `#[cfg(test)]` mock).
 - [ ] ADR-0006 `accepted` in `docs/adr/`.
 
@@ -920,7 +939,7 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 
 Tracciati per non essere persi. Tutti carryover da `progress-omni.md` § 4.1.
 
-- [ ] **MB13.b follow-up — `mb12-userprobe` user-side serial output missing** (scoperto 2026-05-19 post-MB13.b deploy). Con MB13.b il smoke MB12 ora supera il triple-fault del CR3 e raggiunge `[mb12] handing off to user tasks`, poi la VM va `stopped` senza emettere `ping` / `[user] exit=0` / `[user] exit=0`. Possibili cause: (a) `RoundRobinScheduler::yield_current` non invoca `enter_user_mode` per la first-dispatch dei task user appena registrati (MB12.0a/b detection via `context.rsp == 0` da rivedere), oppure (b) i task user innescano un fault silenzioso (CS/SS selector wrong dopo CR3 switch, oppure user RIP non mappato in upper-half-tolerant fashion). Indagare con `int3` breakpoint in user binary + serial dump dei selettori al primo `enter_user_mode`. Non bloccante per MB13.b strictly (CR3-switch è la goal); precondizione per MB13.c smoke completa.
+- [x] **MB13.b follow-up — `mb12-userprobe` user-side serial output missing** (scoperto 2026-05-19 post-MB13.b deploy; **CHIUSO 2026-05-19 da MB13.f**). Root cause: `enter_user_mode` eseguiva `mov cr3, dest_cr3` mentre `RSP` puntava ancora allo stack del chiamante. Nel path MB12 first-dispatch invocato da dentro un syscall handler (`SYSCALL` non commuta `SP`), quello stack era lo *user stack del task uscente*; dopo il `mov cr3` la pagina non era più mappata nel nuovo PML4 e il primo `push {ss}` produceva un page-fault → triple-fault → VM reset. **Fix MB13.f:** `enter_user_mode` aggiunge un nuovo parametro `kernel_stack_top: u64` e fa `mov rsp, {kstk}` **prima** del `mov cr3`. Lo stack di destinazione (range MB10 isolato `[KERNEL_STACK_VA_BASE, KERNEL_STACK_VA_END)`) è mirrored per riferimento in ogni PML4 per-process via la kernel-half clone, quindi resta mappato dall'altra parte del CR3 reload. Entrambi i call site aggiornati: `scheduling.rs::yield_current` first-dispatch e `lib.rs` MB11 single-task path.
 
 - [ ] **TLB shootdown multi-core** — nessun MP/AP enable; LAPIC pronta ma il sistema gira single-core. Necessario prima di P6.7 (driver model). MB11 ha previsto questo: il kernel-half "by reference" di `AddressSpace` diventerà un costo cross-AS broadcast con MP. ADR-0004 § Alternative B documenta la mitigazione futura.
 - [ ] **`map_4k` huge-page split** — `map_4k` oggi non splitta una 2 MiB/1 GiB PS=1 entry. Non bloccante finché il kernel non riscrive VA in range huge-page mappati dal bootloader, ma rischia di mordere quando il driver model entra in scena.

@@ -589,6 +589,7 @@ pub fn kmain(
                             pcb.user_stack_top,
                             bare_metal::usermode::USER_RFLAGS,
                             pcb.address_space.pml4_phys.0,
+                            pcb.task.kernel_stack_va + scheduling::KERNEL_STACK_SIZE,
                         );
                     } else {
                         early_console::write_str("[user] PCB lookup FAILED\n");

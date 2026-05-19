@@ -610,27 +610,33 @@ impl Scheduler for RoundRobinScheduler {
             // via the iretq trampoline instead; the previous task already
             // saved its own state during the kernel-side `yield_current`
             // path that landed us here. `enter_user_mode` performs its
-            // own `mov cr3` so we don't duplicate it here.
+            // own stack swap + `mov cr3` so we don't duplicate them here.
             //
-            // **MB12 bare-metal limitation:** the CR3 reload inside
-            // `enter_user_mode` triple-faults on real hardware today
-            // because the kernel ELF is `ET_EXEC` at `0x200000` (PML4
-            // index 0) and `new_with_kernel_half` only clones the
-            // upper half. See `kernel-runner/src/main.rs` doc-comment
-            // for the full diagnosis. Host tests are not affected
-            // (no `mov cr3` in test mode); MB12 bare-metal smoke is
-            // tracked as an MB13 follow-up.
+            // The kernel ELF lives entirely in the canonical upper half
+            // (MB13.b ET_DYN/PIE relocation) and the destination task's
+            // kernel stack is in the MB10 isolated range
+            // `[KERNEL_STACK_VA_BASE, KERNEL_STACK_VA_END)`, both of
+            // which the per-process PML4 mirrors by reference. The
+            // `enter_user_mode` trampoline therefore swaps RSP onto
+            // `kernel_stack_top` BEFORE the CR3 reload (MB13.f), keeping
+            // the `push` sequence that builds the iretq frame on a page
+            // that is mapped in the incoming address space — without
+            // this swap the CR3 reload would leave RSP dangling on the
+            // outgoing task's user stack (unmapped in the new PML4) and
+            // the next push would triple-fault.
             if saved_rsp == 0 {
                 // SAFETY: user_entry + user_stack_top are validated by
                 // `spawn_from_elf` to reside in the user half of this
-                // AS; `enter_user_mode` reloads CR3 atomically with the
-                // iretq frame build.
+                // AS; `kernel_stack_top` is the MB10 isolated kstk slot
+                // owned by the destination task and is mirrored in every
+                // per-process PML4 via the kernel-half clone.
                 unsafe {
                     crate::bare_metal::usermode::enter_user_mode(
                         user_entry,
                         user_stack_top,
                         crate::bare_metal::usermode::USER_RFLAGS,
                         cr3_phys,
+                        kernel_stack_top,
                     );
                 }
             }
