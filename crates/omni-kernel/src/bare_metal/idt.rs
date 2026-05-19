@@ -1,19 +1,50 @@
 //! Interrupt Descriptor Table (IDT) for `x86_64` long mode (Track B, MB3).
 //!
-//! Installs a minimal IDT that catches the four most critical synchronous
-//! exceptions before they cause silent triple-faults:
+//! Installs a comprehensive synchronous-exception IDT — every CPU vector
+//! between 0 and 21 (the full set defined by Intel SDM Vol 3A §6.15 plus
+//! AMD's #VC/#SX) is wired to a Rust handler that writes the vector and
+//! optional error code to the early console before halting the CPU.
 //!
-//! | Vector | Mnemonic | Name               | Error code? |
-//! |--------|----------|--------------------|-------------|
-//! | 0      | #DE      | Divide Error       | No          |
-//! | 8      | #DF      | Double Fault       | Yes (always 0) |
-//! | 13     | #GP      | General Protection | Yes         |
-//! | 14     | #PF      | Page Fault         | Yes         |
+//! ## Critical vectors with dedicated diagnostics
 //!
-//! All four handlers write the exception vector and (where present) the
-//! error code to the early console, then halt the CPU forever. The IDT
-//! is loaded with `lidt` but interrupts are NOT enabled with `sti` in
-//! this release — the IDT only catches synchronous (fault/trap) exceptions.
+//! | Vector | Mnemonic | Name               | Error code? | Notes |
+//! |--------|----------|--------------------|-------------|-------|
+//! | 0      | #DE      | Divide Error       | No          | dedicated handler |
+//! | 8      | #DF      | Double Fault       | Yes (always 0) | dedicated handler |
+//! | 13     | #GP      | General Protection | Yes         | dedicated handler |
+//! | 14     | #PF      | Page Fault         | Yes         | dedicated handler — also prints CR2 |
+//!
+//! ## Catch-all vectors (MB13.g)
+//!
+//! All remaining synchronous vectors share two generic handlers
+//! ([`kernel_handle_exception_noerr`] / [`kernel_handle_exception_witherr`])
+//! that record `vec=NN` followed by the [`ExceptionFrame`] — giving us
+//! post-mortem visibility on previously-silent triple-faults (e.g., a
+//! mis-built iretq frame faulting to #SS or #NP and cascading to #DF on
+//! a missing IDT entry):
+//!
+//! | Vector | Mnemonic | Error code? |
+//! |--------|----------|-------------|
+//! | 1  | #DB  | No  |
+//! | 2  | NMI  | No  |
+//! | 3  | #BP  | No  |
+//! | 4  | #OF  | No  |
+//! | 5  | #BR  | No  |
+//! | 6  | #UD  | No  |
+//! | 7  | #NM  | No  |
+//! | 10 | #TS  | Yes |
+//! | 11 | #NP  | Yes |
+//! | 12 | #SS  | Yes |
+//! | 16 | #MF  | No  |
+//! | 17 | #AC  | Yes |
+//! | 18 | #MC  | No  |
+//! | 19 | #XF  | No  |
+//! | 20 | #VE  | No  |
+//! | 21 | #CP  | Yes |
+//!
+//! The IDT is loaded with `lidt` but interrupts are NOT enabled with
+//! `sti` in this release — the IDT only catches synchronous (fault/trap)
+//! exceptions.
 //!
 //! ## Calling convention
 //!
@@ -197,6 +228,156 @@ core::arch::global_asm!(
     "    lea rdi, [rsp + 8]",
     "    call kernel_handle_pf",
     "    ud2",
+    // ============================================================
+    // MB13.g — catch-all stubs for the remaining synchronous CPU
+    // exception vectors. Each stub loads the vector number into RDI,
+    // the ExceptionFrame pointer into RSI, and (for the error-code
+    // variants) the CPU-pushed error code into RDX, then calls into a
+    // generic Rust handler.
+    //
+    // No-error-code variant alignment math: on entry the CPU has
+    // pushed SS:RSP:RFLAGS:CS:RIP (40 bytes; 8 mod 16 from a 16-byte
+    // aligned interrupt boundary). `sub rsp, 8` restores 16-byte
+    // alignment before the C-ABI `call`.
+    //
+    // Error-code variant alignment math: 48 bytes pushed (0 mod 16);
+    // `pop rdx` removes the error code (40 bytes left; 8 mod 16);
+    // `sub rsp, 8` then restores 16-byte alignment.
+    // ============================================================
+
+    // ---- #DB (1): Debug — no error code ----
+    ".global isr_db",
+    "isr_db:",
+    "    sub rsp, 8",
+    "    mov rdi, 1",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_noerr",
+    "    ud2",
+    // ---- NMI (2): Non-Maskable Interrupt — no error code ----
+    ".global isr_nmi",
+    "isr_nmi:",
+    "    sub rsp, 8",
+    "    mov rdi, 2",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_noerr",
+    "    ud2",
+    // ---- #BP (3): Breakpoint — no error code ----
+    ".global isr_bp",
+    "isr_bp:",
+    "    sub rsp, 8",
+    "    mov rdi, 3",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_noerr",
+    "    ud2",
+    // ---- #OF (4): Overflow — no error code ----
+    ".global isr_of",
+    "isr_of:",
+    "    sub rsp, 8",
+    "    mov rdi, 4",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_noerr",
+    "    ud2",
+    // ---- #BR (5): BOUND Range Exceeded — no error code ----
+    ".global isr_br",
+    "isr_br:",
+    "    sub rsp, 8",
+    "    mov rdi, 5",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_noerr",
+    "    ud2",
+    // ---- #UD (6): Invalid Opcode — no error code ----
+    ".global isr_ud",
+    "isr_ud:",
+    "    sub rsp, 8",
+    "    mov rdi, 6",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_noerr",
+    "    ud2",
+    // ---- #NM (7): Device Not Available — no error code ----
+    ".global isr_nm",
+    "isr_nm:",
+    "    sub rsp, 8",
+    "    mov rdi, 7",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_noerr",
+    "    ud2",
+    // ---- #TS (10): Invalid TSS — error code ----
+    ".global isr_ts",
+    "isr_ts:",
+    "    pop rdx",
+    "    sub rsp, 8",
+    "    mov rdi, 10",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_witherr",
+    "    ud2",
+    // ---- #NP (11): Segment Not Present — error code ----
+    ".global isr_np",
+    "isr_np:",
+    "    pop rdx",
+    "    sub rsp, 8",
+    "    mov rdi, 11",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_witherr",
+    "    ud2",
+    // ---- #SS (12): Stack-Segment Fault — error code ----
+    ".global isr_ss",
+    "isr_ss:",
+    "    pop rdx",
+    "    sub rsp, 8",
+    "    mov rdi, 12",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_witherr",
+    "    ud2",
+    // ---- #MF (16): x87 FPU Floating-Point Error — no error code ----
+    ".global isr_mf",
+    "isr_mf:",
+    "    sub rsp, 8",
+    "    mov rdi, 16",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_noerr",
+    "    ud2",
+    // ---- #AC (17): Alignment Check — error code ----
+    ".global isr_ac",
+    "isr_ac:",
+    "    pop rdx",
+    "    sub rsp, 8",
+    "    mov rdi, 17",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_witherr",
+    "    ud2",
+    // ---- #MC (18): Machine Check — no error code ----
+    ".global isr_mc",
+    "isr_mc:",
+    "    sub rsp, 8",
+    "    mov rdi, 18",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_noerr",
+    "    ud2",
+    // ---- #XF (19): SIMD FP Exception — no error code ----
+    ".global isr_xf",
+    "isr_xf:",
+    "    sub rsp, 8",
+    "    mov rdi, 19",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_noerr",
+    "    ud2",
+    // ---- #VE (20): Virtualization Exception — no error code ----
+    ".global isr_ve",
+    "isr_ve:",
+    "    sub rsp, 8",
+    "    mov rdi, 20",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_noerr",
+    "    ud2",
+    // ---- #CP (21): Control Protection Exception — error code ----
+    ".global isr_cp",
+    "isr_cp:",
+    "    pop rdx",
+    "    sub rsp, 8",
+    "    mov rdi, 21",
+    "    lea rsi, [rsp + 8]",
+    "    call kernel_handle_exception_witherr",
+    "    ud2",
 );
 
 // Extern declarations so that Rust can take the address of each stub.
@@ -206,6 +387,22 @@ unsafe extern "C" {
     fn isr_df();
     fn isr_gp();
     fn isr_pf();
+    fn isr_db();
+    fn isr_nmi();
+    fn isr_bp();
+    fn isr_of();
+    fn isr_br();
+    fn isr_ud();
+    fn isr_nm();
+    fn isr_ts();
+    fn isr_np();
+    fn isr_ss();
+    fn isr_mf();
+    fn isr_ac();
+    fn isr_mc();
+    fn isr_xf();
+    fn isr_ve();
+    fn isr_cp();
 }
 
 // -----------------------------------------------------------------------
@@ -263,6 +460,44 @@ extern "C" fn kernel_handle_pf(frame: *const ExceptionFrame, error_code: u64) {
     super::arch::halt_forever()
 }
 
+/// Generic catch-all for synchronous exceptions without a CPU-pushed
+/// error code (MB13.g). The vector number is supplied by the assembly
+/// stub so the same Rust function serves every no-error-code vector.
+#[unsafe(no_mangle)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "vector number fits usize trivially"
+)]
+extern "C" fn kernel_handle_exception_noerr(vector: u64, frame: *const ExceptionFrame) {
+    early_console::write_str("\n[OMNI OS EXCEPTION] vec=");
+    early_console::write_usize(vector as usize);
+    early_console::write_str("  (no error code)\n");
+    log_frame(frame);
+    super::arch::halt_forever()
+}
+
+/// Generic catch-all for synchronous exceptions that do push a CPU
+/// error code (MB13.g). For #PF the dedicated [`kernel_handle_pf`]
+/// is preferred because it also dumps `CR2`.
+#[unsafe(no_mangle)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "vector number and error code fit usize trivially"
+)]
+extern "C" fn kernel_handle_exception_witherr(
+    vector: u64,
+    frame: *const ExceptionFrame,
+    error_code: u64,
+) {
+    early_console::write_str("\n[OMNI OS EXCEPTION] vec=");
+    early_console::write_usize(vector as usize);
+    early_console::write_str("  code=");
+    early_console::write_usize(error_code as usize);
+    early_console::write_str("\n");
+    log_frame(frame);
+    super::arch::halt_forever()
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "register values fit usize on x86_64"
@@ -295,12 +530,11 @@ fn log_frame(frame: *const ExceptionFrame) {
 ///
 /// # Vectors installed
 ///
-/// | Vector | Handler          |
-/// |--------|-----------------|
-/// | 0      | `kernel_handle_de` (#DE) |
-/// | 8      | `kernel_handle_df` (#DF) |
-/// | 13     | `kernel_handle_gp` (#GP) |
-/// | 14     | `kernel_handle_pf` (#PF) |
+/// Vectors 0/8/13/14 have dedicated handlers that emit a mnemonic and
+/// (for #PF) the faulting CR2. All other synchronous CPU vectors in
+/// 1..=21 share two generic handlers that record `vec=NN` plus the
+/// optional error code, so a previously-silent triple-fault becomes a
+/// loggable single fault (MB13.g).
 #[cfg(target_arch = "x86_64")]
 pub fn idt_init() {
     use core::arch::asm;
@@ -309,10 +543,29 @@ pub fn idt_init() {
     // code path at this point in initialisation.
     let idt = unsafe { &mut *core::ptr::addr_of_mut!(IDT) };
 
+    // Dedicated diagnostics handlers.
     idt[0] = IdtEntry::interrupt_gate(isr_de as usize as u64, KERNEL_CS);
     idt[8] = IdtEntry::interrupt_gate(isr_df as usize as u64, KERNEL_CS);
     idt[13] = IdtEntry::interrupt_gate(isr_gp as usize as u64, KERNEL_CS);
     idt[14] = IdtEntry::interrupt_gate(isr_pf as usize as u64, KERNEL_CS);
+
+    // MB13.g catch-all coverage for the remaining synchronous vectors.
+    idt[1] = IdtEntry::interrupt_gate(isr_db as usize as u64, KERNEL_CS);
+    idt[2] = IdtEntry::interrupt_gate(isr_nmi as usize as u64, KERNEL_CS);
+    idt[3] = IdtEntry::interrupt_gate(isr_bp as usize as u64, KERNEL_CS);
+    idt[4] = IdtEntry::interrupt_gate(isr_of as usize as u64, KERNEL_CS);
+    idt[5] = IdtEntry::interrupt_gate(isr_br as usize as u64, KERNEL_CS);
+    idt[6] = IdtEntry::interrupt_gate(isr_ud as usize as u64, KERNEL_CS);
+    idt[7] = IdtEntry::interrupt_gate(isr_nm as usize as u64, KERNEL_CS);
+    idt[10] = IdtEntry::interrupt_gate(isr_ts as usize as u64, KERNEL_CS);
+    idt[11] = IdtEntry::interrupt_gate(isr_np as usize as u64, KERNEL_CS);
+    idt[12] = IdtEntry::interrupt_gate(isr_ss as usize as u64, KERNEL_CS);
+    idt[16] = IdtEntry::interrupt_gate(isr_mf as usize as u64, KERNEL_CS);
+    idt[17] = IdtEntry::interrupt_gate(isr_ac as usize as u64, KERNEL_CS);
+    idt[18] = IdtEntry::interrupt_gate(isr_mc as usize as u64, KERNEL_CS);
+    idt[19] = IdtEntry::interrupt_gate(isr_xf as usize as u64, KERNEL_CS);
+    idt[20] = IdtEntry::interrupt_gate(isr_ve as usize as u64, KERNEL_CS);
+    idt[21] = IdtEntry::interrupt_gate(isr_cp as usize as u64, KERNEL_CS);
 
     let idtr = Idtr {
         limit: (core::mem::size_of_val(idt) - 1) as u16,
@@ -427,5 +680,29 @@ mod tests {
     fn exception_frame_size() {
         // 5 × u64 = 40 bytes.
         assert_eq!(core::mem::size_of::<ExceptionFrame>(), 40);
+    }
+
+    /// MB13.g — every CPU synchronous vector in 0..=21 must be covered
+    /// by an IDT entry. Vectors 9 and 15 are architecturally reserved
+    /// and intentionally left as `missing()` sentinels.
+    #[test]
+    fn mb13g_synchronous_vectors_covered() {
+        const COVERED: &[usize] = &[
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21,
+        ];
+        const RESERVED: &[usize] = &[9, 15];
+        assert_eq!(COVERED.len(), 20);
+        assert_eq!(RESERVED.len(), 2);
+        // Reserved must not overlap with covered.
+        for &r in RESERVED {
+            assert!(
+                !COVERED.contains(&r),
+                "reserved vector {r} appears in covered list"
+            );
+        }
+        // Covered list is monotonically increasing.
+        for w in COVERED.windows(2) {
+            assert!(w[0] < w[1]);
+        }
     }
 }

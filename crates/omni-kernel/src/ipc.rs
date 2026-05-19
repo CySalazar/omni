@@ -303,7 +303,8 @@ impl KernelIpcRegistry {
         let resource = KernelResource::IpcChannel(id_u64);
 
         let send_subject = if let Some(tok) = send_token {
-            if verifier.verify(&tok, KernelAction::IpcSend, resource) != CapabilityVerdict::Authorised
+            if verifier.verify(&tok, KernelAction::IpcSend, resource)
+                != CapabilityVerdict::Authorised
             {
                 return Err(KernelError::CapabilityDenied);
             }
@@ -313,7 +314,8 @@ impl KernelIpcRegistry {
         };
 
         let recv_subject = if let Some(tok) = recv_token {
-            if verifier.verify(&tok, KernelAction::IpcRecv, resource) != CapabilityVerdict::Authorised
+            if verifier.verify(&tok, KernelAction::IpcRecv, resource)
+                != CapabilityVerdict::Authorised
             {
                 return Err(KernelError::CapabilityDenied);
             }
@@ -427,11 +429,7 @@ impl KernelIpcRegistry {
     ///
     /// - [`KernelError::InvalidArgument`] if no such channel exists.
     /// - [`KernelError::CapabilityDenied`] if `requester != channel.owner`.
-    pub fn destroy_channel(
-        &mut self,
-        channel: ChannelId,
-        requester: TaskId,
-    ) -> KernelResult<()> {
+    pub fn destroy_channel(&mut self, channel: ChannelId, requester: TaskId) -> KernelResult<()> {
         let entry = self
             .channels
             .get(&channel.0)
@@ -680,10 +678,22 @@ mod tests {
         let mut r = KernelIpcRegistry::new();
         let stub = StubCapabilityProvider;
         let a = r
-            .create_channel(TaskId(1), open_policy(4, BackpressurePolicy::Block), None, None, &stub)
+            .create_channel(
+                TaskId(1),
+                open_policy(4, BackpressurePolicy::Block),
+                None,
+                None,
+                &stub,
+            )
             .unwrap();
         let b = r
-            .create_channel(TaskId(1), open_policy(4, BackpressurePolicy::Block), None, None, &stub)
+            .create_channel(
+                TaskId(1),
+                open_policy(4, BackpressurePolicy::Block),
+                None,
+                None,
+                &stub,
+            )
             .unwrap();
         assert_eq!(a, ChannelId(1));
         assert_eq!(b, ChannelId(2));
@@ -695,7 +705,13 @@ mod tests {
         let mut r = KernelIpcRegistry::new();
         let stub = StubCapabilityProvider;
         let err = r
-            .create_channel(TaskId(1), open_policy(0, BackpressurePolicy::Drop), None, None, &stub)
+            .create_channel(
+                TaskId(1),
+                open_policy(0, BackpressurePolicy::Drop),
+                None,
+                None,
+                &stub,
+            )
             .unwrap_err();
         assert_eq!(err, KernelError::InvalidArgument);
     }
@@ -705,7 +721,13 @@ mod tests {
         let mut r = KernelIpcRegistry::new();
         let stub = StubCapabilityProvider;
         let id = r
-            .create_channel(TaskId(10), open_policy(4, BackpressurePolicy::Drop), None, None, &stub)
+            .create_channel(
+                TaskId(10),
+                open_policy(4, BackpressurePolicy::Drop),
+                None,
+                None,
+                &stub,
+            )
             .unwrap();
         // Non-owner cannot destroy.
         assert_eq!(
@@ -724,7 +746,13 @@ mod tests {
         let mut r = KernelIpcRegistry::new();
         let stub = StubCapabilityProvider;
         let ch = r
-            .create_channel(TaskId(1), open_policy(4, BackpressurePolicy::Drop), None, None, &stub)
+            .create_channel(
+                TaskId(1),
+                open_policy(4, BackpressurePolicy::Drop),
+                None,
+                None,
+                &stub,
+            )
             .unwrap();
         let env = make_envelope(ch, b"ping");
         let wake = r.send(env, TaskId(10), principal(0)).unwrap();
@@ -743,7 +771,13 @@ mod tests {
         let mut r = KernelIpcRegistry::new();
         let stub = StubCapabilityProvider;
         let ch = r
-            .create_channel(TaskId(1), open_policy(2, BackpressurePolicy::Drop), None, None, &stub)
+            .create_channel(
+                TaskId(1),
+                open_policy(2, BackpressurePolicy::Drop),
+                None,
+                None,
+                &stub,
+            )
             .unwrap();
         // Userspace claims to be TaskId(999); kernel must overwrite to actual.
         let mut env = make_envelope(ch, b"x");
@@ -760,7 +794,13 @@ mod tests {
         let mut r = KernelIpcRegistry::new();
         let stub = StubCapabilityProvider;
         let ch = r
-            .create_channel(TaskId(1), open_policy(1, BackpressurePolicy::Drop), None, None, &stub)
+            .create_channel(
+                TaskId(1),
+                open_policy(1, BackpressurePolicy::Drop),
+                None,
+                None,
+                &stub,
+            )
             .unwrap();
         r.send(make_envelope(ch, b"first"), TaskId(10), principal(0))
             .unwrap();
@@ -786,10 +826,13 @@ mod tests {
                 &stub,
             )
             .unwrap();
-        r.send(make_envelope(ch, b"a"), TaskId(10), principal(0)).unwrap();
-        r.send(make_envelope(ch, b"b"), TaskId(10), principal(0)).unwrap();
+        r.send(make_envelope(ch, b"a"), TaskId(10), principal(0))
+            .unwrap();
+        r.send(make_envelope(ch, b"b"), TaskId(10), principal(0))
+            .unwrap();
         // Queue now full → "a" evicted, queue becomes [b, c].
-        r.send(make_envelope(ch, b"c"), TaskId(10), principal(0)).unwrap();
+        r.send(make_envelope(ch, b"c"), TaskId(10), principal(0))
+            .unwrap();
         let (got, _) = r.receive(ch, TaskId(11), principal(0), false).unwrap();
         assert_eq!(got.unwrap().payload, b"b");
         let (got, _) = r.receive(ch, TaskId(11), principal(0), false).unwrap();
@@ -801,10 +844,19 @@ mod tests {
         let mut r = KernelIpcRegistry::new();
         let stub = StubCapabilityProvider;
         let ch = r
-            .create_channel(TaskId(1), open_policy(1, BackpressurePolicy::Block), None, None, &stub)
+            .create_channel(
+                TaskId(1),
+                open_policy(1, BackpressurePolicy::Block),
+                None,
+                None,
+                &stub,
+            )
             .unwrap();
-        r.send(make_envelope(ch, b"a"), TaskId(10), principal(0)).unwrap();
-        let wake = r.send(make_envelope(ch, b"b"), TaskId(20), principal(0)).unwrap();
+        r.send(make_envelope(ch, b"a"), TaskId(10), principal(0))
+            .unwrap();
+        let wake = r
+            .send(make_envelope(ch, b"b"), TaskId(20), principal(0))
+            .unwrap();
         assert_eq!(wake, WakeAction::Block(TaskId(20)));
         // Sender 20 must be parked in waiters_send.
         let ch_ref = r.channel(ch).unwrap();
@@ -818,7 +870,13 @@ mod tests {
         let mut r = KernelIpcRegistry::new();
         let stub = StubCapabilityProvider;
         let ch = r
-            .create_channel(TaskId(1), open_policy(4, BackpressurePolicy::Drop), None, None, &stub)
+            .create_channel(
+                TaskId(1),
+                open_policy(4, BackpressurePolicy::Drop),
+                None,
+                None,
+                &stub,
+            )
             .unwrap();
         let (got, wake) = r.receive(ch, TaskId(11), principal(0), true).unwrap();
         assert!(got.is_none());
@@ -832,7 +890,13 @@ mod tests {
         let mut r = KernelIpcRegistry::new();
         let stub = StubCapabilityProvider;
         let ch = r
-            .create_channel(TaskId(1), open_policy(4, BackpressurePolicy::Drop), None, None, &stub)
+            .create_channel(
+                TaskId(1),
+                open_policy(4, BackpressurePolicy::Drop),
+                None,
+                None,
+                &stub,
+            )
             .unwrap();
         let (got, wake) = r.receive(ch, TaskId(11), principal(0), false).unwrap();
         assert!(got.is_none());
@@ -844,12 +908,20 @@ mod tests {
         let mut r = KernelIpcRegistry::new();
         let stub = StubCapabilityProvider;
         let ch = r
-            .create_channel(TaskId(1), open_policy(4, BackpressurePolicy::Drop), None, None, &stub)
+            .create_channel(
+                TaskId(1),
+                open_policy(4, BackpressurePolicy::Drop),
+                None,
+                None,
+                &stub,
+            )
             .unwrap();
         // Receiver parks first.
         let _ = r.receive(ch, TaskId(11), principal(0), true).unwrap();
         // Now sender arrives.
-        let wake = r.send(make_envelope(ch, b"x"), TaskId(10), principal(0)).unwrap();
+        let wake = r
+            .send(make_envelope(ch, b"x"), TaskId(10), principal(0))
+            .unwrap();
         assert_eq!(wake, WakeAction::Wake(TaskId(11)));
     }
 
@@ -858,11 +930,19 @@ mod tests {
         let mut r = KernelIpcRegistry::new();
         let stub = StubCapabilityProvider;
         let ch = r
-            .create_channel(TaskId(1), open_policy(1, BackpressurePolicy::Block), None, None, &stub)
+            .create_channel(
+                TaskId(1),
+                open_policy(1, BackpressurePolicy::Block),
+                None,
+                None,
+                &stub,
+            )
             .unwrap();
         r.send(make_envelope(ch, b"first"), TaskId(10), principal(0))
             .unwrap();
-        let _ = r.send(make_envelope(ch, b"second"), TaskId(20), principal(0)).unwrap();
+        let _ = r
+            .send(make_envelope(ch, b"second"), TaskId(20), principal(0))
+            .unwrap();
         // The sender 20 is parked; pull "first" → wake 20.
         let (got, wake) = r.receive(ch, TaskId(11), principal(0), false).unwrap();
         assert!(got.is_some());
@@ -895,7 +975,8 @@ mod tests {
             .unwrap_err();
         assert_eq!(err, KernelError::CapabilityDenied);
         // Correct principal succeeds.
-        r.send(make_envelope(ch, b"y"), TaskId(99), principal(42)).unwrap();
+        r.send(make_envelope(ch, b"y"), TaskId(99), principal(42))
+            .unwrap();
     }
 
     #[test]
@@ -916,10 +997,9 @@ mod tests {
                 &stub,
             )
             .unwrap();
-        r.send(make_envelope(ch, b"x"), TaskId(99), principal(0)).unwrap();
-        let err = r
-            .receive(ch, TaskId(11), principal(99), false)
-            .unwrap_err();
+        r.send(make_envelope(ch, b"x"), TaskId(99), principal(0))
+            .unwrap();
+        let err = r.receive(ch, TaskId(11), principal(99), false).unwrap_err();
         assert_eq!(err, KernelError::CapabilityDenied);
         // Correct principal succeeds.
         let (got, _) = r.receive(ch, TaskId(11), principal(7), false).unwrap();
@@ -955,11 +1035,19 @@ mod tests {
         let mut r = KernelIpcRegistry::new();
         let stub = StubCapabilityProvider;
         let ch = r
-            .create_channel(TaskId(1), open_policy(8, BackpressurePolicy::Drop), None, None, &stub)
+            .create_channel(
+                TaskId(1),
+                open_policy(8, BackpressurePolicy::Drop),
+                None,
+                None,
+                &stub,
+            )
             .unwrap();
         assert_eq!(r.queue_depth(ch).unwrap(), 0);
-        r.send(make_envelope(ch, b"a"), TaskId(10), principal(0)).unwrap();
-        r.send(make_envelope(ch, b"b"), TaskId(10), principal(0)).unwrap();
+        r.send(make_envelope(ch, b"a"), TaskId(10), principal(0))
+            .unwrap();
+        r.send(make_envelope(ch, b"b"), TaskId(10), principal(0))
+            .unwrap();
         assert_eq!(r.queue_depth(ch).unwrap(), 2);
     }
 

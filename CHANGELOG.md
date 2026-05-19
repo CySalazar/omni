@@ -17,6 +17,79 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB13.g: comprehensive IDT coverage for synchronous
+  exceptions (2026-05-19).** Extends [`bare_metal::idt`] from 4
+  dedicated handlers (#DE, #DF, #GP, #PF) to **20 catch-all
+  vectors covering 0..=21** so that previously-silent triple-faults
+  surface as a single fault with provenance.
+
+  Motivation: after MB13.b (ET_DYN/PIE upper-half kernel) and MB13.f
+  (`enter_user_mode` kernel-stack swap) the Proxmox VMID 103
+  `mb12-userprobe` deploy reached the `iretq` boundary cleanly
+  (verified via inline COM1 tracepoint `'E'`) but the VM then halted
+  without emitting any tracepoint from the syscall, LAPIC, #PF, #GP
+  or #DF handlers. With 256 IDT slots initialised to
+  `IdtEntry::missing()` (P=0), any synchronous fault on a vector
+  outside {0,8,13,14} triggers a #NP that itself faults to #DF on a
+  missing entry — cascading to a triple fault and a silent VM
+  reset. MB13.g replaces that silence with a `[OMNI OS EXCEPTION]
+  vec=NN  code=X  rip=… cs=… rflags=…` line on the early console,
+  unblocking the root-cause analysis for MB13.h.
+
+  - **`crates/omni-kernel/src/bare_metal/idt.rs`** — adds 16 new
+    `global_asm!` stubs, one per vector in
+    `{1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 16, 17, 18, 19, 20, 21}`, each
+    loading the vector number as an immediate into `RDI` (and the
+    CPU-pushed error code into `RDX` when applicable) before calling
+    one of two new `extern "C"` Rust functions:
+
+    - `kernel_handle_exception_noerr(vector, frame)` — used by the
+      no-error-code vectors (#DB/NMI/#BP/#OF/#BR/#UD/#NM/#MF/#MC/#XF/#VE).
+    - `kernel_handle_exception_witherr(vector, frame, error_code)` —
+      used by the error-code vectors (#TS/#NP/#SS/#AC/#CP).
+
+    Both handlers write the vector tag and frame snapshot through
+    `early_console::write_*`, then call `super::arch::halt_forever()`.
+    The four dedicated handlers (#DE/#DF/#GP/#PF) are preserved
+    unchanged — they emit a mnemonic and (for #PF) the faulting
+    `CR2`. The two architecturally-reserved Intel slots 9 and 15
+    remain `missing()` by design.
+
+  - **`idt_init()`** now installs all 20 catch-all entries in
+    addition to the original four. The IDTR descriptor and `lidt`
+    issue are unchanged. The new test
+    `bare_metal::idt::tests::mb13g_synchronous_vectors_covered`
+    documents the coverage matrix symbolically and asserts that
+    reserved vectors do not overlap with the covered list.
+
+  - **`crates/omni-kernel/src/bare_metal/demo.rs`** — Build Info
+    panel updated to `Active=MB13.g full ISR coverage`,
+    `Next=MB13.h iretq stall fix`, `Track B=MB1-MB12 OK, MB13.a-g OK`,
+    `Phase 1 ≈ 78%`.
+
+  - **Stage gate:** MB13.g is intentionally a *diagnostic* fix — it
+    does not change the kernel's semantics under success paths.
+    Workspace build and clippy are clean on `x86_64-unknown-none`
+    (`bare-metal`, `mb12-userprobe`, default desktop demo); the new
+    unit test is +1 over MB13.f, so workspace target ≥ 444. The
+    expected boot output on the Proxmox VMID 103
+    `mb12-userprobe` build is now one of three branches:
+
+    1. *(Success path)* the original
+       `ping` + double `[user] exit=0` MB12 banner sequence (this
+       would mean MB13.f closed the bug too and the silence was a
+       coincidence of cache flushing or display refresh).
+    2. *(Catch-all triggered)* a new
+       `[OMNI OS EXCEPTION] vec=NN ...` line identifies the
+       specific vector being raised post-iretq, narrowing MB13.h
+       to a targeted fix (TSS.ist1 wiring for #DF, a stale GDT
+       segment descriptor for #NP, an iretq-frame mis-build for
+       #SS, etc.).
+    3. *(Still silent)* the triple-fault precedes the first vector
+       dispatch and points at a hardware-level reset (CR0/CR4
+       mis-config, EFER inconsistency, or a problem in the very
+       first `mov cr3` itself) rather than an IDT-coverage gap.
+
 - **Kernel — MB13.f: `enter_user_mode` kernel-stack swap before CR3
   reload (first-dispatch smoke fix, 2026-05-19).** Closes the open
   `mb12-userprobe` follow-up tracked in `progress-omni.md` § 4.5 #22:

@@ -245,7 +245,11 @@ fn signed_create_channel_rejects_invalid_send_token() {
         TOKEN_NOW,
     );
     assert!(res.is_err(), "corrupt token must be rejected");
-    assert_eq!(registry.channel_count(), 0, "no channel registered on failure");
+    assert_eq!(
+        registry.channel_count(),
+        0,
+        "no channel registered on failure"
+    );
 }
 
 #[test]

@@ -152,13 +152,7 @@ pub unsafe fn enter_user_mode(
 /// Sentinel signature to keep callers source-compatible on host builds.
 /// Diverges via `core::panic!`; never actually invoked at test time.
 #[cfg(not(target_arch = "x86_64"))]
-pub unsafe fn enter_user_mode(
-    _rip: u64,
-    _rsp: u64,
-    _rflags: u64,
-    _cr3: u64,
-    _kstk: u64,
-) -> ! {
+pub unsafe fn enter_user_mode(_rip: u64, _rsp: u64, _rflags: u64, _cr3: u64, _kstk: u64) -> ! {
     panic!("enter_user_mode is x86_64-only");
 }
 

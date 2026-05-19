@@ -714,41 +714,126 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
     let step: u32 = 14;
 
     // Helper closure: "Label  : value" with cyan label + white value.
-    let row = |row_idx: u32, col_x: u32, label: &str, label_w: u32, value: &str, value_color: u32| {
-        font::render_str(
-            fb,
-            col_x,
-            cy + step * row_idx,
-            label,
-            graphics::CYAN,
-            w.bg_color,
-        );
-        font::render_str(
-            fb,
-            col_x + label_w * 8,
-            cy + step * row_idx,
-            value,
-            value_color,
-            w.bg_color,
-        );
-    };
+    let row =
+        |row_idx: u32, col_x: u32, label: &str, label_w: u32, value: &str, value_color: u32| {
+            font::render_str(
+                fb,
+                col_x,
+                cy + step * row_idx,
+                label,
+                graphics::CYAN,
+                w.bg_color,
+            );
+            font::render_str(
+                fb,
+                col_x + label_w * 8,
+                cy + step * row_idx,
+                value,
+                value_color,
+                w.bg_color,
+            );
+        };
 
     // ── Left column: identity + provenance ─────────────────────────────
-    row(0, cx_l, "Version  : omni-kernel v", 23, env!("CARGO_PKG_VERSION"), graphics::WHITE);
-    row(1, cx_l, "Branch   : ", 11, env!("OMNI_GIT_BRANCH"), graphics::WHITE);
-    row(2, cx_l, "Commit   : ", 11, env!("OMNI_GIT_HASH"), graphics::LIGHT_CYAN);
-    row(3, cx_l, "Built    : ", 11, env!("OMNI_BUILD_DATE"), graphics::WHITE);
-    row(4, cx_l, "Rustc    : ", 11, "1.85 stable + x86_64-unknown-none", graphics::WHITE);
+    row(
+        0,
+        cx_l,
+        "Version  : omni-kernel v",
+        23,
+        env!("CARGO_PKG_VERSION"),
+        graphics::WHITE,
+    );
+    row(
+        1,
+        cx_l,
+        "Branch   : ",
+        11,
+        env!("OMNI_GIT_BRANCH"),
+        graphics::WHITE,
+    );
+    row(
+        2,
+        cx_l,
+        "Commit   : ",
+        11,
+        env!("OMNI_GIT_HASH"),
+        graphics::LIGHT_CYAN,
+    );
+    row(
+        3,
+        cx_l,
+        "Built    : ",
+        11,
+        env!("OMNI_BUILD_DATE"),
+        graphics::WHITE,
+    );
+    row(
+        4,
+        cx_l,
+        "Rustc    : ",
+        11,
+        "1.85 stable + x86_64-unknown-none",
+        graphics::WHITE,
+    );
     row(5, cx_l, "License  : ", 11, "AGPL-3.0-only", graphics::WHITE);
-    row(6, cx_l, "Repo     : ", 11, "github.com/CySalazar/omni", graphics::WHITE);
+    row(
+        6,
+        cx_l,
+        "Repo     : ",
+        11,
+        "github.com/CySalazar/omni",
+        graphics::WHITE,
+    );
 
     // ── Right column: implementation status ────────────────────────────
-    row(0, cx_r, "Phase    : ", 11, "1 - Microkernel POC  (~77%)", graphics::WHITE);
-    row(1, cx_r, "Track A  : ", 11, "Desktop M1-M5  OK", graphics::WHITE);
-    row(2, cx_r, "Track B  : ", 11, "MB1-MB12 OK, MB13.a-f OK", graphics::WHITE);
-    row(3, cx_r, "Active   : ", 11, "MB13.f iretq kstk-swap", graphics::LIGHT_CYAN);
-    row(4, cx_r, "Next     : ", 11, "MB13.e PR + intermediate tag", graphics::WHITE);
-    row(5, cx_r, "Tests    : ", 11, "443+ workspace pass", graphics::WHITE);
+    row(
+        0,
+        cx_r,
+        "Phase    : ",
+        11,
+        "1 - Microkernel POC  (~78%)",
+        graphics::WHITE,
+    );
+    row(
+        1,
+        cx_r,
+        "Track A  : ",
+        11,
+        "Desktop M1-M5  OK",
+        graphics::WHITE,
+    );
+    row(
+        2,
+        cx_r,
+        "Track B  : ",
+        11,
+        "MB1-MB12 OK, MB13.a-g OK",
+        graphics::WHITE,
+    );
+    row(
+        3,
+        cx_r,
+        "Active   : ",
+        11,
+        "MB13.g full ISR coverage",
+        graphics::LIGHT_CYAN,
+    );
+    row(
+        4,
+        cx_r,
+        "Next     : ",
+        11,
+        "MB13.h iretq stall fix",
+        graphics::WHITE,
+    );
+    row(
+        5,
+        cx_r,
+        "Tests    : ",
+        11,
+        "444+ workspace pass",
+        graphics::WHITE,
+    );
     row(6, cx_r, "Author   : ", 11, "cySalazar", graphics::WHITE);
 }
 

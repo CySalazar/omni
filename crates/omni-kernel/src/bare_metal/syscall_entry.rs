@@ -481,14 +481,8 @@ mod ipc_handlers {
         let provider = crate::capabilities::Ed25519CapabilityProvider::placeholder();
         // SAFETY: IPC_REGISTRY not aliased; single-CPU.
         let res = unsafe {
-            ipc_registry_mut().create_channel_signed(
-                current,
-                policy,
-                send_slice,
-                recv_slice,
-                &provider,
-                now_secs,
-            )
+            ipc_registry_mut()
+                .create_channel_signed(current, policy, send_slice, recv_slice, &provider, now_secs)
         };
         res.map_or(SYSCALL_ERROR, |ch| ch.0)
     }
@@ -536,9 +530,7 @@ mod ipc_handlers {
     pub(super) fn ipc_destroy_channel(args: [u64; 6]) -> u64 {
         // SAFETY: same as ipc_create_channel.
         let (current, _) = unsafe { current_principal_and_task() };
-        let res = unsafe {
-            ipc_registry_mut().destroy_channel(ChannelId(args[0]), current)
-        };
+        let res = unsafe { ipc_registry_mut().destroy_channel(ChannelId(args[0]), current) };
         match res {
             Ok(()) => 0,
             Err(_) => SYSCALL_ERROR,
@@ -571,11 +563,7 @@ mod ipc_handlers {
             unsafe {
                 let src = payload_ptr as *const u8;
                 payload.set_len(payload_len as usize);
-                core::ptr::copy_nonoverlapping(
-                    src,
-                    payload.as_mut_ptr(),
-                    payload_len as usize,
-                );
+                core::ptr::copy_nonoverlapping(src, payload.as_mut_ptr(), payload_len as usize);
             }
         }
 
@@ -631,9 +619,7 @@ mod ipc_handlers {
 
         loop {
             // SAFETY: IPC_REGISTRY not aliased; single-CPU.
-            let res = unsafe {
-                ipc_registry_mut().receive(channel, current, principal, blocking)
-            };
+            let res = unsafe { ipc_registry_mut().receive(channel, current, principal, blocking) };
             match res {
                 Ok((Some(env), wake)) => {
                     // Wake any blocked sender first; the order does not

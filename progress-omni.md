@@ -1,10 +1,10 @@
 # OMNI OS — Progress Report
 
-**Data snapshot:** 2026-05-19 (post MB13.f — `enter_user_mode` kernel-stack swap, smoke first-dispatch fix)
+**Data snapshot:** 2026-05-19 (post MB13.g — comprehensive IDT coverage for synchronous exception vectors 0..=21)
 **Branch corrente:** `feat/kernel-mb11-userspace` (locale; in attesa di PR + merge in `main`)
-**HEAD:** post-MB13.f — il primo dispatch user-side post-CR3 ora atterra su uno stack mirrored in upper-half
-**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a + MB13.b + MB13.c + MB13.d + MB13.f**).
-**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~77% Track B
+**HEAD:** post-MB13.g — IDT cattura ora ogni vettore sincrono CPU 0..=21, niente più triple-fault silenti
+**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g**).
+**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~78% Track B
 
 ---
 
@@ -252,6 +252,38 @@ Build Info panel aggiornato a Active=`MB13.f iretq kstk-swap`,
 Next=`MB13.e PR + intermediate tag`, Track B=`MB1-MB12 OK, MB13.a-f
 OK`, Phase 1 ≈ 77%.
 
+Il blocco **MB13.g (comprehensive IDT coverage)** è stato chiuso il
+2026-05-19. La pipeline MB13.b/MB13.f aveva risolto i due bug strutturali
+del path `enter_user_mode` ma il deploy MB13.f su Proxmox VMID 103 si
+fermava ancora subito dopo `iretq` senza emettere alcun tracepoint —
+indistinguibile da un triple-fault silente. Root cause del silenzio:
+l'IDT installava solo 4 dei 22 vettori sincroni CPU (`#DE=0`, `#DF=8`,
+`#GP=13`, `#PF=14`); qualunque altro fault (#SS/#NP/#TS/#UD/...) saltava
+a `IdtEntry::missing()` (P=0) → #NP → IDT entry missing → #DF (handler
+registrato, ma se il TSS.ist non è configurato e il page-fault avviene
+durante il push del frame su uno stack ora unmapped, cascada a triple).
+
+Fix: `crates/omni-kernel/src/bare_metal/idt.rs` aggiunge 16 stub
+assembly + 2 handler Rust generici
+(`kernel_handle_exception_noerr(vector, frame)` per i vettori
+1/2/3/4/5/6/7/16/18/19/20 senza error code,
+`kernel_handle_exception_witherr(vector, frame, code)` per i vettori
+10/11/12/17/21 con error code). Ogni handler scrive
+`[OMNI OS EXCEPTION] vec=NN  code=X  rip=… cs=… rflags=…` sul COM1 e
+halt forever. `idt_init()` ora registra TUTTI i 20 vettori coperti
+(i due gap 9 e 15 restano `missing()` perché architetturalmente
+riservati Intel SDM Vol 3A §6.15). Aggiunto 1 unit test simbolico
+`mb13g_synchronous_vectors_covered` che documenta la matrice di
+copertura. Workspace test ≥ 444.
+
+Build Info panel aggiornato a Active=`MB13.g full ISR coverage`,
+Next=`MB13.h iretq stall fix`, Track B=`MB1-MB12 OK, MB13.a-g OK`,
+Phase 1 ≈ 78%. La fix non risolve direttamente l'iretq stall
+(richiede deploy + lettura del vec=NN log per identificare il vettore
+colpevole — è una fix diagnostica), ma sblocca il root-cause analysis
+per MB13.h: il prossimo boot su Proxmox VMID 103 stamperà *quale*
+vettore sta cascading a triple-fault, anziché bloccarsi muto.
+
 Il prossimo blocco di lavoro è **MB13.e — chiusura ciclo MB13**:
 apertura della PR `feat/kernel-mb11-userspace` → `main`, conformance
 CI, scelta del tag intermedio (`v0.2.1` patch o `v0.3.0-alpha.1` minor
@@ -302,7 +334,8 @@ analysis a Done.
 | MB13.b | Boot-path fix: ET_DYN/PIE kernel + upper-half dynamic mapping | ✅ | `d9a0692` |
 | MB13.c | `omni-capability` integration + `Ed25519CapabilityProvider` | ✅ | post-`fd09d1d` |
 | MB13.d | `IpcCreateChannel` syscall ABI extension (postcard-encoded signed tokens) | ✅ | `5cb09fa` |
-| MB13.f | `enter_user_mode` kernel-stack swap (first-dispatch smoke fix) | ✅ | (this commit) |
+| MB13.f | `enter_user_mode` kernel-stack swap (first-dispatch smoke fix) | ✅ | `f098192` |
+| MB13.g | Comprehensive IDT coverage (16 catch-all vectors → no more silent triple-fault) | ✅ | (this commit) |
 | **MB13** | **omni-capability integration (Ed25519 verify) — MB13.e PR open** | 🟡 | — |
 
 **Verifica MB1-MB12:**
