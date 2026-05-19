@@ -61,8 +61,10 @@ pub mod lapic;
 ))]
 pub mod mb8_smoke;
 pub mod mp;
+pub mod mp_ap_entry;
 pub mod mp_emplacement;
 pub mod mp_trampoline;
+pub mod pit_delay;
 pub mod paging;
 pub mod panic;
 pub mod per_cpu;

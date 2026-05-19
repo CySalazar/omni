@@ -719,6 +719,190 @@ pub fn start_aps(
     }
 }
 
+// =============================================================================
+// MB14.c.2.c — live INIT-SIPI-SIPI fire + ack barrier.
+// =============================================================================
+
+/// Outcome of a [`start_aps_live`] call.
+///
+/// Extends [`StartApsReport`] with the number of APs that successfully
+/// entered the landing stub and incremented the ack counter (or, on
+/// host builds, with `acked == 0` since the live path is `x86_64`
+/// bare-metal only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartApsLiveReport {
+    /// Number of APs (enabled, non-BSP entries) the orchestrator
+    /// targeted.
+    pub targeted: usize,
+    /// Number of APs that completed the full INIT-SIPI-SIPI sequence
+    /// (i.e. the ICR busy bit cleared after every write). Always
+    /// `targeted` on hardware that does not glitch the APIC bus.
+    pub sequenced: usize,
+    /// Number of APs that incremented the ack counter within the
+    /// timeout window. `acked == targeted` is the success criterion;
+    /// `acked < targeted` indicates one or more APs failed to start.
+    pub acked: usize,
+}
+
+/// Maximum number of busy-poll iterations the BSP performs while
+/// waiting for every AP to ack. At a conservative 1 ns per iteration
+/// on modern silicon this is roughly 1 s of wall-clock time; matched
+/// against the 10 ms + 200 µs INIT-SIPI cadence it is generous.
+const AP_ACK_POLL_ITERATIONS: u64 = 1_000_000_000;
+
+/// MB14.c.2.c — wake every enabled non-BSP AP via INIT-SIPI-SIPI and
+/// busy-poll the ack counter until all targets respond or the timeout
+/// expires.
+///
+/// **Side-effects on `x86_64` bare-metal:** writes the LAPIC `ICR_HI`/`ICR_LO`
+/// registers, programs PIT channel 2 mode 0 for the 10 ms / 200 µs
+/// delays, and polls a memory location at `phys_offset + 0x8140`
+/// (`AP_ACK_COUNTER`). Caller must have:
+///
+/// 1. Initialised the LAPIC via [`super::lapic::lapic_init`].
+/// 2. Emplaced the trampoline + landing stub at phys `0x8000` via
+///    [`super::mp_emplacement::place_trampoline_live`].
+///
+/// `bsp_apic_id` is excluded from the target set. `trampoline_page` is
+/// the SIPI vector byte (= `trampoline_phys >> 12`); MB14.c.2.c always
+/// passes `0x08`. `phys_offset` is the bootloader-supplied direct-map
+/// offset, used solely to read the ack counter.
+///
+/// On host (`target_os = linux`) builds the function reduces to a pure
+/// loop over the topology — no LAPIC writes, `acked = 0`. The bare-metal
+/// branch is opaque to host tests by design.
+#[cfg(target_arch = "x86_64")]
+#[must_use]
+pub fn start_aps_live(
+    topology: &CpuTopology,
+    bsp_apic_id: u32,
+    trampoline_page: u8,
+    phys_offset: u64,
+) -> StartApsLiveReport {
+    let mut targeted = 0usize;
+    let mut sequenced = 0usize;
+
+    for cpu in topology.entries() {
+        if !cpu.enabled || cpu.apic_id == bsp_apic_id {
+            continue;
+        }
+        targeted += 1;
+
+        // -------------------------------------------------------------
+        // INIT IPI (assert).
+        // -------------------------------------------------------------
+        let init = IcrCommand::init_assert(cpu.apic_id);
+        let (init_lo, init_hi) = encode_icr_xapic(init);
+        if !super::lapic::lapic_send_ipi(init_lo, init_hi) {
+            // LAPIC not initialised — fall through; subsequent loop
+            // iterations would also fail. Caller observes
+            // `sequenced < targeted`.
+            continue;
+        }
+        // Drain the busy bit before the post-INIT settle wait.
+        while super::lapic::lapic_icr_busy() {
+            core::hint::spin_loop();
+        }
+
+        // Intel MP-Spec § B.4 step 3: 10 ms settle after INIT.
+        super::pit_delay::pit_delay_us(10_000);
+
+        // -------------------------------------------------------------
+        // SIPI #1.
+        // -------------------------------------------------------------
+        let sipi = IcrCommand::sipi(cpu.apic_id, trampoline_page);
+        let (sipi_lo, sipi_hi) = encode_icr_xapic(sipi);
+        if !super::lapic::lapic_send_ipi(sipi_lo, sipi_hi) {
+            continue;
+        }
+        while super::lapic::lapic_icr_busy() {
+            core::hint::spin_loop();
+        }
+        // Intel MP-Spec § B.4 step 5: 200 µs spacing between SIPIs.
+        super::pit_delay::pit_delay_us(200);
+
+        // -------------------------------------------------------------
+        // SIPI #2 (errata mitigation per Intel MP-Spec § B.4 step 6).
+        // -------------------------------------------------------------
+        if !super::lapic::lapic_send_ipi(sipi_lo, sipi_hi) {
+            continue;
+        }
+        while super::lapic::lapic_icr_busy() {
+            core::hint::spin_loop();
+        }
+        // Final 200 µs spacing so the AP has time to enter the
+        // landing stub before the BSP polls the ack counter.
+        super::pit_delay::pit_delay_us(200);
+
+        sequenced += 1;
+    }
+
+    // -----------------------------------------------------------------
+    // Busy-poll the ack counter until every AP acks or the iteration
+    // budget runs out.
+    // -----------------------------------------------------------------
+    let target_acks = targeted as u64;
+    let mut acked: u64 = 0;
+    let mut iter: u64 = 0;
+    while iter < AP_ACK_POLL_ITERATIONS {
+        // SAFETY: `phys_offset` is the bootloader-supplied direct-map
+        // offset; the ack counter slot at `0x8140` is reserved by
+        // `kmain`'s `mark_range_used(PhysAddr(0), 0x10_0000)` and
+        // written exclusively by the APs (via `lock inc`) and by
+        // `place_trampoline_live` (the initial zero).
+        let observed = unsafe { super::mp_emplacement::read_ack_counter(phys_offset) };
+        if observed >= target_acks {
+            acked = observed;
+            break;
+        }
+        core::hint::spin_loop();
+        iter = iter.wrapping_add(1);
+    }
+    if acked == 0 {
+        // Loop exited via timeout — record the last observation.
+        // SAFETY: same invariant as above.
+        acked = unsafe { super::mp_emplacement::read_ack_counter(phys_offset) };
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "ack count is bounded by MAX_CPUS (32) which fits in usize on every supported target"
+    )]
+    StartApsLiveReport {
+        targeted,
+        sequenced,
+        acked: acked as usize,
+    }
+}
+
+/// Host stub. The live INIT-SIPI path is x86_64-bare-metal only; on
+/// host builds we return a report that mirrors the DryRun shape (every
+/// targeted AP marked `sequenced`, zero acks) so test code can build
+/// without conditional compilation.
+#[cfg(not(target_arch = "x86_64"))]
+#[must_use]
+pub fn start_aps_live(
+    topology: &CpuTopology,
+    bsp_apic_id: u32,
+    _trampoline_page: u8,
+    _phys_offset: u64,
+) -> StartApsLiveReport {
+    let mut targeted = 0usize;
+    let mut sequenced = 0usize;
+    for cpu in topology.entries() {
+        if !cpu.enabled || cpu.apic_id == bsp_apic_id {
+            continue;
+        }
+        targeted += 1;
+        sequenced += 1;
+    }
+    StartApsLiveReport {
+        targeted,
+        sequenced,
+        acked: 0,
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::indexing_slicing,

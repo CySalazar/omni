@@ -1,10 +1,10 @@
 # OMNI OS — Progress Report
 
-**Data snapshot:** 2026-05-19 (post MB14.c.2.b.2 — bare-metal emplacement della pagina trampolino: alloc 3 frame da `BitmapFrameAllocator` + materialize temp PML4/PDPT/PD via direct map + identity-map della trampoline page in active CR3 + copia 256-byte blob a phys `0x8000`, +11 host-side test con `TestArena` 1.5 MiB)
+**Data snapshot:** 2026-05-19 (post MB14.c.2.c — live INIT-SIPI-SIPI fire + AP landing stub a phys `0x8100` + ack barrier atomic + PIT-based delays (10 ms post-INIT + 200 µs SIPI×2 spacing per Intel MP-Spec § B.4) + `kmain_ap` higher-half park entry via `global_asm!` + ADR-0007 accepted; +17 host-side test su `mp_ap_entry` + `pit_delay`)
 **Branch corrente:** `feat/kernel-mb11-userspace` (locale; in attesa di PR + merge in `main`)
-**HEAD:** post-MB14.c.2.b.2 — `bare_metal::mp_emplacement::place_trampoline(FRAME_ALLOC, pager, 0xFFFF_FFFF_8010_0000)` chiamato in `kmain` post-MB14.c.2.b.1 quando `topo.enabled_count() > 1`; logga `[mb14.c.2.b.2] emplaced tramp_paddr=0x8000 temp_pml4=<addr>`. La pipeline `start_aps` resta in `DryRun` mode fino a MB14.c.2.c.
-**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e + MB14.a + MB14.b + MB14.c.1 + MB14.c.2.a + MB14.c.2.b.1 + **MB14.c.2.b.2**).
-**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~88% Track B
+**HEAD:** post-MB14.c.2.c — `bare_metal::mp_emplacement::place_trampoline_live(FRAME_ALLOC, pager, cr3_raw & !0xFFF, kmain_ap as u64)` chiamato in `kmain` quando `topo.enabled_count() > 1`, seguito da `bare_metal::mp::start_aps_live(&topo, lid, 0x08, phys_offset_mb2)`; logga `[mb14.c.2.c] start_aps_live targeted=N sequenced=N acked=N (all APs online|timeout)`. AP gira: trampoline `0x8000` → landing stub `0x8100` (lock inc ack + load kernel_cr3 + load kmain_ap_va + mov cr3 + jmp r/m64) → `kmain_ap` higher-half (`cli; 1: hlt; jmp 1b`). Per-AP real init (PerCpu slot + kernel stack + IDT/GDT/TSS reload) deferito a MB14.c.2.d.
+**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e + MB14.a + MB14.b + MB14.c.1 + MB14.c.2.a + MB14.c.2.b.1 + MB14.c.2.b.2 + **MB14.c.2.c**).
+**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~89% Track B
 
 ---
 

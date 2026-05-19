@@ -609,34 +609,40 @@ pub fn kmain(
                         early_console::write_usize(gdt.len());
                         early_console::write_str(" (builder dry-run)\n");
 
-                        // MB14.c.2.b.2 — bare-metal emplacement.
+                        // MB14.c.2.c — live AP wake.
                         //
-                        // When the MADT enumerated more than one CPU, we
-                        // actually allocate three temp page-table frames,
-                        // materialise the identity-paging hierarchy through
-                        // the bootloader direct map, identity-map the
-                        // trampoline page in the active CR3, and copy the
-                        // 256-byte blob to physical 0x0000_8000. No LAPIC
-                        // MMIO is emitted — that flip lands in MB14.c.2.c.
+                        // When the MADT enumerated more than one CPU we
+                        // (a) emplace the trampoline + landing stub at
+                        // phys 0x8000, (b) fire INIT-SIPI-SIPI on every
+                        // enabled non-BSP AP via the LAPIC ICR, and
+                        // (c) busy-poll the ack counter at phys 0x8140
+                        // until every targeted AP has entered the
+                        // landing stub. The AP then switches CR3 to the
+                        // active kernel address space and jumps to
+                        // `kmain_ap` (a #[naked] cli; hlt; jmp $-2
+                        // park loop pending MB14.c.2.d).
                         //
-                        // On BSP-only systems (enabled_count == 1) we skip
-                        // emplacement entirely: there is no AP to receive
-                        // the trampoline, and reserving three frames for
-                        // nothing would waste low memory.
+                        // On BSP-only systems (enabled_count == 1) we
+                        // skip the live path entirely: there is no AP
+                        // to wake and reserving frames for nothing would
+                        // waste low memory.
                         if topo.enabled_count() > 1 {
                             #[allow(
                                 unsafe_code,
                                 reason = "single-core BSP context; FRAME_ALLOC not aliased"
                             )]
                             let fa = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_ALLOC) };
-                            match bare_metal::mp_emplacement::place_trampoline(
+                            let kmain_ap_va =
+                                bare_metal::mp_ap_entry::kmain_ap as usize as u64;
+                            match bare_metal::mp_emplacement::place_trampoline_live(
                                 fa,
                                 &mut pager,
-                                0xFFFF_FFFF_8010_0000,
+                                cr3_raw & !0xFFF,
+                                kmain_ap_va,
                             ) {
                                 Ok(emp) => {
                                     early_console::write_str(
-                                        "[mb14.c.2.b.2] emplaced tramp_paddr=",
+                                        "[mb14.c.2.c] emplaced tramp_paddr=",
                                     );
                                     early_console::write_usize(
                                         emp.trampoline_paddr as usize,
@@ -649,17 +655,48 @@ pub fn kmain(
                                     early_console::write_usize(
                                         emp.temp_pml4_paddr as usize,
                                     );
+                                    early_console::write_str(" kmain_ap_va=");
+                                    #[allow(
+                                        clippy::cast_possible_truncation,
+                                        reason = "x86_64; usize is u64 on bare-metal target"
+                                    )]
+                                    early_console::write_usize(kmain_ap_va as usize);
                                     early_console::write_str("\n");
+
+                                    // Fire INIT-SIPI-SIPI on every enabled
+                                    // non-BSP AP, then busy-poll the ack
+                                    // counter until each one has entered
+                                    // the landing stub.
+                                    let live_report =
+                                        bare_metal::mp::start_aps_live(
+                                            &topo,
+                                            lid,
+                                            bare_metal::mp_emplacement::TRAMPOLINE_SIPI_VECTOR,
+                                            phys_offset_mb2,
+                                        );
+                                    early_console::write_str(
+                                        "[mb14.c.2.c] start_aps_live targeted=",
+                                    );
+                                    early_console::write_usize(live_report.targeted);
+                                    early_console::write_str(" sequenced=");
+                                    early_console::write_usize(live_report.sequenced);
+                                    early_console::write_str(" acked=");
+                                    early_console::write_usize(live_report.acked);
+                                    if live_report.acked == live_report.targeted {
+                                        early_console::write_str(" (all APs online)\n");
+                                    } else {
+                                        early_console::write_str(" (timeout)\n");
+                                    }
                                 }
                                 Err(_e) => {
                                     early_console::write_str(
-                                        "[mb14.c.2.b.2] emplacement FAILED — BSP only\n",
+                                        "[mb14.c.2.c] emplacement FAILED — BSP only\n",
                                     );
                                 }
                             }
                         } else {
                             early_console::write_str(
-                                "[mb14.c.2.b.2] BSP-only — emplacement skipped\n",
+                                "[mb14.c.2.c] BSP-only — AP wake skipped\n",
                             );
                         }
                     } else {

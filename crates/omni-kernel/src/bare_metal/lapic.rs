@@ -36,9 +36,18 @@ use core::arch::global_asm;
 const LAPIC_ID: u32 = 0x0020; // Local APIC ID Register (xAPIC: ID in bits 31:24)
 const LAPIC_EOI: u32 = 0x00B0; // End-of-Interrupt (write 0 to ACK)
 const LAPIC_SIVR: u32 = 0x00F0; // Spurious Interrupt Vector Register
+/// xAPIC Interrupt Command Register, low dword (writes here latch and fire the IPI).
+const LAPIC_ICR_LO: u32 = 0x0300;
+/// xAPIC Interrupt Command Register, high dword (write before [`LAPIC_ICR_LO`]).
+const LAPIC_ICR_HI: u32 = 0x0310;
 const LAPIC_LVT_TIMER: u32 = 0x0320; // Local Vector Table — Timer entry
 const LAPIC_TIMER_ICR: u32 = 0x0380; // Initial Count Register
 const LAPIC_TIMER_DCR: u32 = 0x03E0; // Divide Configuration Register
+
+/// Bit 12 of `ICR_LO`: `Delivery Status` (RO). Set while a previously
+/// issued IPI is still pending on the APIC bus; the BSP must spin until
+/// it clears before writing a new ICR command (Intel SDM Vol 3A § 10.6.1).
+const LAPIC_ICR_BUSY_MASK: u32 = 1 << 12;
 
 const LAPIC_ENABLE: u32 = 1 << 8; // SIVR bit 8: enable xAPIC
 const LVT_TIMER_PERIODIC: u32 = 1 << 17; // LVT timer mode: periodic
@@ -193,6 +202,72 @@ pub fn lapic_eoi() {
             lapic_write(LAPIC_BASE, LAPIC_EOI, 0);
         }
     }
+}
+
+/// Send an Inter-Processor Interrupt via the xAPIC Interrupt Command
+/// Register (MB14.c.2.c).
+///
+/// `high` is written to `ICR_HI` first (destination field); `low` is
+/// written to `ICR_LO` second, which latches the command and dispatches
+/// the IPI onto the APIC bus.
+///
+/// The function busy-waits for `ICR_LO` bit 12 (`Delivery Status`) to
+/// clear before writing the new command, per Intel SDM Vol 3A § 10.6.1.
+/// The post-write busy poll is the caller's responsibility — see
+/// [`lapic_icr_busy`] — because INIT/SIPI sequencing typically interposes
+/// a PIT delay between the busy poll and the next write.
+///
+/// Returns `false` if [`lapic_init`] has not yet succeeded (LAPIC base
+/// not mapped); no MMIO occurs in that case. Returns `true` after the
+/// MMIO sequence has been issued.
+///
+/// # Safety
+///
+/// Caller is responsible for the semantic correctness of `(low, high)`
+/// — i.e. that the encoded command is a valid IPI for the current LAPIC
+/// configuration. The MMIO sequence itself is unsafe but well-defined.
+#[must_use]
+pub fn lapic_send_ipi(low: u32, high: u32) -> bool {
+    // SAFETY: single-CPU LAPIC base read; the only writer is `lapic_init`
+    // which runs once at boot before any caller of this function.
+    let base = unsafe { LAPIC_BASE };
+    if base == 0 {
+        return false;
+    }
+    // SAFETY: `base` is the bootloader-mapped LAPIC MMIO window; the
+    // four register offsets (`ICR_LO` / `ICR_HI`) live inside that 4 KiB
+    // page. Volatile reads/writes are mandatory — LAPIC registers are
+    // not cacheable RAM.
+    unsafe {
+        // Drain any prior pending IPI before issuing this one.
+        while (lapic_read(base, LAPIC_ICR_LO) & LAPIC_ICR_BUSY_MASK) != 0 {
+            core::hint::spin_loop();
+        }
+        // Write the destination (HI) first, then the command (LO);
+        // writing LO latches and fires the IPI.
+        lapic_write(base, LAPIC_ICR_HI, high);
+        lapic_write(base, LAPIC_ICR_LO, low);
+    }
+    true
+}
+
+/// Poll the `ICR_LO` `Delivery Status` bit (Intel SDM Vol 3A § 10.6.1).
+///
+/// Returns `true` while a previously issued IPI is still propagating on
+/// the APIC bus and a new write to ICR would be discarded. Returns
+/// `false` once the bus is idle. Also returns `false` when [`lapic_init`]
+/// has not yet been called (LAPIC base unmapped).
+#[must_use]
+pub fn lapic_icr_busy() -> bool {
+    // SAFETY: same single-CPU invariant as [`lapic_send_ipi`].
+    let base = unsafe { LAPIC_BASE };
+    if base == 0 {
+        return false;
+    }
+    // SAFETY: see [`lapic_send_ipi`] — `ICR_LO` is a 32-bit MMIO register
+    // inside the bootloader-mapped LAPIC window.
+    let raw = unsafe { lapic_read(base, LAPIC_ICR_LO) };
+    (raw & LAPIC_ICR_BUSY_MASK) != 0
 }
 
 /// Read the Local APIC ID of the current CPU (MB14.a).

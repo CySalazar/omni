@@ -25,6 +25,10 @@
     reason = "MB14.c.2.b.2 emplaces a 256-byte trampoline + 3 page-table frames via the bootloader direct map; each write is fenced by per-frame SAFETY comments"
 )]
 
+use crate::bare_metal::mp_ap_entry::{
+    AP_ACK_COUNTER_OFFSET, AP_KERNEL_CR3_OFFSET, AP_KMAIN_AP_VA_OFFSET, AP_LANDING_STUB_OFFSET,
+    AP_LANDING_STUB_SIZE, build_ap_landing_stub,
+};
 use crate::bare_metal::mp_trampoline::{
     TRAMPOLINE_BLOB_SIZE, build_temp_identity_paging, build_trampoline_blob,
 };
@@ -250,6 +254,138 @@ pub fn place_trampoline<const N: usize>(
         trampoline_paddr: TRAMPOLINE_PHYS_BASE,
         temp_pml4_paddr: pml4_paddr.0,
     })
+}
+
+/// MB14.c.2.c — emplace the live AP startup payload.
+///
+/// Wraps [`place_trampoline`] with the additional steps required to
+/// route the AP through the [`super::mp_ap_entry`] landing stub instead
+/// of the inert higher-half placeholder used by MB14.c.2.b.2:
+///
+/// 1. Call [`place_trampoline`] passing `kernel_ap_entry =
+///    TRAMPOLINE_PHYS_BASE + AP_LANDING_STUB_OFFSET` so the trampoline
+///    `jmp rax` lands inside the landing stub.
+/// 2. Write the 32-byte landing stub at offset `AP_LANDING_STUB_OFFSET`
+///    inside the trampoline page (i.e. phys `0x8000 + 0x100`).
+/// 3. Zero the [`AP_ACK_COUNTER_OFFSET`] slot.
+/// 4. Write `kernel_cr3` to the [`AP_KERNEL_CR3_OFFSET`] slot — the AP
+///    loads this into `CR3` to enter the kernel address space.
+/// 5. Write `kmain_ap_va` to the [`AP_KMAIN_AP_VA_OFFSET`] slot — the AP
+///    `jmp`s to this VA after the `CR3` switch.
+///
+/// # Errors
+///
+/// Same as [`place_trampoline`]. Caller does not need to free anything
+/// on error; allocations are returned to `allocator` before each
+/// `Err(_)` propagates.
+#[allow(
+    clippy::similar_names,
+    reason = "kernel_cr3 / kernel_ap_entry mirror the runtime artefacts they configure (CR3 vs RIP target)"
+)]
+pub fn place_trampoline_live<const N: usize>(
+    allocator: &mut BitmapFrameAllocator<N>,
+    mapper: &mut PageMapper,
+    kernel_cr3: u64,
+    kmain_ap_va: u64,
+) -> Result<EmplacedTrampoline, EmplacementError> {
+    // Step 1 — emplace the trampoline blob with `kernel_ap_entry`
+    // pointing at the landing-stub offset inside the trampoline page.
+    let landing_va = u64::from(TRAMPOLINE_PHYS_BASE) + AP_LANDING_STUB_OFFSET as u64;
+    let emplaced = place_trampoline(allocator, mapper, landing_va)?;
+
+    // Step 2 — write the landing stub.
+    let stub = build_ap_landing_stub(TRAMPOLINE_PHYS_BASE);
+    let phys_offset = mapper.phys_offset();
+
+    // SAFETY: the trampoline page at phys 0x8000 is reserved by `kmain`
+    // (mark_range_used PhysAddr(0), 0x10_0000) so no other writer aliases
+    // it. The bootloader direct map covers low physical memory.
+    unsafe {
+        write_landing_stub_bytes(
+            phys_offset,
+            u64::from(TRAMPOLINE_PHYS_BASE) + AP_LANDING_STUB_OFFSET as u64,
+            &stub,
+        );
+        // Step 3 — zero the ack counter.
+        write_runtime_slot(
+            phys_offset,
+            u64::from(TRAMPOLINE_PHYS_BASE) + AP_ACK_COUNTER_OFFSET as u64,
+            0,
+        );
+        // Step 4 — write the kernel CR3 the AP will load.
+        write_runtime_slot(
+            phys_offset,
+            u64::from(TRAMPOLINE_PHYS_BASE) + AP_KERNEL_CR3_OFFSET as u64,
+            kernel_cr3,
+        );
+        // Step 5 — write the kmain_ap VA the AP will jump to.
+        write_runtime_slot(
+            phys_offset,
+            u64::from(TRAMPOLINE_PHYS_BASE) + AP_KMAIN_AP_VA_OFFSET as u64,
+            kmain_ap_va,
+        );
+    }
+
+    Ok(emplaced)
+}
+
+/// Read the current AP ack counter via the bootloader direct map.
+///
+/// MB14.c.2.c uses this from the BSP after firing INIT-SIPI to detect
+/// when all targeted APs have entered the landing stub. The counter is
+/// updated by the APs themselves via `lock inc qword ptr [imm32]`
+/// (a strongly-ordered atomic on x86), so a plain volatile read on the
+/// BSP observes the post-increment value once it is committed to memory.
+///
+/// # Safety
+///
+/// `phys_offset` must be the bootloader-supplied direct-map offset
+/// covering low physical memory (true under the MB9 invariant on every
+/// supported boot path).
+#[must_use]
+pub unsafe fn read_ack_counter(phys_offset: u64) -> u64 {
+    let slot_paddr = u64::from(TRAMPOLINE_PHYS_BASE) + AP_ACK_COUNTER_OFFSET as u64;
+    let src = phys_offset.wrapping_add(slot_paddr) as *const u64;
+    // SAFETY: forwarded to the caller (see function-level invariant).
+    unsafe { core::ptr::read_volatile(src) }
+}
+
+/// Write the 32-byte AP landing stub at `paddr` (must point inside the
+/// trampoline page).
+///
+/// # Safety
+///
+/// `phys_offset + paddr` must be a writable kernel-accessible 32-byte
+/// region not aliased by any other live reference (true for the
+/// trampoline page on the MB14.c.2.c path).
+unsafe fn write_landing_stub_bytes(
+    phys_offset: u64,
+    paddr: u64,
+    stub: &[u8; AP_LANDING_STUB_SIZE],
+) {
+    let dst = phys_offset.wrapping_add(paddr) as *mut u8;
+    for (i, byte) in stub.iter().enumerate() {
+        // SAFETY: dst..dst+32 lives in the trampoline page (caller
+        // invariant). Volatile to prevent reordering past the
+        // subsequent INIT-SIPI ICR write.
+        unsafe {
+            core::ptr::write_volatile(dst.add(i), *byte);
+        }
+    }
+}
+
+/// Write an 8-byte runtime slot at `paddr` (`AP_ACK_COUNTER`,
+/// `AP_KERNEL_CR3`, or `AP_KMAIN_AP_VA`).
+///
+/// # Safety
+///
+/// Same caveat as [`write_landing_stub_bytes`].
+unsafe fn write_runtime_slot(phys_offset: u64, paddr: u64, value: u64) {
+    let dst = phys_offset.wrapping_add(paddr) as *mut u64;
+    // SAFETY: caller invariant — see function-level note.
+    unsafe {
+        core::ptr::write_volatile(dst, value);
+    }
 }
 
 /// Write a 512-entry page-table page to physical `paddr` via the
