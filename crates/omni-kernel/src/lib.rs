@@ -497,6 +497,21 @@ pub fn kmain(
                 early_console::write_str("[mb14.a] BSP cpu_id=0 lapic_id=");
                 early_console::write_usize(lid as usize);
                 early_console::write_str("\n");
+
+                // MB14.b — wire IA32_GS_BASE + IA32_KERNEL_GS_BASE to
+                // the BSP descriptor address. After this returns, any
+                // kernel context can recover the active per-CPU pointer
+                // with `mov rax, gs:[0]` (encoded inside
+                // `per_cpu::current_cpu()`) and `omni_syscall_entry`
+                // has its `swapgs` ready for the first Ring 3 transition.
+                bare_metal::per_cpu::init_gs_base(bare_metal::per_cpu::bsp());
+                early_console::write_str("[mb14.b] gs_base=");
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "x86_64 only; usize is u64 on target_os = none"
+                )]
+                early_console::write_usize(bare_metal::per_cpu::bsp().self_ptr() as usize);
+                early_console::write_str("\n");
             } else {
                 early_console::write_str("[mb14.a] read_lapic_id FAILED — descriptor left uninit\n");
             }

@@ -120,6 +120,14 @@ core::arch::global_asm!(
     // 16-byte alignment before `call kernel_syscall_dispatch`.
     ".global omni_syscall_entry",
     "omni_syscall_entry:",
+    // MB14.b — swap to the per-CPU GS base. SYSCALL is unconditionally
+    // entered from Ring 3 (MSR_LSTAR is only reachable via `syscall`),
+    // so the active GS base on entry is whatever userspace set (or 0)
+    // and the kernel's per-CPU pointer sits in IA32_KERNEL_GS_BASE.
+    // `swapgs` flips them: active = per-CPU pointer, shadow = user GS.
+    // No callee-saved register has been spilled yet — `swapgs` itself
+    // does not touch general-purpose registers.
+    "    swapgs",
     // Save callee-saved registers (System V AMD64 ABI §3.2.1).
     "    push rbx",
     "    push r12",
@@ -160,6 +168,12 @@ core::arch::global_asm!(
     "    pop r13",
     "    pop r12",
     "    pop rbx",
+    // MB14.b — restore userspace's GS base before handing the CPU back
+    // to Ring 3. Mirror of the `swapgs` at entry: active = user GS,
+    // shadow = per-CPU pointer (parked for the next syscall's entry
+    // swap). `swapgs` does not touch RAX, so the syscall return value
+    // (already in RAX) survives the flip.
+    "    swapgs",
     "    sysretq",
     // ---- INT 0x80 compatibility path ----
     //

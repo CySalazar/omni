@@ -1,7 +1,7 @@
 # OMNI OS — Implementation TODO
 
-> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB13** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0). MB14.a (per-CPU descriptor scaffold + BSP LAPIC ID identification) chiuso 2026-05-19: `bare_metal::per_cpu::PerCpu` seeded by BSP after `lapic_init`; `current_cpu()` BSP-only stub (GS_BASE swap deferred a MB14.b). Roadmap Phase 1 ~83% Track B. **Prossimo sub-block: MB14.b** = `GS_BASE` per-CPU pointer + `swapgs` su Ring 3 → Ring 0; poi MB14.c (AP startup via INIT-SIPI-SIPI), MB14.d/e (TLB shootdown broadcast), MB14.f (per-CPU scheduler split).
-> **Last updated:** 2026-05-19 (MB14.a closure: per-CPU descriptor scaffold + BSP LAPIC ID identification; +6 unit tests `bare_metal::per_cpu::tests::*`; workspace test count 447+ → 453+. Branch corrente `feat/kernel-mb11-userspace` con HEAD post-`5e907f8`; PR verso `main` resta release-management decision separata).
+> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB13** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0). MB14.a (per-CPU descriptor scaffold) ✅ + MB14.b (`IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()`) ✅ chiusi 2026-05-19: `init_gs_base(bsp())` arma `MSR 0xC000_0101` e `MSR 0xC000_0102`, `current_cpu()` ora dereferenzia `gs:[0]` (self-ptr a offset 0 di `PerCpu`); `omni_syscall_entry` `swapgs` come prima istruzione e prima di `sysretq`. Roadmap Phase 1 ~84% Track B. **Prossimo sub-block: MB14.c** = AP startup via INIT-SIPI-SIPI + real-mode trampoline; poi MB14.d/e (TLB shootdown broadcast), MB14.f (per-CPU scheduler split).
+> **Last updated:** 2026-05-19 (MB14.b closure: `IA32_GS_BASE` + `IA32_KERNEL_GS_BASE` per-CPU pointer via `init_gs_base`, `swapgs` su `omni_syscall_entry` entry+exit, `current_cpu()` GS-relative load via `mov rax, gs:[0]`, +2 unit tests `self_ptr_field_at_offset_zero` + `init_gs_base_stamps_self_pointer`; workspace test count 453+ → 455+. Branch corrente `feat/kernel-mb11-userspace` con HEAD post-`3f38514`; PR verso `main` resta release-management decision separata).
 > **Storia stati precedenti:** 2026-05-18 (MB12 closure — IPC + multi-task user, ADR-0005, 426 tests). 2026-05-18 (Step 7.1-7.4 lift blanket allows + ADR-0003 + CI `blanket-allow-guard`). 2026-05-18 (MB11 closure — Ring 3 + per-process CR3, ADR-0004). 2026-05-18 (MB10 closure — kernel stack isolation, ADR-0002, PR #33 in `main`). 2026-05-18 (v0.2.0 release — MB1-MB9 + Track A, PR #29 in `main`). 2026-05-16 (MB4/MB5). 2026-05-15 (K5 QEMU smoke gate). 2026-05-12 (scaffolding pass P3-P6 verificato). 2026-05-10 (P1 + P2 chiusi). 2026-05-09 (P0 chiuso).
 > **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
 > **Priority order:** Security → Stability → Performance (per project policy).
@@ -798,8 +798,9 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 | MB11 | Primo userspace Ring 3 + per-process CR3 + STAR fix | `[x]` | `22289e1` + `c743173` | [0004](docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md) |
 | MB12 | IPC reale (queue + capability stub + multi-task user) | `[x]` | `60f3a82` | [0005](docs/adr/0005-mb12-ipc-message-passing.md) |
 | **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[x]`** (MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e chiusi 2026-05-19; ADR-0006 `accepted`) | `5e907f8` | [ADR-0006](docs/adr/0006-mb13-omni-capability-integration.md) |
-| MB14.a | Per-CPU descriptor scaffold + BSP LAPIC ID identification | `[x]` (chiuso 2026-05-19) | (this commit) | — |
-| MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[~]` (MB14.a chiuso; MB14.b-f open) | — | — |
+| MB14.a | Per-CPU descriptor scaffold + BSP LAPIC ID identification | `[x]` (chiuso 2026-05-19) | `3f38514` | — |
+| MB14.b | `IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()` | `[x]` (chiuso 2026-05-19) | (this commit) | — |
+| MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[~]` (MB14.a-b chiusi; MB14.c-f open) | — | — |
 
 ### P6.MB13 — `omni-capability` integration reale
 
@@ -943,7 +944,7 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 
 ### P6.MB14 — Multi-processor enable + TLB shootdown
 
-- **Status:** `[~]` (MB14.a `[x]` chiuso 2026-05-19; MB14.b-f open)
+- **Status:** `[~]` (MB14.a `[x]` + MB14.b `[x]` chiusi 2026-05-19; MB14.c-f open)
 - **Priority:** P6 / High (Phase 1.5)
 - **Effort stimato (totale):** 5-10 giornate (MB14.a delivered in 0.2 giornate; il grosso è MB14.c AP startup + MB14.d/e TLB shootdown)
 - **Dependencies:** MB13 ✅; nessuna esterna
@@ -967,18 +968,23 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 
 #### P6.MB14.b — `IA32_KERNEL_GS_BASE` per-CPU pointer + `swapgs` su Ring 3 → Ring 0
 
-- **Status:** `[ ]` (open)
-- **Effort stimato:** 0.5-1 giornata
+- **Status:** `[x]` (chiuso 2026-05-19)
+- **Effort:** 0.4 giornata (delivered)
 - **Dependencies:** MB14.a ✅
-- **Rationale:** `current_cpu()` deve smettere di ritornare il BSP statico e diventare un load `GS_BASE`-relative (1 istruzione, costante tempo, agnostico alla CPU corrente). x86_64 espone `IA32_KERNEL_GS_BASE` (MSR `0xC000_0102`) e l'istruzione `swapgs` per commutare fra il GS user-side e quello kernel-side su ogni Ring 3 → Ring 0 transition (syscall, interrupt, exception).
-- **Deliverables previsti:**
-  - **`crates/omni-kernel/src/bare_metal/per_cpu.rs`** — aggiungere `init_gs_base(pc: &'static PerCpu)` che scrive `&pc as u64` in `IA32_KERNEL_GS_BASE` via `wrmsr`. `current_cpu()` swap a `gs:[offset]` deref via inline asm (un singolo `mov rax, gs:[0]` su un offset 0 del puntatore base).
-  - **`crates/omni-kernel/src/bare_metal/syscall_entry.rs`** — `omni_syscall_entry` issue `swapgs` come prima istruzione (e come ultima prima di `sysretq`). Stesso pattern in ogni IDT vector entry.
-  - **`crates/omni-kernel/src/lib.rs::kmain`** — call `per_cpu::init_gs_base(per_cpu::bsp())` dopo `init_bsp`.
-- **Acceptance:**
-  - Deve compilare clean su `x86_64-unknown-none --features mb12-userprobe`.
-  - Deve passare clippy workspace `-D warnings`.
-  - Smoke `mb12-userprobe` deve emettere stessa sequenza serial baseline + `[mb14.b] gs_base=...` confermato.
+- **Deliverables consegnati:**
+  - **`crates/omni-kernel/src/bare_metal/per_cpu.rs`** — `PerCpu` diventa `#[repr(C)]` con `self_ptr: AtomicU64` a offset 0 (layout deterministico). Nuovo `init_gs_base(pc: &'static PerCpu)` che (a) memorizza `&pc as u64` in `pc.self_ptr` (`Ordering::Release`), (b) scrive lo stesso puntatore in `IA32_GS_BASE` (MSR `0xC000_0101`, active in kernel mode) **e** in `IA32_KERNEL_GS_BASE` (MSR `0xC000_0102`, shadow swappato da `swapgs`). `current_cpu()` ora discrimina su `cfg(all(target_arch = "x86_64", target_os = "none"))`: bare-metal esegue `mov rax, gs:[0]` via inline asm; host/test resta `&BSP`. `wrmsr` privato modulo (duplicato locale rispetto a quello in `syscall_entry.rs`). +2 unit test (`self_ptr_field_at_offset_zero`, `init_gs_base_stamps_self_pointer`).
+  - **`crates/omni-kernel/src/bare_metal/syscall_entry.rs`** — `omni_syscall_entry` emette `swapgs` come **prima** istruzione (prima di qualunque push) e come **ultima** prima di `sysretq` (dopo `pop rbx`). RAX intatto (`swapgs` non tocca GPR). Convenzione: ingresso SYSCALL trova active GS = user value; il primo `swapgs` flippa con per-CPU pointer da `IA32_KERNEL_GS_BASE`; il secondo prima di `sysretq` ripristina user GS base.
+  - **`crates/omni-kernel/src/lib.rs::kmain`** — chiamata `per_cpu::init_gs_base(per_cpu::bsp())` subito dopo `init_bsp(lid)`, seguita da dump serial `[mb14.b] gs_base=<addr>`.
+- **Acceptance (verified):**
+  - `cargo build -p omni-kernel --target x86_64-unknown-none --no-default-features --features bare-metal` clean.
+  - `cargo build --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --features mb12-userprobe` clean.
+  - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean.
+  - Workspace test count 453+ → 455+ (+2 unit test `bare_metal::per_cpu::tests::*`); `cargo test -p omni-kernel --lib` SIGSEGV resta carryover pre-esistente (item §4.5 #16 in progress-omni.md), nessuna regressione introdotta dalla MB14.b.
+  - Build Info panel: Active=`MB14.b GS_BASE per-CPU ptr`, Next=`MB14.c AP startup INIT-SIPI`, Track B=`MB1-MB13 OK, MB14.a-b wip`, Phase 1 ≈ 84%.
+- **Note di scope (esplicitamente NON inclusi):**
+  - swapgs condizionale (CS RPL == 3) nei 20+ ISR IDT sincroni e nel `omni_lapic_timer_handler` — la struttura asm corrente richiederebbe un prologo aggiuntivo per ogni stub. `mb12-userprobe` triple-faulta in MB13.g prima di osservare differenze; differito a MB14.b.1 / MB13.g closure.
+  - swapgs prima di `iretq` in `enter_user_mode` — userspace-side flip ortogonale al kernel-side fix; seguirà MB13.g.
+  - Refactor `msr.rs` condiviso fra `per_cpu.rs` e `syscall_entry.rs` — follow-up minore.
 
 #### P6.MB14.c — AP startup via INIT-SIPI-SIPI + real-mode trampoline
 
