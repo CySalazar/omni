@@ -339,10 +339,19 @@ pub fn build_trampoline_blob(
     blob[0x47] = 0x0F;
     blob[0x48] = 0x32;
 
-    // 0x49  0D 00 01 00 00  or eax, 0x100                      (IA32_EFER.LME = bit 8)
+    // 0x49  0D 00 09 00 00  or eax, 0x900                      (IA32_EFER.LME | NXE)
+    //
+    // MB14.c.2.d.1 fix: bit 8 (LME) alone is insufficient when the BSP's
+    // kernel page tables set the NX bit (bit 63) on non-executable
+    // pages (data / bss / rodata). Without `EFER.NXE = 1`, the AP's
+    // page-walker treats bit 63 of a PTE as a *reserved* bit; any
+    // memory access whose PTE has it set faults with a reserved-bit
+    // page fault. Setting NXE here brings the AP into the same NX
+    // policy the BSP uses, so all of higher-half (text + rodata +
+    // data + bss) is reachable.
     blob[0x49] = 0x0D;
     blob[0x4A] = 0x00;
-    blob[0x4B] = 0x01;
+    blob[0x4B] = 0x09;                          // bit 8 (LME) | bit 11 (NXE)
     blob[0x4C] = 0x00;
     blob[0x4D] = 0x00;
 
@@ -685,8 +694,10 @@ mod tests {
         assert_eq!(&b[0x42..0x47], &[0xB9, 0x80, 0x00, 0x00, 0xC0]);
         // 0F 32           rdmsr
         assert_eq!(&b[0x47..0x49], &[0x0F, 0x32]);
-        // 0D 00 01 00 00  or eax, 0x100  (LME = bit 8)
-        assert_eq!(&b[0x49..0x4E], &[0x0D, 0x00, 0x01, 0x00, 0x00]);
+        // 0D 00 09 00 00  or eax, 0x900  (LME = bit 8 | NXE = bit 11)
+        // MB14.c.2.d.1: NXE is required so the AP's page walker honours
+        // the kernel's NX bit on .data/.bss pages.
+        assert_eq!(&b[0x49..0x4E], &[0x0D, 0x00, 0x09, 0x00, 0x00]);
         // 0F 30           wrmsr
         assert_eq!(&b[0x4E..0x50], &[0x0F, 0x30]);
     }

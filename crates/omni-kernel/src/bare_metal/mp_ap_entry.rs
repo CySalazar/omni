@@ -492,13 +492,27 @@ core::arch::global_asm!(
     "    inc r8d",
     "    jmp 20b",
     "30:",
-    // r8 = cpu_id, rdi = &AP_RUNTIME_CONTROL
+    // r8 = cpu_id, rdi = &AP_RUNTIME_CONTROL, ebx = lapic_id
     // ---- Step 3: load RSP from cpu_kstack_top[cpu_id] ----
     "    mov rsp, [rdi + {off_kstk} + r8*8]",
-    // ---- Step 4: lgdt + lidt with the kernel descriptor tables ----
+    // ---- Step 4a: lgdt with the kernel GDTR ----
     "    lgdt [rdi + {off_gdtr}]",
+    // ---- Step 4b: far return to reload CS from kernel GDT ----
+    // After lgdt the CS hidden cache still holds the trampoline temp-GDT
+    // slot 3 (`0x18` = 64-bit code in the temp). The kernel GDT slot 3
+    // is *user-data* (DPL=3 udata), so any subsequent fault that
+    // re-validates CS through the GDT would `#GP` and triple-fault.
+    // Reload CS to the kernel 64-bit code selector (`0x08`) via a far
+    // return: push the new selector + RIP, then `retfq`.
+    "    mov rax, 0x08",                       // KERNEL_CS
+    "    push rax",
+    "    lea rax, [rip + 40f]",
+    "    push rax",
+    "    retfq",
+    "40:",
+    // ---- Step 5: lidt with the kernel IDTR ----
     "    lidt [rdi + {off_idtr}]",
-    // ---- Step 5: reload data segments to kernel-data ----
+    // ---- Step 6: reload data segments to kernel-data ----
     "    mov dx, 0x10",
     "    mov ds, dx",
     "    mov es, dx",
@@ -506,7 +520,7 @@ core::arch::global_asm!(
     "    xor dx, dx",
     "    mov fs, dx",
     "    mov gs, dx",
-    // ---- Step 6: wrmsr IA32_GS_BASE + IA32_KERNEL_GS_BASE ----
+    // ---- Step 7: wrmsr IA32_GS_BASE + IA32_KERNEL_GS_BASE ----
     // MUST come AFTER the data-segment reload (mov gs, dx zeroes the
     // hidden GS base; only a subsequent wrmsr re-arms it).
     "    mov rax, [rdi + {off_pc} + r8*8]",
@@ -519,17 +533,23 @@ core::arch::global_asm!(
     "    shr rdx, 32",
     "    mov ecx, 0xC0000102",
     "    wrmsr",
-    // ---- Step 7: ltr <per-CPU TSS selector> ----
+    // ---- Step 8: ltr <per-CPU TSS selector> ----
     "    mov ax, word ptr [rdi + {off_sel} + r8*2]",
     "    ltr ax",
-    // ---- Step 8: bump online-ack counter (BSP polls this) ----
+    // ---- Step 9: bump online-ack counter (BSP polls this) ----
     "    lock inc qword ptr [rip + AP_ONLINE_ACK]",
-    // ---- Step 9: park (interrupts disabled — MB14.e enables sti) ----
+    // ---- Step 10: park (interrupts disabled — MB14.e enables sti) ----
     "80:",
     "    cli",
     "    hlt",
     "    jmp 80b",
     // ---- park_unknown: LAPIC ID not in lapic_to_cpu table ----
+    // Never reached on a correctly-configured boot (the BSP populates
+    // lapic_to_cpu[1..N] for every enabled non-BSP AP pre-fire). Kept
+    // as a distinct park label so a disassembler shows the missed-AP
+    // path is reachable in principle, and so a stray AP with an
+    // unexpected LAPIC ID has a defined landing place rather than
+    // running off the end of the function.
     "90:",
     "    cli",
     "91:",
