@@ -608,6 +608,60 @@ pub fn kmain(
                         early_console::write_str(" gdt_entries=");
                         early_console::write_usize(gdt.len());
                         early_console::write_str(" (builder dry-run)\n");
+
+                        // MB14.c.2.b.2 — bare-metal emplacement.
+                        //
+                        // When the MADT enumerated more than one CPU, we
+                        // actually allocate three temp page-table frames,
+                        // materialise the identity-paging hierarchy through
+                        // the bootloader direct map, identity-map the
+                        // trampoline page in the active CR3, and copy the
+                        // 256-byte blob to physical 0x0000_8000. No LAPIC
+                        // MMIO is emitted — that flip lands in MB14.c.2.c.
+                        //
+                        // On BSP-only systems (enabled_count == 1) we skip
+                        // emplacement entirely: there is no AP to receive
+                        // the trampoline, and reserving three frames for
+                        // nothing would waste low memory.
+                        if topo.enabled_count() > 1 {
+                            #[allow(
+                                unsafe_code,
+                                reason = "single-core BSP context; FRAME_ALLOC not aliased"
+                            )]
+                            let fa = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_ALLOC) };
+                            match bare_metal::mp_emplacement::place_trampoline(
+                                fa,
+                                &mut pager,
+                                0xFFFF_FFFF_8010_0000,
+                            ) {
+                                Ok(emp) => {
+                                    early_console::write_str(
+                                        "[mb14.c.2.b.2] emplaced tramp_paddr=",
+                                    );
+                                    early_console::write_usize(
+                                        emp.trampoline_paddr as usize,
+                                    );
+                                    early_console::write_str(" temp_pml4=");
+                                    #[allow(
+                                        clippy::cast_possible_truncation,
+                                        reason = "x86_64; usize is u64 on bare-metal target"
+                                    )]
+                                    early_console::write_usize(
+                                        emp.temp_pml4_paddr as usize,
+                                    );
+                                    early_console::write_str("\n");
+                                }
+                                Err(_e) => {
+                                    early_console::write_str(
+                                        "[mb14.c.2.b.2] emplacement FAILED — BSP only\n",
+                                    );
+                                }
+                            }
+                        } else {
+                            early_console::write_str(
+                                "[mb14.c.2.b.2] BSP-only — emplacement skipped\n",
+                            );
+                        }
                     } else {
                         early_console::write_str("[mb14.c.1] MADT walk FAILED — BSP only\n");
                     }

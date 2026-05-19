@@ -1,10 +1,10 @@
 # OMNI OS — Progress Report
 
-**Data snapshot:** 2026-05-19 (post MB14.c.2.a — INIT-SIPI ICR encoder pure-function (xAPIC + x2APIC) + dry-run `start_aps` orchestrator pinned to Intel SDM Vol 3A § 10.6.1 / § 10.12.9, +13 unit test host-side)
+**Data snapshot:** 2026-05-19 (post MB14.c.2.b.2 — bare-metal emplacement della pagina trampolino: alloc 3 frame da `BitmapFrameAllocator` + materialize temp PML4/PDPT/PD via direct map + identity-map della trampoline page in active CR3 + copia 256-byte blob a phys `0x8000`, +11 host-side test con `TestArena` 1.5 MiB)
 **Branch corrente:** `feat/kernel-mb11-userspace` (locale; in attesa di PR + merge in `main`)
-**HEAD:** post-MB14.c.2.a — `bare_metal::mp::start_aps(&topo, lid, 0x08, DryRun)` chiamato in `kmain` post-MB14.c.1 e logga `[mb14.c.2.a] start_aps targeted=N sequenced=N (dry-run)`; nessuna LAPIC MMIO emessa in questa sub-task (encoder-only, real-mode trampoline + live fire arrivano in MB14.c.2.b/c)
-**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e + MB14.a + MB14.b + MB14.c.1 + **MB14.c.2.a**).
-**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~86% Track B
+**HEAD:** post-MB14.c.2.b.2 — `bare_metal::mp_emplacement::place_trampoline(FRAME_ALLOC, pager, 0xFFFF_FFFF_8010_0000)` chiamato in `kmain` post-MB14.c.2.b.1 quando `topo.enabled_count() > 1`; logga `[mb14.c.2.b.2] emplaced tramp_paddr=0x8000 temp_pml4=<addr>`. La pipeline `start_aps` resta in `DryRun` mode fino a MB14.c.2.c.
+**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e + MB14.a + MB14.b + MB14.c.1 + MB14.c.2.a + MB14.c.2.b.1 + **MB14.c.2.b.2**).
+**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~88% Track B
 
 ---
 
@@ -557,6 +557,97 @@ Build Info panel aggiornato a Active=`MB14.b GS_BASE per-CPU ptr`,
 Next=`MB14.c AP startup INIT-SIPI`, Track B=`MB1-MB13 OK, MB14.a-b
 wip`, Phase 1 ≈ 84%.
 
+Il blocco **MB14.c.2.b.2 (bare-metal emplacement della pagina
+trampolino)** è stato chiuso il 2026-05-19. Trasforma i puri builder di
+MB14.c.2.b.1 in materializzazione fisica: tre frame allocati dal
+`BitmapFrameAllocator<16384>` ospitano la temp PML4 / PDPT / PD, i
+contenuti di `build_temp_identity_paging(pdpt_paddr, pd_paddr)` sono
+scritti via direct map del bootloader (`phys_offset + paddr` →
+`core::ptr::write_volatile` per ogni u64 entry), la pagina trampolino
+`0x0000_8000` è identity-mappata nel CR3 attivo (defensive — il copy
+del blob già passa per il direct map, ma il mapping garantisce che la
+pagina sia raggiungibile anche come VA `0x8000`), e il blob 256-byte
+prodotto da `build_trampoline_blob(0x8000, pml4_u32,
+0xFFFF_FFFF_8010_0000)` è copiato a phys `0x8000` byte-per-byte
+volatile.
+
+Quattro cambi atomici:
+
+- **`crates/omni-kernel/src/bare_metal/mp_emplacement.rs`** — nuovo
+  modulo con `pub const TRAMPOLINE_PHYS_BASE: u32 = 0x0000_8000` +
+  `pub const TRAMPOLINE_SIPI_VECTOR: u8 = 0x08` (vector byte derivato),
+  `pub struct EmplacedTrampoline { trampoline_paddr: u32,
+  temp_pml4_paddr: u64 }`, `pub enum EmplacementError { OutOfFrames,
+  Pml4Above4GiB, TrampolineVaConflict, MapFailed }` e
+  `pub fn place_trampoline<const N: usize>(allocator: &mut
+  BitmapFrameAllocator<N>, mapper: &mut PageMapper, kernel_ap_entry:
+  u64) -> Result<EmplacedTrampoline, EmplacementError>`. Tutti i path
+  di errore restituiscono i frame allocati al `BitmapFrameAllocator`
+  prima del return — la funzione è quindi safe-retry, e una OOM
+  parziale non lascia il bitmap allocator in stato inconsistente. Il
+  mapping del trampolino in active CR3 è idempotente: se
+  `mapper.translate(VirtAddr(0x8000))` ritorna già
+  `Some(PhysAddr(0x8000))`, lo step diventa no-op (utile per
+  ripetizioni difensive su sistemi che pre-mappano il low memory).
+
+- **`crates/omni-kernel/src/bare_metal/mod.rs`** — registrazione del
+  nuovo modulo (`pub mod mp_emplacement;`).
+
+- **`crates/omni-kernel/src/lib.rs`** — hook in `kmain` post-MB14.c.2.b.1
+  che invoca
+  `bare_metal::mp_emplacement::place_trampoline(&mut FRAME_ALLOC, &mut
+  pager, 0xFFFF_FFFF_8010_0000)` quando `topo.enabled_count() > 1`
+  (AP-only path) e logga `[mb14.c.2.b.2] emplaced tramp_paddr=0x8000
+  temp_pml4=<addr>` (success) oppure
+  `[mb14.c.2.b.2] emplacement FAILED — BSP only` (error). Su BSP-only
+  (`enabled_count() == 1`) la sotto-step è skip esplicito con log
+  `[mb14.c.2.b.2] BSP-only — emplacement skipped` — non riserva tre
+  frame fisici per nulla quando non ci sono AP da svegliare.
+
+- **+11 host-side test** in `bare_metal::mp_emplacement::tests::*`:
+  `place_trampoline_returns_canonical_trampoline_paddr` (pin SIPI
+  vector / phys base), `place_trampoline_temp_pml4_is_in_low_4gib`
+  (CR3 32-bit reloc invariant), `_consumes_three_frames_from_allocator`
+  (3..=7 frame, includendo path-build dell'identity map),
+  `_materialises_pml4_pointing_at_pdpt` e
+  `_materialises_pd_with_2mib_identity_entry` (read-back via
+  `TestArena`), `_pml4_contents_match_pure_builder` (byte-equality vs
+  `build_temp_identity_paging`),
+  `_handles_repeat_calls_consistently` (idempotenza identity-mapping,
+  seconda call usa frame temp diversi), `_returns_out_of_frames_when_allocator_empty`
+  (error path drained allocator), `_writes_blob_to_phys_8000`
+  (read-back 256 byte, byte-equality vs `build_trampoline_blob`),
+  `_blob_starts_with_cli_cld_in_memory` (primi opcode in memoria),
+  `sipi_vector_matches_trampoline_base` (`0x08`). L'infrastruttura
+  `TestArena` 1.5 MiB heap-allocated 4 KiB-aligned (`phys_offset =
+  arena.ptr`, phys 0 ↔ arena.ptr) copre **sia** phys `0x8000`
+  (trampolino) **che** le frame `>= 0x10_0000` allocator-handed —
+  matchando il layout reale dove il low 1 MiB è reservato e l'allocator
+  parte da 1 MiB.
+
+Workspace test count 510+ → 521+. `cargo clippy --workspace
+--all-features --all-targets -- -D warnings` + `cargo clippy
+--manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none
+-- -D warnings` clean. Build Info panel aggiornato a
+Active=`MB14.c.2.b.2 emplacement`, Next=`MB14.c.2.c live start_aps`,
+Track B=`MB1-MB13 OK, MB14.a-c.2.b.2 wip`, Phase 1 ≈ 88%, Tests=`515+
+workspace pass`.
+
+Note di scope (MB14.c.2.b.2 esplicitamente NON include):
+
+- Live LAPIC MMIO write — `start_aps` resta in `DryRun` mode (la
+  pipeline ICR encoder MB14.c.2.a è chiamata su `topo` ma scarta i
+  risultati). Il flip `StartApsMode::DryRun → Live` è MB14.c.2.c.
+- Vero per-AP `kmain_ap` entry point — il `kernel_ap_entry` passato è
+  un placeholder higher-half (`0xFFFF_FFFF_8010_0000`). Verrà
+  rimpiazzato dal vero per-AP entry stub in MB14.c.2.c.
+- Acknowledgement barrier via atomic counter (richiesta dal trampolino
+  per segnalare che l'AP è uscito da real mode e ha caricato CR3) —
+  MB14.c.2.c.
+- Per-AP `PerCpu` slot allocation — MB14.c.2.c.
+- ADR-0007 (capture finale del design MP/AP a chiusura del ciclo
+  MB14.c).
+
 ---
 
 ## 2. Stato per track
@@ -580,7 +671,7 @@ wip`, Phase 1 ≈ 84%.
 
 ### 2.2 — Track B: Kernel core (`omni-kernel` bare-metal)
 
-**Status:** MB1-MB13 ✅ chiuse. MB14.a-c.2.b.1 ✅ chiusi (per-CPU descriptor, `IA32_GS_BASE`/`swapgs`, ACPI MADT enumerator, INIT-SIPI ICR encoder dry-run, pure-function trampoline builder 16→32→64 bit + temp GDT + identity-map primitives). Prossimo sub-block MB14.c.2.b.2 (emplacement bare-metal: alloc + identity-map della trampoline page + temp PML4 a CR3 attivo).
+**Status:** MB1-MB13 ✅ chiuse. MB14.a-c.2.b.2 ✅ chiusi (per-CPU descriptor, `IA32_GS_BASE`/`swapgs`, ACPI MADT enumerator, INIT-SIPI ICR encoder dry-run, pure-function trampoline builder 16→32→64 bit + temp GDT + identity-map primitives, **bare-metal emplacement** che materializza fisicamente le tre temp page-table + identity-mappa la trampoline page nel CR3 attivo + copia il blob a phys `0x8000`). Prossimo sub-block MB14.c.2.c (live `start_aps`: flip da `StartApsMode::DryRun` a `Live` con vere LAPIC ICR write per INIT + SIPI×2, ack barrier via atomic counter, per-AP `PerCpu` slot, vero `kmain_ap` entry, ADR-0007).
 
 | Milestone | Contenuto | Stato | Commit |
 |---|---|---|---|
@@ -609,7 +700,8 @@ wip`, Phase 1 ≈ 84%.
 | MB14.b | `IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()` | ✅ | `c30221f` |
 | MB14.c.1 | ACPI MADT cpu enumeration (RSDP→XSDT/RSDT walker) | ✅ | `e964a9d` |
 | MB14.c.2.a | INIT-SIPI ICR encoder (xAPIC + x2APIC) + dry-run `start_aps` | ✅ | `ad3b372` |
-| MB14.c.2.b.1 | Pure-function trampoline builder + temp GDT + identity-map primitives | ✅ | (this commit) |
+| MB14.c.2.b.1 | Pure-function trampoline builder + temp GDT + identity-map primitives | ✅ | `176010f` |
+| MB14.c.2.b.2 | Bare-metal emplacement (3 frames + materialize temp PML4/PDPT/PD + identity-map trampoline page + copy blob to `0x8000`) | ✅ | (this commit) |
 
 **Verifica MB1-MB12:**
 - `cargo test --workspace --all-features` → **426 pass / 0 fail** (era 393 post-MB11, +33 da MB12 — vedi CHANGELOG `[Unreleased] § Added` riga "Test delta")
@@ -1120,7 +1212,7 @@ del kernel ELF in upper half.
 | Roadmap | Stato attuale |
 |---|---|
 | **Phase 0 — Foundation (mesi 0-6)** | ~75% (governance ✅, foundational crates ✅, OIP process ✅, funding/legal in corso) |
-| **Phase 1 — Microkernel POC (mesi 6-18)** | ~86% (boot ✅, paging ✅, scheduler ✅, syscall ✅, ELF loader ✅, kernel-stack isolation ✅, userspace Ring 3 + per-process CR3 ✅, **IPC concreto + multi-task user ✅ MB12**, **bare-metal smoke unblocked ✅ MB13.b** (ET_DYN/PIE kernel, upper-half mapping), **`omni-capability` integration ✅ MB13.a-h+e** (Ed25519CapabilityProvider canonical + `IpcCreateChannel` signed-token ABI + TSS `ltr` wiring + ADR-0006 accepted), **MP/AP foundation in corso ✅ MB14.a-c.2.a** (per-CPU descriptor + `IA32_GS_BASE`/`swapgs` + ACPI MADT cpu enumeration + INIT-SIPI ICR encoder pinned a Intel SDM Vol 3A); mancano driver model user-space (P6.7), real-mode trampoline + live INIT-SIPI fire (MB14.c.2.b/c), audit (P6.8)) |
+| **Phase 1 — Microkernel POC (mesi 6-18)** | ~88% (boot ✅, paging ✅, scheduler ✅, syscall ✅, ELF loader ✅, kernel-stack isolation ✅, userspace Ring 3 + per-process CR3 ✅, **IPC concreto + multi-task user ✅ MB12**, **bare-metal smoke unblocked ✅ MB13.b** (ET_DYN/PIE kernel, upper-half mapping), **`omni-capability` integration ✅ MB13.a-h+e** (Ed25519CapabilityProvider canonical + `IpcCreateChannel` signed-token ABI + TSS `ltr` wiring + ADR-0006 accepted), **MP/AP foundation in corso ✅ MB14.a-c.2.b.2** (per-CPU descriptor + `IA32_GS_BASE`/`swapgs` + ACPI MADT cpu enumeration + INIT-SIPI ICR encoder pinned a Intel SDM Vol 3A + pure-function trampoline builder + **bare-metal emplacement della trampoline page a phys `0x8000` con temp PML4/PDPT/PD identity-paging materializzata**); mancano driver model user-space (P6.7), live INIT-SIPI fire (MB14.c.2.c), audit (P6.8)) |
 | **Phase 2 — AI Runtime + Tier 0** | 0% (bloccato da Phase 1) |
 | **Phase 3-7** | 0% |
 
