@@ -35,6 +35,14 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
     the workspace `.cargo/config.toml` rustflags (force-soft SIMD
     cfgs for `omni-crypto`) merge cleanly when the kernel-runner is
     built.
+  - **`kernel-runner/build.rs`** — removed entirely. The legacy build
+    script emitted `cargo:rustc-link-arg=--no-pie` which appended
+    `--no-pie` to the linker command line *after* the target-spec's
+    `-pie`. LLD honours the last flag, so the kernel ELF was still
+    `ET_EXEC` even after cleaning the `.cargo/config.toml`. Deleting
+    the script lets the target spec's `-pie` reach LLD unopposed.
+    Verified via `readelf -h` → `Type: DYN (Position-Independent
+    Executable file)`.
   - **`kernel-runner/src/main.rs`** — `BOOTLOADER_CONFIG` now sets
     `mappings.dynamic_range_start = Some(0xFFFF_8000_0000_0000)`,
     pushing every bootloader-managed mapping (kernel base, kernel

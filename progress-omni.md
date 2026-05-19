@@ -99,11 +99,19 @@ rustflags target-conditional + feature passthrough Cargo su `sha2 0.10`
 necessaria (Alternativa A in ADR-0005 § Migration NON adottata).
 
 Il blocco **MB13.b (Boot-path fix — ET_DYN/PIE kernel + upper-half
-dynamic mapping)** è stato chiuso il 2026-05-19. `kernel-runner/.cargo/
-config.toml` non forza più ET_EXEC (`-C relocation-model=static` +
-`-C link-arg=--no-pie` rimossi): il target spec `x86_64-unknown-none`
-ha `position-independent-executables = true` per default su Rust 1.83+,
-quindi l'output è ora un ELF `ET_DYN` con codice RIP-relative.
+dynamic mapping)** è stato chiuso il 2026-05-19. Tre cambi atomici:
+(i) `kernel-runner/.cargo/config.toml` non forza più ET_EXEC (`-C
+relocation-model=static` + `-C link-arg=--no-pie` rimossi); (ii)
+`kernel-runner/build.rs` rimosso interamente (emetteva
+`cargo:rustc-link-arg=--no-pie` *dopo* i flag del target spec, e LLD
+honora l'ultimo flag — un override silenzioso che teneva il kernel
+ET_EXEC anche dopo la rimozione dei flag); (iii) `BOOTLOADER_CONFIG`
+in `kernel-runner/src/main.rs` ora imposta
+`mappings.dynamic_range_start = Some(0xFFFF_8000_0000_0000)`. Il
+target spec `x86_64-unknown-none` ha `position-independent-executables
+= true` per default su Rust 1.83+, quindi con i due flag legacy rimossi
+l'output è ora un ELF `ET_DYN` con codice RIP-relative (verificato via
+`readelf -h` → `Type: DYN (Position-Independent Executable file)`).
 `BOOTLOADER_CONFIG` in `kernel-runner/src/main.rs` ora imposta
 `mappings.dynamic_range_start = Some(0xFFFF_8000_0000_0000)`, così
 `bootloader 0.11` rilocca il kernel image, lo stack, il `BootInfo`, il
