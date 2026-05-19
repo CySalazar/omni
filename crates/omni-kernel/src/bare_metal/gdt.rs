@@ -443,10 +443,7 @@ mod tests {
         // Use cpu_id=1 → slot 7.
         let base = 0xFFFF_C100_0000_1000_u64;
         assert!(gdt_set_ap_tss(1, base));
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "sizeof(Tss) = 104"
-        )]
+        #[allow(clippy::cast_possible_truncation, reason = "sizeof(Tss) = 104")]
         let limit = (core::mem::size_of::<super::super::tss::Tss>() - 1) as u32;
         let expected = super::super::tss::tss_descriptor(base, limit);
         let actual = gdt_read_pair(7);

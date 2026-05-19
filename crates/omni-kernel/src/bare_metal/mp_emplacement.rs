@@ -549,10 +549,7 @@ mod tests {
         let phys_offset = arena.phys_offset();
 
         let mut alloc = BitmapFrameAllocator::<8>::new(PhysAddr(0));
-        alloc.mark_range_free(
-            PhysAddr(FREE_BASE),
-            ARENA_FRAMES * 4096 - FREE_BASE,
-        );
+        alloc.mark_range_free(PhysAddr(FREE_BASE), ARENA_FRAMES * 4096 - FREE_BASE);
 
         // Carve out the first free frame as the active-CR3 PML4. The
         // page is already zeroed by alloc_zeroed in TestArena::new.
@@ -584,7 +581,11 @@ mod tests {
             r.temp_pml4_paddr <= u64::from(u32::MAX),
             "temp PML4 must fit in the trampoline's 32-bit CR3 load"
         );
-        assert_eq!(r.temp_pml4_paddr & 0xFFF, 0, "temp PML4 must be 4 KiB-aligned");
+        assert_eq!(
+            r.temp_pml4_paddr & 0xFFF,
+            0,
+            "temp PML4 must be 4 KiB-aligned"
+        );
     }
 
     #[test]
@@ -635,7 +636,11 @@ mod tests {
         assert_eq!(pd[0] & 1, 1, "PD[0] must be present");
         assert_eq!(pd[0] & 0b10, 0b10, "PD[0] must be writable");
         assert_eq!(pd[0] & 0x80, 0x80, "PD[0] must have PS=1 (2 MiB page)");
-        assert_eq!(pd[0] & 0x000F_FFFF_FFE0_0000, 0, "PD[0] must map phys 0..2 MiB");
+        assert_eq!(
+            pd[0] & 0x000F_FFFF_FFE0_0000,
+            0,
+            "PD[0] must map phys 0..2 MiB"
+        );
     }
 
     #[test]

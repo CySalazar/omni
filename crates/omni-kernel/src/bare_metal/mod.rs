@@ -53,6 +53,7 @@ pub mod graphics;
 pub mod heap;
 pub mod idt;
 pub mod input;
+pub mod ipi;
 #[cfg(target_arch = "x86_64")]
 pub mod lapic;
 #[cfg(all(
@@ -66,11 +67,12 @@ pub mod mp;
 pub mod mp_ap_entry;
 pub mod mp_emplacement;
 pub mod mp_trampoline;
-pub mod pit_delay;
 pub mod paging;
 pub mod panic;
 pub mod per_cpu;
+pub mod pit_delay;
 pub mod syscall_entry;
+pub mod tlb_shootdown;
 pub mod tss;
 pub mod user_stack;
 pub mod usermode;

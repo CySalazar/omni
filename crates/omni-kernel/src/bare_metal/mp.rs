@@ -54,7 +54,10 @@
 //!
 //! [`MADT`]: https://uefi.org/specs/ACPI/6.4/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#multiple-apic-description-table-madt
 
-#![allow(unsafe_code, reason = "ACPI table walk reads raw physical-memory window")]
+#![allow(
+    unsafe_code,
+    reason = "ACPI table walk reads raw physical-memory window"
+)]
 
 /// Hard cap on the number of logical CPUs the kernel tracks.
 ///
@@ -1253,10 +1256,7 @@ mod tests {
     fn start_aps_with_trampoline_zero_forces_dry_run() {
         // Even mode=Live downgrades to dry_run when trampoline_page=0
         // (SIPI vector 0 would jump into the IVT — never valid).
-        let topo = topology_from(&[
-            make_cpu(0, true, false),
-            make_cpu(1, true, false),
-        ]);
+        let topo = topology_from(&[make_cpu(0, true, false), make_cpu(1, true, false)]);
         let r = start_aps(&topo, 0, 0, StartApsMode::Live);
         assert!(r.dry_run);
     }
@@ -1266,10 +1266,7 @@ mod tests {
         // The live ICR-write path is not implemented in this sub-block;
         // calling with Live must report dry_run=true (silent downgrade
         // documented on StartApsMode::Live).
-        let topo = topology_from(&[
-            make_cpu(0, true, false),
-            make_cpu(1, true, false),
-        ]);
+        let topo = topology_from(&[make_cpu(0, true, false), make_cpu(1, true, false)]);
         let r = start_aps(&topo, 0, 0x08, StartApsMode::Live);
         assert!(r.dry_run, "Live downgrades until MB14.c.2.c");
         assert_eq!(r.targeted, 1);

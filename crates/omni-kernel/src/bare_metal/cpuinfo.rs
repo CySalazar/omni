@@ -149,7 +149,11 @@ pub fn vendor() -> [u8; VENDOR_LEN] {
 #[must_use]
 pub fn unpack_vendor(r: CpuidRegs) -> [u8; VENDOR_LEN] {
     let mut out = [0u8; VENDOR_LEN];
-    let parts = [r.ebx.to_le_bytes(), r.edx.to_le_bytes(), r.ecx.to_le_bytes()];
+    let parts = [
+        r.ebx.to_le_bytes(),
+        r.edx.to_le_bytes(),
+        r.ecx.to_le_bytes(),
+    ];
     let mut i = 0;
     while i < 3 {
         let mut j = 0;
@@ -195,9 +199,18 @@ pub fn brand_string() -> [u8; BRAND_LEN] {
 pub fn unpack_brand(a: CpuidRegs, b: CpuidRegs, c: CpuidRegs) -> [u8; BRAND_LEN] {
     let mut out = [0u8; BRAND_LEN];
     let parts: [[u8; 4]; 12] = [
-        a.eax.to_le_bytes(), a.ebx.to_le_bytes(), a.ecx.to_le_bytes(), a.edx.to_le_bytes(),
-        b.eax.to_le_bytes(), b.ebx.to_le_bytes(), b.ecx.to_le_bytes(), b.edx.to_le_bytes(),
-        c.eax.to_le_bytes(), c.ebx.to_le_bytes(), c.ecx.to_le_bytes(), c.edx.to_le_bytes(),
+        a.eax.to_le_bytes(),
+        a.ebx.to_le_bytes(),
+        a.ecx.to_le_bytes(),
+        a.edx.to_le_bytes(),
+        b.eax.to_le_bytes(),
+        b.ebx.to_le_bytes(),
+        b.ecx.to_le_bytes(),
+        b.edx.to_le_bytes(),
+        c.eax.to_le_bytes(),
+        c.ebx.to_le_bytes(),
+        c.ecx.to_le_bytes(),
+        c.edx.to_le_bytes(),
     ];
     let mut i = 0;
     while i < 12 {
@@ -290,7 +303,11 @@ pub fn decode_family_model(eax: u32) -> FamilyModel {
     } else {
         model_id_base
     };
-    FamilyModel { family, model, stepping }
+    FamilyModel {
+        family,
+        model,
+        stepping,
+    }
 }
 
 // =====================================================================
@@ -318,7 +335,11 @@ pub struct CpuFeatures {
 pub fn features() -> CpuFeatures {
     let max = cpuid(0, 0).eax;
     let leaf1 = cpuid(1, 0);
-    let leaf7 = if max >= 7 { cpuid(7, 0) } else { CpuidRegs::default() };
+    let leaf7 = if max >= 7 {
+        cpuid(7, 0)
+    } else {
+        CpuidRegs::default()
+    };
     CpuFeatures {
         edx1: leaf1.edx,
         ecx1: leaf1.ecx,
@@ -348,18 +369,18 @@ mod bits {
 
 /// Mnemonic table — order matches the `format_feature_summary` output.
 const FEATURE_TABLE: &[(&[u8], FeatureSource)] = &[
-    (b"SSE",     FeatureSource::Edx1(bits::EDX1_SSE)),
-    (b"SSE2",    FeatureSource::Edx1(bits::EDX1_SSE2)),
-    (b"SSE3",    FeatureSource::Ecx1(bits::ECX1_SSE3)),
-    (b"SSSE3",   FeatureSource::Ecx1(bits::ECX1_SSSE3)),
-    (b"SSE4.1",  FeatureSource::Ecx1(bits::ECX1_SSE41)),
-    (b"SSE4.2",  FeatureSource::Ecx1(bits::ECX1_SSE42)),
-    (b"AES",     FeatureSource::Ecx1(bits::ECX1_AES)),
-    (b"AVX",     FeatureSource::Ecx1(bits::ECX1_AVX)),
-    (b"AVX2",    FeatureSource::Ebx7(bits::EBX7_AVX2)),
-    (b"RDRAND",  FeatureSource::Ecx1(bits::ECX1_RDRAND)),
-    (b"RDSEED",  FeatureSource::Ebx7(bits::EBX7_RDSEED)),
-    (b"x2APIC",  FeatureSource::Ecx1(bits::ECX1_X2APIC)),
+    (b"SSE", FeatureSource::Edx1(bits::EDX1_SSE)),
+    (b"SSE2", FeatureSource::Edx1(bits::EDX1_SSE2)),
+    (b"SSE3", FeatureSource::Ecx1(bits::ECX1_SSE3)),
+    (b"SSSE3", FeatureSource::Ecx1(bits::ECX1_SSSE3)),
+    (b"SSE4.1", FeatureSource::Ecx1(bits::ECX1_SSE41)),
+    (b"SSE4.2", FeatureSource::Ecx1(bits::ECX1_SSE42)),
+    (b"AES", FeatureSource::Ecx1(bits::ECX1_AES)),
+    (b"AVX", FeatureSource::Ecx1(bits::ECX1_AVX)),
+    (b"AVX2", FeatureSource::Ebx7(bits::EBX7_AVX2)),
+    (b"RDRAND", FeatureSource::Ecx1(bits::ECX1_RDRAND)),
+    (b"RDSEED", FeatureSource::Ebx7(bits::EBX7_RDSEED)),
+    (b"x2APIC", FeatureSource::Ecx1(bits::ECX1_X2APIC)),
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -469,7 +490,11 @@ impl CpuSnapshot {
         Self {
             vendor: [0; VENDOR_LEN],
             brand: [0; BRAND_LEN],
-            family_model: FamilyModel { family: 0, model: 0, stepping: 0 },
+            family_model: FamilyModel {
+                family: 0,
+                model: 0,
+                stepping: 0,
+            },
             feature_summary: [0; FEATURE_SUMMARY_LEN],
         }
     }
@@ -572,10 +597,18 @@ mod tests {
         let s = *b"Intel(R) Xeon(R) CPU E5-2670 v3 @ 2.30GHz       ";
         let mut regs = [CpuidRegs::default(); 3];
         for (i, r) in regs.iter_mut().enumerate() {
-            r.eax = u32::from_le_bytes([s[i*16+0], s[i*16+1], s[i*16+2], s[i*16+3]]);
-            r.ebx = u32::from_le_bytes([s[i*16+4], s[i*16+5], s[i*16+6], s[i*16+7]]);
-            r.ecx = u32::from_le_bytes([s[i*16+8], s[i*16+9], s[i*16+10], s[i*16+11]]);
-            r.edx = u32::from_le_bytes([s[i*16+12], s[i*16+13], s[i*16+14], s[i*16+15]]);
+            r.eax =
+                u32::from_le_bytes([s[i * 16 + 0], s[i * 16 + 1], s[i * 16 + 2], s[i * 16 + 3]]);
+            r.ebx =
+                u32::from_le_bytes([s[i * 16 + 4], s[i * 16 + 5], s[i * 16 + 6], s[i * 16 + 7]]);
+            r.ecx =
+                u32::from_le_bytes([s[i * 16 + 8], s[i * 16 + 9], s[i * 16 + 10], s[i * 16 + 11]]);
+            r.edx = u32::from_le_bytes([
+                s[i * 16 + 12],
+                s[i * 16 + 13],
+                s[i * 16 + 14],
+                s[i * 16 + 15],
+            ]);
         }
         let b = unpack_brand(regs[0], regs[1], regs[2]);
         assert_eq!(&b[..], &s[..]);

@@ -590,6 +590,16 @@ pub fn idt_init() {
     idt[20] = IdtEntry::interrupt_gate(isr_ve as usize as u64, KERNEL_CS);
     idt[21] = IdtEntry::interrupt_gate(isr_cp as usize as u64, KERNEL_CS);
 
+    // MB14.d — TLB shootdown IPI handler (vector 0xFD). The asm stub
+    // saves caller-saved registers, calls
+    // `kernel_tlb_shootdown_handler`, restores them, `iretq`. Installed
+    // pre-AP-fire so every AP that hits its `lidt` step in
+    // `kmain_ap` sees the handler at the same offset.
+    idt[usize::from(super::tlb_shootdown::TLB_SHOOTDOWN_VECTOR)] = IdtEntry::interrupt_gate(
+        super::tlb_shootdown::omni_tlb_shootdown_handler as usize as u64,
+        KERNEL_CS,
+    );
+
     let idtr = Idtr {
         limit: (core::mem::size_of_val(idt) - 1) as u16,
         base: core::ptr::addr_of!(IDT) as u64,

@@ -40,8 +40,7 @@ use omni_kernel::bare_metal::elf_loader::{Elf64, PF_R, PF_W, PF_X};
 use omni_kernel::bare_metal::paging::PageMapper;
 use omni_kernel::bare_metal::userprobe_mb12::{USERPROBE_RECEIVER_ELF, USERPROBE_SENDER_ELF};
 use omni_kernel::capabilities::{
-    Ed25519CapabilityProvider, KernelAction, KernelCapabilityToken, KernelPrincipal,
-    KernelResource,
+    Ed25519CapabilityProvider, KernelAction, KernelCapabilityToken, KernelPrincipal, KernelResource,
 };
 use omni_kernel::ipc::{
     BackpressurePolicy, ChannelId, ChannelPolicy, KernelIpcRegistry, MessageEnvelope, MessageKind,

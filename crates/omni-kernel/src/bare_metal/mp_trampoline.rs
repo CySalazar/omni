@@ -351,7 +351,7 @@ pub fn build_trampoline_blob(
     // data + bss) is reachable.
     blob[0x49] = 0x0D;
     blob[0x4A] = 0x00;
-    blob[0x4B] = 0x09;                          // bit 8 (LME) | bit 11 (NXE)
+    blob[0x4B] = 0x09; // bit 8 (LME) | bit 11 (NXE)
     blob[0x4C] = 0x00;
     blob[0x4D] = 0x00;
 
@@ -557,10 +557,7 @@ pub struct TempIdentityPaging {
 /// 0 is a self-contained `pd_entry_2mib(0)` — the target frame is
 /// embedded in the entry itself, not in a separate page.
 #[must_use]
-pub const fn build_temp_identity_paging(
-    pdpt_paddr: u64,
-    pd_paddr: u64,
-) -> TempIdentityPaging {
+pub const fn build_temp_identity_paging(pdpt_paddr: u64, pd_paddr: u64) -> TempIdentityPaging {
     let mut pml4 = [0u64; 512];
     let mut pdpt = [0u64; 512];
     let mut pd = [0u64; 512];

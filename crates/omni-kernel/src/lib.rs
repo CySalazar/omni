@@ -86,6 +86,7 @@ extern crate alloc;
 pub mod capabilities;
 pub mod ipc;
 pub mod memory;
+pub mod mm;
 #[cfg(feature = "bare-metal")]
 pub mod process;
 pub mod scheduling;
@@ -548,7 +549,9 @@ pub fn kmain(
                 // tables, and `rsdp_addr` / `physical_memory_offset`
                 // are valid for this boot.
                 let rsdp = boot_info.rsdp_addr.into_option();
-                if let (Some(rsdp_phys), Some(off)) = (rsdp, boot_info.physical_memory_offset.into_option()) {
+                if let (Some(rsdp_phys), Some(off)) =
+                    (rsdp, boot_info.physical_memory_offset.into_option())
+                {
                     // SAFETY: bootloader-supplied direct-map covers all ACPI
                     // tables; same invariants as `arch::acpi_poweroff_from_fadt`.
                     #[allow(
@@ -567,7 +570,11 @@ pub fn kmain(
                             early_console::write_str("[mb14.c.1]   apic_id=");
                             early_console::write_usize(cpu.apic_id as usize);
                             early_console::write_str(if cpu.x2apic { " (x2apic)" } else { "" });
-                            early_console::write_str(if cpu.enabled { " enabled" } else { " disabled" });
+                            early_console::write_str(if cpu.enabled {
+                                " enabled"
+                            } else {
+                                " disabled"
+                            });
                             early_console::write_str("\n");
                         }
 
@@ -597,9 +604,11 @@ pub fn kmain(
                         early_console::write_usize(report.targeted);
                         early_console::write_str(" sequenced=");
                         early_console::write_usize(report.sequenced);
-                        early_console::write_str(
-                            if report.dry_run { " (dry-run)\n" } else { " (live)\n" },
-                        );
+                        early_console::write_str(if report.dry_run {
+                            " (dry-run)\n"
+                        } else {
+                            " (live)\n"
+                        });
 
                         // MB14.c.2.b.1 — exercise the pure-function trampoline
                         // builders on the BSP so any cross-build regression
@@ -676,15 +685,10 @@ pub fn kmain(
                             // immediately replaced — the AP no longer
                             // depends on low memory after this point).
                             // -----------------------------------------------
-                            let (gdtr_base, gdtr_limit) =
-                                bare_metal::gdt::gdt_base_and_limit();
-                            let (idtr_base, idtr_limit) =
-                                bare_metal::idt::idt_base_and_limit();
+                            let (gdtr_base, gdtr_limit) = bare_metal::gdt::gdt_base_and_limit();
+                            let (idtr_base, idtr_limit) = bare_metal::idt::idt_base_and_limit();
                             bare_metal::mp_ap_entry::install_descriptor_tables(
-                                gdtr_base,
-                                gdtr_limit,
-                                idtr_base,
-                                idtr_limit,
+                                gdtr_base, gdtr_limit, idtr_base, idtr_limit,
                             );
 
                             let mut ap_index: u32 = 1;
@@ -734,31 +738,26 @@ pub fn kmain(
                                     cpu_id, kstk_top, ist1_top, ist2_top,
                                 );
                                 // 3) Register PerCpu slot.
-                                let Some(slot) = bare_metal::per_cpu::register_ap(
-                                    cpu_id,
-                                    cpu.apic_id,
-                                ) else {
+                                let Some(slot) =
+                                    bare_metal::per_cpu::register_ap(cpu_id, cpu.apic_id)
+                                else {
                                     continue;
                                 };
                                 slot.set_kernel_rsp(kstk_top);
                                 // 4) Place TSS descriptor into kernel GDT.
-                                let tss_base =
-                                    bare_metal::tss::ap_tss_addr(cpu_id);
+                                let tss_base = bare_metal::tss::ap_tss_addr(cpu_id);
                                 let _ = bare_metal::gdt::gdt_set_ap_tss(cpu_id, tss_base);
                                 // 5) Stamp AP_RUNTIME_CONTROL.
-                                let tss_sel =
-                                    bare_metal::gdt::tss_selector_for_cpu(cpu_id);
+                                let tss_sel = bare_metal::gdt::tss_selector_for_cpu(cpu_id);
                                 let per_cpu_ptr =
-                                    core::ptr::from_ref::<bare_metal::per_cpu::PerCpu>(slot)
-                                        as u64;
-                                let _ =
-                                    bare_metal::mp_ap_entry::register_ap_runtime_slot(
-                                        cpu_id,
-                                        cpu.apic_id,
-                                        kstk_top,
-                                        per_cpu_ptr,
-                                        tss_sel,
-                                    );
+                                    core::ptr::from_ref::<bare_metal::per_cpu::PerCpu>(slot) as u64;
+                                let _ = bare_metal::mp_ap_entry::register_ap_runtime_slot(
+                                    cpu_id,
+                                    cpu.apic_id,
+                                    kstk_top,
+                                    per_cpu_ptr,
+                                    tss_sel,
+                                );
                                 early_console::write_str("[mb14.c.2.d] ap cpu_id=");
                                 early_console::write_usize(cpu_id as usize);
                                 early_console::write_str(" lapic=");
@@ -781,8 +780,7 @@ pub fn kmain(
                                 early_console::write_str("\n");
                             }
 
-                            let kmain_ap_va =
-                                bare_metal::mp_ap_entry::kmain_ap as usize as u64;
+                            let kmain_ap_va = bare_metal::mp_ap_entry::kmain_ap as usize as u64;
                             match bare_metal::mp_emplacement::place_trampoline_live(
                                 fa,
                                 &mut pager,
@@ -790,20 +788,14 @@ pub fn kmain(
                                 kmain_ap_va,
                             ) {
                                 Ok(emp) => {
-                                    early_console::write_str(
-                                        "[mb14.c.2.c] emplaced tramp_paddr=",
-                                    );
-                                    early_console::write_usize(
-                                        emp.trampoline_paddr as usize,
-                                    );
+                                    early_console::write_str("[mb14.c.2.c] emplaced tramp_paddr=");
+                                    early_console::write_usize(emp.trampoline_paddr as usize);
                                     early_console::write_str(" temp_pml4=");
                                     #[allow(
                                         clippy::cast_possible_truncation,
                                         reason = "x86_64; usize is u64 on bare-metal target"
                                     )]
-                                    early_console::write_usize(
-                                        emp.temp_pml4_paddr as usize,
-                                    );
+                                    early_console::write_usize(emp.temp_pml4_paddr as usize);
                                     early_console::write_str(" kmain_ap_va=");
                                     #[allow(
                                         clippy::cast_possible_truncation,
@@ -816,13 +808,12 @@ pub fn kmain(
                                     // non-BSP AP, then busy-poll the ack
                                     // counter until each one has entered
                                     // the landing stub.
-                                    let live_report =
-                                        bare_metal::mp::start_aps_live(
-                                            &topo,
-                                            lid,
-                                            bare_metal::mp_emplacement::TRAMPOLINE_SIPI_VECTOR,
-                                            phys_offset_mb2,
-                                        );
+                                    let live_report = bare_metal::mp::start_aps_live(
+                                        &topo,
+                                        lid,
+                                        bare_metal::mp_emplacement::TRAMPOLINE_SIPI_VECTOR,
+                                        phys_offset_mb2,
+                                    );
                                     early_console::write_str(
                                         "[mb14.c.2.c] start_aps_live targeted=",
                                     );
@@ -848,22 +839,18 @@ pub fn kmain(
                                     // triple-faults after the landing
                                     // stub, the count stalls but the BSP
                                     // does not hang.
-                                    let ap_target =
-                                        live_report.acked as u64;
+                                    let ap_target = live_report.acked as u64;
                                     let mut iter: u64 = 0;
                                     let mut online: u64 = 0;
                                     while iter < 200_000_000 {
-                                        online =
-                                            bare_metal::per_cpu::ap_online_ack();
+                                        online = bare_metal::per_cpu::ap_online_ack();
                                         if online >= ap_target {
                                             break;
                                         }
                                         core::hint::spin_loop();
                                         iter = iter.wrapping_add(1);
                                     }
-                                    early_console::write_str(
-                                        "[mb14.c.2.d] per-AP init online=",
-                                    );
+                                    early_console::write_str("[mb14.c.2.d] per-AP init online=");
                                     #[allow(
                                         clippy::cast_possible_truncation,
                                         reason = "bare-metal x86_64: usize is u64"
@@ -888,18 +875,20 @@ pub fn kmain(
                                 }
                             }
                         } else {
-                            early_console::write_str(
-                                "[mb14.c.2.c] BSP-only — AP wake skipped\n",
-                            );
+                            early_console::write_str("[mb14.c.2.c] BSP-only — AP wake skipped\n");
                         }
                     } else {
                         early_console::write_str("[mb14.c.1] MADT walk FAILED — BSP only\n");
                     }
                 } else {
-                    early_console::write_str("[mb14.c.1] rsdp / phys_offset unavailable — BSP only\n");
+                    early_console::write_str(
+                        "[mb14.c.1] rsdp / phys_offset unavailable — BSP only\n",
+                    );
                 }
             } else {
-                early_console::write_str("[mb14.a] read_lapic_id FAILED — descriptor left uninit\n");
+                early_console::write_str(
+                    "[mb14.a] read_lapic_id FAILED — descriptor left uninit\n",
+                );
             }
 
             // Enable maskable interrupts — timer can fire from this point on.
@@ -909,6 +898,40 @@ pub fn kmain(
                 core::arch::asm!("sti", options(nomem, nostack));
             }
             early_console::write_str("[lapic] interrupts enabled\n");
+
+            // MB14.d — TLB shootdown smoke. We issue a benign 4 KiB
+            // `invlpg` on a kernel-half address (the trampoline page is
+            // mapped both in the BSP's CR3 and unchanged by this call,
+            // so the invalidation is observable but inert) and broadcast
+            // the IPI on vector `0xFD`. The local `invlpg` always runs;
+            // the IPI broadcast occurs only when at least one AP is
+            // registered. With APs currently parked under `cli; hlt`
+            // (MB14.c.2.d) the broadcast is queued in each AP's LAPIC
+            // IRR until MB14.e enables maskable interrupts on the AP
+            // side — `ShootdownReport.acked` therefore stays at 0 in
+            // multi-CPU boots and is reported with a `(IRR queued; APs
+            // service post-MB14.e sti)` suffix.
+            {
+                let report =
+                    mm::flush_tlb_range(crate::memory::VirtAddr(0x0000_0000_0000_8000), 0x1000);
+                early_console::write_str("[mb14.d] tlb_shootdown vector=0xFD targeted=");
+                early_console::write_usize(report.targeted);
+                early_console::write_str(" acked=");
+                early_console::write_usize(report.acked);
+                early_console::write_str(" local_pages=");
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "bare-metal x86_64: usize is u64"
+                )]
+                early_console::write_usize(report.local_pages as usize);
+                if report.targeted == 0 {
+                    early_console::write_str(" (BSP-only — no broadcast)\n");
+                } else if report.complete() {
+                    early_console::write_str(" (all APs acked)\n");
+                } else {
+                    early_console::write_str(" (IRR queued; APs service post-MB14.e sti)\n");
+                }
+            }
         } else {
             early_console::write_str("[lapic] LAPIC init FAILED — running without timer\n");
         }

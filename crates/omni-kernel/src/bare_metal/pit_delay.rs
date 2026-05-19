@@ -141,7 +141,10 @@ pub fn pit_delay_us(us: u32) {
     unsafe {
         // 1. Ensure speaker data is off, channel 2 gate is off.
         let b = inb(KBD_CTRL_B);
-        outb(KBD_CTRL_B, b & !(KBD_CTRL_B_SPKR_GATE | KBD_CTRL_B_SPKR_DATA));
+        outb(
+            KBD_CTRL_B,
+            b & !(KBD_CTRL_B_SPKR_GATE | KBD_CTRL_B_SPKR_DATA),
+        );
 
         // 2. Program channel 2: mode 0, binary count, lobyte/hibyte.
         outb(PIT_MODE, PIT_MODE_CH2_M0_BIN_LH);

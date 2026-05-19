@@ -676,8 +676,7 @@ mod tests {
         // [0x100..0x120), slots at [0x140..0x158). The 32-byte gap
         // between stub end and first slot is reserved for future
         // expansion (e.g. per-AP stack-top pointers in MB14.c.2.d).
-        const _STUB_DOES_NOT_OVERLAP_BLOB: () =
-            assert!(AP_LANDING_STUB_OFFSET >= 256);
+        const _STUB_DOES_NOT_OVERLAP_BLOB: () = assert!(AP_LANDING_STUB_OFFSET >= 256);
         const _STUB_FITS_BEFORE_SLOTS: () =
             assert!(AP_LANDING_STUB_OFFSET + AP_LANDING_STUB_SIZE <= AP_ACK_COUNTER_OFFSET);
         const _SLOTS_ARE_8_BYTE_ALIGNED: () = assert!(
