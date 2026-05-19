@@ -136,37 +136,26 @@ impl ProcessControlBlock {
 
         let phys_offset = mapper.phys_offset();
 
-        // 1. Per-process address space + kernel-half clone.
-        let address_space = AddressSpace::new_with_kernel_half(boot_cr3, mapper, alloc)
-            .ok_or(KernelError::ResourceExhausted)?;
-
-        // 2. Parse + map the ELF into the new AS.
-        let elf = Elf64::parse(elf_bytes).map_err(|_| KernelError::InvalidArgument)?;
-        let user_entry = elf
-            .map_and_load_into(address_space.pml4_phys, mapper, alloc, phys_offset)
-            .map_err(|_| KernelError::ResourceExhausted)?;
-
-        // 3. User stack (16 KiB, guard page below) in the user-half VA range.
-        let mut next_user_stack_slot: usize = 0;
-        let user_stack_top = user_stack::allocate_user_stack(
-            &mut next_user_stack_slot,
-            &address_space,
-            mapper,
-            alloc,
-        )
-        .ok_or(KernelError::ResourceExhausted)?;
-
-        // 4. Kernel stack (MB10 isolated range) — the Ring-3 → Ring-0
-        // interrupt/syscall path uses this via TSS.rsp0.
+        // 1. Kernel stack (MB10 isolated range) — the Ring-3 → Ring-0
+        //    interrupt/syscall path uses this via TSS.rsp0 and the
+        //    MB13.f `enter_user_mode` trampoline swaps RSP onto it
+        //    before reloading CR3.
+        //
+        //    Mapped FIRST (before cloning the per-process PML4) so the
+        //    boot PML4's kernel-stack PML4 entry is populated before
+        //    `AddressSpace::new_with_kernel_half` snapshots PML4 indices
+        //    256..511. Per-process PML4s share kernel-half PDPTs *by
+        //    reference*, but a brand-new PDPT installed in the boot
+        //    PML4 *after* a clone does NOT propagate — the clone keeps
+        //    its (stale) zero entry. Mapping the kernel stack here
+        //    forces the boot PML4 to allocate the kstk-range PDPT
+        //    eagerly, so the subsequent clone in step 2 captures it
+        //    and every later kstk slot within the same shared PDPT
+        //    propagates automatically. (MB13.f finding 2026-05-19.)
         let kernel_stack_va = scheduler
             .allocate_stack_slot()
             .ok_or(KernelError::ResourceExhausted)?;
         let kernel_stack_phys = alloc.alloc_frame().ok_or(KernelError::ResourceExhausted)?.0;
-        // Map the kernel stack page in the new AS as well (kernel-half is
-        // shared by reference, but the leaf PT may need to be lazily
-        // populated; the per-process PML4 mirrors the boot PDPT pointers,
-        // so the kernel stack mapping made below is visible to all
-        // address spaces).
         if !mapper.map_4k(
             crate::memory::VirtAddr(kernel_stack_va),
             crate::memory::PhysAddr(kernel_stack_phys),
@@ -177,6 +166,28 @@ impl ProcessControlBlock {
         ) {
             return Err(KernelError::ResourceExhausted);
         }
+
+        // 2. Per-process address space + kernel-half clone. The boot
+        //    PML4 now has the kstk-range PDPT populated (step 1), so
+        //    the clone captures it.
+        let address_space = AddressSpace::new_with_kernel_half(boot_cr3, mapper, alloc)
+            .ok_or(KernelError::ResourceExhausted)?;
+
+        // 3. Parse + map the ELF into the new AS.
+        let elf = Elf64::parse(elf_bytes).map_err(|_| KernelError::InvalidArgument)?;
+        let user_entry = elf
+            .map_and_load_into(address_space.pml4_phys, mapper, alloc, phys_offset)
+            .map_err(|_| KernelError::ResourceExhausted)?;
+
+        // 4. User stack (16 KiB, guard page below) in the user-half VA range.
+        let mut next_user_stack_slot: usize = 0;
+        let user_stack_top = user_stack::allocate_user_stack(
+            &mut next_user_stack_slot,
+            &address_space,
+            mapper,
+            alloc,
+        )
+        .ok_or(KernelError::ResourceExhausted)?;
 
         // 5. Allocate a TaskId.
         let id = scheduler.allocate_task_id();

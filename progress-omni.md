@@ -597,27 +597,62 @@ Accumulato durante le 7 iterazioni di CI conformance su PR #29.
     `mb12-userprobe` supera il punto di triple-fault precedente e
     raggiunge `[mb12] handing off to user tasks` (vedi nuovo finding § 22).
 
-22. ~~⚠️ **`mb12-userprobe` user-side serial output missing**~~ ✅
-    **CHIUSO da MB13.f (2026-05-19).** Root cause: `enter_user_mode`
-    eseguiva `mov cr3, dest_cr3` mentre `RSP` puntava ancora allo stack
-    del chiamante. Nel path MB12 first-dispatch invocato da dentro un
-    syscall handler (`SYSCALL` su x86_64 non commuta `SP`), quello stack
-    era lo *user stack del task uscente*: dopo il `mov cr3` la pagina
-    non era più mappata nel nuovo PML4 (l'user half è privato per
-    processo) e il primo `push {ss}` per il build dell'iretq frame
-    produceva un page-fault → triple-fault → VM reset. La diagnostica
-    del 2026-05-19 mostrava `[mb12] handing off to user tasks` (stampato
-    da kmain prima di `yield_current`) seguito da silenzio: il primo
-    `enter_user_mode` veniva eseguito ma faultava all'istante, senza
-    raggiungere alcuna istruzione Ring 3 (quindi nessun `[user] exit=0`
-    né `ping`). **Fix MB13.f:** `enter_user_mode` aggiunge il parametro
-    `kernel_stack_top: u64` e fa `mov rsp, {kstk}` *prima* del `mov cr3`,
-    spostando l'esecuzione su una pagina kernel-half mirrored (range
-    MB10 isolato `[KERNEL_STACK_VA_BASE, KERNEL_STACK_VA_END)`) che
-    resta mappata dall'altra parte del CR3 reload. Entrambi i call site
-    aggiornati: `scheduling.rs::yield_current` first-dispatch e
-    `lib.rs` MB11 single-task path. Pending: smoke validation completa
-    su Proxmox VMID 103 a deploy-time (vedi § "Verifica MB13.f" sotto).
+22. ⚠️ **`mb12-userprobe` user-side serial output missing — parzialmente
+    chiuso da MB13.f + process.rs reorder (2026-05-19).** Il bug aveva
+    due cause sovrapposte:
+
+    **Causa 1 (chiusa):** `enter_user_mode` eseguiva `mov cr3, dest_cr3`
+    mentre `RSP` puntava ancora allo stack del chiamante (lo *user
+    stack del task uscente* per i first-dispatch invocati da un syscall
+    handler, dato che `SYSCALL` su x86_64 non commuta `SP`). Dopo il
+    `mov cr3` quella pagina non era più mappata nel nuovo PML4 e il
+    primo `push {ss}` produceva un page-fault → triple-fault.
+    *Fix MB13.f:* `enter_user_mode` aggiunge `kernel_stack_top: u64`
+    e fa `mov rsp, {kstk}` *prima* del `mov cr3`. Validato via
+    tracepoint inline (port 0x3F8) — il blocco asm completo
+    (`mov rsp` → `mov cr3` → 5 `push` → `iretq`) ora esegue
+    interamente senza fault Ring 0.
+
+    **Causa 2 (chiusa):** `new_with_kernel_half` clona PML4 entries
+    256..511 by *value*. Per i nuovi PDPT non ancora presenti nel
+    boot PML4 al momento del clone, la condivisione "by reference"
+    documentata in ADR-0004 non vale: ogni nuovo PDPT installato
+    successivamente nel boot PML4 (es. la prima allocazione di una
+    kstk MB10 al PML4 index 0x180) rimane invisibile alle PML4
+    cloned precedentemente. Per la PRIMA spawn di processo user, il
+    flusso originale (clone PML4 → map kstk via boot mapper) lasciava
+    il PML4 cloned con `PML4[0x180] = 0` mentre boot PML4 aveva
+    `PML4[0x180] = PDPT_X`. CR3 reload + accesso a kstk_top → #PF.
+    *Fix reorder:* `process.rs::spawn_from_elf` ora alloca + mappa
+    la kstk *prima* del clone PML4. Il clone successivo cattura il
+    PDPT shared, e tutte le kstk successive (slot ≥ 1 within the
+    same PDPT) propagano via shared PDPT/PD/PT senza ulteriori
+    reorder.
+
+    **Stato residuo (open follow-up MB13.g):** con entrambi i fix, il
+    primo `enter_user_mode` raggiunge `iretq` sano (verificato via
+    tracepoint 'E' sul COM1) ma la VM si arresta subito dopo senza
+    emettere nessuno dei tracepoint installati per debug (`'S'` ad
+    `omni_syscall_entry`, `'T'` al `lapic_timer_handler`, `'P'/'G'/'F'`
+    agli ISR `#PF`/`#GP`/`#DF`). Il task Ring 3 non esegue nemmeno
+    una `jmp $` (testato sostituendo il codice del receiver con
+    `0xEB 0xFE`). Ipotesi rimaste: (a) un fault ad `iretq` di vettore
+    non gestito (#SS, #NP, #TS, #UD), che cascata a #DF il cui IDT
+    entry esiste ma il cui handler non viene raggiunto per qualche
+    motivo (TSS.rsp0 o segment-state?); (b) un problema di TLB stale
+    sul nuovo CR3 nonostante il reload; (c) un descriptor in GDT che
+    diventa unreachable dopo lo swap CR3. Diagnostica più profonda
+    richiede `-d int,cpu_reset -D <log>` sui flag QEMU di VMID 103
+    (modifica `/etc/pve/qemu-server/103.conf`), non eseguita in
+    questo round.
+
+    Validazione del default desktop demo build su Proxmox VMID 103
+    confermata 2026-05-19: kernel-runner senza `mb12-userprobe`
+    boota fino a `[virtio] tablet ready`, renderizza il framebuffer
+    (screenshot 1280×800 catturato via `qm monitor 103 :: screendump`
+    contiene pixel data RGB non-zero), Build Info panel riflette
+    `Active = MB13.f iretq kstk-swap`, `Track B = MB1-MB12 OK,
+    MB13.a-f OK`, `Phase 1 ≈ 77%`.
 
 ---
 

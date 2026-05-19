@@ -62,6 +62,21 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
     RSP is the *outgoing* task's user stack. Host tests did not catch
     it because `enter_user_mode` has a `panic!()` stub on non-x86_64.
 
+  - **`crates/omni-kernel/src/process.rs`** — `spawn_from_elf` now
+    allocates and maps the per-process MB10 kernel stack via
+    `mapper.map_4k(...)` *before* cloning the per-process PML4 via
+    `AddressSpace::new_with_kernel_half`. Reason: `new_with_kernel_half`
+    copies PML4 entries 256..511 by value, and any *new* PDPT installed
+    in the boot PML4 *after* a clone (e.g. the first kstk allocation
+    at PML4 index 0x180) does not propagate to clones taken earlier.
+    Pre-MB13.f, the first user-task spawn cloned an empty PML4[0x180]
+    and then mapped the kstk into the boot mapper, leaving the new
+    process's PML4 with a stale zero entry and the kstk unreachable
+    after CR3 reload. Reordering forces the boot PML4 to allocate the
+    kstk-range PDPT eagerly so the clone captures the shared PDPT, and
+    every subsequent kstk slot inside the same shared PDPT propagates
+    automatically.
+
   Verification (host, 2026-05-19 post-MB13.f):
     - `cargo build --workspace --all-features` → clean (0 warning).
     - `cargo build --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --release --features omni-kernel/mb12-userprobe` → clean.
@@ -76,6 +91,24 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
       I/O on Linux userspace) and at the `bare_metal::paging::tests`
       teardown remains; this carryover (item §4.5 #16) is unrelated to
       MB13.f, which touches only the `x86_64` asm path.
+
+  Smoke validation on Proxmox VMID 103 (2026-05-19):
+    - **Default desktop build** (no `mb12-userprobe`): VM boots to
+      `[virtio] tablet ready`, GOP framebuffer renders, screenshot via
+      `qm monitor 103 :: screendump` confirms Build Info panel at the
+      new milestone state. ✅
+    - **`mb12-userprobe` build:** with MB13.f + the process.rs reorder,
+      `enter_user_mode` now executes the full
+      `mov rsp` → `mov cr3` → 5 `push` → `iretq` sequence without
+      Ring 0 fault (verified via inline tracepoints on COM1 port
+      0x3F8: emit `A` enter / `B` after `mov rsp` / `C` after
+      `mov cr3` / `D` after first push / `E` before `iretq`). The VM
+      still arrests immediately after `iretq` without emitting any of
+      the SYSCALL/timer/ISR tracepoints; the receiver does not even
+      execute a `jmp $`. Tracked as **MB13.g — Ring 3 post-iretq
+      triple-fault** (open). Diagnostic next step requires
+      `-d int,cpu_reset -D /tmp/qemu-trace.log` on QEMU args of VMID
+      103, not performed in this round.
 
 - **Kernel — MB13.d: `IpcCreateChannel` syscall ABI extension for
   postcard-encoded signed tokens (2026-05-19).** Closes the last
