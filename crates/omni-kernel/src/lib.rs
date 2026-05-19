@@ -512,6 +512,51 @@ pub fn kmain(
                 )]
                 early_console::write_usize(bare_metal::per_cpu::bsp().self_ptr() as usize);
                 early_console::write_str("\n");
+
+                // MB14.c.1 — enumerate logical CPUs via the ACPI MADT.
+                // No APs are started here; the figure is logged for
+                // verification and consumed in MB14.c.2 (INIT-SIPI
+                // orchestrator) and MB14.e (per-CPU run-queues).
+                //
+                // The MADT walk is best-effort: if RSDP or the
+                // physical-memory window is unavailable, or any table
+                // in the chain is malformed, we log the failure and
+                // fall through to BSP-only operation (same behaviour
+                // as MB14.b).
+                //
+                // SAFETY: the same invariants the FADT walker depends
+                // on (see `arch::find_pm1a_cnt_from_fadt`): the
+                // bootloader-supplied direct-map covers all ACPI
+                // tables, and `rsdp_addr` / `physical_memory_offset`
+                // are valid for this boot.
+                let rsdp = boot_info.rsdp_addr.into_option();
+                if let (Some(rsdp_phys), Some(off)) = (rsdp, boot_info.physical_memory_offset.into_option()) {
+                    // SAFETY: bootloader-supplied direct-map covers all ACPI
+                    // tables; same invariants as `arch::acpi_poweroff_from_fadt`.
+                    #[allow(
+                        unsafe_code,
+                        reason = "ACPI MADT walk via bootloader direct map; SAFETY above"
+                    )]
+                    let topo_opt = unsafe { bare_metal::mp::enumerate_cpus(rsdp_phys, off) };
+                    if let Some(topo) = topo_opt {
+                        early_console::write_str("[mb14.c.1] MADT cpus=");
+                        early_console::write_usize(topo.len());
+                        early_console::write_str(" enabled=");
+                        early_console::write_usize(topo.enabled_count());
+                        early_console::write_str("\n");
+                        for cpu in topo.entries() {
+                            early_console::write_str("[mb14.c.1]   apic_id=");
+                            early_console::write_usize(cpu.apic_id as usize);
+                            early_console::write_str(cpu.x2apic.then_some(" (x2apic)").unwrap_or(""));
+                            early_console::write_str(cpu.enabled.then_some(" enabled").unwrap_or(" disabled"));
+                            early_console::write_str("\n");
+                        }
+                    } else {
+                        early_console::write_str("[mb14.c.1] MADT walk FAILED — BSP only\n");
+                    }
+                } else {
+                    early_console::write_str("[mb14.c.1] rsdp / phys_offset unavailable — BSP only\n");
+                }
             } else {
                 early_console::write_str("[mb14.a] read_lapic_id FAILED — descriptor left uninit\n");
             }

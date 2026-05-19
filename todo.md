@@ -1,7 +1,7 @@
 # OMNI OS — Implementation TODO
 
-> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB13** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0). MB14.a (per-CPU descriptor scaffold) ✅ + MB14.b (`IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()`) ✅ chiusi 2026-05-19: `init_gs_base(bsp())` arma `MSR 0xC000_0101` e `MSR 0xC000_0102`, `current_cpu()` ora dereferenzia `gs:[0]` (self-ptr a offset 0 di `PerCpu`); `omni_syscall_entry` `swapgs` come prima istruzione e prima di `sysretq`. Roadmap Phase 1 ~84% Track B. **Prossimo sub-block: MB14.c** = AP startup via INIT-SIPI-SIPI + real-mode trampoline; poi MB14.d/e (TLB shootdown broadcast), MB14.f (per-CPU scheduler split).
-> **Last updated:** 2026-05-19 (MB14.b closure: `IA32_GS_BASE` + `IA32_KERNEL_GS_BASE` per-CPU pointer via `init_gs_base`, `swapgs` su `omni_syscall_entry` entry+exit, `current_cpu()` GS-relative load via `mov rax, gs:[0]`, +2 unit tests `self_ptr_field_at_offset_zero` + `init_gs_base_stamps_self_pointer`; workspace test count 453+ → 455+. Branch corrente `feat/kernel-mb11-userspace` con HEAD post-`3f38514`; PR verso `main` resta release-management decision separata).
+> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB13** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0). MB14.a (per-CPU descriptor scaffold) ✅ + MB14.b (`IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()`) ✅ + MB14.c.1 (ACPI MADT cpu enumeration: pure-function `parse_madt` + bare-metal `enumerate_cpus` con RSDP→XSDT/RSDT walker) ✅ chiusi 2026-05-19. Roadmap Phase 1 ~85% Track B. **Prossimo sub-block: MB14.c.2** = INIT-SIPI-SIPI orchestrator + real-mode trampoline a `0x8000`; poi MB14.d/e (TLB shootdown broadcast), MB14.f (per-CPU scheduler split).
+> **Last updated:** 2026-05-19 (MB14.c.1 closure: `bare_metal::mp::parse_madt` decoder pure-function su `&[u8]` (Processor Local APIC type 0x00 + Processor Local x2APIC type 0x09, IO APIC & altri ICS skipped), `bare_metal::mp::enumerate_cpus(rsdp_phys, phys_offset)` come unsafe wrapper bare-metal che cerca la tabella MADT via RSDP→XSDT/RSDT chain modellato su `arch::find_pm1a_cnt_from_fadt`, hook in `kmain` post-MB14.b che logga `[mb14.c.1] MADT cpus=N enabled=M` + per-entry `apic_id`/`x2apic`/`enabled`; +12 unit test `bare_metal::mp::tests::*`; workspace test count 455+ → 467+. Branch corrente `feat/kernel-mb11-userspace`; PR verso `main` resta release-management decision separata).
 > **Storia stati precedenti:** 2026-05-18 (MB12 closure — IPC + multi-task user, ADR-0005, 426 tests). 2026-05-18 (Step 7.1-7.4 lift blanket allows + ADR-0003 + CI `blanket-allow-guard`). 2026-05-18 (MB11 closure — Ring 3 + per-process CR3, ADR-0004). 2026-05-18 (MB10 closure — kernel stack isolation, ADR-0002, PR #33 in `main`). 2026-05-18 (v0.2.0 release — MB1-MB9 + Track A, PR #29 in `main`). 2026-05-16 (MB4/MB5). 2026-05-15 (K5 QEMU smoke gate). 2026-05-12 (scaffolding pass P3-P6 verificato). 2026-05-10 (P1 + P2 chiusi). 2026-05-09 (P0 chiuso).
 > **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
 > **Priority order:** Security → Stability → Performance (per project policy).
@@ -799,8 +799,9 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 | MB12 | IPC reale (queue + capability stub + multi-task user) | `[x]` | `60f3a82` | [0005](docs/adr/0005-mb12-ipc-message-passing.md) |
 | **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[x]`** (MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e chiusi 2026-05-19; ADR-0006 `accepted`) | `5e907f8` | [ADR-0006](docs/adr/0006-mb13-omni-capability-integration.md) |
 | MB14.a | Per-CPU descriptor scaffold + BSP LAPIC ID identification | `[x]` (chiuso 2026-05-19) | `3f38514` | — |
-| MB14.b | `IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()` | `[x]` (chiuso 2026-05-19) | (this commit) | — |
-| MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[~]` (MB14.a-b chiusi; MB14.c-f open) | — | — |
+| MB14.b | `IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()` | `[x]` (chiuso 2026-05-19) | `c30221f` | — |
+| MB14.c.1 | ACPI MADT parser + bare-metal `enumerate_cpus` (RSDP→XSDT/RSDT→MADT walker) | `[x]` (chiuso 2026-05-19) | (this commit) | — |
+| MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[~]` (MB14.a + MB14.b + MB14.c.1 chiusi; MB14.c.2-f open) | — | — |
 
 ### P6.MB13 — `omni-capability` integration reale
 
@@ -944,7 +945,7 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 
 ### P6.MB14 — Multi-processor enable + TLB shootdown
 
-- **Status:** `[~]` (MB14.a `[x]` + MB14.b `[x]` chiusi 2026-05-19; MB14.c-f open)
+- **Status:** `[~]` (MB14.a `[x]` + MB14.b `[x]` + MB14.c.1 `[x]` chiusi 2026-05-19; MB14.c.2-f open)
 - **Priority:** P6 / High (Phase 1.5)
 - **Effort stimato (totale):** 5-10 giornate (MB14.a delivered in 0.2 giornate; il grosso è MB14.c AP startup + MB14.d/e TLB shootdown)
 - **Dependencies:** MB13 ✅; nessuna esterna
@@ -988,7 +989,7 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 
 #### P6.MB14.c — AP startup via INIT-SIPI-SIPI + real-mode trampoline
 
-- **Status:** `[ ]` (open)
+- **Status:** `[~]` (MB14.c.1 chiuso 2026-05-19; MB14.c.2 open)
 - **Effort stimato:** 2-3 giornate (la più complessa di MB14)
 - **Dependencies:** MB14.b ✅
 - **Rationale:** ogni Application Processor parte in real mode a `0xFFFF_FFF0`. Per portarli in long mode serve un trampoline 16→32→64 bit a una pagina fisica nota (tipicamente `0x8000`), che inizializza GDT, abilita PAE+LME+paging e salta al kernel entry per-AP. Il BSP scrive (INIT, SIPI, SIPI) al LAPIC ICR di ogni AP.
@@ -997,6 +998,24 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
   - `bare_metal::mp::start_aps(num_cpus, &mut frame_alloc)` orchestrator (INIT 10ms, SIPI×2, attesa ack via shared atomic).
   - Per-AP `kmain_ap` entry che setta GS_BASE proprio, completa init, entra in scheduler loop.
   - ADR-0007 (status `accepted` a chiusura).
+
+##### P6.MB14.c.1 — ACPI MADT cpu enumeration
+
+- **Status:** `[x]` (chiuso 2026-05-19)
+- **Effort:** 0.3 giornate (delivered)
+- **Dependencies:** MB14.b ✅
+- **Rationale:** prima di lanciare INIT-SIPI-SIPI bisogna sapere quanti AP esistono e quali LAPIC ID hanno. Il firmware ACPI MADT (signature `APIC`) li elenca come `Processor Local APIC` (type 0x00, 8 byte) o `Processor Local x2APIC` (type 0x09, 16 byte). MB14.c.1 estrae la lista; MB14.c.2 la consumerà.
+- **Deliverables:**
+  - **`crates/omni-kernel/src/bare_metal/mp.rs`** — nuovo modulo con `parse_madt(&[u8]) -> Result<CpuTopology, MadtError>` pure-function (decoder ICS table; skips IO APIC / NMI / altri ICS unknown senza errare; reject `length=0` per evitare loop infiniti e `length` che superi la table end; capienza `MAX_CPUS = 32`). `enumerate_cpus(rsdp_phys, phys_offset)` unsafe wrapper bare-metal che attraversa RSDP signature `"RSD PTR "` → XSDT (ACPI ≥ 2.0) o RSDT → MADT, modellato su `arch::find_pm1a_cnt_from_fadt` per la sicurezza del physical-memory window. Host-side stub no-op su non-x86_64.
+  - **`crates/omni-kernel/src/lib.rs`** — hook in `kmain` post-MB14.b che, se `boot_info.rsdp_addr` + `physical_memory_offset` sono entrambi disponibili, chiama `bare_metal::mp::enumerate_cpus` e logga su serial `[mb14.c.1] MADT cpus=N enabled=M` + per-entry `apic_id`/`x2apic`/`enabled`. Failure-tollerante: niente RSDP → log `BSP only`, niente boot fault.
+  - **+12 unit test** in `bare_metal::mp::tests::*`: truncated buffer, bad signature, length mismatch, MADT empty, single BSP Local APIC, disabled Local APIC, x2APIC con 32-bit ID, multipli CPU + IO APIC interleaved, unknown ICS skip, zero-length ICS reject, ICS oltre table-end reject, troppi CPU reject. Tutti host-side via hand-crafted byte buffer (no physical memory window richiesta).
+  - Workspace test count 455+ → 467+; `cargo clippy --workspace --all-features --all-targets` + `cargo clippy --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none -- -D warnings` clean.
+  - Build Info panel: Active=`MB14.c.1 MADT cpu enum`, Next=`MB14.c.2 INIT-SIPI trampoline`, Track B=`MB1-MB13 OK, MB14.a-c.1 wip`, Phase 1 ≈ 85%.
+- **Note di progettazione:**
+  - `parse_madt` è pure-function su `&[u8]` per essere host-testabile *senza* alcun mock di `unsafe` bare-metal. La parte unsafe è confinata in `enumerate_cpus` + `find_table_phys`, riusando lo stesso pattern documentato in ADR di sicurezza del FADT walker.
+  - `CpuEntry.acpi_uid` widened a `u32` per uniformità tra xAPIC (8-bit acpi_processor_id) e x2APIC (32-bit acpi_processor_uid). `CpuEntry.x2apic: bool` consente all'orchestrator MB14.c.2 di scegliere fra xAPIC ICR encoding (memory-mapped) e x2APIC MSR encoding (`IA32_X2APIC_ICR`).
+  - `MAX_CPUS = 32` lascia margine per Proxmox dev VM (2-4 vCPU oggi) e desktop-class workload futuri. MB14.e raise quando i per-CPU run-queue saranno dimensionati.
+  - **Pending:** validazione smoke su Proxmox VMID 103 a deploy-time per confermare che il MADT della VM venga letto correttamente (tipicamente 1 entry abilitata, perché la VM ha 1 vCPU di default).
 
 #### P6.MB14.d — IPI vettore + TLB shootdown protocol
 

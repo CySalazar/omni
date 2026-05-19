@@ -1,10 +1,10 @@
 # OMNI OS — Progress Report
 
-**Data snapshot:** 2026-05-19 (post MB14.b — `IA32_GS_BASE` / `IA32_KERNEL_GS_BASE` per-CPU pointer + `swapgs` su syscall entry; GS-relative `current_cpu()` accessor)
+**Data snapshot:** 2026-05-19 (post MB14.c.1 — ACPI MADT cpu enumeration: pure-function `parse_madt` + bare-metal `enumerate_cpus` RSDP→XSDT/RSDT walker + kmain hook log-only)
 **Branch corrente:** `feat/kernel-mb11-userspace` (locale; in attesa di PR + merge in `main`)
-**HEAD:** post-MB14.b — `init_gs_base(bsp())` arma `IA32_GS_BASE` + `IA32_KERNEL_GS_BASE` dopo `init_bsp`; `current_cpu()` ora dereferenzia `gs:[0]` su bare-metal (BSP self-ptr a offset 0 di `PerCpu`); `omni_syscall_entry` emette `swapgs` come prima istruzione e prima di `sysretq`
-**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e + MB14.a + **MB14.b**).
-**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~84% Track B
+**HEAD:** post-MB14.c.1 — `bare_metal::mp::enumerate_cpus(rsdp, phys_off)` decodifica il MADT e logga `[mb14.c.1] MADT cpus=N enabled=M` + per-entry `apic_id`/`x2apic`/`enabled`; nessun AP avviato in questa sub-task (read-only)
+**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e + MB14.a + MB14.b + **MB14.c.1**).
+**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~85% Track B
 
 ---
 

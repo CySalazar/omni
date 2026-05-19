@@ -17,6 +17,63 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB14.c.1: ACPI MADT cpu enumeration (2026-05-19).**
+  Decodes the firmware-supplied MADT table to discover the set of
+  logical CPUs the platform exposes — the prerequisite for the
+  INIT-SIPI-SIPI orchestrator that will land in MB14.c.2. No APs are
+  started here; the figure is logged on the early-boot serial console
+  and consumed by later MB14.c.2 / MB14.e sub-blocks.
+
+  Three additive changes:
+
+  - **`crates/omni-kernel/src/bare_metal/mp.rs`** — new module with
+    a pure-function decoder `parse_madt(&[u8]) -> Result<CpuTopology, MadtError>`
+    that walks the MADT ICS (Interrupt Controller Structure) list and
+    extracts `Processor Local APIC` (type `0x00`, 8 bytes) and
+    `Processor Local x2APIC` (type `0x09`, 16 bytes) entries into a
+    fixed-capacity (`MAX_CPUS = 32`) `CpuTopology` value. Other ICS
+    types (IO APIC, NMI source, etc.) are skipped via the entry's
+    `length` byte without producing an error. Malformed cases are
+    rejected explicitly: zero-length ICS (would loop forever), ICS
+    that runs past the table end, header `length` field that
+    disagrees with the buffer, signature mismatch, MADT advertising
+    more CPUs than the kernel tracks. The widened `CpuEntry.apic_id: u32`
+    accommodates both 8-bit xAPIC and 32-bit x2APIC IDs in a single
+    field; `CpuEntry.x2apic: bool` flags which encoding the
+    MB14.c.2 orchestrator must use for the ICR write.
+    On bare-metal, the entry point `enumerate_cpus(rsdp_phys, phys_offset)`
+    (unsafe wrapper) walks `RSDP → XSDT/RSDT → MADT` to locate the
+    table, modelled on the FADT walker in
+    `crates/omni-kernel/src/bare_metal/arch/x86_64.rs::find_pm1a_cnt_from_fadt`
+    so the safety invariants on the physical-memory window are
+    identical. Host-side stub returns `None` on non-x86_64. `+12 unit
+    tests` exercise the decoder with hand-crafted byte buffers
+    (truncated header, bad signature, length mismatch, empty MADT,
+    single BSP Local APIC, disabled Local APIC, x2APIC with 32-bit
+    ID, multiple CPUs with an IO APIC entry interleaved, unknown ICS
+    type skipped, zero-length ICS rejected, ICS running past table
+    end rejected, more than `MAX_CPUS` CPUs rejected). The unit
+    tests need no bare-metal plumbing, making the parser fully
+    host-testable.
+  - **`crates/omni-kernel/src/lib.rs`** — `kmain` calls
+    `bare_metal::mp::enumerate_cpus(rsdp_phys, phys_offset)`
+    immediately after `init_gs_base` returns and before `sti`. The
+    call is best-effort: missing `BootInfo.rsdp_addr` or
+    `physical_memory_offset` falls through to a `[mb14.c.1] rsdp /
+    phys_offset unavailable — BSP only` log line; a parse failure
+    falls through to `[mb14.c.1] MADT walk FAILED — BSP only`. On
+    success each entry is printed as `[mb14.c.1] apic_id=<N> [x2apic]
+    enabled|disabled`. The kernel proceeds with single-CPU operation
+    in either case — MB14.c.1 is read-only.
+  - **`crates/omni-kernel/src/bare_metal/mod.rs`** — registers the
+    new `mp` submodule (unconditional, since the decoder is portable;
+    the bare-metal walker is `#[cfg(target_arch = "x86_64")]` inside
+    the module).
+
+  Build Info panel updated to `Active = MB14.c.1 MADT cpu enum`,
+  `Next = MB14.c.2 INIT-SIPI trampoline`, `Track B = MB1-MB13 OK,
+  MB14.a-c.1 wip`, `Phase 1 ≈ 85%`, `Tests = 467+ workspace pass`.
+
 - **Kernel — MB14.a: per-CPU descriptor scaffold + BSP LAPIC ID
   identification (2026-05-19).** Opens the MB14 (MP/AP enable + TLB
   shootdown) work-package by installing the foundation that every

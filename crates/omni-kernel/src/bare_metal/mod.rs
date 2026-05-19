@@ -60,6 +60,7 @@ pub mod lapic;
     not(test)
 ))]
 pub mod mb8_smoke;
+pub mod mp;
 pub mod paging;
 pub mod panic;
 pub mod per_cpu;
