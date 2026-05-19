@@ -138,7 +138,7 @@ estensione dell'ABI syscall `IpcCreateChannel` per accettare i token.
 | **MB13** | **omni-capability integration (sblocco omni-crypto bare-metal + Ed25519 verify)** | ⬜ | — |
 
 **Verifica MB1-MB12:**
-- `cargo test --workspace --all-features` → **434 pass / 0 fail** (era 393 post-MB11, +41 da MB12)
+- `cargo test --workspace --all-features` → **426 pass / 0 fail** (era 393 post-MB11, +33 da MB12 — vedi CHANGELOG `[Unreleased] § Added` riga "Test delta")
 - `cargo test -p omni-kernel --all-features` → ~133 unit (lib) + 4 integration
   suites (`mb11_userspace.rs` 6 + `mb12_ipc_cross_process.rs` 8 + `panic_record.rs` 5 + sanity)
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` → clean

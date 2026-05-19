@@ -1,12 +1,14 @@
 # OMNI OS — Implementation TODO
 
-> **Status:** Phase 0 (Foundation) — v0.1 design complete, **P0 fully closed 2026-05-09** (9/9 done; repo live at https://github.com/CySalazar/omni, public, AGPL-3.0, branch-protected, all commits SSH-signed and GitHub-verified). **P1 fully closed 2026-05-10** (3/3 foundational crates implemented + verified: `omni-types`, `omni-crypto`, `omni-capability`; 131 tests green; `cargo clippy -D warnings` and `cargo doc -D warnings` clean across all three crates). **P2 fully closed 2026-05-10** (3/3 — `OIP-Process-001` `Active` under bootstrap fiat; `/oips/` registry + template + sentinel + linter live; BDFL veto window documented immutably 2026-05-09 → 2031-05-09 in `OIP-Process-001` §5.4 and `docs/05-governance.md`). **P3/P4/P5/P6 scaffolding verified green 2026-05-12** — full workspace builds, 185 tests pass, `cargo clippy --all-targets --all-features -D warnings` clean, `cargo doc -D warnings` clean, `cargo fmt --check` clean (`cargo deny` validated by CI). Next focus: P3 (cryptographic peer review of `omni-crypto`) and/or kicking off the first non-`Meta` OIP to dogfood the formal voting flow.
-> **Last updated:** 2026-05-16 (Track B MB4 `[x]` — syscall dispatcher: `SYSCALL`/`SYSRET` MSR setup + `INT 0x80` fallback via IDT vector 0x80, `kernel_syscall_dispatch` C-ABI entry, `KernelSyscallDispatcher` trait impl, 8 tests green; MB5 `[x]` — ELF64 loader: `Elf64::parse`, `load_segments` iterator, `map_and_load` frame mapper, 12 tests green; probe binary embedded in `kmain`; desktop sysinfo updated; docs committed). **Next: MB6 scheduler skeleton.** 2026-05-15 (K5 QEMU boot smoke test gate cleared — PR #25 all CI green; P6.1 closed `[x]`; `OIP-Kernel-003` advanced to `Review`; branch protection updated to include 3 new required checks: `QEMU boot smoke`, `bare-metal build`, `kernel-runner build`). 2026-05-12 (post-scaffolding verify-state + fix-pass — see `[Unreleased] Fixed` in [`CHANGELOG.md`](CHANGELOG.md) for the full delta. P5.1 / P6.1 / P6.3 / P6.4 / P6.5 / P6.6 transitioned to `[~]` to reflect the verified scaffold; full `[x]` is gated on the per-task acceptance criteria, several of which require external dependencies — hardware, audit, OIP activation). **2026-05-12 — `OIP-Container-006` filed as `Draft`**: OmniContainer micro-VM engine + Wine-in-container for Windows apps + cyDock evolution path. This OIP **resolves** the previously-open POSIX-compatibility question in `docs/02-architecture.md`. **2026-05-12 — 5 ulteriori OIP filati come `Draft`** che compongono la "OMNI App Mesh": `OIP-Helper-007` (autonomy levels + impact dashboard), `OIP-Pkg-008` (federated content-addressed package manager), `OIP-Forge-009` (Rust→WASM/ELF on-demand generation), `OIP-Market-010` (Stichting marketplace + Bronze/Silver/Gold + continuous CVE), `OIP-Flagship-011` (Omni* prefix policy + OmniCode v1 phased). Architecture doc aggiornato con nuova sezione "OMNI App Mesh".
+> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB12** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0). Roadmap Phase 1 ~65% — il deliverable "IPC primitives operational (typed message passing)" è chiuso. **Prossimo blocco tecnico: MB13** = `omni-capability` integration reale (Ed25519 verify) + fix bare-metal smoke triple-fault (ET_DYN/PIE kernel) + SIMD `force-soft` su `sha2`/`poly1305`/`curve25519-dalek`.
+> **Last updated:** 2026-05-19 (riallineamento post-MB12: aggiunti tier P6.MB sezioni MB1-MB13, Step 7 closure, P6.6 chiuso da MB12, P6.7 sbloccato da MB12, P3 Tamarin proof eseguito 2026-05-12, `docs/adr/0001..0005` tutti `accepted`. Branch corrente `feat/kernel-mb11-userspace` con HEAD `1a0fa3e`; PR verso `main` ancora da aprire).
+> **Storia stati precedenti:** 2026-05-18 (MB12 closure — IPC + multi-task user, ADR-0005, 426 tests). 2026-05-18 (Step 7.1-7.4 lift blanket allows + ADR-0003 + CI `blanket-allow-guard`). 2026-05-18 (MB11 closure — Ring 3 + per-process CR3, ADR-0004). 2026-05-18 (MB10 closure — kernel stack isolation, ADR-0002, PR #33 in `main`). 2026-05-18 (v0.2.0 release — MB1-MB9 + Track A, PR #29 in `main`). 2026-05-16 (MB4/MB5). 2026-05-15 (K5 QEMU smoke gate). 2026-05-12 (scaffolding pass P3-P6 verificato). 2026-05-10 (P1 + P2 chiusi). 2026-05-09 (P0 chiuso).
 > **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
 > **Priority order:** Security → Stability → Performance (per project policy).
 > **Repo:** [github.com/CySalazar/omni](https://github.com/CySalazar/omni) · License: [AGPL-3.0-only](LICENSE) · Branch protection summary in [`docs/11-tooling-and-ci.md`](docs/11-tooling-and-ci.md).
+> **HEAD verificato:** `1a0fa3e docs(kernel): MB12 bare-metal smoke finding` sul branch locale `feat/kernel-mb11-userspace` (post v0.2.0 release `25790f0` + PR #33 MB10 `8c1496a` su `main`).
 >
-> **Scaffolding pass (2026-05-10):** every P3–P6 task that can be advanced without external dependencies (notary, hardware, cryptographer) has had its artefacts drafted or scaffolded. P3.1 (mesh handshake spec + Tamarin model), P3.2 (cryptographer engagement template), P3.3 (`OIP-Crypto-002` Draft), P4.1 (bylaws + Stichting checklist drafts), P4.2 (pitch deck + one-pager + 4 grant drafts + sponsor menu), P4.3 (`08-funding-policy.md` v0.2 with bylaws cross-refs), P4.4 (3 role descriptions + salary bands), P5.1 (`TeeBackend` trait + `MockTeeBackend` end-to-end), P5.2/P5.3 (feature-gated TDX/SEV-SNP scaffolds), P5.4 (`omni-hal::tee` re-exports), P6.1 (`bare-metal` feature flag on `omni-kernel`), P6.2 (`OIP-Kernel-003` Draft — UEFI + `bootloader` crate selection), P6.3–P6.6 (memory / scheduling / IPC / capabilities / syscall trait skeletons with stable syscall ABI). Status icons in the body are NOT updated wholesale; per-task transitions to `[~]` / `[x]` are tracked when their downstream activation gates clear.
+> **Allineamento DOE:** questo documento è la **task decomposition L2** (riferimento [`doe-framework/L2-orchestration/02-task-decomposition.md`](doe-framework/L2-orchestration/02-task-decomposition.md)) — i tier P0-P8 sono i moduli DAG-ordinati; le sotto-task atomiche (P*.N.a/b/c) sono le `TASK-NNN` con dipendenze, complessità e acceptance criteria espliciti. I report di stato vivono in [`progress-omni.md`](progress-omni.md) (snapshot mensile/per-milestone — L2 state management) + [`CHANGELOG.md`](CHANGELOG.md) (per-release). Le decisioni architetturali stanno in [`docs/adr/`](docs/adr/) (template DOE `templates/adr-template.md`). Le direttive di esecuzione (code/test/security/docs/CI/deps) sono i 6 file in [`doe-framework/L3-execution/`](doe-framework/L3-execution/).
 
 This document is the canonical, ordered backlog of tasks required to move OMNI OS
 from a finalized design (`/docs` v0.1) into an executable, auditable, contribution-ready
@@ -757,25 +759,159 @@ Re-export `TeeBackend` and provide a runtime selector (`select_tee_backend()`) t
 
 ---
 
-# P6 — Kernel `no_std` Transition + UEFI Bootloader
+# P6 — Kernel `no_std` Transition + UEFI Bootloader (Phase 1 of roadmap)
 
-**Goal:** transition `omni-kernel` from a stub library to a bare-metal microkernel that boots on x86_64.
-**Estimated effort:** 6–18 months (Phase 1 of roadmap).
-**Blocker for:** everything userspace.
+**Goal:** transition `omni-kernel` from a stub library to a bare-metal microkernel that boots on x86_64 with TEE attestation, IPC, capability-based syscalls, user-space driver model, and first external audit.
+**Estimated effort:** 6–18 months calendar (Phase 1 of roadmap; ~65% done as of 2026-05-18).
+**Blocker for:** everything userspace beyond the embedded probes; Phase 2 entry.
 
-This tier is intentionally low-detail in the TODO — it is the scope of an entire phase of the roadmap, with multiple OIPs governing its sub-decisions. The high-level breakdown:
+## P6 — Subsystem-level status (one-line per OIP-mapped sub-tier)
 
-- [x] **P6.1 — Convert `omni-kernel` to `no_std` + `no_main`** (closed 2026-05-15: `bare-metal` feature flag verified 2026-05-12; `OIP-Kernel-012` `Active`; K5 QEMU smoke test green on PR #25 — all 5 banner lines present and in order on first CI run 25888095006; `scripts/qemu-boot-smoke.sh` + `.github/workflows/qemu-boot-smoke.yml` merged; panic handler + bump allocator + heap provisioning per `OIP-Kernel-012` § S2 operational)
-- [~] **P6.2 — UEFI bootloader (decision: Limine vs Tock vs custom)** (K5 gate green 2026-05-15: `kernel-runner` boots under QEMU+SeaBIOS with all 5 banner lines; `OIP-Kernel-003` advanced to `Review` 2026-05-15 — full `[x]` when OIP-Kernel-003 transitions to `Active` via `Last Call → Active`; PR #25 ready to merge)
-- [~] **P6.3 — Page table management, virtual memory subsystem** (MB2 arch-specific `x86_64` walker complete 2026-05-16: `PageMapper` + `translate`/`map_4k`/`unmap_4k` + 13 unit tests — commit `102ec7a`. Trait skeletons from 2026-05-12 still active. Full `[x]` when integrated with a userspace process loader in MB6+.)
-- [~] **P6.4 — Scheduler (thermal-aware, AI-workload-aware)** (trait skeleton landed + verified 2026-05-12 in `crates/omni-kernel/src/scheduling.rs`: `TaskId` + `PriorityClass::AiInference` + `TaskState` + `Scheduler` trait. Full `[x]` requires the actual scheduler impl + thermal model.)
-- [x] **P6.5 — Capability-based syscall dispatch** (MB4 complete 2026-05-16: `SYSCALL`/`SYSRET` MSR setup + `INT 0x80` fallback in `bare_metal/syscall_entry.rs` — commit `f2e88da`. `IA32_EFER.SCE` enabled, `IA32_STAR`/`IA32_LSTAR`/`IA32_FMASK` configured, IDT vector 0x80 installed. `KernelSyscallDispatcher` implements `SyscallDispatcher` trait; `TimeMonotonicNanos` + `TaskYield` functional, all others `NotYetImplemented`. 8 unit tests.)
-- [x] **P6.5b — ELF64 loader / binary loader** (MB5 complete 2026-05-16: `bare_metal/elf_loader.rs` — commit `960e440`. `Elf64<'a>::parse` validates magic/class/endianness/machine/type; `load_segments()` yields `LoadSegment { virt_addr, file_data, mem_size, flags }` via `SegIter`; `map_and_load<N>` allocates frames + maps via `PageMapper::map_4k` + copies file image + zeros BSS via direct-map window. `kmain` embeds a 120-byte probe ELF, logs `[elf] probe OK  entry=0x40000000`. 12 unit tests.)
-- [~] **P6.6 — Typed message-passing IPC** (trait skeleton landed + verified 2026-05-12 in `crates/omni-kernel/src/ipc.rs`: `ChannelId` / `MessageKind` / `BackpressurePolicy` / `ChannelPolicy.tee_bound` / `MessageEnvelope` / `Ipc` trait. Full `[x]` requires the in-kernel queue + capability check impl.)
-- [ ] **P6.7 — Userspace driver model (NVMe, Ethernet/Wi-Fi, TEE)**
-- [ ] **P6.8 — First external security audit of kernel + capability system (per roadmap Phase 1 deliverables)**
+- [x] **P6.1 — `omni-kernel` → `no_std` + `no_main`** (closed 2026-05-15 — `bare-metal` feature flag; `OIP-Kernel-012` `Active`; K5 QEMU smoke green on PR #25; panic handler + bump allocator + heap provisioning per `OIP-Kernel-012` § S2 operational).
+- [x] **P6.2 — UEFI bootloader (decision: `bootloader_api` 0.11 selected)** (closed 2026-05-16 — `OIP-Kernel-003` `Active` via Solo Founder Fast-Track § 5.5; `kernel-runner` boots under QEMU+OVMF, VirtualBox, Proxmox VMID 103; PR #25 merged).
+- [x] **P6.3 — Page table management + virtual memory subsystem** (closed 2026-05-18 — MB2 `PageMapper` x86_64 walker + MB9 huge-page-aware + MB10 kernel-stack VA isolation + MB11 per-process CR3 / `AddressSpace`. `map_4k_into(root,…)` for explicit-root targets. Limit: `map_4k` does not split huge-page entries — tracked under "Kernel follow-up" below).
+- [x] **P6.4 — Scheduler (preemptive round-robin)** (closed 2026-05-18 — MB6 cooperative round-robin + MB7 LAPIC xAPIC + MB8 preemption from timer + MB12.0a/b multi-task user dispatch (TSS.rsp0 update + CR3 reload + first-dispatch sentinel via `enter_user_mode`). Thermal/AI-workload-aware variant deferred to Phase 2 — out of P6 scope).
+- [x] **P6.5 — Capability-based syscall dispatch** (closed 2026-05-16 MB4 ABI + closed 2026-05-18 MB11/MB12 real handlers: `TaskExit(11)`, `WriteConsole(60)`, `MemMap(1)` stub, `IpcCreateChannel(20)`/`IpcDestroyChannel(21)`/`IpcSend(22)`/`IpcReceive(23)`. STAR fix MB11.1 (`STAR[63:48]=0x10` → CS=0x23, SS=0x1B per Intel SDM). Capability gate via in-kernel `KernelCapabilityCheck` trait + `StubCapabilityProvider` — swap-in compatibile col futuro `Ed25519CapabilityProvider` MB13).
+- [x] **P6.5b — ELF64 loader** (closed 2026-05-16 MB5 + esteso MB11 con `Elf64::map_and_load_into` for explicit-root AddressSpace).
+- [x] **P6.6 — Typed message-passing IPC** (closed 2026-05-18 MB12 — `KernelIpcRegistry` concreta (`BTreeMap`, niente `HashMap` per via di MB12.0c), `BackpressurePolicy::{Block,Drop,EvictOldest}`, wait queues per canale, capability check 2-livelli, 4 syscall handler operativi, `task_exit` yields se runnables presenti, retry-loop sender/receiver su `WakeAction::Block`. Integration test `mb12_ipc_cross_process.rs` 8 verdi. ADR-0005 `accepted`).
+- [~] **P6.7 — User-space driver model (NVMe, Ethernet/Wi-Fi, TEE)** — sbloccato da MB12 (IPC ✅) ma richiede ancora (a) MB13 Ed25519 capability reale, (b) MP/AP enable (LAPIC IPI + per-CPU data + TLB shootdown). Tracciato in P6.MB14+ (Phase 1.5).
+- [ ] **P6.8 — First external security audit of kernel + capability system** — Phase 1 deliverable, bloccato da P4 funding + P6.7 done.
 
-Each of P6.1–P6.8 will be expanded into its own task list when its corresponding OIP is filed.
+---
+
+## P6.MB — Track B kernel milestones (granulare, post-v0.2.0)
+
+Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul branch `feat/kernel-mb11-userspace`. Ogni voce mappa 1:1 alle entries di `progress-omni.md` § 2.2 + `CHANGELOG.md` `[Unreleased]`/`[0.2.0]`.
+
+| ID | Contenuto | Stato | Commit | ADR |
+|---|---|---|---|---|
+| MB1 | `BitmapFrameAllocator<const N>` + GDT iniziale | `[x]` | `119f3d8` | — |
+| MB2 | `PageMapper` x86_64 walker + `map_4k`/`unmap_4k` | `[x]` | `102ec7a` | — |
+| MB3 | IDT + handler #DE/#DF/#GP/#PF (CR2 dump) | `[x]` | `657d7d1` | — |
+| MB4 | `SYSCALL`/`SYSRET` MSR setup + `INT 0x80` fallback | `[x]` | `f2e88da` | — |
+| MB5 | ELF64 loader (parser + segment mapper) | `[x]` | `960e440` | — |
+| MB6 | Round-robin scheduler + `omni_context_switch` asm | `[x]` | `27720ee` | — |
+| MB7 | LAPIC xAPIC + PIC disable + `sti` + `TICK_COUNT` | `[x]` | `27720ee` | — |
+| MB8 | Preemption from LAPIC timer + `need_resched` | `[x]` | `5d9989b` | — |
+| MB9 | `PageMapper` huge-page aware + direct-map validator | `[x]` | `926a37e` | [0001](docs/adr/0001-mb9-paging-huge-page-aware.md) |
+| MB10 | Kernel stack isolation + guard page | `[x]` | `8c1496a` | [0002](docs/adr/0002-mb10-kernel-stack-isolation.md) |
+| MB11 | Primo userspace Ring 3 + per-process CR3 + STAR fix | `[x]` | `22289e1` + `c743173` | [0004](docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md) |
+| MB12 | IPC reale (queue + capability stub + multi-task user) | `[x]` | `60f3a82` | [0005](docs/adr/0005-mb12-ipc-message-passing.md) |
+| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[ ]`** | — | TBD ADR-0006 |
+| MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[ ]` | — | — |
+
+### P6.MB13 — `omni-capability` integration reale
+
+- **Status:** `[ ]` (next, sbloccato da MB12)
+- **Priority:** P6 / High
+- **Effort:** 1-2 giornate (gating SIMD + glue + nuovi test) + 0.5-1 giornata per il fix triple-fault
+- **Dependencies:** MB12 ✅; nessuna esterna
+- **ADR di chiusura:** ADR-0006 (da scrivere — capability dispatch + bare-metal ABI extension)
+- **Rationale:** la pipeline MB12 ha consegnato uno `StubCapabilityProvider` interno (subject byte-compare + action shape-match, niente Ed25519). MB13 chiude la promessa Phase 1 "Capability-based security primitives implemented" sostituendo lo stub con un provider reale che chiama `omni_capability::CapabilityToken::verify_full`. Tre work-package indipendenti convergono qui.
+
+#### P6.MB13.a — `force-soft` SIMD su `sha2` + `poly1305` + `curve25519-dalek`
+
+- **Status:** `[ ]`
+- **Effort:** 0.5 giornata
+- **Deliverables:**
+  - Aggiungere `default-features = false` + `features = ["force-soft"]` (o equivalente per ogni crate) nel `Cargo.toml` di `omni-crypto`.
+  - Verifica: `cargo build -p omni-crypto --target x86_64-unknown-none --no-default-features` compila clean (oggi fallisce con LLVM ICE su SIMD intrinsics).
+- **Alternativa A** (documentata in ADR-0005 § Migration): estrarre `omni-crypto-verify` come crate separato con solo `OmniVerifyingKey::verify` + `domain_separated_hash` + HKDF. Più chirurgico ma rompe l'API surface.
+- **Acceptance:** `cargo clippy -p omni-crypto --target x86_64-unknown-none --no-default-features -- -D warnings` clean.
+
+#### P6.MB13.b — Boot-path fix: ET_DYN/PIE kernel (triple-fault smoke)
+
+- **Status:** `[ ]`
+- **Effort:** 0.5-1 giornata
+- **Rationale:** `mb12-userprobe` (e per estensione `mb11-userprobe`) triple-fault su Proxmox VMID 103 / QEMU+OVMF perché il kernel ELF è `ET_EXEC` con `p_vaddr = 0x200000` (PML4 index 0). `bootloader_api` 0.11 non rilocca `ET_EXEC` → kernel finisce in lower half → `AddressSpace::new_with_kernel_half` (clone solo entries 256..511) → al `mov cr3` dentro `enter_user_mode` la pagina con l'istruzione successiva è non-mappata → triple fault. Diagnostica catturata in [`kernel-runner/src/main.rs:27-40`](kernel-runner/src/main.rs#L27-L40).
+- **Deliverables (in ordine di preferenza):**
+  1. **Opzione (a) — ET_DYN/PIE kernel (raccomandato):** forzare `relocation-model=pic` + `-pie` su `kernel-runner` (modificare `kernel-runner/.cargo/config.toml` + verificare che `bootloader_api` 0.11 applichi `BootloaderConfig::mappings.dynamic_range_start = 0xFFFF_8000_0000_0000` per portarlo in upper half).
+  2. **Opzione (b) — linker script upper-half:** hard-code `p_vaddr` del kernel ELF in upper half via custom linker script (`.cargo/config.toml` + `linker-script.ld`).
+  3. **Opzione (c) — trampoline page cross-AS aliased:** installare una pagina trampolino al medesimo VA in ogni PML4 prima del `mov cr3` (mitigazione, non risoluzione).
+- **Acceptance:**
+  - Smoke `mb12-userprobe` su Proxmox VMID 103 (host `100.101.77.9`) produce serial output completo: `[mb12] receiver task_id=N / [mb12] sender task_id=M / [mb12] channel 1 pre-created / [mb12] handing off to user tasks / ping / [user] exit=0 / [user] exit=0`.
+  - Smoke `mb11-userprobe` produce: `[user] hello / [user] exit=0`.
+  - Test integration `mb12_ipc_cross_process.rs` restano verdi (8/8) — non sono affetti dal fix bare-metal.
+
+#### P6.MB13.c — `omni-capability` come dep di `omni-kernel`
+
+- **Status:** `[ ]` (blocked-on `MB13.a`)
+- **Effort:** 1 giornata
+- **Deliverables:**
+  - `crates/omni-capability/Cargo.toml`: aggiungere feature `bare-metal = []` + propagation; verificare `no_std + alloc` compatibility.
+  - `crates/omni-kernel/Cargo.toml`: `omni-capability = { path = "../omni-capability", default-features = false, features = ["bare-metal"] }`.
+  - `omni_capability::scope::Action` + `Resource` (variants `#[non_exhaustive]` per semver-safety): aggiungere `Action::IpcSend`, `Action::IpcRecv`, `Resource::IpcChannel(u64)`.
+  - `crates/omni-kernel/src/capabilities.rs`: nuovo `Ed25519CapabilityProvider` che implementa `KernelCapabilityCheck::verify` chiamando `CapabilityToken::verify_full`; sostituisce `StubCapabilityProvider` nel boot wiring.
+- **Acceptance:**
+  - `cargo test -p omni-capability` resta verde (43 unit + 7 integration).
+  - `cargo test -p omni-kernel --all-features` mostra +N test (target ~6 unit) sul nuovo provider.
+  - `cargo clippy -p omni-kernel --target x86_64-unknown-none --no-default-features --features bare-metal -- -D warnings` clean.
+
+#### P6.MB13.d — `IpcCreateChannel` syscall ABI extension
+
+- **Status:** `[ ]` (blocked-on `MB13.c`)
+- **Effort:** 0.5 giornata
+- **Deliverables:**
+  - Estendere `IpcCreateChannel(20)` syscall ABI per accettare due pointer postcard-encoded opzionali `(send_token_ptr, recv_token_ptr)`; manteniere il legacy path (token NULL → comportamento MB12 con stub) per non rompere `mb12-userprobe`.
+  - Aggiornare `bare_metal/syscall_entry.rs::ipc_handlers::create_channel`.
+  - Nuovi user ELFs di test (`userprobe_mb13.rs`): sender ed receiver che pre-firmano token in build-time o usano un token canned.
+  - Nuovo test integration `tests/mb13_capability_signed.rs` (target: 6+ checks — happy path, tampered token rejection, mismatched action, expired NBF/NAF, wrong subject).
+- **Acceptance:**
+  - 6+ nuovi test integration verdi (target workspace total ~432).
+  - ADR-0006 scritto e `accepted`.
+
+#### P6.MB13.e — Chiusura ciclo (PR + tag intermedio)
+
+- **Status:** `[ ]` (last; blocked-on `MB13.a`-`MB13.d`)
+- **Effort:** 0.5 giornata (PR + CI conformance + release notes)
+- **Deliverables:**
+  - PR `feat/kernel-mb13-capability-real` → `main` (squash-merge).
+  - Tag intermedio `v0.2.1` o `v0.3.0-alpha.1` (decisione: minor bump perché c'è nuova surface API in `omni-capability`).
+  - Aggiornamento `progress-omni.md` § 2 (chiusura MB13) + § 4 (move MB13 da gap analysis a Done).
+  - Aggiornamento `CHANGELOG.md` `[Unreleased]` → `[X.Y.Z]`.
+
+### Acceptance criteria globali MB13
+
+- [ ] `cargo build -p omni-crypto --target x86_64-unknown-none --no-default-features` clean (oggi: LLVM ICE).
+- [ ] `cargo test --workspace --all-features` ≥ 432 pass (era 426 post-MB12, target +6 da `mb13_capability_signed.rs`).
+- [ ] Smoke `mb12-userprobe` su QEMU+OVMF + Proxmox VMID 103 = serial output completo (oggi: triple-fault).
+- [ ] Smoke `mb11-userprobe` su QEMU+OVMF = `[user] hello / [user] exit=0` (oggi: stesso bug latente, mai validato manuale).
+- [ ] `StubCapabilityProvider` rimosso da `crates/omni-kernel/src/capabilities.rs` (o ridotto a `#[cfg(test)]` mock).
+- [ ] ADR-0006 `accepted` in `docs/adr/`.
+
+---
+
+## P6 — Kernel follow-up minori (non bloccanti per MB13, da pianificare in MB14+)
+
+Tracciati per non essere persi. Tutti carryover da `progress-omni.md` § 4.1.
+
+- [ ] **TLB shootdown multi-core** — nessun MP/AP enable; LAPIC pronta ma il sistema gira single-core. Necessario prima di P6.7 (driver model). MB11 ha previsto questo: il kernel-half "by reference" di `AddressSpace` diventerà un costo cross-AS broadcast con MP. ADR-0004 § Alternative B documenta la mitigazione futura.
+- [ ] **`map_4k` huge-page split** — `map_4k` oggi non splitta una 2 MiB/1 GiB PS=1 entry. Non bloccante finché il kernel non riscrive VA in range huge-page mappati dal bootloader, ma rischia di mordere quando il driver model entra in scena.
+- [ ] **`omni-userprobe-helloworld` come crate separato** — MB11.7 ha embedded i 167 byte hand-crafted; un crate Rust `no_std` con linker script + `build.rs` ricorsivo produrrebbe lo stesso ELF in modo manutenibile.
+- [ ] **CI smoke automatico per `mb11-userprobe` e `mb12-userprobe`** — il job `qemu-boot-smoke` valida MB1-MB10. Servono due nuovi job (o un flag su `scripts/qemu-boot-smoke.sh`) con `EXPECTED_LINES` esteso per le linee `[user] hello` / `[mb12] channel 1 pre-created` / `ping`. Sblocca-bile **dopo** MB13.b (oggi fallirebbero per il triple-fault).
+- [ ] **BumpHeap no-free per canali IPC distrutti** — ADR-0005 § Negative: cap raccomandato `queue_depth ≤ 256` per canale; slab/free-list allocator → OIP separato (Phase 2).
+- [ ] **Hygiene CHANGELOG MB8** — la riga "Known blocker (MB9)" del 2026-05-17 è ora storica; annotare "resolved by MB9".
+
+---
+
+## P6.7 — Userspace driver model (NVMe, Ethernet/Wi-Fi, TEE)
+
+- **Status:** `[~]` (sbloccato da MB12, gated da MB13 + MB14)
+- **Priority:** P6 / Critical (Phase 1 deliverable)
+- **Effort:** 6-12 engineer-months estimated
+- **Dependencies:** MB13 (capability reale) + MB14 (MP/AP enable) + per-driver OIPs (TBD: `OIP-Driver-NVMe-XXX`, `OIP-Driver-Net-XXX`, `OIP-Driver-TEE-XXX`)
+- **Rationale:** roadmap Phase 1 list explicit: "Drivers (in user space): NVMe storage, Ethernet/Wi-Fi networking, TEE". Microkernel principle — tutto fuori dal TCB. Sblocca anche P5.2/P5.3 (TEE backends reali).
+
+## P6.8 — First external security audit of kernel + capability system
+
+- **Status:** `[!]` blocked-on P4 funding + P6.7 done
+- **Priority:** P6 / Critical (Phase 1 deliverable)
+- **Effort:** 4-8 settimane calendar (auditor's schedule)
+- **Dependencies:** P4.2 (funding); P6.7 done; raccomandato anche P3.2 (cryptographer review) chiuso prima
+
+---
+
+Each of P6.1–P6.8 + P6.MB1–P6.MB14 will be expanded into its own task list when its corresponding OIP is filed (vedi `oips/` directory; `OIP-Kernel-003`, `OIP-Kernel-005`, `OIP-Kernel-012` già `Active`).
 
 ---
 
@@ -821,11 +957,14 @@ Each of P6.1–P6.8 will be expanded into its own task list when its correspondi
 
 ## P7.3 — `OMNI-PROTO-v0.2` documentation update
 
-- **Status:** `[ ]` blocked on P7.2
-- **Priority:** P7
+- **Status:** `[ ]` — **READY** (P7.2 M1-M5 ✅; non più blocked-on)
+- **Priority:** P7 / Low (1 PR edit-only, sblocca check verde `oip-lint` collaterale)
 - **Effort:** 1 day
-- **Dependencies:** P7.2.M5
-- **Rationale:** `docs/protocol/handshake.md` § 3.2 currently negotiates only `OMNI-PROTO-v0.1`. After P7.2.M5, the handshake spec must reflect the v0.2 cutover (`serde_format = "postcard-1.0"` discriminant; v0.1 negotiation removed).
+- **Dependencies:** P7.2.M5 ✅
+- **Rationale:** `docs/protocol/handshake.md` § 3.2 currently negotiates only `OMNI-PROTO-v0.1`. After P7.2.M5, the handshake spec must reflect the v0.2 cutover (`serde_format = "postcard-1.0"` discriminant; v0.1 negotiation removed). Il codice è già `omni_types::version::PROTOCOL_VERSION_V0_2`; solo doc-update.
+- **Acceptance:**
+  - [ ] `docs/protocol/handshake.md` § 3.2 menziona solo `OMNI-PROTO-v0.2`.
+  - [ ] PR con label `area:docs` + `priority:P3` aperta e mergiata (admin fast-track, no codice).
 
 ---
 
@@ -893,6 +1032,86 @@ P8 turns the OmniContainer specification into the canonical Rust implementation 
 
 ---
 
+# P9 — Code hygiene & lint-debt management
+
+**Goal:** maintain `omni-kernel` (and gradually the rest of the workspace) with **zero crate-root blanket `#![allow(...)]`**. Ogni soppressione intenzionale è localizzata, motivata, e validata da CI.
+**Estimated effort:** 1 day setup + ongoing per ADR-0003.
+**Tracking ADR:** [`ADR-0003 — No blanket allows in production crates`](docs/adr/0003-no-blanket-allows-in-production-crates.md).
+
+## P9.1 — Step 7 closure (lift omni-kernel blanket allows)
+
+- **Status:** `[x]` (closed 2026-05-18 — 4 commits on `main` `770c7aa → 1768966`).
+- **Priority:** P9 / High (debt accumulato durante 7 iterazioni CI conformance su PR #29)
+- **Effort:** delivered in ~1 giornata distribuita su 4 PR consecutivi
+- **Dependencies:** v0.2.0 merge (PR #29) ✅
+- **Deliverables:**
+  - [x] **Step 7.1** (`770c7aa`) — lift `restriction` + `rustdoc` lints (~40 siti localizzati; +2 broken intra-doc links riscritti come code spans).
+  - [x] **Step 7.3** (`50eddf1`) — lift `clippy::pedantic` (~68 siti, mix fix/allow module-level su `bare_metal/{cursor,demo,graphics,gdt,idt,input,paging,virtio_tablet,widget,wm}.rs`).
+  - [x] **Step 7.4** (`83ff1e8`) — lift `clippy::nursery` + `clippy::cargo` (7 siti totali; 4 `too_long_first_doc_paragraph` in `scheduling.rs`, 2 `use_self` in `wm.rs`, 1 `cognitive_complexity` allow su `demo::run_desktop`).
+  - [x] **Step 7.2** (`1768966`) — lift `unsafe_code` (~40 cfg-gated bare-metal siti; CI `blanket-allow-guard` flipped to **blocking**). **Last** dei 4 PR — sequenziato per landing immediato prima di MB11 (minimizza merge-conflict).
+  - [x] **`scripts/check-no-blanket-allow.sh`** — bash guardrail script (whitelisted: doc URL, `warn(...)`, `cfg_attr(test, allow(...))`, `cfg_attr(all(feature = "bare-metal", ...))`).
+  - [x] **CI job `blanket-allow-guard`** in `.github/workflows/ci.yml` — bloccante.
+  - [x] **ADR-0003** `accepted`.
+- **Acceptance:** `bash scripts/check-no-blanket-allow.sh` exit 0 (output: `ok (scanned 12 crate-root files)`); `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean.
+
+## P9.2 — Extend `check-no-blanket-allow.sh` ai restanti crate
+
+- **Status:** `[ ]`
+- **Priority:** P9 / Low
+- **Effort:** ~1 giornata
+- **Rationale:** lo script oggi scansiona solo `crates/<scoped>/src/{lib,main}.rs` (12 file). Altri crate workspace (`disk-image-builder/`, `kernel-runner/`, `omni-userprobe-helloworld` futuro) hanno la stessa policy ADR-0003 ma non sono enforced. Far passare anche loro alla guardrail.
+
+---
+
+# P10 — Branch / release workflow (post-v0.2.0)
+
+**Goal:** mantenere `main` in stato release-able; cadenza di squash-merge dai branch feature; tag intermedi per milestone significativi.
+
+## P10.1 — Merge `feat/kernel-mb11-userspace` → `main`
+
+- **Status:** `[ ]` — **READY** (HEAD `1a0fa3e` complete; CI da validare)
+- **Priority:** P10 / High
+- **Effort:** 0.5-1 giornata (push remote + CI conformance + DCO sign-off + admin bypass su `cargo test (ubuntu-24.04)` SIGSEGV se ricompare)
+- **Dependencies:** nessuna tecnica (MB11 + MB12 closed; ADR-0004 + ADR-0005 accepted). **Decisione esplicita:** se aprire ora un solo PR aggregato MB11+MB12+Step 7 oppure 3 PR sequenziali. Raccomandazione: 1 PR aggregato (Step 7 lì dentro già contiene 4 commit; aggiungere altri 4 da MB11+MB12 mantiene il branch leggibile per il review).
+- **Deliverables:**
+  - [ ] `git push origin feat/kernel-mb11-userspace`.
+  - [ ] `gh pr create --base main --title "feat(kernel): MB10 follow-up + MB11 + MB12 + Step 7 (post v0.2.0)"`.
+  - [ ] DCO sign-off check pass.
+  - [ ] 11 required CI checks (vedi `progress-omni.md` § 2.3) → 10 verdi + 1 admin-bypass tollerato (`cargo test (ubuntu-24.04)` SIGSEGV — vedi P10.3 root cause).
+  - [ ] Squash-merge con commit message ben formato (no Co-Authored-By AI per [CLAUDE.md § Git Attribution Policy](CLAUDE.md)).
+- **Acceptance:** `main` HEAD include MB10 + MB11 + MB12 + Step 7; tag intermedio opzionale (`v0.2.1`?) deferred a P10.2.
+
+## P10.2 — Tag intermedio v0.2.1 (decision pending)
+
+- **Status:** `[ ]`
+- **Priority:** P10 / Low
+- **Effort:** 0.5 giornata (release notes + tag + GitHub release)
+- **Rationale:** MB10 + MB11 + MB12 + Step 7 sono delta significativi (Ring 3 + IPC); valutare se rilasciare `v0.2.1` (patch — niente public API break) oppure attendere MB13 per `v0.3.0-alpha.1`. **Decisione raccomandata:** attendere MB13 (più narrabile come "real capability dispatch + bootable smoke fix"), ma se MB13 slitta oltre 2026-05-26 considerare `v0.2.1` come stop-gap.
+
+## P10.3 — Risolvere `cargo test (ubuntu-24.04)` SIGSEGV
+
+- **Status:** `[ ]` (carryover da v0.2.0 / PR #29 / PR #33)
+- **Priority:** P10 / Medium (sblocca CI pulito; ad oggi richiede admin bypass su ogni PR)
+- **Effort:** ~1 giornata
+- **Rationale:** il binary `omni_kernel-…` exit con `signal: 11` al teardown del test harness *dopo* che tutti i unit test riportano `ok`. Locale macOS arm64 1.85.1 passa. Probabile bug nel drop di `bare_metal::paging::tests::TestArena` (raw 256-KiB alloc + manual dealloc consumed via `*mut RawPageTable`).
+- **Deliverables (alternative):**
+  - **Opzione (a) quick fix:** `--test-threads=1` nel workflow `.github/workflows/ci.yml` job `cargo test (ubuntu-24.04)`.
+  - **Opzione (b) root cause fix:** rifattorizzare `TestArena` in `Arc<Mutex<...>>` o `&'static mut [MaybeUninit<u8>]` per evitare il manual dealloc race.
+- **Acceptance:** CI green su `cargo test (ubuntu-24.04)` su 5 PR consecutivi senza admin bypass.
+
+## P10.4 — CI smoke automatico per `mb11-userprobe` e `mb12-userprobe`
+
+- **Status:** `[ ]` (blocked-on MB13.b — oggi il smoke triple-faulta)
+- **Priority:** P10 / Medium
+- **Effort:** 0.5 giornata per job (1 giornata totale)
+- **Dependencies:** P6.MB13.b ✅
+- **Deliverables:**
+  - [ ] Estendere `scripts/qemu-boot-smoke.sh` con flag `--feature mb11-userprobe` + `--feature mb12-userprobe`.
+  - [ ] Aggiungere 2 nuovi job in `.github/workflows/qemu-boot-smoke.yml` con `EXPECTED_LINES` esteso per `[user] hello` / `[mb12] channel 1 pre-created` / `ping` / `[user] exit=0` (x2 per MB12).
+  - [ ] Branch protection update per renderli required (richiede admin token).
+
+---
+
 # Open decisions awaiting Founder input
 
 Decisions resolved during P0 closure:
@@ -918,9 +1137,11 @@ Resolved during P2 review (2026-05-10, post-publication founder editorial review
 Still open:
 
 8. **Repo visibility long-term** — flipped to **PUBLIC** on 2026-05-09 because branch protection on the GitHub free plan requires it and AGPL-3.0 is consistent with public hosting. Confirm this remains the steady state, or signal a temporary embargo for any pre-disclosure phase.
-9. **Branch-protection update for `oip-lint`** — `OIP-Process-001` §9 ¶2 mandates that branch protection on `main` add `oip-lint / oip-lint` as a required status check within 7 calendar days of the OIP transitioning to `Active`. Concrete action: re-run `scripts/bootstrap-github.sh` (or equivalent `gh` CLI invocation) before 2026-05-17 to extend the required-check list from 8 to 9. *(Founder-side action — requires GitHub admin token.)*
+9. **Branch-protection update for `oip-lint`** — `OIP-Process-001` §9 ¶2 mandates that branch protection on `main` add `oip-lint / oip-lint` as a required status check within 7 calendar days of the OIP transitioning to `Active`. Concrete action: re-run `scripts/bootstrap-github.sh` (or equivalent `gh` CLI invocation) before 2026-05-17 to extend the required-check list from 8 to 9. *(Founder-side action — requires GitHub admin token.)* — **NOTE 2026-05-19:** deadline 2026-05-17 superata; check da aggiungere comunque retroattivamente prima di mergiare `feat/kernel-mb11-userspace` (P10.1).
 15. **Last Call closing actions for `OIP-Bounty-002` and `OIP-Serde-004` (window closes 2026-05-26)** — Both OIPs entered `Last Call` on 2026-05-12 under `OIP-Process-001` § 4. Under § 5.3 each transitions `Last Call → Active` automatically at the end of the 14-day window unless ≥ 30% weighted vote is reached earlier (in which case the editors close the window at that point) **or** a blocking good-faith objection is filed (in which case the OIP returns to `Review`). Concrete actions for the editor body on or before **2026-05-26**: (a) confirm no blocking objection has been filed on the linked GitHub Discussion thread; (b) merge a single PR per OIP transitioning the frontmatter `status:` from `Last Call` to `Active` and updating the `updated:` field to the close date; (c) for `OIP-Bounty-002` (Process track), no activation phase applies, the OIP is effectively `Final` at `Active`; (d) for `OIP-Serde-004` (Standards Track), the activation phase per § 7 is dormant until Phase 4+ mesh telemetry exists — the OIP remains in `Active` indefinitely; (e) append a row to `oip-editors-report-YYYY-Q2.md` recording the tally (or its absence) and the editorial decision. **No founder-side or hardware-side gate; pure editorial action.**
 14. ~~**`OIP-bounty-002` drafting kickoff**~~ — **In progress 2026-05-10:** `Draft` filed at [`oips/oip-bounty-002.md`](oips/oip-bounty-002.md) (~31KB, 10 sezioni canoniche, lint green). Defaults applicati senza pre-allineamento ulteriore (founder ha confermato "procedi"): severity tiers riusati da `SECURITY.md` §4 (CVSS v4.0); payout ranges Critical €5K–€50K / High €1K–€10K / Medium €250–€2.5K / Low €50–€500; eligibility con 6-month contributor guard + esclusione editor body / Stichting board / commit-access su `main`; disclosure timeline ancorato a `SECURITY.md` §3; payment mechanics con opzioni crypto privacy-preserving (Monero, BTC LN); dispute resolution a 3 livelli che termina in public arbitration; **non-monetary mode** durante Bootstrap con commitment retroattivo entro 24 mesi dall'Activation Date. Index aggiornato in `oips/README.md`; `SECURITY.md` §7 aggiornato per puntare al Draft. Prossimi passi: editorial review by founder; transition to `Review` quando il founder è pronto; questo OIP è il **dogfood test** del flusso §5 di `OIP-Process-001`.
+16. **MB13 fix opzione (a/b/c) per il triple-fault smoke** (vedi P6.MB13.b) — preferenza tecnica: opzione (a) ET_DYN/PIE kernel. Sblocco potenziale: capire se `bootloader_api` 0.11 onora davvero `dynamic_range_start` su `ET_DYN` x86_64-unknown-none — la docstring in `kernel-runner/src/main.rs:27-40` dice di no per `ET_EXEC` ma non è stato testato sperimentalmente per `ET_DYN`. **Azione richiesta:** spike di 2-4 ore per build ET_DYN sperimentale prima di committare a una delle tre opzioni.
+17. **Quando rilasciare v0.2.1 vs aspettare v0.3.0-alpha.1** (vedi P10.2) — decisione del founder sul cadence del tag intermedio.
 
 These decisions do not block strategic planning, only execution order.
 
@@ -948,6 +1169,29 @@ These decisions do not block strategic planning, only execution order.
 
 ---
 
+# Phase 1 closure roadmap — executive sequence (post v0.2.0)
+
+Sintesi ordinata dei prossimi sprint per chiudere **Phase 1 — Microkernel POC** della roadmap. Da leggere top-down; ogni step è un sotto-task elencato nelle sezioni precedenti.
+
+| # | Sprint | Tasks chiave | Bloccato da | Effort | Output atteso |
+|---|---|---|---|---|---|
+| 1 | **Merge MB10/MB11/MB12 → main** | P10.1 | — | 0.5-1d | `main` HEAD include MB12 + Step 7; tag intermedio opzionale (P10.2) |
+| 2 | **MB13 — `omni-capability` reale** | P6.MB13.a/b/c/d/e + ADR-0006 | Sprint 1 | 2-3d | `Ed25519CapabilityProvider` attivo + smoke `mb12-userprobe` verde + 432+ tests |
+| 3 | **CI smoke MB11/MB12 automatico** | P10.4 | MB13.b | 1d | Job `qemu-boot-smoke` bloccante anche su `[user]`/`[mb12]` lines |
+| 4 | **P7.3 docs `OMNI-PROTO-v0.2`** | P7.3 | — (parallelizzabile da subito) | 0.5d | Handshake spec aggiornato; OIP-Serde-004 verso `Final` |
+| 5 | **P3.3 OIP STARK vs SNARK** | OIP `oip-crypto-002` Draft → Review | P3.2 cryptographer (P4.2 funding) | 1-2 sett | Decisione formale sulla strategia ZK |
+| 6 | **MB14 — MP/AP enable + TLB shootdown** | nuovo (post-MB13) | MB13 | 5-10d | Multi-core operativo; ADR-0007 |
+| 7 | **P6.7 — Userspace driver model** | NVMe + Net + TEE drivers | MB13 + MB14 + 3 nuovi OIP | 6-12 mesi | Phase 1 deliverable "Drivers in user space" |
+| 8 | **P5.2/P5.3 — TDX + SEV-SNP backends reali** | + hardware acquisition | P4.2 funding | 2-4 sett | Phase 1 deliverable "TEE attestation" |
+| 9 | **P6.8 — External kernel + capability audit** | engagement auditor | P4.2 funding + P6.7 done | 4-8 sett | Phase 1 closure deliverable |
+| 10 | **Phase 1 → Phase 2 transition** | docs/06-roadmap.md update + OIP "Phase-2-Entry-XXX" | tutti gli sprint 1-9 | 1 sett | Phase 2 (AI Runtime) sblocca |
+
+**Critical path techinical-only (esclude funding):** Sprint 1 → 2 → 3 → 6 → 7 → 9 → 10. Stimato realisticamente in **9-15 mesi** se single-implementer; **4-7 mesi** con il core team Phase 1 (2 senior Rust + 1 cryptographer) assunto.
+
+**Critical path funding-dependent:** Sprint 5 + 8 + 9 dipendono da P4.2 (€350K runway). Senza funding, P3.2 cryptographer + TDX/SEV-SNP hardware + auditor pro-bono rimangono best-effort.
+
+---
+
 # Maintenance policy for this document
 
 - This file is updated **after every completed task**.
@@ -955,3 +1199,5 @@ These decisions do not block strategic planning, only execution order.
 - Adding a new task requires it to slot into the existing tier structure or justify a new tier.
 - Removing or downgrading a task requires either (a) the work is genuinely done, or (b) an OIP that supersedes the requirement.
 - Cross-references between this document and `/docs/06-roadmap.md` must stay in sync; when in conflict, the roadmap is authoritative for *what*, this file is authoritative for *how*.
+- Cross-references con [`progress-omni.md`](progress-omni.md) (snapshot stato) + [`CHANGELOG.md`](CHANGELOG.md) (per-release) devono restare coerenti; questo file è autoritativo per *what's next*, gli altri due per *what already happened*.
+- **Allineamento DOE framework:** la struttura P0-P10 corrisponde al pattern `TASK-NNN` di `doe-framework/L2-orchestration/02-task-decomposition.md`. Ogni sotto-task ha: ID, Status, Priority, Effort, Dependencies, Deliverables, Acceptance criteria. Le decisioni architetturali significative producono un ADR in `docs/adr/` (template `doe-framework/templates/adr-template.md`).
