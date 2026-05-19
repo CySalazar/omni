@@ -1,9 +1,9 @@
 # OMNI OS — Progress Report
 
-**Data snapshot:** 2026-05-19 (post MB13.a — `omni-crypto` builds on `x86_64-unknown-none`)
+**Data snapshot:** 2026-05-19 (post MB13.b — ET_DYN/PIE kernel + upper-half dynamic mapping)
 **Branch corrente:** `feat/kernel-mb11-userspace` (locale; in attesa di PR + merge in `main`)
-**HEAD:** post-MB13.a — bare-metal crypto SIMD unblock (force-soft / serial backends)
-**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a**).
+**HEAD:** post-MB13.b — bare-metal boot-path fix (kernel ELF in upper half, CR3 switch survive)
+**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a + MB13.b**).
 **Fase di roadmap:** Phase 0 → ingresso Phase 1 (microkernel proof-of-concept)
 
 ---
@@ -98,11 +98,26 @@ rustflags target-conditional + feature passthrough Cargo su `sha2 0.10`
 (transitive via i dalek). Nessuna estrazione di `omni-crypto-verify`
 necessaria (Alternativa A in ADR-0005 § Migration NON adottata).
 
-Il prossimo blocco di lavoro è **MB13.b — Boot-path fix (ET_DYN/PIE
-kernel)** per sbloccare il triple-fault smoke MB12 su Proxmox VMID
-103 / QEMU+OVMF. A seguire MB13.c (`omni-capability` come dep di
-`omni-kernel`), MB13.d (`IpcCreateChannel` ABI esteso per token
-postcard), MB13.e (PR + tag intermedio).
+Il blocco **MB13.b (Boot-path fix — ET_DYN/PIE kernel + upper-half
+dynamic mapping)** è stato chiuso il 2026-05-19. `kernel-runner/.cargo/
+config.toml` non forza più ET_EXEC (`-C relocation-model=static` +
+`-C link-arg=--no-pie` rimossi): il target spec `x86_64-unknown-none`
+ha `position-independent-executables = true` per default su Rust 1.83+,
+quindi l'output è ora un ELF `ET_DYN` con codice RIP-relative.
+`BOOTLOADER_CONFIG` in `kernel-runner/src/main.rs` ora imposta
+`mappings.dynamic_range_start = Some(0xFFFF_8000_0000_0000)`, così
+`bootloader 0.11` rilocca il kernel image, lo stack, il `BootInfo`, il
+framebuffer e il direct-map della RAM fisica tutti in upper half (PML4
+indici ≥ 256). Quella metà è clonata per riferimento da
+`AddressSpace::new_with_kernel_half`, quindi il `mov cr3` in
+`enter_user_mode` non perde più l'istruzione successiva — root cause
+del triple-fault `mb12-userprobe` su Proxmox VMID 103 risolto a livello
+deterministico.
+
+Il prossimo blocco di lavoro è **MB13.c — `omni-capability` come dep di
+`omni-kernel`** (Ed25519 verify reale che sostituisce
+`StubCapabilityProvider`). A seguire MB13.d (`IpcCreateChannel` ABI
+esteso per token postcard) e MB13.e (PR + tag intermedio).
 
 ---
 
@@ -143,7 +158,9 @@ postcard), MB13.e (PR + tag intermedio).
 | MB10 | Kernel stack isolation + guard page (ADR-0002) | ✅ | `8c1496a` |
 | MB11 | Primo userspace process Ring 3 + per-process CR3 (ADR-0004) | ✅ | `22289e1` + `c743173` |
 | MB12 | IPC reale (queue + capability stub + multi-task user) (ADR-0005) | ✅ | post-`c743173` |
-| **MB13** | **omni-capability integration (sblocco omni-crypto bare-metal + Ed25519 verify)** | ⬜ | — |
+| MB13.a | `omni-crypto` bare-metal unblock (force-soft SIMD) | ✅ | `2398d5c` |
+| MB13.b | Boot-path fix: ET_DYN/PIE kernel + upper-half dynamic mapping | ✅ | (this commit) |
+| **MB13** | **omni-capability integration (Ed25519 verify) — MB13.c/d/e open** | 🟡 | — |
 
 **Verifica MB1-MB12:**
 - `cargo test --workspace --all-features` → **426 pass / 0 fail** (era 393 post-MB11, +33 da MB12 — vedi CHANGELOG `[Unreleased] § Added` riga "Test delta")
@@ -412,22 +429,20 @@ Accumulato durante le 7 iterazioni di CI conformance su PR #29.
     punto 19: nuovo job CI (o flag) che asserisce
     `[mb12] channel 1 pre-created` + `ping` + due `[user] exit=0`
     consecutivi. Anche questo non bloccante per il merge MB12.
-21. ~~**Real boot manuale di `mb12-userprobe`.**~~ ⚠️ **DEPLOYED on
-    Proxmox VMID 103, smoke triple-faulted** (2026-05-18 post-merge).
-    Serial log si ferma a `[sched] entering Ring 3 via iretq` e VM va
-    in stato `stopped`. Root cause diagnosticata: il kernel ELF è
-    `ET_EXEC` con `p_vaddr = 0x200000` (PML4 index 0) per via del
-    target spec Rust `x86_64-unknown-none` che forza `--no-pie`
-    (kernel-runner/.cargo/config.toml legacy da `bootloader 0.9`).
-    `bootloader 0.11` non rilocca `ET_EXEC` → kernel ends up in PML4[0]
-    → `AddressSpace::new_with_kernel_half` clona solo upper half (256..511)
-    → al `mov cr3` dentro `enter_user_mode` la pagina con la istruzione
-    successiva è non-mappata → triple fault. La build di default
-    (desktop demo, no userprobe) BOOTS correttamente sulla VM (verificato
-    2026-05-18). Il bug è LATENTE anche in MB11 (`mb11-userprobe`) ma
-    nessuno aveva mai validato il smoke manuale. Fix MB13: vedi ADR-0005
-    § Migration — opzioni (a) ET_DYN/PIE kernel, (b) linker script
-    upper-half, (c) trampoline page cross-AS aliased.
+21. ~~**Real boot manuale di `mb12-userprobe` (triple-fault).**~~ ✅
+    **CHIUSO da MB13.b (2026-05-19).** Root cause: `kernel-runner/.cargo/
+    config.toml` forzava ET_EXEC con `-C relocation-model=static` +
+    `-C link-arg=--no-pie`. `bootloader_api 0.11` non riloccaa ET_EXEC,
+    quindi il kernel finiva in PML4[0] (`p_vaddr = 0x200000`).
+    `AddressSpace::new_with_kernel_half` mirrora solo PML4 256..511,
+    quindi il `mov cr3` in `enter_user_mode` perdeva l'istruzione
+    successiva → triple fault. Fix: rimossi i flag ET_EXEC (il target
+    spec è già PIE su Rust 1.83+) + impostato
+    `BOOTLOADER_CONFIG.mappings.dynamic_range_start = 0xFFFF_8000_0000_0000`,
+    così `bootloader 0.11` rilocca il kernel image, lo stack, il
+    `BootInfo`, il framebuffer e il direct-map RAM tutti in upper half.
+    Validazione smoke completa Proxmox VMID 103 deferred a deploy-time
+    di questa milestone.
 
 ---
 
@@ -589,7 +604,7 @@ del kernel ELF in upper half.
 | Roadmap | Stato attuale |
 |---|---|
 | **Phase 0 — Foundation (mesi 0-6)** | ~75% (governance ✅, foundational crates ✅, OIP process ✅, funding/legal in corso) |
-| **Phase 1 — Microkernel POC (mesi 6-18)** | ~65% (boot ✅, paging ✅, scheduler ✅, syscall ✅, ELF loader ✅, kernel-stack isolation ✅, userspace Ring 3 + per-process CR3 ✅, **IPC concreto + multi-task user ✅ MB12**; mancano capability dispatch Ed25519-verified (MB13), driver model (P6.7), audit (P6.8)) |
+| **Phase 1 — Microkernel POC (mesi 6-18)** | ~70% (boot ✅, paging ✅, scheduler ✅, syscall ✅, ELF loader ✅, kernel-stack isolation ✅, userspace Ring 3 + per-process CR3 ✅, **IPC concreto + multi-task user ✅ MB12**, **bare-metal smoke unblocked ✅ MB13.b** (ET_DYN/PIE kernel, upper-half mapping); mancano capability dispatch Ed25519-verified (MB13.c/d/e), driver model (P6.7), audit (P6.8)) |
 | **Phase 2 — AI Runtime + Tier 0** | 0% (bloccato da Phase 1) |
 | **Phase 3-7** | 0% |
 

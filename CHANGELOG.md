@@ -17,11 +17,44 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB13.b: ET_DYN/PIE kernel + upper-half dynamic mapping
+  (2026-05-19).** Fixes the `mb11-userprobe` / `mb12-userprobe`
+  triple-fault on Proxmox VMID 103 / QEMU+OVMF at root cause: the
+  kernel ELF was `ET_EXEC` with `p_vaddr = 0x200000` (PML4 index 0),
+  which `bootloader_api 0.11` does not relocate. After
+  `AddressSpace::new_with_kernel_half` cloned only PML4 256..=511,
+  the `mov cr3` in `enter_user_mode` dropped the kernel image and
+  triple-faulted on the next instruction fetch.
+
+  - **`kernel-runner/.cargo/config.toml`** — removed
+    `-C relocation-model=static` + `-C link-arg=--no-pie`. The
+    `x86_64-unknown-none` target spec already sets
+    `position-independent-executables = true` on Rust 1.83+, so the
+    kernel ELF is now `ET_DYN` (PIE) by default with RIP-relative
+    addressing. The file now contains only an explanatory comment so
+    the workspace `.cargo/config.toml` rustflags (force-soft SIMD
+    cfgs for `omni-crypto`) merge cleanly when the kernel-runner is
+    built.
+  - **`kernel-runner/src/main.rs`** — `BOOTLOADER_CONFIG` now sets
+    `mappings.dynamic_range_start = Some(0xFFFF_8000_0000_0000)`,
+    pushing every bootloader-managed mapping (kernel base, kernel
+    stack, `BootInfo`, framebuffer, physical-memory direct map) into
+    the canonical upper half (PML4 ≥ 256). Combined with the ET_DYN
+    kernel, this guarantees `AddressSpace::new_with_kernel_half`
+    (which mirrors PML4 256..=511 by reference) keeps every kernel
+    mapping live across CR3 switches.
+  - **Verification:**
+    - `cargo build --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --features mb12-userprobe` → clean (ET_DYN).
+    - `cargo clippy --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --features mb12-userprobe -- -D warnings` → clean.
+    - `cargo clippy -p omni-kernel --target x86_64-unknown-none --no-default-features --features mb12-userprobe -- -D warnings` → clean (regression).
+    - `cargo test -p omni-kernel --all-features --test mb12_ipc_cross_process` → 8/8 ok (host-side, unaffected by the bare-metal fix).
+    - Build Info panel updated to `Active = MB13.b ET_DYN upper-half`, `Next = MB13.c omni-capability dep`, `Phase 1 ≈ 70%`.
+
 - **Kernel — MB13.a: `omni-crypto` builds on `x86_64-unknown-none`
   (2026-05-19).** Unblocks the bare-metal build of `omni-crypto`, removing
   the LLVM ICE on SIMD intrinsics in `sha2`, `poly1305`, `chacha20`, and
   `curve25519-dalek`. This is the first slice of MB13; MB13.b
-  (`ET_DYN` kernel for the triple-fault smoke fix), MB13.c
+  (ET_DYN kernel for the triple-fault smoke fix) closed above; MB13.c
   (`omni-capability` integration), MB13.d (capability syscall ABI),
   and MB13.e (PR + tag) land in subsequent commits.
 

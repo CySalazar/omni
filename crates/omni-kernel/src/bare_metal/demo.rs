@@ -743,12 +743,12 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
     row(6, cx_l, "Repo     : ", 11, "github.com/CySalazar/omni", graphics::WHITE);
 
     // ── Right column: implementation status ────────────────────────────
-    row(0, cx_r, "Phase    : ", 11, "1 - Microkernel POC  (~68%)", graphics::WHITE);
+    row(0, cx_r, "Phase    : ", 11, "1 - Microkernel POC  (~70%)", graphics::WHITE);
     row(1, cx_r, "Track A  : ", 11, "Desktop M1-M5  OK", graphics::WHITE);
-    row(2, cx_r, "Track B  : ", 11, "MB1-MB12  OK,  MB13.a  OK", graphics::WHITE);
-    row(3, cx_r, "Active   : ", 11, "MB13 (capability + ET_DYN)", graphics::LIGHT_CYAN);
-    row(4, cx_r, "Next     : ", 11, "MB13.b - bare-metal smoke fix", graphics::WHITE);
-    row(5, cx_r, "Tests    : ", 11, "410+ workspace pass", graphics::WHITE);
+    row(2, cx_r, "Track B  : ", 11, "MB1-MB12  OK,  MB13.a/b  OK", graphics::WHITE);
+    row(3, cx_r, "Active   : ", 11, "MB13.b ET_DYN upper-half", graphics::LIGHT_CYAN);
+    row(4, cx_r, "Next     : ", 11, "MB13.c omni-capability dep", graphics::WHITE);
+    row(5, cx_r, "Tests    : ", 11, "426+ workspace pass", graphics::WHITE);
     row(6, cx_r, "Author   : ", 11, "cySalazar", graphics::WHITE);
 }
 

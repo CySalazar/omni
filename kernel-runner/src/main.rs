@@ -18,29 +18,39 @@ use omni_kernel::bare_metal::graphics::{FrameBuffer, PixelFormat};
 
 mod early_console;
 
-/// Bootloader configuration: request dynamic physical-memory mapping.
+/// Lowest virtual address the bootloader is allowed to use when mapping
+/// the kernel image, the boot info, the framebuffer, and the kernel
+/// stack. Pushing the floor into the canonical upper half ensures the
+/// kernel ELF lands in PML4 indices ≥ 256, which is the region cloned
+/// by reference by `AddressSpace::new_with_kernel_half`.
+const KERNEL_DYNAMIC_RANGE_START: u64 = 0xFFFF_8000_0000_0000;
+
+/// Bootloader configuration.
+///
+/// `BootloaderConfig` is consumed by `bootloader 0.11`'s second-stage
+/// loader. The settings used here:
+///
+/// - `physical_memory = Dynamic` — request a full-RAM linear map so
+///   the kernel can walk page tables and program PCI BARs via
+///   `boot_info.physical_memory_offset` without trampolining through
+///   the recursive mapping.
+/// - `dynamic_range_start = 0xFFFF_8000_0000_0000` — confine every
+///   bootloader-managed dynamic mapping (`kernel_base`, `kernel_stack`,
+///   `boot_info`, `framebuffer`, `physical_memory`) to the canonical
+///   upper half. Combined with the ET_DYN kernel ELF produced by the
+///   default `x86_64-unknown-none` PIE target spec, this guarantees the
+///   per-process `AddressSpace::new_with_kernel_half` clone (which
+///   mirrors PML4 indices 256..=511 from the boot PML4) keeps every
+///   kernel mapping live across a `mov cr3` switch — fixing the MB12
+///   `mb12-userprobe` triple-fault on Proxmox VMID 103 / QEMU+OVMF.
 ///
 /// Framebuffer resolution is configured in the `disk-image` builder
 /// (via `bootloader::UefiBoot`) rather than here; `bootloader_api 0.11`
 /// moved that concern to the host-side build step.
-///
-/// **MB12 bare-metal limitation:** the kernel ELF is linked as
-/// `ET_EXEC` with `p_vaddr = 0x200000` (PML4 index 0). The
-/// `BootloaderConfig::mappings.dynamic_range_start` field only honours
-/// `ET_DYN` kernels, which Rust's `x86_64-unknown-none` target spec
-/// does not currently produce (`-C relocation-model=static` +
-/// `--no-pie` remain mandatory to keep the bootloader happy on the
-/// build path). Consequence: the kernel image lives in the low half,
-/// so the per-process `AddressSpace::new_with_kernel_half` clone
-/// (which mirrors only PML4 indices 256..511) loses the kernel image
-/// when `mov cr3` switches to a per-process PML4. The first instruction
-/// fetch after the CR3 reload triple-faults, which manifests as the VM
-/// going to `stopped` after the `[sched] entering Ring 3 via iretq`
-/// trace line under `mb12-userprobe`. Tracked as the headline MB13
-/// follow-up alongside the SIMD ICE on `omni-crypto`.
 static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut cfg = BootloaderConfig::new_default();
     cfg.mappings.physical_memory = Some(Mapping::Dynamic);
+    cfg.mappings.dynamic_range_start = Some(KERNEL_DYNAMIC_RANGE_START);
     cfg
 };
 

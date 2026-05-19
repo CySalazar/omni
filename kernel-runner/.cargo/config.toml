@@ -1,28 +1,30 @@
 # =============================================================================
 # kernel-runner — Cargo target configuration
 # =============================================================================
-# Rust 1.83+ x86_64-unknown-none has `position_independent_executables = true`
-# in the target spec, generating ET_DYN binaries with RIP-relative code.
+# MB13.b — ET_DYN/PIE kernel switch (2026-05-19).
 #
-# Historically (pre-MB12) this crate forced ET_EXEC via
-# `-C relocation-model=static` + `-C link-arg=--no-pie` because the
-# previous `bootloader 0.9` second-stage loader rejected ET_DYN. With
-# `bootloader 0.11` (currently pinned in `kernel-runner/Cargo.toml`)
-# ET_DYN is fully supported — and **required** for MB12: the bootloader
-# applies RIP-relative relocations to honour
-# `BootloaderConfig::mappings.kernel_base`, which we use to push the
-# kernel image into the upper half (PML4 indices ≥ 256). The upper-half
-# kernel mapping is what makes the per-process `AddressSpace`'s
-# kernel-half clone (256..511) sufficient for the post-`mov cr3`
-# instruction fetch in `enter_user_mode` to land on a mapped page.
+# Rust 1.83+ ships `x86_64-unknown-none` with
+# `position_independent_executables = true` in the target spec, which makes
+# the linker emit an ET_DYN (PIE) ELF with RIP-relative addressing.
+# `bootloader_api 0.11` requires ET_DYN to honour
+# `BootloaderConfig::mappings.dynamic_range_start` (and any fixed
+# `kernel_base`): only PIE binaries can be relocated to the upper half
+# (PML4 indices ≥ 256) at boot.
 #
-# Leaving the target spec defaults intact (PIE) keeps the kernel ELF
-# `ET_DYN`, which `bootloader 0.11` happily relocates to the dynamic
-# range starting at `dynamic_range_start = 0xFFFF_8000_0000_0000`.
+# Historically (pre-MB13.b) this file forced ET_EXEC via
+# `-C relocation-model=static` + `-C link-arg=--no-pie`. That was a
+# leftover from the `bootloader 0.9` second-stage loader which refused
+# ET_DYN. It also caused the `mb11-userprobe` / `mb12-userprobe` smoke
+# to triple-fault on Proxmox: the kernel ELF landed at
+# `p_vaddr = 0x200000` (PML4 index 0, lower half), so
+# `AddressSpace::new_with_kernel_half` — which only mirrors PML4
+# indices 256..511 — dropped the kernel image as soon as `mov cr3`
+# switched the per-process page table.
+#
+# With this file now empty for `x86_64-unknown-none`, cargo merges the
+# workspace `.cargo/config.toml` rustflags (force-soft SIMD cfgs for
+# `omni-crypto`) cleanly, and the kernel ELF is ET_DYN by default. The
+# bootloader relocates the image into the upper half per
+# `BOOTLOADER_CONFIG.mappings.dynamic_range_start` in `src/main.rs`,
+# which keeps the kernel mapped across CR3 switches.
 # =============================================================================
-
-[target.x86_64-unknown-none]
-rustflags = [
-    "-C", "relocation-model=static",
-    "-C", "link-arg=--no-pie",
-]

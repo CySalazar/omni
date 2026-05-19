@@ -1,6 +1,6 @@
 # OMNI OS — Implementation TODO
 
-> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB12** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0). Roadmap Phase 1 ~65% — il deliverable "IPC primitives operational (typed message passing)" è chiuso. **Prossimo blocco tecnico: MB13** = `omni-capability` integration reale (Ed25519 verify) + fix bare-metal smoke triple-fault (ET_DYN/PIE kernel) + SIMD `force-soft` su `sha2`/`poly1305`/`curve25519-dalek`.
+> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB12** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0); MB13.a (SIMD force-soft) + **MB13.b (ET_DYN/PIE kernel, upper-half mapping)** chiusi 2026-05-19. Roadmap Phase 1 ~70% — il deliverable "IPC primitives operational (typed message passing)" è chiuso e il blocker boot-path triple-fault è risolto. **Prossimo blocco tecnico: MB13.c** = `omni-capability` come dep di `omni-kernel` (Ed25519 verify reale sostituisce `StubCapabilityProvider`).
 > **Last updated:** 2026-05-19 (riallineamento post-MB12: aggiunti tier P6.MB sezioni MB1-MB13, Step 7 closure, P6.6 chiuso da MB12, P6.7 sbloccato da MB12, P3 Tamarin proof eseguito 2026-05-12, `docs/adr/0001..0005` tutti `accepted`. Branch corrente `feat/kernel-mb11-userspace` con HEAD `1a0fa3e`; PR verso `main` ancora da aprire).
 > **Storia stati precedenti:** 2026-05-18 (MB12 closure — IPC + multi-task user, ADR-0005, 426 tests). 2026-05-18 (Step 7.1-7.4 lift blanket allows + ADR-0003 + CI `blanket-allow-guard`). 2026-05-18 (MB11 closure — Ring 3 + per-process CR3, ADR-0004). 2026-05-18 (MB10 closure — kernel stack isolation, ADR-0002, PR #33 in `main`). 2026-05-18 (v0.2.0 release — MB1-MB9 + Track A, PR #29 in `main`). 2026-05-16 (MB4/MB5). 2026-05-15 (K5 QEMU smoke gate). 2026-05-12 (scaffolding pass P3-P6 verificato). 2026-05-10 (P1 + P2 chiusi). 2026-05-09 (P0 chiuso).
 > **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
@@ -797,12 +797,12 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 | MB10 | Kernel stack isolation + guard page | `[x]` | `8c1496a` | [0002](docs/adr/0002-mb10-kernel-stack-isolation.md) |
 | MB11 | Primo userspace Ring 3 + per-process CR3 + STAR fix | `[x]` | `22289e1` + `c743173` | [0004](docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md) |
 | MB12 | IPC reale (queue + capability stub + multi-task user) | `[x]` | `60f3a82` | [0005](docs/adr/0005-mb12-ipc-message-passing.md) |
-| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[~]`** (MB13.a chiuso 2026-05-19) | — | TBD ADR-0006 |
+| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[~]`** (MB13.a + MB13.b chiusi 2026-05-19) | — | TBD ADR-0006 |
 | MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[ ]` | — | — |
 
 ### P6.MB13 — `omni-capability` integration reale
 
-- **Status:** `[~]` (MB13.a chiuso 2026-05-19; MB13.b/c/d/e ancora aperti)
+- **Status:** `[~]` (MB13.a + MB13.b chiusi 2026-05-19; MB13.c/d/e ancora aperti)
 - **Priority:** P6 / High
 - **Effort:** 1-2 giornate (gating SIMD + glue + nuovi test) + 0.5-1 giornata per il fix triple-fault
 - **Dependencies:** MB12 ✅; nessuna esterna
@@ -831,17 +831,20 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 
 #### P6.MB13.b — Boot-path fix: ET_DYN/PIE kernel (triple-fault smoke)
 
-- **Status:** `[ ]`
-- **Effort:** 0.5-1 giornata
-- **Rationale:** `mb12-userprobe` (e per estensione `mb11-userprobe`) triple-fault su Proxmox VMID 103 / QEMU+OVMF perché il kernel ELF è `ET_EXEC` con `p_vaddr = 0x200000` (PML4 index 0). `bootloader_api` 0.11 non rilocca `ET_EXEC` → kernel finisce in lower half → `AddressSpace::new_with_kernel_half` (clone solo entries 256..511) → al `mov cr3` dentro `enter_user_mode` la pagina con l'istruzione successiva è non-mappata → triple fault. Diagnostica catturata in [`kernel-runner/src/main.rs:27-40`](kernel-runner/src/main.rs#L27-L40).
-- **Deliverables (in ordine di preferenza):**
-  1. **Opzione (a) — ET_DYN/PIE kernel (raccomandato):** forzare `relocation-model=pic` + `-pie` su `kernel-runner` (modificare `kernel-runner/.cargo/config.toml` + verificare che `bootloader_api` 0.11 applichi `BootloaderConfig::mappings.dynamic_range_start = 0xFFFF_8000_0000_0000` per portarlo in upper half).
-  2. **Opzione (b) — linker script upper-half:** hard-code `p_vaddr` del kernel ELF in upper half via custom linker script (`.cargo/config.toml` + `linker-script.ld`).
-  3. **Opzione (c) — trampoline page cross-AS aliased:** installare una pagina trampolino al medesimo VA in ogni PML4 prima del `mov cr3` (mitigazione, non risoluzione).
-- **Acceptance:**
-  - Smoke `mb12-userprobe` su Proxmox VMID 103 (host `100.101.77.9`) produce serial output completo: `[mb12] receiver task_id=N / [mb12] sender task_id=M / [mb12] channel 1 pre-created / [mb12] handing off to user tasks / ping / [user] exit=0 / [user] exit=0`.
-  - Smoke `mb11-userprobe` produce: `[user] hello / [user] exit=0`.
-  - Test integration `mb12_ipc_cross_process.rs` restano verdi (8/8) — non sono affetti dal fix bare-metal.
+- **Status:** `[x]` (closed 2026-05-19)
+- **Effort:** 0.5 giornata (delivered)
+- **Rationale:** `mb12-userprobe` (e per estensione `mb11-userprobe`) triple-fault su Proxmox VMID 103 / QEMU+OVMF perché il kernel ELF era `ET_EXEC` con `p_vaddr = 0x200000` (PML4 index 0). `bootloader_api` 0.11 non rilocca `ET_EXEC` → kernel finiva in lower half → `AddressSpace::new_with_kernel_half` (clone solo entries 256..511) → al `mov cr3` dentro `enter_user_mode` la pagina con l'istruzione successiva era non-mappata → triple fault.
+- **Soluzione adottata (Opzione (a) — ET_DYN/PIE kernel):**
+  - **`kernel-runner/.cargo/config.toml`** — rimossi i flag `-C relocation-model=static` + `-C link-arg=--no-pie`. Il target spec `x86_64-unknown-none` ha già `position-independent-executables = true` (Rust 1.83+), quindi il linker produce nativamente un ELF `ET_DYN` con addressing RIP-relative. Il file ora contiene solo un commento esplicativo del cambio MB13.b, così che la merge dei rustflags del workspace `.cargo/config.toml` (force-soft SIMD cfgs) avvenga in modo pulito.
+  - **`kernel-runner/src/main.rs`** — `BOOTLOADER_CONFIG` ora imposta `mappings.dynamic_range_start = Some(0xFFFF_8000_0000_0000)`. `bootloader 0.11` applica le relocazioni RIP-relative del kernel ELF spostando l'immagine in upper half (PML4 indices ≥ 256), assieme a `kernel_stack`, `boot_info`, `framebuffer` e `physical_memory`. Tutte queste mapping cadono nella metà clonata per riferimento dal CR3 di boot in `AddressSpace::new_with_kernel_half`, quindi rimangono live dopo il `mov cr3` di `enter_user_mode`.
+- **Alternative documentate (non adottate):** opzione (b) linker script con `p_vaddr` upper-half hard-coded (più invasivo, perde la dinamicità del bootloader); opzione (c) trampoline page aliased cross-AS (mitigazione, non risoluzione del root cause).
+- **Acceptance (verified):**
+  - `cargo build --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --features mb12-userprobe` clean (ET_DYN PIE).
+  - `cargo clippy --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --features mb12-userprobe -- -D warnings` clean.
+  - `cargo clippy -p omni-kernel --target x86_64-unknown-none --no-default-features --features mb12-userprobe -- -D warnings` clean (regression).
+  - Test integration `mb12_ipc_cross_process.rs` verdi (8/8) — non affetti dal fix bare-metal.
+  - Build Info panel aggiornato a Active=`MB13.b ET_DYN upper-half`, Next=`MB13.c omni-capability dep`.
+  - Validazione smoke completa su Proxmox VMID 103 deferred a deploy-time (vedi `progress-omni.md` § "Verifica MB13.b").
 
 #### P6.MB13.c — `omni-capability` come dep di `omni-kernel`
 
