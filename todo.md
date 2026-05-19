@@ -1177,6 +1177,14 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
   - **x2APIC support.** LAPIC IDs > 255 (sparse topology di server-class silicon) richiedono switch al MSR-based ICR encoding già coperto da `mp::encode_icr_x2apic` ma non ancora wired nel `kmain_ap` ID-read step (CPUID leaf 1 EBX[31:24] è 8-bit). MB14.f promove a CPUID leaf 0xB sub-leaf 0 EDX.
   - **ADR-0008 (per-CPU scheduling protocol).** Writing differito a MB14.f closure quando il binding scheduler ↔ per_cpu_run_queue va live.
 
+- **Smoke validation Proxmox VMID 103 (2026-05-19):** la build default desktop demo boot reaches `[virtio] tablet ready`, framebuffer renderizzato (≈67% non-zero pixel = desktop demo full render). Il Build Info panel mostra il nuovo stato (Active=`MB14.e per-CPU run-queue`, Next=`MB14.f x2APIC LAPIC>255`, Phase 1 ≈ 93%, Tests=586+). Linee serial chiave:
+  - `[mb14.c.2.c] start_aps_live targeted=7 sequenced=7 acked=7 (all APs online)` — 7 AP svegliate
+  - `[mb14.c.2.d] per-AP init online=7/7 (all APs parked)` — tutte completano init+park
+  - `[mb14.e] per_cpu_run_queue local=ok steal=ok` — **scaffold validato end-to-end** (enqueue/pop + steal-fallback su BSP+AP cpu_id=1)
+  - `[mb14.d] tlb_shootdown vector=0xFD targeted=7 acked=0 local_pages=1 (timeout — AP ISR did not ack)` — **issue residuo: gli AP non incrementano l'ack counter**, vedi MB14.e.4 follow-up sotto.
+
+- [ ] **MB14.e.4 follow-up — TLB shootdown ack timeout su AP** (open, scoperto 2026-05-19 durante smoke MB14.e). Con `sti` enabled sull'AP idle park, il broadcast `0xFD` da BSP raggiunge il LAPIC di ogni AP ma il `SHOOTDOWN.ack.fetch_add(1)` nel handler `kernel_tlb_shootdown_handler` non viene mai eseguito (acked=0 con targeted=7). Ipotesi: (a) la `lapic_eoi()` chiamata dall'handler in 0xFD su AP scrive nel LAPIC base virtuale che `lapic_init` ha settato sulla CPU BSP — l'AP non ha mai chiamato `lapic_init` quindi il proprio LAPIC potrebbe non essere abilitato (SIVR.0xFF) e quindi rifiuta le delivery; (b) la `lock inc` su `SHOOTDOWN.ack` viene effettivamente eseguita ma il fetch_add è masked da un page fault Ring 0 al rientro `iretq` (kstack overflow su 1 frame senza guardia? IST mismatch?); (c) l'IDT che l'AP carica via `lidt` ha il vector 0xFD installato ma il `interrupt_gate` punta alla VA `omni_tlb_shootdown_handler` che potrebbe non essere mapped nel kernel CR3 condiviso dall'AP. Diagnostica successiva: aggiungere tracepoint inline su COM1 prima di `lapic_eoi` + dopo `fetch_add` per identificare quale dei 4 step del handler fallisce. **Non bloccante** per la chiusura MB14.e (il per-CPU run-queue scaffold + sti enable sono validati indipendentemente). Tracked per la prima fase di MB14.f.
+
 ---
 
 ## P6 — Kernel follow-up minori (non bloccanti per MB13, da pianificare in MB14+)
