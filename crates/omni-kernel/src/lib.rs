@@ -270,13 +270,27 @@ pub fn kmain(
     boot_info: &'static bootloader_api::BootInfo,
     framebuffer: Option<bare_metal::graphics::FrameBuffer>,
 ) -> ! {
-    use bare_metal::{arch, demo, early_console, gdt, idt, paging};
+    use bare_metal::{arch, demo, early_console, gdt, idt, paging, tss};
 
     // -------------------------------------------------------------------------
     // GDT: install kernel-controlled segment descriptors (replaces bootloader's
     // temporary GDT). Must be the first action after entering kmain.
     // -------------------------------------------------------------------------
     gdt::gdt_init();
+
+    // -------------------------------------------------------------------------
+    // TSS init (MB13.h): populate `TSS.ist1` / `TSS.ist2` with the static
+    // IST stack tops, then issue `ltr 0x28` so the CPU's task register
+    // points at the static TSS. Without `ltr`, a Ring 3 → Ring 0
+    // transition cannot resolve `TSS.rsp0` and cascades silently to a
+    // triple fault — the MB13.f post-iretq stall root cause.
+    //
+    // Must run after `gdt::gdt_init` (which writes the TSS descriptor at
+    // slots 5+6) and before `idt::idt_init` (whose #DF / #PF entries
+    // reference IST=1 / IST=2 respectively).
+    // -------------------------------------------------------------------------
+    tss::init_ist_stacks();
+    tss::ltr_load();
 
     // -------------------------------------------------------------------------
     // IDT: load the kernel Interrupt Descriptor Table so that synchronous

@@ -17,6 +17,71 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB13.h: TSS `ltr` wiring + dedicated IST stacks for
+  #DF / #PF (2026-05-19).** Closes the silent-stall root cause that
+  MB13.g surfaced as a missing diagnostic line: even with the full
+  IDT coverage installed by MB13.g, the post-`iretq` Ring 3 fault
+  could not write `[OMNI OS EXCEPTION] vec=NN` because the CPU was
+  unable to resolve a kernel stack at the privilege transition.
+
+  Two cooperating defects:
+
+  - **`tss::ltr_load()` was never invoked.** `gdt::gdt_init` wrote
+    the TSS descriptor at GDT slots 5+6 (introduced in MB11.1) and
+    the scheduler kept `TSS.rsp0` up to date via `tss::set_rsp0`
+    (MB12.0a), but `ltr 0x28` was never executed — so the CPU's
+    task register stayed null. A Ring 3 → Ring 0 transition needs
+    the task register to look up `TSS.rsp0`; without it the CPU
+    cannot push the exception frame and cascades straight to a
+    triple fault, silently resetting the VM before any handler runs.
+  - **`TSS.ist1` / `TSS.ist2` were hard-coded to zero.** The TSS
+    struct had the fields and the module-level docs since MB11
+    advertised "MB11 uses IST1 for #DF and IST2 for #PF", but the
+    fields were never populated and the IDT entries used IST=0.
+    Even with a working `ltr`, a stack-related fault (e.g., a #PF
+    on `rsp0` immediately after a CR3 reload to a per-process PML4
+    where the kernel stack page has not yet propagated) would
+    cascade to #DF on the same broken stack.
+
+  Three atomic changes:
+
+  - **`crates/omni-kernel/src/bare_metal/tss.rs`** — introduces two
+    static `IstStack([u8; 16384])` buffers (`IST1_STACK`,
+    `IST2_STACK`) in `.bss` (16 KiB each, parity with
+    `scheduling::KERNEL_STACK_SIZE`), a public
+    `init_ist_stacks()` that writes `base + IST_STACK_SIZE` into
+    `TSS.ist1` / `TSS.ist2`, plus `current_ist1()` /
+    `current_ist2()` read-back helpers for tests. Static IST
+    buffers live in the kernel image so they are mapped by the
+    bootloader once and survive every per-process CR3 reload via
+    the kernel-half shared-by-reference mechanism
+    (`AddressSpace::new_with_kernel_half`).
+  - **`crates/omni-kernel/src/bare_metal/idt.rs`** — adds
+    `IdtEntry::interrupt_gate_with_ist(handler, selector, ist_index)`
+    encoding the IST index in the low 3 bits of byte 4. `idt_init`
+    now uses `(isr_df, 1)` for vector 8 (#DF) and `(isr_pf, 2)` for
+    vector 14 (#PF); the catch-all vectors keep IST=0 because they
+    are not stack-related faults. The `& 0x07` mask blinds future
+    callers against an out-of-range IST index corrupting the
+    reserved bits.
+  - **`crates/omni-kernel/src/lib.rs::kmain`** — inserts
+    `tss::init_ist_stacks()` + `tss::ltr_load()` between
+    `gdt::gdt_init()` and `idt::idt_init()`. Without this exact
+    ordering the TSS descriptor wouldn't exist when `ltr` runs, or
+    the IST fields would still be zero at the first fault — both
+    fatal.
+
+  Tests added: `tss::tests::ist_stack_size_is_16_kib`,
+  `tss::tests::init_ist_stacks_writes_top_of_each_buffer`,
+  `idt::tests::interrupt_gate_with_ist_sets_index`,
+  `idt::tests::interrupt_gate_with_ist_masks_high_bits` (+4).
+  Workspace test target ≥ 447. `cargo clippy --workspace --all-targets
+  --all-features -- -D warnings` clean; bare-metal + mb12-userprobe
+  + kernel-runner builds clean.
+
+  Build Info panel: Active=`MB13.h TSS ltr + IST`, Next=`MB13.e PR
+  + tag`, Track B=`MB1-MB12 OK, MB13.a-h OK`, Phase 1 ≈ 80%.
+
 - **Kernel — MB13.g: comprehensive IDT coverage for synchronous
   exceptions (2026-05-19).** Extends [`bare_metal::idt`] from 4
   dedicated handlers (#DE, #DF, #GP, #PF) to **20 catch-all

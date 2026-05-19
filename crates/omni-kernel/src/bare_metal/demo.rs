@@ -791,7 +791,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Phase    : ",
         11,
-        "1 - Microkernel POC  (~78%)",
+        "1 - Microkernel POC  (~80%)",
         graphics::WHITE,
     );
     row(
@@ -807,7 +807,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Track B  : ",
         11,
-        "MB1-MB12 OK, MB13.a-g OK",
+        "MB1-MB12 OK, MB13.a-h OK",
         graphics::WHITE,
     );
     row(
@@ -815,7 +815,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "MB13.g full ISR coverage",
+        "MB13.h TSS ltr + IST",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -823,7 +823,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "MB13.h iretq stall fix",
+        "MB13.e PR + tag",
         graphics::WHITE,
     );
     row(
@@ -831,7 +831,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Tests    : ",
         11,
-        "444+ workspace pass",
+        "447+ workspace pass",
         graphics::WHITE,
     );
     row(6, cx_r, "Author   : ", 11, "cySalazar", graphics::WHITE);

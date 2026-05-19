@@ -134,6 +134,27 @@ impl IdtEntry {
             _reserved: 0,
         }
     }
+
+    /// MB13.h — like [`Self::interrupt_gate`] but routes the vector to
+    /// `TSS.ist[ist_index]` instead of the normal `TSS.rsp0` slot.
+    ///
+    /// Only the low 3 bits of `ist_index` are honored (valid range
+    /// 1..=7; value 0 disables IST switching and is equivalent to
+    /// `interrupt_gate`). Used by `idt_init` to give #DF (IST=1) and
+    /// #PF (IST=2) their own dedicated kernel stacks, so a stack-related
+    /// fault cannot cascade to a silent triple fault.
+    #[must_use]
+    pub fn interrupt_gate_with_ist(handler: u64, selector: u16, ist_index: u8) -> Self {
+        Self {
+            offset_low: (handler & 0xFFFF) as u16,
+            selector,
+            ist_and_zero: ist_index & 0x07,
+            type_and_attr: 0x8E, // P=1, DPL=0, type=0xE
+            offset_mid: ((handler >> 16) & 0xFFFF) as u16,
+            offset_high: ((handler >> 32) & 0xFFFF_FFFF) as u32,
+            _reserved: 0,
+        }
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -543,11 +564,13 @@ pub fn idt_init() {
     // code path at this point in initialisation.
     let idt = unsafe { &mut *core::ptr::addr_of_mut!(IDT) };
 
-    // Dedicated diagnostics handlers.
+    // Dedicated diagnostics handlers. MB13.h routes #DF to IST1 and
+    // #PF to IST2 so a stack-related fault has a known-good kernel
+    // stack to land on, eliminating the silent triple-fault cascade.
     idt[0] = IdtEntry::interrupt_gate(isr_de as usize as u64, KERNEL_CS);
-    idt[8] = IdtEntry::interrupt_gate(isr_df as usize as u64, KERNEL_CS);
+    idt[8] = IdtEntry::interrupt_gate_with_ist(isr_df as usize as u64, KERNEL_CS, 1);
     idt[13] = IdtEntry::interrupt_gate(isr_gp as usize as u64, KERNEL_CS);
-    idt[14] = IdtEntry::interrupt_gate(isr_pf as usize as u64, KERNEL_CS);
+    idt[14] = IdtEntry::interrupt_gate_with_ist(isr_pf as usize as u64, KERNEL_CS, 2);
 
     // MB13.g catch-all coverage for the remaining synchronous vectors.
     idt[1] = IdtEntry::interrupt_gate(isr_db as usize as u64, KERNEL_CS);
@@ -680,6 +703,28 @@ mod tests {
     fn exception_frame_size() {
         // 5 × u64 = 40 bytes.
         assert_eq!(core::mem::size_of::<ExceptionFrame>(), 40);
+    }
+
+    /// MB13.h — `interrupt_gate_with_ist` encodes the IST index in the
+    /// low 3 bits of byte 4 and leaves the type/attr byte untouched.
+    #[test]
+    fn interrupt_gate_with_ist_sets_index() {
+        let entry = IdtEntry::interrupt_gate_with_ist(0xCAFE_F00D, 0x08, 1);
+        assert_eq!(entry.ist_and_zero, 0x01);
+        assert_eq!(entry.type_and_attr, 0x8E);
+        assert_eq!(entry.selector, 0x08);
+
+        let entry2 = IdtEntry::interrupt_gate_with_ist(0xCAFE_F00D, 0x08, 2);
+        assert_eq!(entry2.ist_and_zero, 0x02);
+    }
+
+    /// MB13.h — the helper masks the IST index to the low 3 bits so any
+    /// future caller passing a too-large value does not corrupt the
+    /// reserved bits 3..7 of the IST byte.
+    #[test]
+    fn interrupt_gate_with_ist_masks_high_bits() {
+        let entry = IdtEntry::interrupt_gate_with_ist(0, 0x08, 0xFF);
+        assert_eq!(entry.ist_and_zero, 0x07);
     }
 
     /// MB13.g — every CPU synchronous vector in 0..=21 must be covered

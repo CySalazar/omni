@@ -1,4 +1,4 @@
-//! Task State Segment (`TSS`) for `x86_64` long mode (MB11).
+//! Task State Segment (`TSS`) for `x86_64` long mode (MB11 + MB13.h).
 //!
 //! In long mode the TSS no longer holds full task state for hardware
 //! task switching (the feature is unavailable in 64-bit mode). It does
@@ -10,11 +10,25 @@
 //!    is executing would land on the user stack and likely fault again.
 //! 2. **`ist1..ist7`** — Interrupt Stack Table entries: per-vector
 //!    dedicated kernel stacks used when the corresponding IDT entry's
-//!    IST field is non-zero. MB11 uses IST1 for `#DF` (already planned
-//!    in ADR-0002) and IST2 for `#PF` (so a stack-overflow inside a
-//!    user-mode page fault handler does not double-fault).
+//!    IST field is non-zero. MB13.h wires IST1 to `#DF` and IST2 to
+//!    `#PF` so that a stack-related fault (the post-iretq stall root
+//!    cause) lands on a known-good kernel stack instead of cascading
+//!    silently to a triple fault.
 //!
-//! Loaded via `ltr <selector>` after the GDT install. ADR-0004 § 3.
+//! ## Init order (MB13.h)
+//!
+//! `kmain` must call, in this exact order:
+//!
+//! 1. [`super::gdt::gdt_init`] — populates the TSS descriptor in GDT
+//!    slots 5+6.
+//! 2. [`init_ist_stacks`] — fills `TSS.ist1` / `TSS.ist2` with the top
+//!    pointers of the two static IST stacks.
+//! 3. [`ltr_load`] — issues `ltr 0x28` so the CPU's task register
+//!    points at the static TSS. Without this step, a Ring 3 → Ring 0
+//!    transition cannot resolve `TSS.rsp0` and cascades to triple
+//!    fault. This was the root cause of the MB13.f post-iretq stall.
+//! 4. [`super::idt::idt_init`] — installs the IDT entries; #DF uses
+//!    IST=1, #PF uses IST=2.
 
 #![allow(unsafe_code, reason = "static mut TSS + ltr asm; SAFETY per init fn")]
 
@@ -89,6 +103,72 @@ impl Default for Tss {
 /// per-CPU TSS arrays in a future milestone.
 #[unsafe(no_mangle)]
 static mut TSS: Tss = Tss::new();
+
+/// Size of each IST stack (16 KiB). Sized to match the regular kernel
+/// stack (`scheduling::KERNEL_STACK_SIZE`) so a fault handler has the
+/// same headroom as the normal kernel-mode path.
+pub const IST_STACK_SIZE: usize = 16 * 1024;
+
+/// 16-byte aligned static IST stack buffer. Lives in the kernel image
+/// `.bss` so it is mapped by the bootloader and remains valid across
+/// every per-process CR3 reload (kernel half is shared by reference
+/// via `AddressSpace::new_with_kernel_half`).
+#[repr(C, align(16))]
+struct IstStack([u8; IST_STACK_SIZE]);
+
+/// IST stack dedicated to #DF (Double Fault). Wired via [`init_ist_stacks`].
+#[unsafe(no_mangle)]
+static mut IST1_STACK: IstStack = IstStack([0; IST_STACK_SIZE]);
+
+/// IST stack dedicated to #PF (Page Fault). Wired via [`init_ist_stacks`].
+#[unsafe(no_mangle)]
+static mut IST2_STACK: IstStack = IstStack([0; IST_STACK_SIZE]);
+
+/// Populate `TSS.ist1` / `TSS.ist2` with the top-of-stack pointers of
+/// the two static IST buffers (MB13.h).
+///
+/// The CPU treats the IST field of an IDT entry as a 1-based index into
+/// `TSS.ist1..ist7`; when non-zero it overrides the normal `rsp0`
+/// kernel-stack lookup on Ring 3 → Ring 0 transition for that specific
+/// vector. This is the only reliable way to handle a stack-related
+/// fault (e.g., the post-iretq stall root cause where `rsp0` itself
+/// points to an unmapped page after a CR3 reload).
+///
+/// Must be called once at boot AFTER [`super::gdt::gdt_init`] and
+/// BEFORE [`ltr_load`].
+pub fn init_ist_stacks() {
+    // SAFETY: single-core init; TSS + IST stacks are not aliased by
+    // any other code path at this point. We compute the
+    // one-past-the-end address of each buffer (legal as a u64 pointer
+    // value) and store it in the corresponding TSS slot.
+    unsafe {
+        let tss_p = core::ptr::addr_of_mut!(TSS);
+        let ist1_base = core::ptr::addr_of!(IST1_STACK) as u64;
+        let ist2_base = core::ptr::addr_of!(IST2_STACK) as u64;
+        (*tss_p).ist1 = ist1_base + IST_STACK_SIZE as u64;
+        (*tss_p).ist2 = ist2_base + IST_STACK_SIZE as u64;
+    }
+}
+
+/// Read-back helper for tests / diagnostics.
+#[must_use]
+pub fn current_ist1() -> u64 {
+    // SAFETY: single-core; read of u64 field via raw pointer.
+    unsafe {
+        let p = core::ptr::addr_of!(TSS);
+        (*p).ist1
+    }
+}
+
+/// Read-back helper for tests / diagnostics.
+#[must_use]
+pub fn current_ist2() -> u64 {
+    // SAFETY: single-core; read of u64 field via raw pointer.
+    unsafe {
+        let p = core::ptr::addr_of!(TSS);
+        (*p).ist2
+    }
+}
 
 /// Set the kernel-stack pointer the CPU loads on Ring 3 → Ring 0
 /// privilege transitions (interrupts / exceptions from user mode).
@@ -202,5 +282,30 @@ mod tests {
         let limit_hi = (low >> 48) & 0xF;
         assert_eq!(limit_lo, 103);
         assert_eq!(limit_hi, 0);
+    }
+
+    /// MB13.h — IST stacks must be 16 KiB to match the regular kernel
+    /// stack size and give the #DF / #PF handlers the same headroom.
+    #[test]
+    fn ist_stack_size_is_16_kib() {
+        assert_eq!(IST_STACK_SIZE, 16 * 1024);
+    }
+
+    /// MB13.h — `init_ist_stacks` writes non-zero, distinct top-of-stack
+    /// values into TSS.ist1 / TSS.ist2. The values must equal
+    /// `base + IST_STACK_SIZE` so the CPU's pre-decrement push lands
+    /// inside the buffer.
+    #[test]
+    fn init_ist_stacks_writes_top_of_each_buffer() {
+        init_ist_stacks();
+        let ist1 = current_ist1();
+        let ist2 = current_ist2();
+        assert_ne!(ist1, 0);
+        assert_ne!(ist2, 0);
+        assert_ne!(ist1, ist2);
+        let ist1_base = core::ptr::addr_of!(IST1_STACK) as u64;
+        let ist2_base = core::ptr::addr_of!(IST2_STACK) as u64;
+        assert_eq!(ist1, ist1_base + IST_STACK_SIZE as u64);
+        assert_eq!(ist2, ist2_base + IST_STACK_SIZE as u64);
     }
 }

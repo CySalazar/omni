@@ -1,10 +1,10 @@
 # OMNI OS — Progress Report
 
-**Data snapshot:** 2026-05-19 (post MB13.g — comprehensive IDT coverage for synchronous exception vectors 0..=21)
+**Data snapshot:** 2026-05-19 (post MB13.h — TSS `ltr` wiring + dedicated IST stacks for #DF / #PF)
 **Branch corrente:** `feat/kernel-mb11-userspace` (locale; in attesa di PR + merge in `main`)
-**HEAD:** post-MB13.g — IDT cattura ora ogni vettore sincrono CPU 0..=21, niente più triple-fault silenti
-**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g**).
-**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~78% Track B
+**HEAD:** post-MB13.h — task register finalmente caricato (`ltr 0x28`) e fault stack-related hanno il proprio kernel stack via IST
+**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h**).
+**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~80% Track B
 
 ---
 
@@ -284,6 +284,55 @@ colpevole — è una fix diagnostica), ma sblocca il root-cause analysis
 per MB13.h: il prossimo boot su Proxmox VMID 103 stamperà *quale*
 vettore sta cascading a triple-fault, anziché bloccarsi muto.
 
+Il blocco **MB13.h (TSS `ltr` wiring + IST stacks per #DF / #PF)** è
+stato chiuso il 2026-05-19. Root cause del silenzio post-iretq
+finalmente identificata via code review: `tss::ltr_load()` (che esegue
+`ltr 0x28` per caricare il task register) **non era mai chiamata** da
+`kmain`. Conseguenza diretta: anche se `TSS.rsp0` veniva impostato
+dallo scheduler prima di ogni dispatch user, il task register restava
+nullo. Quando il primo task Ring 3 generava una qualsiasi eccezione
+sincrona, la CPU non poteva risolvere `TSS.rsp0` dal task register e
+cascadava a triple-fault PRIMA di poter scrivere `[OMNI OS EXCEPTION]
+vec=NN` sul COM1 — perfettamente coerente con lo stall silente
+osservato post-MB13.f. Inoltre `TSS.ist1` / `ist2` erano hardcoded a
+zero (campi presenti ma mai inizializzati), quindi anche se `ltr`
+fosse stato eseguito, qualunque fault stack-related (es. #PF su `rsp0`
+dopo un CR3 reload a un PML4 dove la kstk non è ancora mappata)
+cascadava comunque a #DF → triple-fault.
+
+Tre cambi atomici:
+
+(i) **`crates/omni-kernel/src/bare_metal/tss.rs`** — aggiunti due
+static `[u8; 16384]` (`IST1_STACK` / `IST2_STACK`) in `.bss`, una
+funzione `init_ist_stacks()` che imposta `TSS.ist1`/`ist2` ai
+top-of-stack address dei due buffer, e due helper read-back
+`current_ist1()` / `current_ist2()` per i test. `IST_STACK_SIZE` =
+16 KiB (parità con `scheduling::KERNEL_STACK_SIZE`). +3 test:
+`ist_stack_size_is_16_kib`, `init_ist_stacks_writes_top_of_each_buffer`.
+
+(ii) **`crates/omni-kernel/src/bare_metal/idt.rs`** — aggiunto
+`IdtEntry::interrupt_gate_with_ist(handler, selector, ist_index)`
+che encoda l'IST index nei low 3 bit del byte 4 dell'entry.
+`idt_init()` ora installa `#DF (vector 8) → IST=1` e `#PF (vector 14)
+→ IST=2`. Il mask `& 0x07` blinda contro caller futuri che passassero
+un valore fuori range. +2 test: `interrupt_gate_with_ist_sets_index`,
+`interrupt_gate_with_ist_masks_high_bits`.
+
+(iii) **`crates/omni-kernel/src/lib.rs::kmain`** — aggiunti due call
+in sequenza fra `gdt::gdt_init()` e `idt::idt_init()`:
+`tss::init_ist_stacks()` + `tss::ltr_load()`. Quest'ultima emette
+finalmente `ltr 0x28` portando il task register al TSS descriptor
+installato da `gdt_init` ai GDT slot 5+6. Senza questa coppia di
+chiamate qualsiasi Ring 3 → Ring 0 transition triple-fault muta.
+
+`cargo build -p omni-kernel --target x86_64-unknown-none
+--no-default-features --features bare-metal` clean; idem
+`mb12-userprobe` e `kernel-runner --features mb12-userprobe`.
+`cargo clippy --workspace --all-targets --all-features -- -D
+warnings` clean. Build Info panel aggiornato a Active=`MB13.h TSS ltr
++ IST`, Next=`MB13.e PR + tag`, Track B=`MB1-MB12 OK, MB13.a-h OK`,
+Phase 1 ≈ 80%.
+
 Il prossimo blocco di lavoro è **MB13.e — chiusura ciclo MB13**:
 apertura della PR `feat/kernel-mb11-userspace` → `main`, conformance
 CI, scelta del tag intermedio (`v0.2.1` patch o `v0.3.0-alpha.1` minor
@@ -335,7 +384,8 @@ analysis a Done.
 | MB13.c | `omni-capability` integration + `Ed25519CapabilityProvider` | ✅ | post-`fd09d1d` |
 | MB13.d | `IpcCreateChannel` syscall ABI extension (postcard-encoded signed tokens) | ✅ | `5cb09fa` |
 | MB13.f | `enter_user_mode` kernel-stack swap (first-dispatch smoke fix) | ✅ | `f098192` |
-| MB13.g | Comprehensive IDT coverage (16 catch-all vectors → no more silent triple-fault) | ✅ | (this commit) |
+| MB13.g | Comprehensive IDT coverage (16 catch-all vectors → no more silent triple-fault) | ✅ | `a6fde3a` |
+| MB13.h | TSS `ltr 0x28` wiring + dedicated IST1 (#DF) / IST2 (#PF) kernel stacks | ✅ | (this commit) |
 | **MB13** | **omni-capability integration (Ed25519 verify) — MB13.e PR open** | 🟡 | — |
 
 **Verifica MB1-MB12:**
@@ -907,6 +957,7 @@ prossimo collo di bottiglia non-tecnico resta il funding Phase 0.
 | **MB12 capability stub vs Ed25519 reale** | bassa (oggi) → media (MB13) | media | ADR-0005 § Migration: il trait `KernelCapabilityCheck` è swap-in compatibile con il futuro `Ed25519CapabilityProvider`. `StubCapabilityProvider::verify` autorizza qualunque token con action/resource shape match — sufficiente in dev mode, **non** in production. Blocker tracciato come MB13. |
 | **`omni-crypto` SIMD LLVM ICE su `x86_64-unknown-none`** | alta | media | Scoperto in MB12.0c. Soluzione MB13: `force-soft` feature su `sha2`+`poly1305`+`curve25519-dalek` oppure crate `omni-crypto-verify` separato. ADR-0005 § Alternative A. |
 | **BumpHeap no-free per canali IPC distrutti** | media | media | Documentato in ADR-0005 § Negative. Cap raccomandato `queue_depth ≤ 256` per canale. Slab/free-list allocator → OIP separato (Phase 2). |
+| ~~Triple-fault muta post-iretq~~ | ~~alta~~ → bassa | ~~alta~~ | ✅ MB13.h chiuso: `tss::ltr_load()` ora caricato in `kmain` (`ltr 0x28`) e IST1/IST2 wired con stack dedicati per #DF/#PF. Senza `ltr`, qualunque eccezione Ring 3 → Ring 0 cascadava prima di poter scrivere su COM1. |
 
 ---
 
