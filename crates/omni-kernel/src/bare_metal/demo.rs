@@ -48,7 +48,7 @@
 use super::cursor::Cursor;
 use super::early_console;
 use super::graphics::FrameBuffer;
-use super::{arch, font, graphics, input, vga, virtio_tablet, widget, wm};
+use super::{arch, cpuinfo, font, graphics, input, vga, virtio_tablet, widget, wm};
 
 // =============================================================================
 // Constants
@@ -59,7 +59,7 @@ const TOTAL_SECS: usize = 300;
 /// "Power Off" button in the System Info window content area.
 const POWEROFF_BTN: widget::Button = widget::Button {
     rel_x: 8,
-    rel_y: 148,
+    rel_y: 254, // bumped from 148 to clear the 6 added CPU rows (84 px)
     width: 96,
     height: 22,
     label: "Power Off",
@@ -95,6 +95,8 @@ pub fn run_desktop(
     free_mib: u32,
     total_mib: u32,
     phys_offset: u64,
+    cpu_total: usize,
+    cpu_bsp_apic_id: u32,
 ) {
     let fb_opt: Option<&FrameBuffer> = framebuffer.as_ref();
 
@@ -104,7 +106,7 @@ pub fn run_desktop(
         x: 20,
         y: 20,
         width: 484,
-        height: 224, // was 210; +14 for MB5 ELF line
+        height: 308, // 224 + 84 (6 new CPU rows × 14)
         title: "System Info",
         bg_color: graphics::DARK_NAVY,
     });
@@ -139,7 +141,15 @@ pub fn run_desktop(
         let (h, m, s) = arch::rtc_time();
         render_clock(fb, h, m, s);
         wm_state.draw_all(fb);
-        render_sysinfo(fb, &wm_state, region_count, free_mib, total_mib);
+        render_sysinfo(
+            fb,
+            &wm_state,
+            region_count,
+            free_mib,
+            total_mib,
+            cpu_total,
+            cpu_bsp_apic_id,
+        );
         render_terminal_static(fb, &wm_state);
         render_echo(fb, &wm_state, &echo_buf, echo_len);
         render_buildinfo(fb, &wm_state);
@@ -474,12 +484,22 @@ fn render_clock(fb: &FrameBuffer, h: u8, m: u8, s: u8) {
 }
 
 /// Render the System Info window content (labels + Power Off button).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "render_sysinfo paints a fixed-format panel; every argument is a distinct visible field"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear sequence of font::render_str calls — one per displayed row"
+)]
 fn render_sysinfo(
     fb: &FrameBuffer,
     wm_state: &wm::WindowManager,
     region_count: usize,
     free_mib: u32,
     total_mib: u32,
+    cpu_total: usize,
+    cpu_bsp_apic_id: u32,
 ) {
     let Some(w) = wm_state.get(0) else { return };
     let cx = w.x + 8;
@@ -670,6 +690,211 @@ fn render_sysinfo(
         graphics::CYAN,
         w.bg_color,
     );
+
+    // ── CPU rows (MB14.a/c.1 + CPUID snapshot) ────────────────────────
+    let snap = cpuinfo::snapshot();
+
+    // Row 10 — CPU brand (CPUID 0x80000002..4).
+    font::render_str(
+        fb,
+        cx,
+        cy + step * 10,
+        "CPU     : ",
+        graphics::CYAN,
+        w.bg_color,
+    );
+    {
+        let brand = cpuinfo::trim_brand(&snap.brand);
+        let brand_str = core::str::from_utf8(brand).unwrap_or("(non-ASCII)");
+        font::render_str(
+            fb,
+            cx + 10 * 8,
+            cy + step * 10,
+            brand_str,
+            graphics::WHITE,
+            w.bg_color,
+        );
+    }
+
+    // Row 11 — CPU vendor (CPUID 0).
+    font::render_str(
+        fb,
+        cx,
+        cy + step * 11,
+        "Vendor  : ",
+        graphics::CYAN,
+        w.bg_color,
+    );
+    {
+        let vendor_str = core::str::from_utf8(&snap.vendor).unwrap_or("(non-ASCII)");
+        font::render_str(
+            fb,
+            cx + 10 * 8,
+            cy + step * 11,
+            vendor_str,
+            graphics::WHITE,
+            w.bg_color,
+        );
+    }
+
+    // Row 12 — Family / Model / Stepping (CPUID 1 EAX decoded).
+    font::render_str(
+        fb,
+        cx,
+        cy + step * 12,
+        "CPUID   : Family ",
+        graphics::CYAN,
+        w.bg_color,
+    );
+    let fm = snap.family_model;
+    let mut x_cursor = cx + 17 * 8;
+    font::render_usize_scaled(
+        fb,
+        x_cursor,
+        cy + step * 12,
+        fm.family as usize,
+        graphics::WHITE,
+        w.bg_color,
+        1,
+    );
+    x_cursor += font::digit_width(fm.family as usize, 1);
+    font::render_str(
+        fb,
+        x_cursor,
+        cy + step * 12,
+        " Model ",
+        graphics::CYAN,
+        w.bg_color,
+    );
+    x_cursor += 7 * 8;
+    font::render_usize_scaled(
+        fb,
+        x_cursor,
+        cy + step * 12,
+        fm.model as usize,
+        graphics::WHITE,
+        w.bg_color,
+        1,
+    );
+    x_cursor += font::digit_width(fm.model as usize, 1);
+    font::render_str(
+        fb,
+        x_cursor,
+        cy + step * 12,
+        " Step ",
+        graphics::CYAN,
+        w.bg_color,
+    );
+    x_cursor += 6 * 8;
+    font::render_usize_scaled(
+        fb,
+        x_cursor,
+        cy + step * 12,
+        fm.stepping as usize,
+        graphics::WHITE,
+        w.bg_color,
+        1,
+    );
+
+    // Row 13 — logical cores enumerated via the MADT.
+    font::render_str(
+        fb,
+        cx,
+        cy + step * 13,
+        "Cores   : ",
+        graphics::CYAN,
+        w.bg_color,
+    );
+    let mut xc = cx + 10 * 8;
+    font::render_usize_scaled(
+        fb,
+        xc,
+        cy + step * 13,
+        cpu_total,
+        graphics::WHITE,
+        w.bg_color,
+        1,
+    );
+    xc += font::digit_width(cpu_total, 1);
+    font::render_str(
+        fb,
+        xc,
+        cy + step * 13,
+        " logical (BSP+",
+        graphics::DARK_GRAY,
+        w.bg_color,
+    );
+    xc += 14 * 8;
+    let ap_count = cpu_total.saturating_sub(1);
+    font::render_usize_scaled(
+        fb,
+        xc,
+        cy + step * 13,
+        ap_count,
+        graphics::WHITE,
+        w.bg_color,
+        1,
+    );
+    xc += font::digit_width(ap_count, 1);
+    font::render_str(
+        fb,
+        xc,
+        cy + step * 13,
+        " AP)",
+        graphics::DARK_GRAY,
+        w.bg_color,
+    );
+
+    // Row 14 — BSP LAPIC ID + APIC mode.
+    font::render_str(
+        fb,
+        cx,
+        cy + step * 14,
+        "APIC    : BSP id=",
+        graphics::CYAN,
+        w.bg_color,
+    );
+    let mut xa = cx + 17 * 8;
+    font::render_usize_scaled(
+        fb,
+        xa,
+        cy + step * 14,
+        cpu_bsp_apic_id as usize,
+        graphics::WHITE,
+        w.bg_color,
+        1,
+    );
+    xa += font::digit_width(cpu_bsp_apic_id as usize, 1);
+    font::render_str(
+        fb,
+        xa,
+        cy + step * 14,
+        " mode=xAPIC",
+        graphics::DARK_GRAY,
+        w.bg_color,
+    );
+
+    // Row 15 — feature flags (selected subset of CPUID 1/7).
+    font::render_str(
+        fb,
+        cx,
+        cy + step * 15,
+        "Feats   : ",
+        graphics::CYAN,
+        w.bg_color,
+    );
+    {
+        let feats = cpuinfo::trim_feature_summary(&snap.feature_summary);
+        let feats_str = core::str::from_utf8(feats).unwrap_or("(non-ASCII)");
+        font::render_str(
+            fb,
+            cx + 10 * 8,
+            cy + step * 15,
+            feats_str,
+            graphics::LIGHT_CYAN,
+            w.bg_color,
+        );
+    }
 
     widget::draw_button(fb, w.x + 1, w.y + wm::TITLEBAR_H, &POWEROFF_BTN, false);
 }

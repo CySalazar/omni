@@ -483,6 +483,19 @@ pub fn kmain(
     // LAPIC (MB7): disable legacy 8259 PIC, enable xAPIC, start periodic timer
     // at IDT vector 0x20. Issues `sti` to enable maskable interrupts.
     // -------------------------------------------------------------------------
+    // Variables surfaced from the MB14.a/c.1 block down to the desktop
+    // demo so the System Info panel can render the BSP LAPIC ID + total
+    // logical-CPU count. Default to "single CPU" so MADT-walk failures
+    // do not break the panel rendering.
+    let mut sysinfo_cpu_total: usize = 1;
+    let mut sysinfo_bsp_apic_id: u32 = 0;
+
+    // MB14 panel — collect CPUID once and cache it so render_sysinfo
+    // can render the brand/vendor/feature rows without re-issuing
+    // CPUID on every redraw.
+    #[cfg(target_arch = "x86_64")]
+    bare_metal::cpuinfo::init();
+
     #[cfg(target_arch = "x86_64")]
     {
         if bare_metal::lapic::lapic_init(phys_offset_mb2) {
@@ -493,6 +506,7 @@ pub fn kmain(
             // observe the physical ID, which the descriptor stores under
             // cpu_id=0 (BSP is always slot 0 in the per-CPU array).
             if let Some(lid) = bare_metal::lapic::read_lapic_id() {
+                sysinfo_bsp_apic_id = lid;
                 bare_metal::per_cpu::init_bsp(lid);
                 early_console::write_str("[mb14.a] BSP cpu_id=0 lapic_id=");
                 early_console::write_usize(lid as usize);
@@ -539,6 +553,7 @@ pub fn kmain(
                     )]
                     let topo_opt = unsafe { bare_metal::mp::enumerate_cpus(rsdp_phys, off) };
                     if let Some(topo) = topo_opt {
+                        sysinfo_cpu_total = topo.enabled_count();
                         early_console::write_str("[mb14.c.1] MADT cpus=");
                         early_console::write_usize(topo.len());
                         early_console::write_str(" enabled=");
@@ -944,6 +959,8 @@ pub fn kmain(
         free_mib,
         total_mib,
         phys_offset_mb2,
+        sysinfo_cpu_total,
+        sysinfo_bsp_apic_id,
     );
 
     // -------------------------------------------------------------------------

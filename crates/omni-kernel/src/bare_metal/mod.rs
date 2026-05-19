@@ -41,6 +41,8 @@ pub mod address_space;
 pub mod arch;
 #[cfg(target_arch = "x86_64")]
 pub mod context_switch;
+#[cfg(target_arch = "x86_64")]
+pub mod cpuinfo;
 pub mod cursor;
 pub mod demo;
 pub mod early_console;
