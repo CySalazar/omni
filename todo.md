@@ -1,7 +1,7 @@
 # OMNI OS — Implementation TODO
 
-> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB13** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0). MB13.e (chiusura ciclo `omni-capability` integration) chiuso 2026-05-19: `Ed25519CapabilityProvider` è ora il provider canonico in ogni `IpcCreateChannel` path; `StubCapabilityProvider` gated `#[cfg(test)]`-only; ADR-0006 `accepted`. Roadmap Phase 1 ~82% — il deliverable "Capability-based security primitives implemented" è chiuso. **Prossimo blocco di lavoro: MB14** = MP/AP enable + LAPIC IPI + per-CPU data + TLB shootdown (sblocca il driver model user-space P6.7).
-> **Last updated:** 2026-05-19 (MB13.e closure: Ed25519 canonical wiring + Stub `#[cfg(test)]`-only + ADR-0006; nessun delta test count (447+). Branch corrente `feat/kernel-mb11-userspace` con HEAD post-`e3f7742`; PR verso `main` resta release-management decision separata).
+> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB13** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0). MB14.a (per-CPU descriptor scaffold + BSP LAPIC ID identification) chiuso 2026-05-19: `bare_metal::per_cpu::PerCpu` seeded by BSP after `lapic_init`; `current_cpu()` BSP-only stub (GS_BASE swap deferred a MB14.b). Roadmap Phase 1 ~83% Track B. **Prossimo sub-block: MB14.b** = `GS_BASE` per-CPU pointer + `swapgs` su Ring 3 → Ring 0; poi MB14.c (AP startup via INIT-SIPI-SIPI), MB14.d/e (TLB shootdown broadcast), MB14.f (per-CPU scheduler split).
+> **Last updated:** 2026-05-19 (MB14.a closure: per-CPU descriptor scaffold + BSP LAPIC ID identification; +6 unit tests `bare_metal::per_cpu::tests::*`; workspace test count 447+ → 453+. Branch corrente `feat/kernel-mb11-userspace` con HEAD post-`5e907f8`; PR verso `main` resta release-management decision separata).
 > **Storia stati precedenti:** 2026-05-18 (MB12 closure — IPC + multi-task user, ADR-0005, 426 tests). 2026-05-18 (Step 7.1-7.4 lift blanket allows + ADR-0003 + CI `blanket-allow-guard`). 2026-05-18 (MB11 closure — Ring 3 + per-process CR3, ADR-0004). 2026-05-18 (MB10 closure — kernel stack isolation, ADR-0002, PR #33 in `main`). 2026-05-18 (v0.2.0 release — MB1-MB9 + Track A, PR #29 in `main`). 2026-05-16 (MB4/MB5). 2026-05-15 (K5 QEMU smoke gate). 2026-05-12 (scaffolding pass P3-P6 verificato). 2026-05-10 (P1 + P2 chiusi). 2026-05-09 (P0 chiuso).
 > **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
 > **Priority order:** Security → Stability → Performance (per project policy).
@@ -797,8 +797,9 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 | MB10 | Kernel stack isolation + guard page | `[x]` | `8c1496a` | [0002](docs/adr/0002-mb10-kernel-stack-isolation.md) |
 | MB11 | Primo userspace Ring 3 + per-process CR3 + STAR fix | `[x]` | `22289e1` + `c743173` | [0004](docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md) |
 | MB12 | IPC reale (queue + capability stub + multi-task user) | `[x]` | `60f3a82` | [0005](docs/adr/0005-mb12-ipc-message-passing.md) |
-| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[x]`** (MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e chiusi 2026-05-19; ADR-0006 `accepted`) | — | [ADR-0006](docs/adr/0006-mb13-omni-capability-integration.md) |
-| MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[ ]` | — | — |
+| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[x]`** (MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e chiusi 2026-05-19; ADR-0006 `accepted`) | `5e907f8` | [ADR-0006](docs/adr/0006-mb13-omni-capability-integration.md) |
+| MB14.a | Per-CPU descriptor scaffold + BSP LAPIC ID identification | `[x]` (chiuso 2026-05-19) | (this commit) | — |
+| MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[~]` (MB14.a chiuso; MB14.b-f open) | — | — |
 
 ### P6.MB13 — `omni-capability` integration reale
 
@@ -937,6 +938,77 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 - [~] Smoke `mb11-userprobe` su QEMU+OVMF = `[user] hello / [user] exit=0` (stesso set di fix; pending validazione manuale hardware).
 - [x] `StubCapabilityProvider` ridotto a `#[cfg(test)]` mock (chiuso da MB13.e).
 - [x] ADR-0006 `accepted` in `docs/adr/` (chiuso da MB13.e).
+
+---
+
+### P6.MB14 — Multi-processor enable + TLB shootdown
+
+- **Status:** `[~]` (MB14.a `[x]` chiuso 2026-05-19; MB14.b-f open)
+- **Priority:** P6 / High (Phase 1.5)
+- **Effort stimato (totale):** 5-10 giornate (MB14.a delivered in 0.2 giornate; il grosso è MB14.c AP startup + MB14.d/e TLB shootdown)
+- **Dependencies:** MB13 ✅; nessuna esterna
+- **ADR di chiusura:** ADR-0007 (da scrivere a chiusura di MB14.c — AP startup) e potenzialmente ADR-0008 (TLB shootdown protocol)
+- **Rationale:** il kernel gira single-CPU; la LAPIC è pronta ma nessuna AP è stata svegliata. P6.7 (driver model user-space) richiede (a) per-CPU scheduling per evitare la contesa sul `RoundRobinScheduler` globale, (b) cross-CPU IPI per signalling driver-to-driver, (c) TLB shootdown broadcast quando un driver-process modifica un mapping cross-CPU. MB14 è il sequencing che porta il sistema multi-core, sblocca P6.7 e completa il deliverable Phase 1 "Drivers in user space".
+
+#### P6.MB14.a — Per-CPU descriptor scaffold + BSP LAPIC ID
+
+- **Status:** `[x]` (chiuso 2026-05-19)
+- **Effort:** 0.2 giornata (delivered)
+- **Deliverables consegnati:**
+  - **`crates/omni-kernel/src/bare_metal/lapic.rs`** — aggiunto `read_lapic_id() -> Option<u32>` che legge il registro MMIO LAPIC offset `0x20` (xAPIC ID, bits 31:24 per Intel SDM Vol 3A § 10.4.6). `lapic_read` ora ha un caller reale → rimosso il `#[allow(dead_code)]`.
+  - **`crates/omni-kernel/src/bare_metal/per_cpu.rs`** (nuovo) — struct `PerCpu` con campi atomic `cpu_id`/`lapic_id`/`is_bsp`, sentinel `CPU_ID_UNINIT = u32::MAX` (non collide con gli xAPIC ID 8-bit), accessori `init_bsp` / `current_cpu` (BSP-only stub) / `bsp()`. +6 unit test.
+  - **`crates/omni-kernel/src/lib.rs::kmain`** — chiamata `per_cpu::init_bsp(read_lapic_id())` dopo `lapic_init` success, prima di `sti`. Emette `[mb14.a] BSP cpu_id=0 lapic_id=<N>` sul COM1.
+- **Acceptance (verified):**
+  - `cargo build -p omni-kernel --target x86_64-unknown-none --no-default-features --features bare-metal` clean.
+  - `cargo build --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --features mb12-userprobe` clean.
+  - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean.
+  - Workspace test count 447+ → 453+ (+6 unit test `bare_metal::per_cpu::tests::*`); `cargo test -p omni-kernel --lib` SIGSEGV è carryover pre-esistente (item §4.5 #16 in progress-omni.md), nessuna regressione introdotta.
+  - Build Info panel: Active=`MB14.a per-CPU identity`, Next=`MB14.b GS_BASE per-CPU ptr`, Track B=`MB1-MB13 OK, MB14.a wip`, Phase 1 ≈ 83%.
+
+#### P6.MB14.b — `IA32_KERNEL_GS_BASE` per-CPU pointer + `swapgs` su Ring 3 → Ring 0
+
+- **Status:** `[ ]` (open)
+- **Effort stimato:** 0.5-1 giornata
+- **Dependencies:** MB14.a ✅
+- **Rationale:** `current_cpu()` deve smettere di ritornare il BSP statico e diventare un load `GS_BASE`-relative (1 istruzione, costante tempo, agnostico alla CPU corrente). x86_64 espone `IA32_KERNEL_GS_BASE` (MSR `0xC000_0102`) e l'istruzione `swapgs` per commutare fra il GS user-side e quello kernel-side su ogni Ring 3 → Ring 0 transition (syscall, interrupt, exception).
+- **Deliverables previsti:**
+  - **`crates/omni-kernel/src/bare_metal/per_cpu.rs`** — aggiungere `init_gs_base(pc: &'static PerCpu)` che scrive `&pc as u64` in `IA32_KERNEL_GS_BASE` via `wrmsr`. `current_cpu()` swap a `gs:[offset]` deref via inline asm (un singolo `mov rax, gs:[0]` su un offset 0 del puntatore base).
+  - **`crates/omni-kernel/src/bare_metal/syscall_entry.rs`** — `omni_syscall_entry` issue `swapgs` come prima istruzione (e come ultima prima di `sysretq`). Stesso pattern in ogni IDT vector entry.
+  - **`crates/omni-kernel/src/lib.rs::kmain`** — call `per_cpu::init_gs_base(per_cpu::bsp())` dopo `init_bsp`.
+- **Acceptance:**
+  - Deve compilare clean su `x86_64-unknown-none --features mb12-userprobe`.
+  - Deve passare clippy workspace `-D warnings`.
+  - Smoke `mb12-userprobe` deve emettere stessa sequenza serial baseline + `[mb14.b] gs_base=...` confermato.
+
+#### P6.MB14.c — AP startup via INIT-SIPI-SIPI + real-mode trampoline
+
+- **Status:** `[ ]` (open)
+- **Effort stimato:** 2-3 giornate (la più complessa di MB14)
+- **Dependencies:** MB14.b ✅
+- **Rationale:** ogni Application Processor parte in real mode a `0xFFFF_FFF0`. Per portarli in long mode serve un trampoline 16→32→64 bit a una pagina fisica nota (tipicamente `0x8000`), che inizializza GDT, abilita PAE+LME+paging e salta al kernel entry per-AP. Il BSP scrive (INIT, SIPI, SIPI) al LAPIC ICR di ogni AP.
+- **Deliverables previsti:**
+  - Trampoline a `0x8000` (codice 16-bit assembly + paging table embedded).
+  - `bare_metal::mp::start_aps(num_cpus, &mut frame_alloc)` orchestrator (INIT 10ms, SIPI×2, attesa ack via shared atomic).
+  - Per-AP `kmain_ap` entry che setta GS_BASE proprio, completa init, entra in scheduler loop.
+  - ADR-0007 (status `accepted` a chiusura).
+
+#### P6.MB14.d — IPI vettore + TLB shootdown protocol
+
+- **Status:** `[ ]` (open)
+- **Effort stimato:** 1-2 giornate
+- **Dependencies:** MB14.c ✅
+- **Rationale:** quando un thread modifica un mapping in un AS condiviso (es. driver-process che fa `MemMap`), bisogna broadcast `invlpg <addr>` su tutte le CPU che hanno quel CR3 attivo. Pattern Linux: scrivere il target VA in una struct per-CPU + raise IPI; handler IPI emette `invlpg` e acknowledged.
+- **Deliverables previsti:**
+  - IDT vector `0xFD` (TLB shootdown) + handler.
+  - `ipi::send_to_all_except_self(vector)` via LAPIC ICR.
+  - `mm::flush_tlb_range(va_start, len)` che decide se broadcastare in base ai bit di "AS active on CPU N".
+
+#### P6.MB14.e — Per-CPU run-queue + scheduler split
+
+- **Status:** `[ ]` (open)
+- **Effort stimato:** 1-2 giornate
+- **Dependencies:** MB14.c ✅ + MB14.d ✅
+- **Rationale:** `RoundRobinScheduler` è globale; con N CPU diventa il collo di bottiglia. Pattern: per-CPU run-queue ancorato a `PerCpu`, work-stealing fra siblings su idle. Mantiene la cooperative-yield semantics di MB6.
 
 ---
 

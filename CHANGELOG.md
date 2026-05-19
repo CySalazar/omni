@@ -17,6 +17,60 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB14.a: per-CPU descriptor scaffold + BSP LAPIC ID
+  identification (2026-05-19).** Opens the MB14 (MP/AP enable + TLB
+  shootdown) work-package by installing the foundation that every
+  later sub-block depends on: a stable per-CPU descriptor that
+  identifies the executing logical CPU. The bare-metal smoke remains
+  identical to the post-MB13 baseline — only one extra serial line
+  (`[mb14.a] BSP cpu_id=0 lapic_id=<N>`) is emitted right after
+  `lapic_init` succeeds.
+
+  Three additive changes:
+
+  - **`crates/omni-kernel/src/bare_metal/lapic.rs`** — adds
+    `read_lapic_id() -> Option<u32>`, which reads LAPIC register
+    `0x20` (xAPIC ID, bits 31:24 per Intel SDM Vol 3A § 10.4.6) and
+    returns `None` if `lapic_init` has not yet mapped the LAPIC MMIO
+    window. The previously `#[allow(dead_code)]` `lapic_read` helper
+    is now an actual caller, so the attribute is removed.
+  - **`crates/omni-kernel/src/bare_metal/per_cpu.rs`** — new module
+    exposing the `PerCpu` struct (atomic `cpu_id` / `lapic_id` /
+    `is_bsp` fields), an uninitialised-sentinel constant
+    `CPU_ID_UNINIT = u32::MAX` (chosen to never collide with an 8-bit
+    xAPIC ID), and three accessors: `init_bsp(lapic_id)` seeds the
+    single static `BSP` slot, `current_cpu()` returns the executing
+    CPU's descriptor (MB14.a stub: always returns `BSP`; MB14.b will
+    swap to a `GS_BASE`-relative load), `bsp()` returns the BSP
+    descriptor explicitly. `+6 unit tests` exercise the seed/read
+    cycle and the sentinel invariant.
+  - **`crates/omni-kernel/src/lib.rs`** — `kmain` now calls
+    `per_cpu::init_bsp(read_lapic_id())` immediately after
+    `lapic_init` returns `true` and before `sti`. The `Option`
+    `None` branch logs a diagnostic line and leaves the descriptor
+    uninitialised — defence in depth, since `read_lapic_id` only
+    returns `None` if `lapic_init` itself succeeded but raced with
+    a write to `LAPIC_BASE` (impossible on single-CPU but cheap to
+    guard).
+
+  No public ABI surface change; no syscall handler touched; no
+  scheduler invariant moved. The new descriptor is read-only from
+  every kernel path until MB14.b wires `GS_BASE` and MB14.c starts
+  application processors.
+
+  `cargo build -p omni-kernel --target x86_64-unknown-none
+  --no-default-features --features bare-metal` clean; idem
+  `kernel-runner --features mb12-userprobe`. `cargo clippy
+  --workspace --all-targets --all-features -- -D warnings` clean.
+  Workspace test count rises from 447+ to 453+ (`+6` per the
+  per-CPU unit tests). The pre-existing `cargo test -p omni-kernel
+  --lib` SIGSEGV (carryover documented in `progress-omni.md` § 4.5
+  #16) is unchanged.
+
+  Build Info panel: Active=`MB14.a per-CPU identity`,
+  Next=`MB14.b GS_BASE per-CPU ptr`,
+  Track B=`MB1-MB13 OK, MB14.a wip`, Phase 1 ≈ 83%.
+
 - **Kernel — MB13.e: closure of the `omni-capability` integration
   cycle (2026-05-19).** Closes the last open MB13 acceptance criteria
   by making `Ed25519CapabilityProvider` the canonical

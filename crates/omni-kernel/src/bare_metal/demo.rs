@@ -791,7 +791,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Phase    : ",
         11,
-        "1 - Microkernel POC  (~82%)",
+        "1 - Microkernel POC  (~83%)",
         graphics::WHITE,
     );
     row(
@@ -807,7 +807,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Track B  : ",
         11,
-        "MB1-MB12 OK, MB13 closed",
+        "MB1-MB13 OK, MB14.a wip",
         graphics::WHITE,
     );
     row(
@@ -815,7 +815,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "MB13.e closure + ADR-0006",
+        "MB14.a per-CPU identity",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -823,7 +823,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "MB14 MP/AP + TLB shootdown",
+        "MB14.b GS_BASE per-CPU ptr",
         graphics::WHITE,
     );
     row(
@@ -831,7 +831,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Tests    : ",
         11,
-        "447+ workspace pass",
+        "453+ workspace pass",
         graphics::WHITE,
     );
     row(6, cx_r, "Author   : ", 11, "cySalazar", graphics::WHITE);

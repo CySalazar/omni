@@ -33,6 +33,7 @@ use core::arch::global_asm;
 // xAPIC MMIO register offsets (from LAPIC base address)
 // ---------------------------------------------------------------------------
 
+const LAPIC_ID: u32 = 0x0020; // Local APIC ID Register (xAPIC: ID in bits 31:24)
 const LAPIC_EOI: u32 = 0x00B0; // End-of-Interrupt (write 0 to ACK)
 const LAPIC_SIVR: u32 = 0x00F0; // Spurious Interrupt Vector Register
 const LAPIC_LVT_TIMER: u32 = 0x0320; // Local Vector Table — Timer entry
@@ -73,7 +74,6 @@ unsafe fn rdmsr(msr: u32) -> u64 {
 // MMIO helpers (volatile reads/writes — required for memory-mapped registers)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 unsafe fn lapic_read(base: u64, reg: u32) -> u32 {
     unsafe { ((base + u64::from(reg)) as *const u32).read_volatile() }
 }
@@ -193,6 +193,34 @@ pub fn lapic_eoi() {
             lapic_write(LAPIC_BASE, LAPIC_EOI, 0);
         }
     }
+}
+
+/// Read the Local APIC ID of the current CPU (MB14.a).
+///
+/// Returns `None` if [`lapic_init`] has not yet succeeded (LAPIC MMIO base
+/// not mapped). Otherwise reads the 32-bit register at LAPIC offset
+/// `0x20` and extracts bits `31:24` (xAPIC ID format per Intel SDM Vol 3A
+/// §10.4.6). On x2APIC the full 32-bit value would apply, but xAPIC is
+/// what QEMU/Proxmox surface for small VMs and what `lapic_init` enables
+/// via the SIVR `LAPIC_ENABLE` bit.
+///
+/// MMIO accesses must be volatile (the LAPIC register window is not
+/// cacheable RAM) — `lapic_read` issues `read_volatile`.
+#[must_use]
+pub fn read_lapic_id() -> Option<u32> {
+    // SAFETY: single-CPU read of a static u64 — the only writer is
+    // `lapic_init` which runs once at boot before any caller of this
+    // function. After that, `LAPIC_BASE` is treated as read-only.
+    let base = unsafe { LAPIC_BASE };
+    if base == 0 {
+        return None;
+    }
+    // SAFETY: `base` is the virtual address of the LAPIC MMIO window
+    // mapped by the bootloader's direct-map; `lapic_read` performs a
+    // volatile 32-bit read from a 4 KiB-aligned page that holds the
+    // LAPIC register block.
+    let raw = unsafe { lapic_read(base, LAPIC_ID) };
+    Some(raw >> 24)
 }
 
 // ---------------------------------------------------------------------------

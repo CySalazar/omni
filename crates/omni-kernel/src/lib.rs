@@ -487,6 +487,20 @@ pub fn kmain(
     {
         if bare_metal::lapic::lapic_init(phys_offset_mb2) {
             early_console::write_str("[lapic] timer started  vector=0x20\n");
+
+            // MB14.a — seed the BSP per-CPU descriptor. LAPIC base is now
+            // mapped (lapic_init wrote LAPIC_BASE) so read_lapic_id can
+            // observe the physical ID, which the descriptor stores under
+            // cpu_id=0 (BSP is always slot 0 in the per-CPU array).
+            if let Some(lid) = bare_metal::lapic::read_lapic_id() {
+                bare_metal::per_cpu::init_bsp(lid);
+                early_console::write_str("[mb14.a] BSP cpu_id=0 lapic_id=");
+                early_console::write_usize(lid as usize);
+                early_console::write_str("\n");
+            } else {
+                early_console::write_str("[mb14.a] read_lapic_id FAILED — descriptor left uninit\n");
+            }
+
             // Enable maskable interrupts — timer can fire from this point on.
             // SAFETY: LAPIC is configured; IDT vector 0x20 handler is installed.
             #[allow(unsafe_code, reason = "sti enable interrupts; SAFETY comment above")]

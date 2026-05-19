@@ -1,10 +1,10 @@
 # OMNI OS — Progress Report
 
-**Data snapshot:** 2026-05-19 (post MB13.e — chiusura ciclo `omni-capability` integration; Ed25519 canonical, Stub `#[cfg(test)]`-only, ADR-0006 accepted)
+**Data snapshot:** 2026-05-19 (post MB14.a — per-CPU descriptor scaffold + BSP LAPIC ID identification; foundation for MB14 multi-processor work)
 **Branch corrente:** `feat/kernel-mb11-userspace` (locale; in attesa di PR + merge in `main`)
-**HEAD:** post-MB13.e — `StubCapabilityProvider` gated `#[cfg(test)]`; tutte le `IpcCreateChannel` path passano `Ed25519CapabilityProvider`
-**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e**).
-**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~82% Track B
+**HEAD:** post-MB14.a — `bare_metal::per_cpu::PerCpu` seeded by BSP in `kmain` via `lapic::read_lapic_id()`; `current_cpu()` still BSP-only (GS_BASE swap deferred to MB14.b)
+**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e + **MB14.a**).
+**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~83% Track B
 
 ---
 
@@ -380,6 +380,80 @@ release-management decision separata, da pianificare quando il batch
 post-`v0.2.0` raggiunge una dimensione sufficiente da giustificare un
 tag.
 
+Il blocco **MB14.a (per-CPU descriptor scaffold + BSP LAPIC ID
+identification)** è stato chiuso il 2026-05-19. È la prima sotto-task
+atomica di MB14 e installa la fondazione che ogni sotto-blocco
+successivo presuppone: un descrittore per-CPU stabile in grado di
+identificare il logical CPU in esecuzione. La pipeline bare-metal
+smoke resta byte-per-byte identica al baseline post-MB13 — viene
+emessa una sola linea aggiuntiva su COM1
+(`[mb14.a] BSP cpu_id=0 lapic_id=<N>`) subito dopo che `lapic_init`
+ritorna `true`.
+
+Tre cambi atomici:
+
+(i) **`crates/omni-kernel/src/bare_metal/lapic.rs`** — aggiunge
+`read_lapic_id() -> Option<u32>` che legge il registro MMIO LAPIC
+offset `0x20` (xAPIC ID nei bit 31:24, per Intel SDM Vol 3A § 10.4.6)
+e ritorna `None` se `lapic_init` non ha ancora mappato la finestra
+MMIO. Il helper `lapic_read`, precedentemente
+`#[allow(dead_code)]`, è ora un caller reale → l'attribute è stato
+rimosso.
+
+(ii) **`crates/omni-kernel/src/bare_metal/per_cpu.rs`** — nuovo
+modulo con la struct `PerCpu` (campi atomic `cpu_id` / `lapic_id` /
+`is_bsp`), il sentinel `CPU_ID_UNINIT = u32::MAX` (scelto perché
+gli xAPIC ID sono 8-bit: non collide mai con un ID reale), tre
+accessori: `init_bsp(lapic_id)` seed lo slot statico `BSP`,
+`current_cpu()` ritorna il descrittore della CPU corrente
+(MB14.a stub: BSP-only; MB14.b sostituirà l'implementazione con
+load `GS_BASE`-relative dopo `swapgs`), `bsp()` espone il BSP
+esplicitamente per le future API IPI broadcast. `+6 unit test`
+coprono il seed/read cycle e l'invariante del sentinel.
+
+(iii) **`crates/omni-kernel/src/lib.rs`** — `kmain` chiama
+`per_cpu::init_bsp(read_lapic_id())` subito dopo `lapic_init`
+ritorna `true`, prima di `sti`. Il branch `None` logga una linea
+diagnostica e lascia il descrittore non-inizializzato — difesa in
+profondità per impedire che future regressioni dell'ordine di init
+nascondano un read prima del map MMIO.
+
+Acceptance criteria MB14.a:
+
+- [x] `cargo build -p omni-kernel --target x86_64-unknown-none
+      --no-default-features --features bare-metal` clean
+- [x] `cargo build --manifest-path kernel-runner/Cargo.toml --target
+      x86_64-unknown-none --features mb12-userprobe` clean
+- [x] `cargo clippy --workspace --all-targets --all-features -- -D
+      warnings` clean
+- [x] `+6` per-CPU unit test verdi
+      (`bare_metal::per_cpu::tests::*`)
+- [x] Workspace test count 447+ → 453+ pass (regressioni zero su
+      `mb11_userspace`, `mb12_ipc_cross_process`,
+      `mb13_capability_signed`, `heap`, `panic_record`)
+- [~] Smoke `mb12-userprobe` su Proxmox VMID 103 = stessa serial
+      output del post-MB13 baseline + linea aggiuntiva
+      `[mb14.a] BSP cpu_id=0 lapic_id=0` (validazione hardware
+      eseguita come deploy step di questa stessa run)
+
+Note di scope (MB14.a esplicitamente NON include):
+
+- AP startup via INIT-SIPI-SIPI handshake (tracked per MB14.c).
+- Per-CPU pointer via `IA32_KERNEL_GS_BASE` + `swapgs` su Ring 3
+  → Ring 0 transition (tracked per MB14.b).
+- TLB shootdown broadcast (`invlpg` cross-AS via IPI vettore
+  dedicato, tracked per MB14.d/e).
+- Per-CPU scheduler / run-queue split (tracked per MB14.f).
+
+Il `PerCpu` esposto è già `Sync` (campi `AtomicU32` / `AtomicBool`)
+e progettato per essere replicato in un `[PerCpu; MAX_CPUS]` quando
+gli AP arriveranno in MB14.c, senza serializzazione globale sul cold
+path di init.
+
+Build Info panel aggiornato a Active=`MB14.a per-CPU identity`,
+Next=`MB14.b GS_BASE per-CPU ptr`, Track B=`MB1-MB13 OK, MB14.a wip`,
+Phase 1 ≈ 83%.
+
 ---
 
 ## 2. Stato per track
@@ -403,7 +477,7 @@ tag.
 
 ### 2.2 — Track B: Kernel core (`omni-kernel` bare-metal)
 
-**Status:** MB1-MB13 ✅ chiuse. Prossimo blocco MB14 (MP/AP enable + TLB shootdown).
+**Status:** MB1-MB13 ✅ chiuse. MB14.a ✅ (per-CPU descriptor scaffold). Prossimo sub-block MB14.b (`GS_BASE` per-CPU pointer + `swapgs`).
 
 | Milestone | Contenuto | Stato | Commit |
 |---|---|---|---|
@@ -426,8 +500,9 @@ tag.
 | MB13.f | `enter_user_mode` kernel-stack swap (first-dispatch smoke fix) | ✅ | `f098192` |
 | MB13.g | Comprehensive IDT coverage (16 catch-all vectors → no more silent triple-fault) | ✅ | `a6fde3a` |
 | MB13.h | TSS `ltr 0x28` wiring + dedicated IST1 (#DF) / IST2 (#PF) kernel stacks | ✅ | `e3f7742` |
-| MB13.e | Closure: Ed25519 canonical provider + `StubCapabilityProvider` `#[cfg(test)]`-only + ADR-0006 | ✅ | (this commit) |
+| MB13.e | Closure: Ed25519 canonical provider + `StubCapabilityProvider` `#[cfg(test)]`-only + ADR-0006 | ✅ | `5e907f8` |
 | **MB13** | **omni-capability integration (Ed25519 verify) — chiuso** (ADR-0006) | ✅ | — |
+| MB14.a | Per-CPU descriptor scaffold + BSP LAPIC ID identification | ✅ | (this commit) |
 
 **Verifica MB1-MB12:**
 - `cargo test --workspace --all-features` → **426 pass / 0 fail** (era 393 post-MB11, +33 da MB12 — vedi CHANGELOG `[Unreleased] § Added` riga "Test delta")

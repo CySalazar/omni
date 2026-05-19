@@ -62,6 +62,7 @@ pub mod lapic;
 pub mod mb8_smoke;
 pub mod paging;
 pub mod panic;
+pub mod per_cpu;
 pub mod syscall_entry;
 pub mod tss;
 pub mod user_stack;
