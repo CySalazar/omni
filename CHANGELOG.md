@@ -17,6 +17,56 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB13.a: `omni-crypto` builds on `x86_64-unknown-none`
+  (2026-05-19).** Unblocks the bare-metal build of `omni-crypto`, removing
+  the LLVM ICE on SIMD intrinsics in `sha2`, `poly1305`, `chacha20`, and
+  `curve25519-dalek`. This is the first slice of MB13; MB13.b
+  (`ET_DYN` kernel for the triple-fault smoke fix), MB13.c
+  (`omni-capability` integration), MB13.d (capability syscall ABI),
+  and MB13.e (PR + tag) land in subsequent commits.
+
+  - **Workspace `.cargo/config.toml`** (new file) — target-conditional
+    `rustflags` for `x86_64-unknown-none`:
+    - `--cfg poly1305_force_soft` → portable Poly1305 backend.
+    - `--cfg chacha20_force_soft` → portable ChaCha20 backend.
+    - `--cfg curve25519_dalek_backend="serial"` → 64-bit serial
+      Curve25519 field arithmetic (no AVX2/AVX-512 vector reductions).
+    - `--cfg sha2_backend="soft"` → portable SHA-256 + SHA-512
+      backends in `sha2 0.11` (the workspace direct dep).
+    Host targets are unaffected — they keep the hardware-accelerated
+    backends.
+  - **`crates/omni-crypto/Cargo.toml`** — target-scoped
+    `[target.x86_64-unknown-none.dependencies]` adds a feature
+    passthrough on `sha2 0.10` (`force-soft`) which the dalek family
+    transitively pulls in via `digest 0.10`. Cargo unifies the
+    feature with the dalek-side resolution, so `sha2 0.10`'s
+    portable backend is selected without forking the dep graph.
+  - **Verification:**
+    - `cargo build -p omni-crypto --target x86_64-unknown-none --no-default-features` → clean (was: LLVM ICE on `poly1305 0.8` + `sha2 0.10` + `sha2 0.11`).
+    - `cargo clippy -p omni-crypto --target x86_64-unknown-none --no-default-features -- -D warnings` → clean.
+    - `cargo build -p omni-kernel --target x86_64-unknown-none --no-default-features --features mb12-userprobe` → clean (regression).
+    - `cargo build --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --features mb12-userprobe` → clean.
+    - `cargo clippy --workspace --all-targets --all-features -- -D warnings` → clean.
+    - `cargo doc --workspace --no-deps` → clean (was: 5 pre-existing warnings, fixed below).
+    - `scripts/check-no-blanket-allow.sh` → ok (scanned 12 crate-root files).
+
+### Fixed
+
+- **`crates/omni-crypto/src/kdf.rs`** — gate `zeroize` import behind
+  `#[cfg(feature = "rng")]`; on the bare-metal verify-only build
+  (`--no-default-features`) `Zeroize`/`ZeroizeOnDrop` are only used by
+  the rng-gated `Argon2idHash`, so the import emitted
+  `unused_imports` warnings.
+- **Pre-existing doc warnings** (5 total, surfaced by `cargo doc`):
+  - `omni-tee/src/lib.rs:46-47` — broken intra-doc links to `tdx` /
+    `sev_snp` modules (feature-gated, not visible to default doc
+    build). Demoted to inline code spans.
+  - `omni-tee/src/traits.rs:148-149` — same root cause, same fix.
+  - `omni-crypto/src/kex.rs:55` — link to non-existent
+    `Self::from_bytes` on `OmniEphemeralSecret`. Demoted to inline
+    code span (future `from_bytes` constructor is a hypothetical;
+    the comment now reflects that without claiming the API exists).
+
 - **Kernel — MB12: real message-passing IPC + multi-task user-space
   (Track B MB12.0a–MB12.9, 2026-05-18).** Closes the Phase 1 deliverable
   "IPC primitives operational (typed message passing)" from the roadmap.

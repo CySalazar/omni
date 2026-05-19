@@ -88,6 +88,33 @@ zeroize          = { workspace = true }
 serde            = { workspace = true }
 thiserror        = { workspace = true }
 
+# -----------------------------------------------------------------------------
+# Bare-metal feature passthrough (MB13.a)
+# -----------------------------------------------------------------------------
+# `ed25519-dalek 2.1` and `x25519-dalek 2.0` transitively pin `sha2 0.10` (via
+# `digest 0.10`). On `x86_64-unknown-none` `sha2 0.10`'s default backend
+# pulls in SHA-NI / SSE intrinsics that LLVM cannot legalize against the
+# bare-metal target spec (no `sse2`/`ssse3`/`sse4.1` `target_feature`), and
+# the build aborts with
+#       rustc-LLVM ERROR: Do not know how to split the result of this operator!
+#
+# `sha2 0.10` exposes a `force-soft` Cargo feature that routes through the
+# portable software backend. Cargo unifies features per resolved version, so
+# declaring the feature here is sufficient to attach it to the transitive
+# `sha2 0.10` instance shared with the dalek crates. The passthrough is a
+# different package alias (`sha2_010_force_soft`) so it cannot collide with
+# the workspace's direct `sha2 0.11` dependency above.
+#
+# Scoped to `x86_64-unknown-none` only — host builds keep the hardware-fast
+# backend. `sha2 0.11` (used directly by `omni-crypto`) does not need this
+# treatment because its 0.11 backend selection is `target_feature`-driven
+# and degrades gracefully to soft on bare metal.
+#
+# Companion `rustflags` for `poly1305 0.8`, `chacha20 0.9`, and
+# `curve25519-dalek 4` live in the workspace `/.cargo/config.toml`.
+[target.x86_64-unknown-none.dependencies]
+sha2_010_force_soft = { package = "sha2", version = "0.10", default-features = false, features = ["force-soft"] }
+
 [dev-dependencies]
 proptest = { workspace = true }
 # Hex used for parsing RFC test vectors.

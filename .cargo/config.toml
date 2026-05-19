@@ -1,0 +1,53 @@
+# =============================================================================
+# OMNI OS — Workspace Cargo configuration
+# =============================================================================
+# Target-conditional `rustflags` for the bare-metal target `x86_64-unknown-none`.
+# These cfgs route the RustCrypto SIMD-aware crates (`poly1305`, `chacha20`,
+# `curve25519-dalek`) to their pure-software backends on bare metal.
+#
+# Why this is necessary (MB13.a, ADR-0006 pending):
+#   When `omni-crypto` (or any crate transitively depending on the above) is
+#   built for `x86_64-unknown-none`, LLVM emits
+#       rustc-LLVM ERROR: Do not know how to split the result of this operator!
+#   on the SSE2/SSSE3/AVX2 intrinsics in `poly1305 0.8` and on the SHA-NI
+#   intrinsics in `sha2 0.10` (transitive via `ed25519-dalek` / `x25519-dalek`).
+#   The bare-metal target spec disables every SIMD `target_feature`, so the
+#   intrinsics receive operands wider than the available register set and LLVM
+#   ICEs while trying to legalize them.
+#
+# The cfg switches below are the upstream-blessed escape hatches:
+#   - `poly1305_force_soft`      — selects the portable Poly1305 backend.
+#   - `chacha20_force_soft`      — selects the portable ChaCha20 backend
+#                                  (pulled in via `chacha20poly1305`).
+#   - `curve25519_dalek_backend="serial"` — picks the 64-bit serial Curve25519
+#                                  field arithmetic (no AVX2/AVX-512 vector
+#                                  reductions). `curve25519-dalek 4.x`'s
+#                                  `build.rs` reads `CARGO_CFG_CURVE25519_*`,
+#                                  which Cargo populates from these `--cfg`
+#                                  flags.
+#   - `sha2_backend="soft"`      — selects the portable backend for
+#                                  `sha2 0.11`'s SHA-256 *and* SHA-512
+#                                  pipelines. The default path probes
+#                                  `target_feature = "sha"` / `"avx2"` at
+#                                  runtime via `cpufeatures`, but the
+#                                  intrinsic modules are still compiled and
+#                                  LLVM ICEs on them. Forcing `soft` skips
+#                                  the intrinsic modules entirely.
+#
+# The transitive `sha2 0.10` instance (pulled by the dalek family via
+# `digest 0.10`) is unblocked via a target-scoped feature passthrough in
+# `crates/omni-crypto/Cargo.toml` (`sha2 0.10` uses a Cargo feature
+# `force-soft` rather than a cfg).
+#
+# These flags apply **only** to `x86_64-unknown-none`. Host workspace builds
+# (`x86_64-unknown-linux-gnu`, the macOS aarch64 dev box) keep the SIMD
+# backends and their hardware acceleration.
+# =============================================================================
+
+[target.x86_64-unknown-none]
+rustflags = [
+    "--cfg", "poly1305_force_soft",
+    "--cfg", "chacha20_force_soft",
+    "--cfg", "curve25519_dalek_backend=\"serial\"",
+    "--cfg", "sha2_backend=\"soft\"",
+]

@@ -43,8 +43,8 @@
 //! - [`sealed_keys`] — [`SealedBlob`], [`SealPolicy`], [`TeeSharedKey`].
 //! - [`mock`] (feature `mock`, default-on) — deterministic in-process
 //!   backend for tests.
-//! - [`tdx`] (feature `tdx`) — Intel TDX backend scaffold.
-//! - [`sev_snp`] (feature `sev-snp`) — AMD SEV-SNP backend scaffold.
+//! - `tdx` (feature `tdx`) — Intel TDX backend scaffold.
+//! - `sev_snp` (feature `sev-snp`) — AMD SEV-SNP backend scaffold.
 //!
 //! See [`/docs/04-security-model.md`](../../../docs/04-security-model.md)
 //! § "TEE compromise resistance" and

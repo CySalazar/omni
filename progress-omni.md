@@ -1,9 +1,9 @@
 # OMNI OS — Progress Report
 
-**Data snapshot:** 2026-05-18 (post-release v0.2.0 + MB10 + Step 7 + MB11 + MB12)
+**Data snapshot:** 2026-05-19 (post MB13.a — `omni-crypto` builds on `x86_64-unknown-none`)
 **Branch corrente:** `feat/kernel-mb11-userspace` (locale; in attesa di PR + merge in `main`)
-**HEAD:** post-MB12 — IPC concreto + multi-task user-space + ADR-0005
-**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9).
+**HEAD:** post-MB13.a — bare-metal crypto SIMD unblock (force-soft / serial backends)
+**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a**).
 **Fase di roadmap:** Phase 0 → ingresso Phase 1 (microkernel proof-of-concept)
 
 ---
@@ -89,12 +89,20 @@ mantengono il blanket allow guard verde: `omni-kernel/src/lib.rs` non
 porta alcun `#![allow(<group>)]` non whitelisted; ogni nuovo `unsafe`
 in `ipc.rs` è dichiarato a livello modulo con reason.
 
-Il prossimo blocco di lavoro è **MB13 — `omni-capability` integration
-reale**: feature-gating SIMD (`force-soft`) su `sha2`/`poly1305`/
-`curve25519-dalek` per sbloccare `omni-crypto` su `x86_64-unknown-none`,
-aggiunta di `omni-capability` come dep di `omni-kernel`, swap di
-`StubCapabilityProvider` con un `Ed25519CapabilityProvider` reale, ed
-estensione dell'ABI syscall `IpcCreateChannel` per accettare i token.
+Il blocco **MB13.a (`force-soft` SIMD su `sha2`/`poly1305`/`chacha20`/
+`curve25519-dalek` + `sha2_backend="soft"` per `sha2 0.11`)** è stato
+chiuso il 2026-05-19. `cargo build -p omni-crypto --target
+x86_64-unknown-none --no-default-features` ora compila clean (era LLVM
+ICE su intrinsics SIMD). Soluzione: workspace `.cargo/config.toml` con
+rustflags target-conditional + feature passthrough Cargo su `sha2 0.10`
+(transitive via i dalek). Nessuna estrazione di `omni-crypto-verify`
+necessaria (Alternativa A in ADR-0005 § Migration NON adottata).
+
+Il prossimo blocco di lavoro è **MB13.b — Boot-path fix (ET_DYN/PIE
+kernel)** per sbloccare il triple-fault smoke MB12 su Proxmox VMID
+103 / QEMU+OVMF. A seguire MB13.c (`omni-capability` come dep di
+`omni-kernel`), MB13.d (`IpcCreateChannel` ABI esteso per token
+postcard), MB13.e (PR + tag intermedio).
 
 ---
 
@@ -251,13 +259,14 @@ cargo audit                                              clean
 cargo deny check advisories                              ok
 ```
 
-**Known limitation (deferred MB13):** `cargo build -p omni-crypto
---target x86_64-unknown-none --no-default-features` fallisce con LLVM
-ICE su SIMD intrinsics in `sha2`, `poly1305`, `curve25519-dalek`
-(rustc 1.85, host `aarch64-apple-darwin`). Ortogonale a `getrandom`
-gating. Soluzione MB13: `force-soft` feature su quelle 3 librerie *o*
-extraction di `omni-crypto-verify` come crate separato. ADR-0005
-§ Migration documenta il path.
+**Known limitation (resolved by MB13.a, 2026-05-19):** `cargo build -p
+omni-crypto --target x86_64-unknown-none --no-default-features` ora
+compila clean. La soluzione (rustflags `--cfg poly1305_force_soft` +
+`--cfg chacha20_force_soft` + `--cfg curve25519_dalek_backend="serial"`
++ `--cfg sha2_backend="soft"` nel workspace `.cargo/config.toml`,
+combinata con un passthrough Cargo target-scoped su `sha2 0.10` per
+i dalek transitive) è preferita all'estrazione di `omni-crypto-verify`
+(Alternativa A in ADR-0005) per mantenere stabile l'API surface.
 
 **CI status sui commit post-MB10 (`770c7aa`..`c743173`):** tutti i 11
 required check (`cargo fmt`, `cargo clippy`, `cargo doc`, `DCO
@@ -294,10 +303,13 @@ LOC sorgente Rust del workspace:
 
 1bis. **MB13 — `omni-capability` integration reale.** `StubCapabilityProvider`
    è il placeholder MB12; serve swap con un provider Ed25519 reale che
-   chiami `omni_capability::CapabilityToken::verify_full`. Bloccato da
-   feature-gating SIMD su `sha2` + `poly1305` + `curve25519-dalek`
-   (LLVM ICE su `x86_64-unknown-none`). Effort: 1-2 giornate. ADR-0005
-   § Migration documenta la sequenza.
+   chiami `omni_capability::CapabilityToken::verify_full`. **MB13.a
+   chiuso 2026-05-19** (workspace `.cargo/config.toml` + passthrough
+   `sha2 0.10` force-soft): `omni-crypto` ora compila clean su
+   `x86_64-unknown-none`. Restano MB13.b (ET_DYN kernel — sblocca smoke
+   triple-fault), MB13.c (`omni-capability` come dep di `omni-kernel`),
+   MB13.d (`IpcCreateChannel` ABI esteso), MB13.e (PR + tag). Effort
+   residuo: ~1-1.5 giornate. ADR-0005 § Migration documenta la sequenza.
 2. **TLB shootdown multi-core.** Nessun MP/AP enable; LAPIC è già pronta
    ma il sistema gira su un solo core. Non bloccante per MB12 ma
    sarà necessario prima di P6.7 (driver). MB11 ha previsto questo

@@ -51,8 +51,8 @@ pub struct OmniEphemeralSecret {
 impl OmniEphemeralSecret {
     /// Generate a fresh ephemeral secret from the platform CSPRNG.
     ///
-    /// Gated behind the `rng` feature; bare-metal builds use
-    /// [`Self::from_bytes`]-style construction with a kernel-provided
+    /// Gated behind the `rng` feature; bare-metal builds use a
+    /// `from_bytes`-style construction with a kernel-provided
     /// seed instead (when one is needed at all — the kernel currently
     /// does not perform key exchange).
     #[cfg(feature = "rng")]

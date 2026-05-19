@@ -797,12 +797,12 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 | MB10 | Kernel stack isolation + guard page | `[x]` | `8c1496a` | [0002](docs/adr/0002-mb10-kernel-stack-isolation.md) |
 | MB11 | Primo userspace Ring 3 + per-process CR3 + STAR fix | `[x]` | `22289e1` + `c743173` | [0004](docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md) |
 | MB12 | IPC reale (queue + capability stub + multi-task user) | `[x]` | `60f3a82` | [0005](docs/adr/0005-mb12-ipc-message-passing.md) |
-| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[ ]`** | — | TBD ADR-0006 |
+| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[~]`** (MB13.a chiuso 2026-05-19) | — | TBD ADR-0006 |
 | MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[ ]` | — | — |
 
 ### P6.MB13 — `omni-capability` integration reale
 
-- **Status:** `[ ]` (next, sbloccato da MB12)
+- **Status:** `[~]` (MB13.a chiuso 2026-05-19; MB13.b/c/d/e ancora aperti)
 - **Priority:** P6 / High
 - **Effort:** 1-2 giornate (gating SIMD + glue + nuovi test) + 0.5-1 giornata per il fix triple-fault
 - **Dependencies:** MB12 ✅; nessuna esterna
@@ -811,13 +811,23 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 
 #### P6.MB13.a — `force-soft` SIMD su `sha2` + `poly1305` + `curve25519-dalek`
 
-- **Status:** `[ ]`
-- **Effort:** 0.5 giornata
-- **Deliverables:**
-  - Aggiungere `default-features = false` + `features = ["force-soft"]` (o equivalente per ogni crate) nel `Cargo.toml` di `omni-crypto`.
-  - Verifica: `cargo build -p omni-crypto --target x86_64-unknown-none --no-default-features` compila clean (oggi fallisce con LLVM ICE su SIMD intrinsics).
-- **Alternativa A** (documentata in ADR-0005 § Migration): estrarre `omni-crypto-verify` come crate separato con solo `OmniVerifyingKey::verify` + `domain_separated_hash` + HKDF. Più chirurgico ma rompe l'API surface.
-- **Acceptance:** `cargo clippy -p omni-crypto --target x86_64-unknown-none --no-default-features -- -D warnings` clean.
+- **Status:** `[x]` (closed 2026-05-19)
+- **Effort:** 0.5 giornata (delivered)
+- **Deliverables (delivered):**
+  - **Workspace `.cargo/config.toml`** (nuovo) — rustflags target-conditional per `x86_64-unknown-none`:
+    - `--cfg poly1305_force_soft` (portable backend per `poly1305 0.8`).
+    - `--cfg chacha20_force_soft` (portable backend per `chacha20 0.9`).
+    - `--cfg curve25519_dalek_backend="serial"` (serial backend per `curve25519-dalek 4.1`).
+    - `--cfg sha2_backend="soft"` (portable backend per `sha2 0.11`).
+  - **`crates/omni-crypto/Cargo.toml`** — `[target.x86_64-unknown-none.dependencies]` con `sha2_010_force_soft = { package = "sha2", version = "0.10", default-features = false, features = ["force-soft"] }` per attaccare la feature `force-soft` all'istanza `sha2 0.10` portata dai dalek (digest 0.10). Cargo unifica per versione risolta.
+  - **`crates/omni-crypto/src/kdf.rs`** — `Zeroize`/`ZeroizeOnDrop` import gating dietro `#[cfg(feature = "rng")]` (era `unused_imports` warning sulla build bare-metal).
+- **Alternativa A** (documentata in ADR-0005 § Migration) **NON adottata**: l'estrazione di `omni-crypto-verify` come crate separato sarebbe stata più chirurgica ma avrebbe rotto l'API surface. La passthrough Cargo + cfg flags mantiene la API stabile e produce lo stesso effetto.
+- **Acceptance (verified):**
+  - `cargo build -p omni-crypto --target x86_64-unknown-none --no-default-features` clean (era: LLVM ICE su poly1305 + sha2 0.10 + sha2 0.11).
+  - `cargo clippy -p omni-crypto --target x86_64-unknown-none --no-default-features -- -D warnings` clean.
+  - `cargo build -p omni-kernel --target x86_64-unknown-none --no-default-features --features mb12-userprobe` clean (regression).
+  - `cargo build --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --features mb12-userprobe` clean.
+  - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean.
 
 #### P6.MB13.b — Boot-path fix: ET_DYN/PIE kernel (triple-fault smoke)
 

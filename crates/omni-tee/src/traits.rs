@@ -145,8 +145,8 @@ impl TeeError {
 ///
 /// Implementations live in:
 ///   - [`crate::mock::MockTeeBackend`] for tests,
-///   - [`crate::tdx::TdxBackend`] for Intel TDX (feature `tdx`),
-///   - [`crate::sev_snp::SevSnpBackend`] for AMD SEV-SNP (feature `sev-snp`).
+///   - `crate::tdx::TdxBackend` for Intel TDX (feature `tdx`),
+///   - `crate::sev_snp::SevSnpBackend` for AMD SEV-SNP (feature `sev-snp`).
 ///
 /// The trait is `Send + Sync` so consumers can hold a `dyn TeeBackend`
 /// across threads in userspace services (`omni-runtime`, `omni-mesh`).

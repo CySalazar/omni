@@ -21,6 +21,7 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use hkdf::Hkdf;
 use omni_types::error::{CryptoErrorKind, OmniError, Result};
 use sha2::Sha256;
+#[cfg(feature = "rng")]
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 // =============================================================================
