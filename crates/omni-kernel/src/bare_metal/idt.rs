@@ -630,6 +630,33 @@ pub fn idt_set_vector(vector: usize, handler: u64) {
 #[cfg(not(target_arch = "x86_64"))]
 pub fn idt_set_vector(_vector: usize, _handler: u64) {}
 
+// =====================================================================
+// MB14.c.2.d — exposed (base, limit) of the kernel IDT so the AP entry
+// asm can re-issue `lidt` after the CR3 switch without rebuilding the
+// pseudo-descriptor itself.
+// =====================================================================
+
+/// Returns the (base, limit) values the BSP loaded into the IDTR during
+/// [`idt_init`]. The limit equals `sizeof(IDT) - 1 = 256 * 16 - 1 = 4095`.
+#[cfg(target_arch = "x86_64")]
+#[must_use]
+pub fn idt_base_and_limit() -> (u64, u16) {
+    let base = core::ptr::addr_of!(IDT) as u64;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "256 × 16 - 1 = 4095, fits u16 trivially"
+    )]
+    let limit = (256 * core::mem::size_of::<IdtEntry>() - 1) as u16;
+    (base, limit)
+}
+
+/// Host stub returning (0, 0) — non-x86_64 hosts cannot install an IDT.
+#[cfg(not(target_arch = "x86_64"))]
+#[must_use]
+pub fn idt_base_and_limit() -> (u64, u16) {
+    (0, 4095)
+}
+
 // -----------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------

@@ -1,5 +1,15 @@
 //! MB14.c.2.c — Application Processor landing stub + higher-half entry.
 //!
+//! ## MB14.c.2.d additions
+//!
+//! The `cli; hlt; jmp $-2` body of `kmain_ap` is replaced with a real
+//! per-CPU initialisation sequence (read LAPIC ID via `cpuid`, load
+//! per-AP RSP, wire `GS_BASE` / `KERNEL_GS_BASE` to the AP slot, `lgdt`
+//! / `lidt` / `ltr` against the BSP's kernel descriptor tables, reload
+//! data segments, then park `cli; hlt`). The BSP populates a runtime
+//! control block ([`AP_RUNTIME_CONTROL`]) pre-fire that tells each AP
+//! exactly which per-CPU slot, stack top, and TSS selector to use.
+//!
 //! Companion to [`mp_trampoline`](super::mp_trampoline) /
 //! [`mp_emplacement`](super::mp_emplacement). The trampoline brings each AP
 //! from 16-bit real mode to 64-bit long mode and jumps to a caller-supplied
@@ -201,32 +211,229 @@ pub fn build_ap_landing_stub(tramp_base_paddr: u32) -> [u8; AP_LANDING_STUB_SIZE
 }
 
 // =====================================================================
-// Higher-half AP entry — naked, no stack accesses.
+// MB14.c.2.d — AP runtime control block + per-AP allocation helpers.
 // =====================================================================
 
-// Bare-metal AP entry: defined via `global_asm!` so we avoid the
-// unstable `#[naked]` attribute on Rust 1.85. The body is functionally
-// equivalent to a naked `cli; 1: hlt; jmp 1b` — no prologue, no stack
-// accesses, never returns. The `#[no_mangle]` symbol `kmain_ap` is
-// exposed for the BSP to discover its address via `kmain_ap as u64`.
+use super::mp::MAX_CPUS;
+use crate::memory::BitmapFrameAllocator;
+
+/// `lgdt` / `lidt` pseudo-descriptor: 16-bit limit + 64-bit base, packed
+/// (no padding between fields). 10 bytes total.
+///
+/// This is the on-the-wire format the `LGDT`/`LIDT` instructions read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C, packed)]
+pub struct PseudoDescriptor {
+    /// Byte-size of the table minus 1.
+    pub limit: u16,
+    /// Linear address of the table.
+    pub base: u64,
+}
+
+impl PseudoDescriptor {
+    /// Construct a zeroed pseudo-descriptor (suitable for a `static`).
+    #[must_use]
+    pub const fn zero() -> Self {
+        Self { limit: 0, base: 0 }
+    }
+}
+
+// Offset constants — hardcoded into the AP-entry asm. A divergence
+// between these and the actual `ApRuntimeControl` layout would only
+// surface as a triple-fault on a real AP, so we pin both via host-side
+// tests below (`ap_runtime_control_*_at_offset_*`).
 //
-// MB14.c.2.d will replace this body with a real per-CPU init sequence
-// (per-AP `PerCpu`, kernel stack, IDT, GDT, `swapgs` of `GS_BASE`).
-//
-// Section: emit into `.text.kmain_ap` so the linker keeps the symbol
-// alive even when LTO sees no Rust caller (the only caller is the
-// landing stub via an absolute physical-memory pointer, which LTO
-// cannot reason about).
-#[cfg(all(target_arch = "x86_64", target_os = "none", not(test)))]
-core::arch::global_asm!(
-    ".section .text.kmain_ap, \"ax\", @progbits",
-    ".global kmain_ap",
-    ".type kmain_ap, @function",
-    "kmain_ap:",
-    "    cli",
-    "1:  hlt",
-    "    jmp 1b",
-);
+// `dead_code` allow: these constants are referenced via `const`
+// operands inside the `kmain_ap` `global_asm!` block (gated to bare-metal
+// `target_os = "none"`). Host clippy builds skip the asm and therefore
+// see the constants as unused.
+#[allow(
+    dead_code,
+    reason = "consumed by the bare-metal kmain_ap asm const-operands; host-side build skips the asm but the consts pin the layout for unit tests"
+)]
+const OFFSET_GDTR: usize = 0x00;
+#[allow(
+    dead_code,
+    reason = "consumed by the bare-metal kmain_ap asm const-operands"
+)]
+const OFFSET_IDTR: usize = 0x10;
+#[allow(
+    dead_code,
+    reason = "consumed by the bare-metal kmain_ap asm const-operands"
+)]
+const OFFSET_LAPIC_TO_CPU: usize = 0x20;
+#[allow(
+    dead_code,
+    reason = "consumed by the bare-metal kmain_ap asm const-operands"
+)]
+const OFFSET_KSTACK_TOP: usize = 0xA0;
+#[allow(
+    dead_code,
+    reason = "consumed by the bare-metal kmain_ap asm const-operands"
+)]
+const OFFSET_PER_CPU_PTR: usize = 0x1A0;
+#[allow(
+    dead_code,
+    reason = "consumed by the bare-metal kmain_ap asm const-operands"
+)]
+const OFFSET_TSS_SEL: usize = 0x2A0;
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "pinned by the `ap_runtime_control_total_size_matches_asm_constant` host-side test; the asm references field offsets, not the total size"
+    )
+)]
+const AP_RUNTIME_CONTROL_SIZE: usize = 0x2E0;
+
+/// MB14.c.2.d — BSP-populated runtime control block read by every AP
+/// during its post-trampoline initialisation.
+///
+/// Layout is locked at offset granularity so the [`kmain_ap`] asm can
+/// reach individual fields via constant displacements; see the
+/// `OFFSET_*` constants above.
+///
+/// All slots are indexed by **kernel-local `cpu_id`** (BSP = 0, AP k = k).
+/// Slot 0 entries describe the BSP and are written for completeness
+/// (BSP-side debugging / future code) but never read by an AP.
+#[repr(C, align(16))]
+pub struct ApRuntimeControl {
+    /// GDTR pseudo-descriptor (offset 0x00). `lgdt [rdi]` source.
+    pub gdtr: PseudoDescriptor,
+    _pad_after_gdtr: [u8; 6],
+    /// IDTR pseudo-descriptor (offset 0x10). `lidt [rdi + 0x10]` source.
+    pub idtr: PseudoDescriptor,
+    _pad_after_idtr: [u8; 6],
+    /// `lapic_to_cpu[k]` = LAPIC ID of CPU `k`. Unused slots remain
+    /// `CPU_ID_UNINIT` (= `u32::MAX`) — chosen so a stray match against
+    /// a real LAPIC ID (8-bit xAPIC up to 255) is impossible.
+    pub lapic_to_cpu: [u32; MAX_CPUS],
+    /// `cpu_kstack_top[k]` = top-of-kernel-stack VA for CPU `k`. The
+    /// AP loads this into RSP before any push/pop.
+    pub cpu_kstack_top: [u64; MAX_CPUS],
+    /// `cpu_per_cpu_ptr[k]` = address of `&'static PerCpu` slot for
+    /// CPU `k`. The AP writes this to `IA32_GS_BASE` /
+    /// `IA32_KERNEL_GS_BASE`.
+    pub cpu_per_cpu_ptr: [u64; MAX_CPUS],
+    /// `cpu_tss_sel[k]` = GDT selector to `ltr` for CPU `k`'s TSS.
+    pub cpu_tss_sel: [u16; MAX_CPUS],
+}
+
+impl ApRuntimeControl {
+    /// Zero-initialised control block. Every slot defaults to "AP not
+    /// registered" (LAPIC sentinel + zero pointers).
+    #[must_use]
+    pub const fn zero() -> Self {
+        Self {
+            gdtr: PseudoDescriptor::zero(),
+            _pad_after_gdtr: [0; 6],
+            idtr: PseudoDescriptor::zero(),
+            _pad_after_idtr: [0; 6],
+            lapic_to_cpu: [u32::MAX; MAX_CPUS],
+            cpu_kstack_top: [0; MAX_CPUS],
+            cpu_per_cpu_ptr: [0; MAX_CPUS],
+            cpu_tss_sel: [0; MAX_CPUS],
+        }
+    }
+}
+
+/// Singleton control block. BSP populates pre-fire via the helpers
+/// below; APs read it via the `kmain_ap` global asm.
+#[unsafe(no_mangle)]
+static mut AP_RUNTIME_CONTROL: ApRuntimeControl = ApRuntimeControl::zero();
+
+/// MB14.c.2.d — populate the GDTR / IDTR descriptor pair shared by every
+/// AP. Called once from the BSP after `gdt_init` + `idt_init` have run.
+pub fn install_descriptor_tables(gdtr_base: u64, gdtr_limit: u16, idtr_base: u64, idtr_limit: u16) {
+    // SAFETY: single-core pre-fire wiring; no AP has been signalled yet.
+    unsafe {
+        let p = core::ptr::addr_of_mut!(AP_RUNTIME_CONTROL);
+        (*p).gdtr = PseudoDescriptor {
+            limit: gdtr_limit,
+            base: gdtr_base,
+        };
+        (*p).idtr = PseudoDescriptor {
+            limit: idtr_limit,
+            base: idtr_base,
+        };
+    }
+}
+
+/// MB14.c.2.d — populate the per-CPU runtime slots for the given AP.
+///
+/// `cpu_id` must be in `1..MAX_CPUS` (BSP entries are written by the
+/// BSP itself; APs never read slot 0 of the runtime control). Returns
+/// `false` for invalid `cpu_id`.
+///
+/// All four slots are populated atomically (single-writer, BSP-only
+/// pre-fire).
+pub fn register_ap_runtime_slot(
+    cpu_id: u32,
+    lapic_id: u32,
+    kstack_top: u64,
+    per_cpu_ptr: u64,
+    tss_selector: u16,
+) -> bool {
+    let idx = cpu_id as usize;
+    if idx == 0 || idx >= MAX_CPUS {
+        return false;
+    }
+    // SAFETY: single-core pre-fire wiring; the AP for this slot has
+    // not yet been signalled.
+    unsafe {
+        let p = core::ptr::addr_of_mut!(AP_RUNTIME_CONTROL);
+        (*p).lapic_to_cpu[idx] = lapic_id;
+        (*p).cpu_kstack_top[idx] = kstack_top;
+        (*p).cpu_per_cpu_ptr[idx] = per_cpu_ptr;
+        (*p).cpu_tss_sel[idx] = tss_selector;
+    }
+    true
+}
+
+/// MB14.c.2.d — read-back accessor for the runtime control block. Used
+/// by host-side tests to verify the slot was populated as expected.
+#[must_use]
+pub fn read_ap_runtime_slot(cpu_id: u32) -> Option<(u32, u64, u64, u16)> {
+    let idx = cpu_id as usize;
+    if idx >= MAX_CPUS {
+        return None;
+    }
+    // SAFETY: read of u32/u64/u16 fields via raw pointer; single-
+    // writer (BSP pre-fire) + single-reader (this test / the AP).
+    unsafe {
+        let p = core::ptr::addr_of!(AP_RUNTIME_CONTROL);
+        Some((
+            (*p).lapic_to_cpu[idx],
+            (*p).cpu_kstack_top[idx],
+            (*p).cpu_per_cpu_ptr[idx],
+            (*p).cpu_tss_sel[idx],
+        ))
+    }
+}
+
+/// MB14.c.2.d — allocate a single 4 KiB physical frame and return its
+/// top-of-stack virtual address via the bootloader direct-map window.
+///
+/// Used as the back-end for both per-AP kernel stacks and per-AP IST
+/// stacks (the latter at 4 KiB each: enough for the MB13.g diagnostic
+/// halt handlers, which only push the `ExceptionFrame` before stopping).
+///
+/// **No guard page** in MB14.c.2.d — the AP never executes user code or
+/// deep stack-using kernel routines in this milestone (it parks in
+/// `cli; hlt` straight away). MB14.e's per-CPU scheduler will need to
+/// adopt the MB10 guard-page layout when AP scheduling lands.
+///
+/// Returns `None` if the allocator is exhausted.
+#[must_use]
+pub fn allocate_ap_stack_frame<const N: usize>(
+    allocator: &mut BitmapFrameAllocator<N>,
+    phys_offset: u64,
+) -> Option<u64> {
+    let frame = allocator.alloc_frame()?;
+    // Top-of-stack = base + frame_size. The AP's first push will
+    // decrement RSP into the writable frame.
+    Some(phys_offset.wrapping_add(frame.0).wrapping_add(0x1000))
+}
 
 // Higher-half landing point for every Application Processor in
 // MB14.c.2.c. The AP arrives here with:
@@ -242,7 +449,101 @@ core::arch::global_asm!(
 //   never returns from this function, so reloading a real per-CPU GDT
 //   is deferred to MB14.c.2.d.
 //
+// MB14.c.2.d body — per-CPU initialisation sequence:
+//
+//   1. Read xAPIC ID (CPUID leaf 1, EBX[31:24]).
+//   2. Linear-search `AP_RUNTIME_CONTROL.lapic_to_cpu[]` for our cpu_id.
+//   3. Load RSP from `cpu_kstack_top[cpu_id]` (no stack until now).
+//   4. `lgdt` the kernel GDT and `lidt` the kernel IDT.
+//   5. Reload data segments to kernel-data (`0x10`) and zero FS/GS.
+//   6. `wrmsr` `IA32_GS_BASE` + `IA32_KERNEL_GS_BASE` with the per-CPU
+//      pointer (MUST be after the `mov gs, dx` zero — segment-register
+//      loads invalidate the hidden GS base).
+//   7. `ltr` the per-CPU TSS selector.
+//   8. `lock inc` the online-ack counter (BSP polls this).
+//   9. Park `cli; hlt; jmp $-2` — preemption / scheduler enrolment is
+//      MB14.e (per-CPU run-queue split).
+//
+// xAPIC-only: this path reads CPUID leaf 1 EBX[31:24] (8-bit). x2APIC
+// LAPIC IDs > 255 would alias here; MB14.f will switch to CPUID leaf
+// 0xB sub-leaf 0 EDX when x2APIC support actually matters.
+//
 // Note: `extern` blocks cannot carry rustdoc; document via this comment.
+#[cfg(all(target_arch = "x86_64", target_os = "none", not(test)))]
+core::arch::global_asm!(
+    ".section .text.kmain_ap, \"ax\", @progbits",
+    ".global kmain_ap",
+    ".type kmain_ap, @function",
+    "kmain_ap:",
+    "    cli",
+    // ---- Step 1: read xAPIC ID via CPUID leaf 1 EBX[31:24] ----
+    "    mov eax, 1",
+    "    cpuid",
+    "    shr ebx, 24",
+    // ---- Step 2: linear-search lapic_to_cpu[] for our cpu_id ----
+    "    lea rdi, [rip + AP_RUNTIME_CONTROL]",
+    "    xor r8d, r8d",
+    "20:",
+    "    cmp r8d, {max_cpus}",
+    "    je 90f",
+    "    mov edx, dword ptr [rdi + {off_lapic} + r8*4]",
+    "    cmp edx, ebx",
+    "    je 30f",
+    "    inc r8d",
+    "    jmp 20b",
+    "30:",
+    // r8 = cpu_id, rdi = &AP_RUNTIME_CONTROL
+    // ---- Step 3: load RSP from cpu_kstack_top[cpu_id] ----
+    "    mov rsp, [rdi + {off_kstk} + r8*8]",
+    // ---- Step 4: lgdt + lidt with the kernel descriptor tables ----
+    "    lgdt [rdi + {off_gdtr}]",
+    "    lidt [rdi + {off_idtr}]",
+    // ---- Step 5: reload data segments to kernel-data ----
+    "    mov dx, 0x10",
+    "    mov ds, dx",
+    "    mov es, dx",
+    "    mov ss, dx",
+    "    xor dx, dx",
+    "    mov fs, dx",
+    "    mov gs, dx",
+    // ---- Step 6: wrmsr IA32_GS_BASE + IA32_KERNEL_GS_BASE ----
+    // MUST come AFTER the data-segment reload (mov gs, dx zeroes the
+    // hidden GS base; only a subsequent wrmsr re-arms it).
+    "    mov rax, [rdi + {off_pc} + r8*8]",
+    "    mov rdx, rax",
+    "    shr rdx, 32",
+    "    mov ecx, 0xC0000101",
+    "    wrmsr",
+    "    mov rax, [rdi + {off_pc} + r8*8]",
+    "    mov rdx, rax",
+    "    shr rdx, 32",
+    "    mov ecx, 0xC0000102",
+    "    wrmsr",
+    // ---- Step 7: ltr <per-CPU TSS selector> ----
+    "    mov ax, word ptr [rdi + {off_sel} + r8*2]",
+    "    ltr ax",
+    // ---- Step 8: bump online-ack counter (BSP polls this) ----
+    "    lock inc qword ptr [rip + AP_ONLINE_ACK]",
+    // ---- Step 9: park (interrupts disabled — MB14.e enables sti) ----
+    "80:",
+    "    cli",
+    "    hlt",
+    "    jmp 80b",
+    // ---- park_unknown: LAPIC ID not in lapic_to_cpu table ----
+    "90:",
+    "    cli",
+    "91:",
+    "    hlt",
+    "    jmp 91b",
+    max_cpus = const MAX_CPUS,
+    off_gdtr = const OFFSET_GDTR,
+    off_idtr = const OFFSET_IDTR,
+    off_lapic = const OFFSET_LAPIC_TO_CPU,
+    off_kstk = const OFFSET_KSTACK_TOP,
+    off_pc = const OFFSET_PER_CPU_PTR,
+    off_sel = const OFFSET_TSS_SEL,
+);
+
 #[cfg(all(target_arch = "x86_64", target_os = "none", not(test)))]
 unsafe extern "C" {
     /// AP entry point — defined via the `global_asm!` block above.
@@ -386,5 +687,132 @@ mod tests {
         assert_eq!(&a[0x00..0x05], &b[0x00..0x05]);
         // 0x05..0x09 (ack disp32) differ.
         assert_ne!(&a[0x05..0x09], &b[0x05..0x09]);
+    }
+
+    // =====================================================================
+    // MB14.c.2.d — `ApRuntimeControl` layout + slot register/read tests.
+    //
+    // The `kmain_ap` asm hard-codes the field offsets of
+    // `ApRuntimeControl`. If we ever move a field (or change `MAX_CPUS`
+    // such that array padding shifts), the AP triple-faults on real
+    // silicon with no diagnostic. These tests pin the byte offsets so a
+    // refactor surfaces as a unit-test failure instead.
+    // =====================================================================
+
+    #[test]
+    fn ap_runtime_control_total_size_matches_asm_constant() {
+        assert_eq!(
+            core::mem::size_of::<ApRuntimeControl>(),
+            AP_RUNTIME_CONTROL_SIZE
+        );
+    }
+
+    #[test]
+    fn ap_runtime_control_gdtr_at_offset_zero() {
+        let c = ApRuntimeControl::zero();
+        let base = core::ptr::addr_of!(c) as usize;
+        let field = core::ptr::addr_of!(c.gdtr) as usize;
+        assert_eq!(field - base, OFFSET_GDTR);
+    }
+
+    #[test]
+    fn ap_runtime_control_idtr_at_offset_0x10() {
+        let c = ApRuntimeControl::zero();
+        let base = core::ptr::addr_of!(c) as usize;
+        let field = core::ptr::addr_of!(c.idtr) as usize;
+        assert_eq!(field - base, OFFSET_IDTR);
+    }
+
+    #[test]
+    fn ap_runtime_control_lapic_to_cpu_at_offset_0x20() {
+        let c = ApRuntimeControl::zero();
+        let base = core::ptr::addr_of!(c) as usize;
+        let field = core::ptr::addr_of!(c.lapic_to_cpu) as usize;
+        assert_eq!(field - base, OFFSET_LAPIC_TO_CPU);
+    }
+
+    #[test]
+    fn ap_runtime_control_kstack_top_at_offset_0xa0() {
+        let c = ApRuntimeControl::zero();
+        let base = core::ptr::addr_of!(c) as usize;
+        let field = core::ptr::addr_of!(c.cpu_kstack_top) as usize;
+        assert_eq!(field - base, OFFSET_KSTACK_TOP);
+    }
+
+    #[test]
+    fn ap_runtime_control_per_cpu_ptr_at_offset_0x1a0() {
+        let c = ApRuntimeControl::zero();
+        let base = core::ptr::addr_of!(c) as usize;
+        let field = core::ptr::addr_of!(c.cpu_per_cpu_ptr) as usize;
+        assert_eq!(field - base, OFFSET_PER_CPU_PTR);
+    }
+
+    #[test]
+    fn ap_runtime_control_tss_sel_at_offset_0x2a0() {
+        let c = ApRuntimeControl::zero();
+        let base = core::ptr::addr_of!(c) as usize;
+        let field = core::ptr::addr_of!(c.cpu_tss_sel) as usize;
+        assert_eq!(field - base, OFFSET_TSS_SEL);
+    }
+
+    #[test]
+    fn pseudo_descriptor_is_ten_bytes() {
+        // `lgdt` / `lidt` expect a 10-byte limit:base layout. The
+        // packed repr (no padding) is the only encoding the CPU accepts.
+        assert_eq!(core::mem::size_of::<PseudoDescriptor>(), 10);
+    }
+
+    #[test]
+    fn zero_initialised_lapic_table_uses_uninit_sentinel() {
+        // Every slot defaults to `u32::MAX` so the AP linear search
+        // cannot accidentally match a slot the BSP never registered.
+        let c = ApRuntimeControl::zero();
+        for slot in c.lapic_to_cpu {
+            assert_eq!(slot, u32::MAX);
+        }
+    }
+
+    #[test]
+    fn register_ap_runtime_slot_rejects_bsp_and_oor() {
+        assert!(!register_ap_runtime_slot(0, 1, 0, 0, 0));
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "MAX_CPUS = 32 fits u32 trivially"
+        )]
+        let oor = MAX_CPUS as u32;
+        assert!(!register_ap_runtime_slot(oor, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn register_ap_runtime_slot_round_trips_fields() {
+        let cpu_id: u32 = 1;
+        let lapic = 0xAA;
+        let kstk = 0xFFFF_C000_DEAD_BEEF;
+        let pc = 0xFFFF_C000_CAFE_F00D;
+        let sel: u16 = 0x38;
+        assert!(register_ap_runtime_slot(cpu_id, lapic, kstk, pc, sel));
+        let (l, k, p, s) = read_ap_runtime_slot(cpu_id).expect("slot");
+        assert_eq!(l, lapic);
+        assert_eq!(k, kstk);
+        assert_eq!(p, pc);
+        assert_eq!(s, sel);
+    }
+
+    #[test]
+    fn install_descriptor_tables_round_trips() {
+        install_descriptor_tables(0xDEAD_BEEF_C000_0000, 0x37, 0xCAFE_F00D_0000_0000, 0xFFF);
+        // SAFETY: single-threaded host test; AP_RUNTIME_CONTROL is the
+        // only writer (via install_descriptor_tables).
+        let (g_limit, g_base, i_limit, i_base) = unsafe {
+            let p = core::ptr::addr_of!(AP_RUNTIME_CONTROL);
+            // `read_unaligned` because PseudoDescriptor is `packed`.
+            let g = core::ptr::addr_of!((*p).gdtr).read_unaligned();
+            let i = core::ptr::addr_of!((*p).idtr).read_unaligned();
+            (g.limit, g.base, i.limit, i.base)
+        };
+        assert_eq!(g_limit, 0x37);
+        assert_eq!(g_base, 0xDEAD_BEEF_C000_0000);
+        assert_eq!(i_limit, 0xFFF);
+        assert_eq!(i_base, 0xCAFE_F00D_0000_0000);
     }
 }

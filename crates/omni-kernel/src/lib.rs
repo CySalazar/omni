@@ -266,6 +266,10 @@ fn register_direct_mapped_regions(
     clippy::too_many_lines,
     reason = "kmain is the boot orchestrator; subsystem init must stay in single flow"
 )]
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "kmain inlines every subsystem init for single-flow boot ordering; an extraction would obscure the deterministic init sequence the orchestrator must enforce"
+)]
 pub fn kmain(
     boot_info: &'static bootloader_api::BootInfo,
     framebuffer: Option<bare_metal::graphics::FrameBuffer>,
@@ -562,8 +566,8 @@ pub fn kmain(
                         for cpu in topo.entries() {
                             early_console::write_str("[mb14.c.1]   apic_id=");
                             early_console::write_usize(cpu.apic_id as usize);
-                            early_console::write_str(cpu.x2apic.then_some(" (x2apic)").unwrap_or(""));
-                            early_console::write_str(cpu.enabled.then_some(" enabled").unwrap_or(" disabled"));
+                            early_console::write_str(if cpu.x2apic { " (x2apic)" } else { "" });
+                            early_console::write_str(if cpu.enabled { " enabled" } else { " disabled" });
                             early_console::write_str("\n");
                         }
 
@@ -647,6 +651,136 @@ pub fn kmain(
                                 reason = "single-core BSP context; FRAME_ALLOC not aliased"
                             )]
                             let fa = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_ALLOC) };
+
+                            // -----------------------------------------------
+                            // MB14.c.2.d — per-AP pre-fire wiring.
+                            //
+                            // For every enabled non-BSP AP in the topology,
+                            // we allocate:
+                            //   - a per-AP kernel stack (1 frame, no guard;
+                            //     guard-page protection lands with the
+                            //     per-CPU scheduler in MB14.e)
+                            //   - per-AP IST1 / IST2 stacks (1 frame each)
+                            //   - a per-AP `PerCpu` slot (in AP_SLOTS)
+                            //   - a per-AP TSS (in AP_TSS)
+                            //   - a per-AP TSS GDT descriptor (slot
+                            //     7 + 2*(cpu_id - 1))
+                            //   - an `AP_RUNTIME_CONTROL` slot entry that
+                            //     hands the running AP its `cpu_id`,
+                            //     `kstack_top`, `&PerCpu`, and TSS selector.
+                            //
+                            // The BSP also stamps the kernel GDTR / IDTR
+                            // pseudo-descriptors into the control block so
+                            // every AP `lgdt` / `lidt` against the live
+                            // kernel tables (the trampoline's temp GDT is
+                            // immediately replaced — the AP no longer
+                            // depends on low memory after this point).
+                            // -----------------------------------------------
+                            let (gdtr_base, gdtr_limit) =
+                                bare_metal::gdt::gdt_base_and_limit();
+                            let (idtr_base, idtr_limit) =
+                                bare_metal::idt::idt_base_and_limit();
+                            bare_metal::mp_ap_entry::install_descriptor_tables(
+                                gdtr_base,
+                                gdtr_limit,
+                                idtr_base,
+                                idtr_limit,
+                            );
+
+                            let mut ap_index: u32 = 1;
+                            let mut ap_kstack_failures: usize = 0;
+                            let mut ap_ist_failures: usize = 0;
+                            for cpu in topo.entries() {
+                                if !cpu.enabled || cpu.apic_id == lid {
+                                    continue;
+                                }
+                                let cpu_id = ap_index;
+                                ap_index += 1;
+                                // 1) Allocate per-AP kernel stack +
+                                //    IST stacks via direct-map (single
+                                //    frame each). Bail out of this AP
+                                //    on allocator exhaustion — the BSP
+                                //    will still wake any AP whose
+                                //    wiring landed.
+                                let Some(kstk_top) =
+                                    bare_metal::mp_ap_entry::allocate_ap_stack_frame(
+                                        fa,
+                                        phys_offset_mb2,
+                                    )
+                                else {
+                                    ap_kstack_failures += 1;
+                                    continue;
+                                };
+                                let Some(ist1_top) =
+                                    bare_metal::mp_ap_entry::allocate_ap_stack_frame(
+                                        fa,
+                                        phys_offset_mb2,
+                                    )
+                                else {
+                                    ap_ist_failures += 1;
+                                    continue;
+                                };
+                                let Some(ist2_top) =
+                                    bare_metal::mp_ap_entry::allocate_ap_stack_frame(
+                                        fa,
+                                        phys_offset_mb2,
+                                    )
+                                else {
+                                    ap_ist_failures += 1;
+                                    continue;
+                                };
+                                // 2) Populate per-AP TSS.
+                                let _ = bare_metal::tss::init_ap_tss(
+                                    cpu_id, kstk_top, ist1_top, ist2_top,
+                                );
+                                // 3) Register PerCpu slot.
+                                let Some(slot) = bare_metal::per_cpu::register_ap(
+                                    cpu_id,
+                                    cpu.apic_id,
+                                ) else {
+                                    continue;
+                                };
+                                slot.set_kernel_rsp(kstk_top);
+                                // 4) Place TSS descriptor into kernel GDT.
+                                let tss_base =
+                                    bare_metal::tss::ap_tss_addr(cpu_id);
+                                let _ = bare_metal::gdt::gdt_set_ap_tss(cpu_id, tss_base);
+                                // 5) Stamp AP_RUNTIME_CONTROL.
+                                let tss_sel =
+                                    bare_metal::gdt::tss_selector_for_cpu(cpu_id);
+                                let per_cpu_ptr =
+                                    core::ptr::from_ref::<bare_metal::per_cpu::PerCpu>(slot)
+                                        as u64;
+                                let _ =
+                                    bare_metal::mp_ap_entry::register_ap_runtime_slot(
+                                        cpu_id,
+                                        cpu.apic_id,
+                                        kstk_top,
+                                        per_cpu_ptr,
+                                        tss_sel,
+                                    );
+                                early_console::write_str("[mb14.c.2.d] ap cpu_id=");
+                                early_console::write_usize(cpu_id as usize);
+                                early_console::write_str(" lapic=");
+                                early_console::write_usize(cpu.apic_id as usize);
+                                early_console::write_str(" kstk_top=");
+                                #[allow(
+                                    clippy::cast_possible_truncation,
+                                    reason = "bare-metal x86_64 target: usize is u64"
+                                )]
+                                early_console::write_usize(kstk_top as usize);
+                                early_console::write_str(" tss_sel=");
+                                early_console::write_usize(tss_sel as usize);
+                                early_console::write_str("\n");
+                            }
+                            if ap_kstack_failures > 0 || ap_ist_failures > 0 {
+                                early_console::write_str("[mb14.c.2.d] stack alloc failures kstk=");
+                                early_console::write_usize(ap_kstack_failures);
+                                early_console::write_str(" ist=");
+                                early_console::write_usize(ap_ist_failures);
+                                early_console::write_str("\n");
+                            }
+
                             let kmain_ap_va =
                                 bare_metal::mp_ap_entry::kmain_ap as usize as u64;
                             match bare_metal::mp_emplacement::place_trampoline_live(
@@ -701,6 +835,50 @@ pub fn kmain(
                                         early_console::write_str(" (all APs online)\n");
                                     } else {
                                         early_console::write_str(" (timeout)\n");
+                                    }
+
+                                    // MB14.c.2.d — busy-poll the per-AP
+                                    // online ack counter (incremented by
+                                    // the kmain_ap asm post-ltr). This is
+                                    // separate from the landing-stub ack:
+                                    // it confirms that the AP completed
+                                    // its `lgdt` / `lidt` / `ltr` sequence
+                                    // and is parked in the steady-state
+                                    // hlt loop. Bounded budget — if an AP
+                                    // triple-faults after the landing
+                                    // stub, the count stalls but the BSP
+                                    // does not hang.
+                                    let ap_target =
+                                        live_report.acked as u64;
+                                    let mut iter: u64 = 0;
+                                    let mut online: u64 = 0;
+                                    while iter < 200_000_000 {
+                                        online =
+                                            bare_metal::per_cpu::ap_online_ack();
+                                        if online >= ap_target {
+                                            break;
+                                        }
+                                        core::hint::spin_loop();
+                                        iter = iter.wrapping_add(1);
+                                    }
+                                    early_console::write_str(
+                                        "[mb14.c.2.d] per-AP init online=",
+                                    );
+                                    #[allow(
+                                        clippy::cast_possible_truncation,
+                                        reason = "bare-metal x86_64: usize is u64"
+                                    )]
+                                    early_console::write_usize(online as usize);
+                                    early_console::write_str("/");
+                                    #[allow(
+                                        clippy::cast_possible_truncation,
+                                        reason = "bare-metal x86_64: usize is u64"
+                                    )]
+                                    early_console::write_usize(ap_target as usize);
+                                    if online >= ap_target {
+                                        early_console::write_str(" (all APs parked)\n");
+                                    } else {
+                                        early_console::write_str(" (timeout post-ltr)\n");
                                     }
                                 }
                                 Err(_e) => {
@@ -935,6 +1113,12 @@ pub fn kmain(
         let _ = free_mib;
         let _ = total_mib;
         let _ = phys_offset_mb2;
+        // Same: the MB14.a sysinfo carries (BSP LAPIC ID + enabled CPU
+        // count) are surfaced only to `render_sysinfo` in the desktop
+        // path. Silence them on the mb12-userprobe build to keep the
+        // workspace warning-clean.
+        let _ = sysinfo_cpu_total;
+        let _ = sysinfo_bsp_apic_id;
         // After both user processes terminate (or on spawn failure),
         // park the kernel. `halt_forever` diverges (`-> !`) so the
         // subsequent desktop block becomes unreachable on this build.

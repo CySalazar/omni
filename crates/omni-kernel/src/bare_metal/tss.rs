@@ -1,4 +1,11 @@
-//! Task State Segment (`TSS`) for `x86_64` long mode (MB11 + MB13.h).
+//! Task State Segment (`TSS`) for `x86_64` long mode (MB11 + MB13.h +
+//! MB14.c.2.d).
+//!
+//! MB14.c.2.d extends the single BSP `TSS` with a sibling `AP_TSS` array
+//! indexed by `cpu_id - 1`. Each AP gets its own `Tss` plus dedicated
+//! IST1 / IST2 stack tops (caller-supplied physical/virtual addresses —
+//! they live in dynamically-allocated frames, not `.bss`, to keep the
+//! kernel image small under `MAX_CPUS = 32`).
 //!
 //! In long mode the TSS no longer holds full task state for hardware
 //! task switching (the feature is unavailable in 64-bit mode). It does
@@ -247,6 +254,122 @@ pub fn ltr_load() {
 #[cfg(not(target_arch = "x86_64"))]
 pub fn ltr_load() {}
 
+// =========================================================================
+// MB14.c.2.d — Application Processor TSS sibling array.
+// =========================================================================
+
+use super::per_cpu::MAX_AP_SLOTS;
+
+/// `MAX_AP_SLOTS` TSS instances, one per `cpu_id` in `1..MAX_CPUS`. The
+/// BSP keeps using the legacy [`TSS`] static so existing call sites
+/// continue to work byte-for-byte.
+///
+/// Each AP slot is zero-initialised; the BSP calls [`init_ap_tss`] pre-fire
+/// to populate `rsp0` + `ist1` + `ist2` for the corresponding AP.
+#[unsafe(no_mangle)]
+static mut AP_TSS: [Tss; MAX_AP_SLOTS] = [const { Tss::new() }; MAX_AP_SLOTS];
+
+/// MB14.c.2.d — populate the TSS for AP `cpu_id` (must be in `1..MAX_CPUS`).
+///
+/// `rsp0` is the top of the per-AP kernel stack (loaded on Ring 3 → Ring 0
+/// transitions); `ist1_top` / `ist2_top` are the tops of the per-AP IST1
+/// / IST2 stacks (loaded by `#DF` / `#PF` respectively, per MB13.h).
+///
+/// Returns `false` if `cpu_id` is out of range (0 or `>= MAX_CPUS`).
+/// On success the BSP must read [`ap_tss_addr`] to obtain the TSS base
+/// address for the GDT descriptor.
+pub fn init_ap_tss(cpu_id: u32, rsp0: u64, ist1_top: u64, ist2_top: u64) -> bool {
+    let Some(idx) = (cpu_id as usize).checked_sub(1) else {
+        return false;
+    };
+    if idx >= MAX_AP_SLOTS {
+        return false;
+    }
+    // SAFETY: single-core pre-fire wiring; the AP for this slot has
+    // not been signalled yet (BSP is still in INIT-SIPI pre-amble),
+    // so the slot is exclusively owned by the BSP.
+    unsafe {
+        let p = core::ptr::addr_of_mut!(AP_TSS);
+        // `idx < MAX_AP_SLOTS` guaranteed above.
+        let slot = (*p).as_mut_ptr().add(idx);
+        (*slot).rsp0 = rsp0;
+        (*slot).ist1 = ist1_top;
+        (*slot).ist2 = ist2_top;
+    }
+    true
+}
+
+/// MB14.c.2.d — virtual address of the AP TSS for `cpu_id`. Used by the
+/// GDT descriptor builder ([`tss_descriptor`]) and by host-side tests.
+///
+/// Returns `0` if `cpu_id` is out of range.
+#[must_use]
+pub fn ap_tss_addr(cpu_id: u32) -> u64 {
+    let Some(idx) = (cpu_id as usize).checked_sub(1) else {
+        return 0;
+    };
+    if idx >= MAX_AP_SLOTS {
+        return 0;
+    }
+    // SAFETY: addr_of! does not deref; we just compute the address.
+    unsafe {
+        let p = core::ptr::addr_of!(AP_TSS);
+        (*p).as_ptr().add(idx) as u64
+    }
+}
+
+/// MB14.c.2.d — read-back of `AP_TSS[cpu_id - 1].rsp0` for tests.
+///
+/// Returns `0` for out-of-range `cpu_id` (BSP or beyond `MAX_CPUS`).
+#[must_use]
+pub fn ap_tss_rsp0(cpu_id: u32) -> u64 {
+    let Some(idx) = (cpu_id as usize).checked_sub(1) else {
+        return 0;
+    };
+    if idx >= MAX_AP_SLOTS {
+        return 0;
+    }
+    // SAFETY: read of u64 field via raw pointer; AP_TSS is `static mut`
+    // but each per-AP slot is single-writer (BSP pre-fire) + single-reader
+    // (the AP after CR3 switch, or this read-back for tests).
+    unsafe {
+        let p = core::ptr::addr_of!(AP_TSS);
+        (*(*p).as_ptr().add(idx)).rsp0
+    }
+}
+
+/// Read-back of `AP_TSS[cpu_id - 1].ist1` for tests.
+#[must_use]
+pub fn ap_tss_ist1(cpu_id: u32) -> u64 {
+    let Some(idx) = (cpu_id as usize).checked_sub(1) else {
+        return 0;
+    };
+    if idx >= MAX_AP_SLOTS {
+        return 0;
+    }
+    // SAFETY: same as `ap_tss_rsp0`.
+    unsafe {
+        let p = core::ptr::addr_of!(AP_TSS);
+        (*(*p).as_ptr().add(idx)).ist1
+    }
+}
+
+/// Read-back of `AP_TSS[cpu_id - 1].ist2` for tests.
+#[must_use]
+pub fn ap_tss_ist2(cpu_id: u32) -> u64 {
+    let Some(idx) = (cpu_id as usize).checked_sub(1) else {
+        return 0;
+    };
+    if idx >= MAX_AP_SLOTS {
+        return 0;
+    }
+    // SAFETY: same as `ap_tss_rsp0`.
+    unsafe {
+        let p = core::ptr::addr_of!(AP_TSS);
+        (*(*p).as_ptr().add(idx)).ist2
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,5 +430,46 @@ mod tests {
         let ist2_base = core::ptr::addr_of!(IST2_STACK) as u64;
         assert_eq!(ist1, ist1_base + IST_STACK_SIZE as u64);
         assert_eq!(ist2, ist2_base + IST_STACK_SIZE as u64);
+    }
+
+    // -----------------------------------------------------------------
+    // MB14.c.2.d — AP TSS sibling array.
+    // -----------------------------------------------------------------
+
+    /// `init_ap_tss(0, _, _, _)` rejects BSP cpu_id.
+    #[test]
+    fn init_ap_tss_rejects_bsp_cpu_id() {
+        assert!(!init_ap_tss(0, 0x1000, 0x2000, 0x3000));
+    }
+
+    /// `init_ap_tss` for a valid cpu_id writes rsp0 / ist1 / ist2.
+    #[test]
+    fn init_ap_tss_populates_rsp0_and_ist_slots() {
+        // Use cpu_id == 1 — single-writer pre-fire semantics, so a
+        // shared test-host run sees the most recent write.
+        let rsp0 = 0xFFFF_C001_DEAD_BEEF;
+        let ist1 = 0xFFFF_C002_CAFE_0001;
+        let ist2 = 0xFFFF_C002_CAFE_0002;
+        assert!(init_ap_tss(1, rsp0, ist1, ist2));
+        assert_eq!(ap_tss_rsp0(1), rsp0);
+        assert_eq!(ap_tss_ist1(1), ist1);
+        assert_eq!(ap_tss_ist2(1), ist2);
+    }
+
+    /// `ap_tss_addr` returns distinct addresses for distinct cpu_ids
+    /// (the array stride is `sizeof(Tss)` = 104 bytes).
+    #[test]
+    fn ap_tss_addr_strides_by_tss_size() {
+        let a = ap_tss_addr(1);
+        let b = ap_tss_addr(2);
+        assert_ne!(a, 0);
+        assert_ne!(b, 0);
+        assert_eq!(b - a, core::mem::size_of::<Tss>() as u64);
+    }
+
+    /// `ap_tss_addr(0)` is 0 — the BSP uses the legacy single static.
+    #[test]
+    fn ap_tss_addr_zero_for_bsp() {
+        assert_eq!(ap_tss_addr(0), 0);
     }
 }

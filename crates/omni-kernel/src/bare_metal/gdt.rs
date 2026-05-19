@@ -78,11 +78,17 @@ const UDATA64: u64 = 0x00CF_F200_0000_FFFF;
 #[cfg(any(target_arch = "x86_64", test))]
 const UCODE64: u64 = 0x00AF_FA00_0000_FFFF;
 
-/// Number of u64 slots in the GDT. Slots 5+6 host the 16-byte TSS
-/// descriptor (high & low words). Computed at init time.
-const GDT_LEN: usize = 7;
+/// Number of u64 slots in the GDT.
+///
+/// MB14.c.2.d extends the layout from 7 slots (BSP-only) to
+/// `7 + 2 * MAX_AP_SLOTS`. Slots 5+6 still host the BSP TSS descriptor;
+/// each AP `cpu_id k >= 1` claims slots `7 + 2*(k-1)..=7 + 2*(k-1) + 1`
+/// for its own TSS descriptor. With `MAX_AP_SLOTS = 31` the GDT has 69
+/// u64 entries (552 bytes — comfortably under the 64 KiB `lgdt` limit).
+const GDT_LEN: usize = 7 + 2 * super::per_cpu::MAX_AP_SLOTS;
 
 /// GDT slots. Slots 5+6 are filled in by `gdt_init` from the static TSS.
+/// MB14.c.2.d AP TSS descriptors land via [`gdt_set_ap_tss`].
 #[unsafe(no_mangle)]
 static mut GDT: [u64; GDT_LEN] = [0; GDT_LEN];
 
@@ -193,6 +199,131 @@ pub fn gdt_init() {
 #[cfg(not(target_arch = "x86_64"))]
 pub fn gdt_init() {}
 
+// =====================================================================
+// MB14.c.2.d — per-CPU TSS descriptor placement + selector arithmetic.
+// =====================================================================
+
+/// First u64 slot index reserved for an AP TSS descriptor.
+///
+/// BSP occupies slots 5..=6; AP `cpu_id=1` starts at slot 7.
+const AP_TSS_FIRST_SLOT: usize = 7;
+
+/// Number of u64 slots a single 64-bit TSS descriptor occupies in the
+/// GDT (high + low words).
+const TSS_DESCRIPTOR_SLOTS: usize = 2;
+
+/// MB14.c.2.d — compute the GDT selector for the TSS belonging to
+/// logical CPU `cpu_id`.
+///
+/// BSP (`cpu_id = 0`) yields the legacy [`super::tss::TSS_SELECTOR`]
+/// (`0x28`); every AP yields a unique selector derived from
+/// `AP_TSS_FIRST_SLOT + 2 * (cpu_id - 1)`.
+///
+/// Returns `0` (the null selector — always rejected by `ltr`) when
+/// `cpu_id >= MAX_CPUS` so callers can pattern-match on a sentinel
+/// without separate error plumbing.
+#[must_use]
+pub fn tss_selector_for_cpu(cpu_id: u32) -> u16 {
+    if cpu_id == 0 {
+        return super::tss::TSS_SELECTOR;
+    }
+    let Some(off) = (cpu_id as usize).checked_sub(1) else {
+        return 0;
+    };
+    if off >= super::per_cpu::MAX_AP_SLOTS {
+        return 0;
+    }
+    let slot = AP_TSS_FIRST_SLOT + TSS_DESCRIPTOR_SLOTS * off;
+    // selector = slot * 8 (RPL=0).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "MAX_AP_SLOTS=31 → max slot 67 → selector 67*8=0x218, fits u16 trivially"
+    )]
+    let sel = (slot as u16) << 3;
+    sel
+}
+
+/// MB14.c.2.d — write the TSS descriptor for AP `cpu_id` into the
+/// kernel GDT.
+///
+/// `tss_base` is the linear address of the per-AP TSS (e.g. via
+/// [`super::tss::ap_tss_addr`]); the limit is fixed at
+/// `sizeof(Tss) - 1`. Returns `false` for invalid `cpu_id` (0 or
+/// `>= MAX_CPUS`).
+///
+/// Must be called BEFORE the AP fires INIT-SIPI — once the AP issues
+/// `ltr <sel>` against this slot, the descriptor is observed live.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "slot derived from `tss_selector_for_cpu` arithmetic and bounded by `off < MAX_AP_SLOTS`; `slot + 1 < GDT_LEN` holds by construction"
+)]
+pub fn gdt_set_ap_tss(cpu_id: u32, tss_base: u64) -> bool {
+    let Some(off) = (cpu_id as usize).checked_sub(1) else {
+        return false;
+    };
+    if off >= super::per_cpu::MAX_AP_SLOTS {
+        return false;
+    }
+    let slot = AP_TSS_FIRST_SLOT + TSS_DESCRIPTOR_SLOTS * off;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "sizeof(Tss) = 104 fits u32 trivially"
+    )]
+    let limit = (core::mem::size_of::<super::tss::Tss>() - 1) as u32;
+    let (low, high) = super::tss::tss_descriptor(tss_base, limit);
+    // SAFETY: single-core pre-fire wiring; the AP for this slot has not
+    // been signalled yet so the GDT slot is exclusively owned by BSP.
+    unsafe {
+        let p = core::ptr::addr_of_mut!(GDT);
+        // `slot + 1 < GDT_LEN` because `off < MAX_AP_SLOTS` and
+        // `GDT_LEN = 7 + 2 * MAX_AP_SLOTS`.
+        (*p)[slot] = low;
+        (*p)[slot + 1] = high;
+    }
+    true
+}
+
+/// Read-back of the (low, high) u64 pair at GDT slot `slot, slot+1`.
+/// Used by host-side tests to verify [`gdt_set_ap_tss`] wrote the
+/// expected descriptor words.
+#[must_use]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "`slot + 1 < GDT_LEN` guarded above"
+)]
+pub fn gdt_read_pair(slot: usize) -> (u64, u64) {
+    if slot + 1 >= GDT_LEN {
+        return (0, 0);
+    }
+    // SAFETY: read of u64 fields via raw pointer; single-writer
+    // semantics during pre-fire wiring.
+    unsafe {
+        let p = core::ptr::addr_of!(GDT);
+        ((*p)[slot], (*p)[slot + 1])
+    }
+}
+
+/// MB14.c.2.d — exposed (base, limit) of the kernel GDT for the AP
+/// landing asm.
+///
+/// The AP cannot reuse the stack-local pseudo-descriptor [`gdt_init`]
+/// built (it was freed when `gdt_init` returned). This accessor returns
+/// the persistent values so the BSP can stamp them into the AP runtime
+/// control block.
+#[must_use]
+pub fn gdt_base_and_limit() -> (u64, u16) {
+    let base = core::ptr::addr_of!(GDT) as u64;
+    let limit = (GDT_LEN * core::mem::size_of::<u64>() - 1) as u16;
+    (base, limit)
+}
+
+/// Total number of u64 slots in the GDT (visible for host-side tests
+/// that pin the MB14.c.2.d expansion).
+#[must_use]
+pub const fn gdt_total_slots() -> usize {
+    GDT_LEN
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +385,85 @@ mod tests {
         // Flags nibble (bits 52..56) must include L=1 (bit 53).
         let flags = (UCODE64 >> 52) & 0xF;
         assert_eq!(flags & 0x2, 0x2);
+    }
+
+    // -----------------------------------------------------------------
+    // MB14.c.2.d — GDT extension + per-CPU TSS selector arithmetic.
+    // -----------------------------------------------------------------
+
+    /// GDT grew to `7 + 2 * MAX_AP_SLOTS` slots to host one TSS
+    /// descriptor per AP (16-byte 64-bit TSS descriptor = 2 u64 slots).
+    #[test]
+    fn gdt_extended_for_ap_tss_descriptors() {
+        assert_eq!(
+            gdt_total_slots(),
+            7 + 2 * super::super::per_cpu::MAX_AP_SLOTS
+        );
+    }
+
+    /// `tss_selector_for_cpu(0)` returns the legacy BSP selector (`0x28`).
+    #[test]
+    fn tss_selector_for_bsp_is_legacy_value() {
+        assert_eq!(tss_selector_for_cpu(0), super::super::tss::TSS_SELECTOR);
+    }
+
+    /// `tss_selector_for_cpu(k)` for AP `k>=1` derives from
+    /// `slot 7 + 2*(k-1)` × 8, no RPL bits set.
+    #[test]
+    fn tss_selector_for_first_ap_is_slot_seven() {
+        // cpu_id=1 → slot 7 → selector = 56 = 0x38.
+        assert_eq!(tss_selector_for_cpu(1), 0x38);
+        // cpu_id=2 → slot 9 → selector = 72 = 0x48.
+        assert_eq!(tss_selector_for_cpu(2), 0x48);
+    }
+
+    /// Out-of-range cpu_ids yield the null selector (caller-detectable
+    /// sentinel — `ltr 0` faults).
+    #[test]
+    fn tss_selector_out_of_range_is_null() {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "MAX_CPUS = 32 fits u32 trivially"
+        )]
+        let oor = super::super::mp::MAX_CPUS as u32;
+        assert_eq!(tss_selector_for_cpu(oor), 0);
+    }
+
+    /// `gdt_set_ap_tss(0, _)` rejects BSP cpu_id (false return).
+    #[test]
+    fn gdt_set_ap_tss_rejects_bsp() {
+        assert!(!gdt_set_ap_tss(0, 0xDEAD));
+    }
+
+    /// `gdt_set_ap_tss` writes the (low, high) u64 pair returned by
+    /// [`super::super::tss::tss_descriptor`] at the slot derived from
+    /// `tss_selector_for_cpu`.
+    #[test]
+    fn gdt_set_ap_tss_writes_descriptor_at_correct_slot() {
+        // Use cpu_id=1 → slot 7.
+        let base = 0xFFFF_C100_0000_1000_u64;
+        assert!(gdt_set_ap_tss(1, base));
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "sizeof(Tss) = 104"
+        )]
+        let limit = (core::mem::size_of::<super::super::tss::Tss>() - 1) as u32;
+        let expected = super::super::tss::tss_descriptor(base, limit);
+        let actual = gdt_read_pair(7);
+        assert_eq!(actual, expected);
+    }
+
+    /// `gdt_base_and_limit` returns the persistent base + a limit equal
+    /// to `GDT_LEN * 8 - 1`.
+    #[test]
+    fn gdt_base_and_limit_returns_persistent_descriptor_values() {
+        let (base, limit) = gdt_base_and_limit();
+        assert_ne!(base, 0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "GDT_LEN * 8 - 1 fits u16 by construction"
+        )]
+        let expected_limit = (gdt_total_slots() * 8 - 1) as u16;
+        assert_eq!(limit, expected_limit);
     }
 }

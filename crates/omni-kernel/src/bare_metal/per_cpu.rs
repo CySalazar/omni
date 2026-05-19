@@ -1,11 +1,19 @@
-//! Per-CPU descriptor scaffold — MB14.a foundation for MP/AP enable,
-//! extended in MB14.b with `IA32_GS_BASE` / `IA32_KERNEL_GS_BASE` wiring
-//! and a GS-relative [`current_cpu`] accessor.
+//! Per-CPU descriptor scaffold — MB14.a foundation for MP/AP enable.
 //!
-//! ## Scope (MB14.a + MB14.b)
+//! Extended in MB14.b with `IA32_GS_BASE` / `IA32_KERNEL_GS_BASE` wiring
+//! and a GS-relative [`current_cpu`] accessor, then in MB14.c.2.d with
+//! a sibling `AP_SLOTS` array so every logical CPU has a stable per-CPU
+//! descriptor reachable by `lapic_id` lookup.
 //!
-//! - **Single CPU.** Exactly one [`PerCpu`] static (`BSP`) is initialised
-//!   from [`init_bsp`] after [`super::lapic::lapic_init`] has succeeded.
+//! ## Scope (MB14.a + MB14.b + MB14.c.2.d)
+//!
+//! - **`BSP`** is initialised from [`init_bsp`] after
+//!   [`super::lapic::lapic_init`] has succeeded.
+//! - **`AP_SLOTS`** is an array of [`MAX_CPUS - 1`] descriptors, one per
+//!   Application Processor. The BSP populates the slots pre-fire via
+//!   [`register_ap`]; the AP itself reads the slot pointer the BSP
+//!   stamped into [`super::mp_ap_entry::AP_RUNTIME_CONTROL`] and parks
+//!   it in its `gs:[0]` via `wrmsr` (MB14.c.2.d landing code).
 //! - **`GS_BASE` per-CPU pointer (MB14.b).** [`init_gs_base`] writes the
 //!   address of the supplied descriptor into the two GS-base MSRs:
 //!   `IA32_GS_BASE` (`0xC000_0101`, active in kernel mode) and
@@ -43,6 +51,8 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use super::mp::MAX_CPUS;
+
 /// Sentinel: the descriptor has not yet been seeded by [`init_bsp`].
 /// Chosen as `u32::MAX` so it cannot collide with a valid xAPIC ID
 /// (8-bit field, max 255).
@@ -75,6 +85,10 @@ const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
 ///   May be sparse (e.g., 0, 2, 4, … on some NUMA topologies).
 /// - `is_bsp`: true on the Bootstrap Processor, false on Application
 ///   Processors. Used by the IPI broadcast logic to skip self.
+/// - `kernel_rsp`: MB14.c.2.d — top of the per-CPU kernel stack, used by
+///   the AP entry stub to materialise `RSP` before any push/pop. Stays
+///   `0` for the BSP (which has been running on the boot stack since
+///   reset).
 #[derive(Debug)]
 #[repr(C)]
 pub struct PerCpu {
@@ -82,6 +96,7 @@ pub struct PerCpu {
     cpu_id: AtomicU32,
     lapic_id: AtomicU32,
     is_bsp: AtomicBool,
+    kernel_rsp: AtomicU64,
 }
 
 impl PerCpu {
@@ -94,7 +109,22 @@ impl PerCpu {
             cpu_id: AtomicU32::new(CPU_ID_UNINIT),
             lapic_id: AtomicU32::new(CPU_ID_UNINIT),
             is_bsp: AtomicBool::new(false),
+            kernel_rsp: AtomicU64::new(0),
         }
+    }
+
+    /// MB14.c.2.d — set the per-CPU kernel stack top (read by the AP
+    /// entry stub before any push/pop). `Release` so the AP — which
+    /// loads this with a plain `mov` after observing the slot pointer
+    /// via [`AP_RUNTIME_CONTROL`] — sees the latest value.
+    pub fn set_kernel_rsp(&self, rsp_top: u64) {
+        self.kernel_rsp.store(rsp_top, Ordering::Release);
+    }
+
+    /// MB14.c.2.d — read-back of the per-CPU kernel stack top.
+    #[must_use]
+    pub fn kernel_rsp(&self) -> u64 {
+        self.kernel_rsp.load(Ordering::Acquire)
     }
 
     /// Dense kernel-local CPU identifier (BSP = 0).
@@ -141,11 +171,24 @@ impl PerCpu {
     }
 }
 
-/// Singleton Bootstrap Processor descriptor.
+/// Singleton Bootstrap Processor descriptor (`cpu_id = 0`, always).
 ///
-/// MB14.a only writes this slot. MB14.c will introduce a sibling array
-/// for Application Processors.
+/// MB14.a only wrote this slot. MB14.c.2.d adds [`AP_SLOTS`] for sibling
+/// Application Processors; the BSP descriptor stays distinct so the
+/// existing single-CPU code paths (every kernel reference to
+/// `current_cpu()` and `bsp()`) remain byte-identical.
 static BSP: PerCpu = PerCpu::new_uninit();
+
+/// Maximum number of Application Processors the kernel tracks. Equal to
+/// `MAX_CPUS - 1` (the BSP occupies its own slot).
+pub const MAX_AP_SLOTS: usize = MAX_CPUS - 1;
+
+/// Sibling array indexed by `ap_index = cpu_id - 1` for `cpu_id >= 1`.
+///
+/// MB14.c.2.d populates this from the BSP pre-fire via [`register_ap`].
+/// Each entry is independently `Sync` (atomic fields) so a hypothetical
+/// concurrent observer cannot tear a partially-initialised descriptor.
+static AP_SLOTS: [PerCpu; MAX_AP_SLOTS] = [const { PerCpu::new_uninit() }; MAX_AP_SLOTS];
 
 /// Seed the BSP descriptor with `lapic_id` (typically read via
 /// [`super::lapic::read_lapic_id`]).
@@ -155,6 +198,71 @@ static BSP: PerCpu = PerCpu::new_uninit();
 /// last-written values.
 pub fn init_bsp(lapic_id: u32) {
     BSP.seed(0, lapic_id, true);
+}
+
+/// MB14.c.2.d — populate an Application Processor descriptor.
+///
+/// `cpu_id` MUST be in `1..MAX_CPUS`; `cpu_id = 0` is the BSP and is
+/// rejected. Returns `None` on out-of-range `cpu_id`, the populated
+/// `&'static PerCpu` otherwise.
+///
+/// The slot reference returned is `'static` because it aliases
+/// `AP_SLOTS[cpu_id - 1]`, which is a `static`. The BSP stores this
+/// address inside [`super::mp_ap_entry::AP_RUNTIME_CONTROL`] so the AP
+/// can recover it after the CR3 switch.
+#[must_use]
+pub fn register_ap(cpu_id: u32, lapic_id: u32) -> Option<&'static PerCpu> {
+    if cpu_id == 0 {
+        return None;
+    }
+    let idx = (cpu_id as usize).checked_sub(1)?;
+    let slot = AP_SLOTS.get(idx)?;
+    slot.seed(cpu_id, lapic_id, false);
+    Some(slot)
+}
+
+/// MB14.c.2.d — read-back accessor for an AP slot by `cpu_id` (>= 1).
+///
+/// Returns `None` for `cpu_id = 0` (BSP — use [`bsp`]) or an out-of-range
+/// `cpu_id`.
+#[must_use]
+pub fn ap_slot(cpu_id: u32) -> Option<&'static PerCpu> {
+    let idx = (cpu_id as usize).checked_sub(1)?;
+    AP_SLOTS.get(idx)
+}
+
+/// Number of slots actively populated by [`register_ap`].
+///
+/// MB14.c.2.d uses this for the boot-log line and the host-side tests
+/// that scan `AP_SLOTS` for `is_initialised()` entries.
+#[must_use]
+pub fn registered_ap_count() -> usize {
+    AP_SLOTS.iter().filter(|s| s.is_initialised()).count()
+}
+
+/// MB14.c.2.d — monotonic counter incremented by each AP once it has
+/// reached the parked state (post-`lgdt`/`lidt`/`ltr`/`sti`-free park).
+/// The BSP polls this from `kmain` after `start_aps_live` returns to
+/// confirm the per-AP init sequence completed.
+///
+/// `no_mangle` because the AP entry asm (see [`super::mp_ap_entry`])
+/// emits a `lock inc qword ptr [rip + AP_ONLINE_ACK]` referencing this
+/// symbol directly.
+#[unsafe(no_mangle)]
+static AP_ONLINE_ACK: AtomicU64 = AtomicU64::new(0);
+
+/// MB14.c.2.d — read the AP online ack counter.
+#[must_use]
+pub fn ap_online_ack() -> u64 {
+    AP_ONLINE_ACK.load(Ordering::Acquire)
+}
+
+/// MB14.c.2.d — symbol address of the AP online ack counter so the
+/// AP-entry asm can emit `lock inc qword ptr [rip + AP_ONLINE_ACK]`
+/// against it without round-tripping through a register.
+#[must_use]
+pub fn ap_online_ack_addr() -> u64 {
+    core::ptr::addr_of!(AP_ONLINE_ACK) as u64
 }
 
 /// Reference to the descriptor for the CPU currently running this code.
@@ -364,5 +472,78 @@ mod tests {
         let stamped = bsp().self_ptr();
         let expected = core::ptr::from_ref::<PerCpu>(bsp()) as u64;
         assert_eq!(stamped, expected);
+    }
+
+    // -----------------------------------------------------------------
+    // MB14.c.2.d — AP slot array + register/lookup helpers.
+    // -----------------------------------------------------------------
+
+    /// `MAX_AP_SLOTS` matches `MAX_CPUS - 1` (BSP occupies its own slot).
+    #[test]
+    fn max_ap_slots_is_max_cpus_minus_one() {
+        assert_eq!(MAX_AP_SLOTS, MAX_CPUS - 1);
+    }
+
+    /// `register_ap(0, _)` is rejected — `cpu_id = 0` is reserved for BSP.
+    #[test]
+    fn register_ap_rejects_bsp_cpu_id() {
+        assert!(register_ap(0, 12).is_none());
+    }
+
+    /// `register_ap(MAX_CPUS, _)` is rejected — out-of-range cpu_id.
+    #[test]
+    fn register_ap_rejects_out_of_range_cpu_id() {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "MAX_CPUS = 32 fits u32 trivially; reject path"
+        )]
+        let oor = MAX_CPUS as u32;
+        assert!(register_ap(oor, 99).is_none());
+    }
+
+    /// `register_ap(k, l)` returns an aliased `'static` slot whose
+    /// `cpu_id`/`lapic_id` reflect the call.
+    #[test]
+    fn register_ap_seeds_slot_with_lapic_id() {
+        // Use cpu_id == 1 (first AP slot) — different tests share static
+        // state, so assert relative-to-input rather than relative-to-zero.
+        let slot = register_ap(1, 7).expect("AP slot 1 must register");
+        assert_eq!(slot.cpu_id(), 1);
+        assert_eq!(slot.lapic_id(), 7);
+        assert!(!slot.is_bsp());
+        assert!(slot.is_initialised());
+    }
+
+    /// `ap_slot(k)` returns the same pointer as `register_ap(k, _)`.
+    #[test]
+    fn ap_slot_returns_same_pointer_as_register_ap() {
+        let a = register_ap(2, 9).expect("slot 2");
+        let b = ap_slot(2).expect("slot 2 readback");
+        assert_eq!(core::ptr::from_ref(a), core::ptr::from_ref(b));
+    }
+
+    /// `ap_slot(0)` returns `None` (BSP); use `bsp()` instead.
+    #[test]
+    fn ap_slot_zero_is_none() {
+        assert!(ap_slot(0).is_none());
+    }
+
+    /// `set_kernel_rsp` round-trips through `kernel_rsp`.
+    #[test]
+    fn kernel_rsp_round_trip() {
+        let pc = PerCpu::new_uninit();
+        assert_eq!(pc.kernel_rsp(), 0);
+        pc.set_kernel_rsp(0xFFFF_C001_0000_0000);
+        assert_eq!(pc.kernel_rsp(), 0xFFFF_C001_0000_0000);
+    }
+
+    /// `ap_online_ack_addr` returns a non-null, stable address (same
+    /// across consecutive calls).
+    #[test]
+    fn ap_online_ack_addr_is_stable_and_nonzero() {
+        let a = ap_online_ack_addr();
+        let b = ap_online_ack_addr();
+        assert_ne!(a, 0);
+        assert_eq!(a, b);
     }
 }
