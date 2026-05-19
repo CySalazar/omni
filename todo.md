@@ -1,7 +1,7 @@
 # OMNI OS — Implementation TODO
 
-> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB13** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0). MB14.a (per-CPU descriptor scaffold) ✅ + MB14.b (`IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()`) ✅ + MB14.c.1 (ACPI MADT cpu enumeration: pure-function `parse_madt` + bare-metal `enumerate_cpus` con RSDP→XSDT/RSDT walker) ✅ + MB14.c.2.a (INIT-SIPI ICR encoder xAPIC + x2APIC + dry-run `start_aps` orchestrator) ✅ chiusi 2026-05-19. Roadmap Phase 1 ~86% Track B. **Prossimo sub-block: MB14.c.2.b** = real-mode trampoline a `0x8000` (16→32→64-bit) + identity-map della pagina trampolino + GDT/PML4 temporanee; poi MB14.c.2.c (live `start_aps` + ack barrier + `kmain_ap` + ADR-0007), MB14.d/e (TLB shootdown broadcast), MB14.f (per-CPU scheduler split).
-> **Last updated:** 2026-05-19 (MB14.c.2.a closure: `IcrDeliveryMode`/`IcrDestinationMode`/`IcrLevel`/`IcrTriggerMode`/`IcrDestinationShorthand` enums `#[repr(u8)]`, `IcrCommand::{init_assert, sipi}` const constructors, `encode_icr_xapic(cmd) -> (u32, u32)` + `encode_icr_x2apic(cmd) -> u64` pure-function encoders pinned to Intel SDM Vol 3A § 10.6.1 / § 10.12.9, `start_aps(topology, bsp_apic_id, trampoline_page, mode) -> StartApsReport` con `StartApsMode::{DryRun, Live}` (Live downgrades silently fino a MB14.c.2.c), hook in `kmain` post-MB14.c.1 che logga `[mb14.c.2.a] start_aps targeted=N sequenced=N (dry-run)`; +13 unit test `bare_metal::mp::tests::xapic_init_encoding_matches_intel_layout`/`xapic_sipi_*`/`xapic_destination_truncates_to_eight_bits`/`x2apic_init_*`/`x2apic_sipi_packs_*`/`encoder_emits_zero_*`/`shorthand_all_excluding_self_*`/`start_aps_dry_run_*`/`start_aps_skips_bsp_*`/`start_aps_skips_disabled_*`/`start_aps_with_trampoline_zero_*`/`start_aps_mode_live_downgrades_*`/`start_aps_returns_zero_targets_*`; workspace test count 467+ → 480+. Branch corrente `feat/kernel-mb11-userspace`; PR verso `main` resta release-management decision separata).
+> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB13** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0). MB14.a (per-CPU descriptor scaffold) ✅ + MB14.b (`IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()`) ✅ + MB14.c.1 (ACPI MADT cpu enumeration: pure-function `parse_madt` + bare-metal `enumerate_cpus` con RSDP→XSDT/RSDT walker) ✅ + MB14.c.2.a (INIT-SIPI ICR encoder xAPIC + x2APIC + dry-run `start_aps` orchestrator) ✅ + MB14.c.2.b.1 (pure-function trampoline builder 16→32→64-bit + temp GDT + temp 2 MiB identity PML4/PDPT/PD primitives, byte-exact tests pinned a Intel SDM Vol 2/3A) ✅ chiusi 2026-05-19. Roadmap Phase 1 ~87% Track B. **Prossimo sub-block: MB14.c.2.b.2** = emplacement bare-metal (alloc + identity-map della trampoline page + temp PML4/PDPT/PD + copia blob a `0x8000`); poi MB14.c.2.c (live `start_aps` + ack barrier + `kmain_ap` + ADR-0007), MB14.d/e (TLB shootdown broadcast), MB14.f (per-CPU scheduler split).
+> **Last updated:** 2026-05-19 (MB14.c.2.b.1 closure: nuovo modulo `bare_metal::mp_trampoline` con `build_trampoline_blob(base_paddr, temp_pml4_paddr, kernel_ap_entry) -> [u8; 256]` (16-bit real-mode → 32-bit protected → 64-bit long, byte-encoded a mano contro Intel SDM Vol 2 — opcodes 0x66 prefix lgdt/o32 jmp far, MOV CRn 0x0F 0x20-22, RDMSR/WRMSR EFER LME, REX.W mov rax imm64 + jmp r/m64), `build_temp_gdt() -> [u64; 4]` (null/32-code/32-data/64-code descriptors `0x00CF_9A00_0000_FFFF` / `0x00CF_9200_0000_FFFF` / `0x00AF_9A00_0000_FFFF`), `build_temp_gdtr(gdt_base) -> [u8; 6]` (lim16 || base32), `pml4_entry_pdpt`/`pdpt_entry_pd`/`pd_entry_2mib`/`build_temp_identity_paging(pdpt_paddr, pd_paddr)` per identity-map dei primi 2 MiB via PS=1 PDE; section offsets `RM16=0x00 / PM32=0x22 / LM64=0x62 / GDT=0x70 / GDTR=0x90` esposti come costanti pubbliche; hook in `kmain` post-MB14.c.2.a che logga `[mb14.c.2.b.1] trampoline blob bytes=256 nonzero=N gdt_entries=4 (builder dry-run)`. +30 unit test in `bare_metal::mp_trampoline::tests::*` (blob prologue cli/cld, xor ax/segregs zero, o32 lgdt disp16 reloc, PE-set sequence, 16→32 far jmp encoding+selector, 32-bit data selector load, CR3 reloc, CR4.PAE, EFER.LME via rdmsr/wrmsr, CR0.PG+PE, 32→64 far jmp, REX.W mov rax imm64 + jmp rax, GDT/GDTR byte layout per SDM Vol 3A § 3.4.5, PML4/PDPT/PD entry bit layout per SDM Vol 3A § 4.5, identity-paging composition, isolation delle reloc — solo i byte documentati cambiano fra build diverse). Workspace test count 480+ → 510+; `cargo clippy --workspace --all-features --all-targets -- -D warnings` + `cargo clippy --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none -- -D warnings` clean. Branch corrente `feat/kernel-mb11-userspace`; PR verso `main` resta release-management decision separata).
 > **Storia stati precedenti:** 2026-05-18 (MB12 closure — IPC + multi-task user, ADR-0005, 426 tests). 2026-05-18 (Step 7.1-7.4 lift blanket allows + ADR-0003 + CI `blanket-allow-guard`). 2026-05-18 (MB11 closure — Ring 3 + per-process CR3, ADR-0004). 2026-05-18 (MB10 closure — kernel stack isolation, ADR-0002, PR #33 in `main`). 2026-05-18 (v0.2.0 release — MB1-MB9 + Track A, PR #29 in `main`). 2026-05-16 (MB4/MB5). 2026-05-15 (K5 QEMU smoke gate). 2026-05-12 (scaffolding pass P3-P6 verificato). 2026-05-10 (P1 + P2 chiusi). 2026-05-09 (P0 chiuso).
 > **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
 > **Priority order:** Security → Stability → Performance (per project policy).
@@ -801,8 +801,9 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 | MB14.a | Per-CPU descriptor scaffold + BSP LAPIC ID identification | `[x]` (chiuso 2026-05-19) | `3f38514` | — |
 | MB14.b | `IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()` | `[x]` (chiuso 2026-05-19) | `c30221f` | — |
 | MB14.c.1 | ACPI MADT parser + bare-metal `enumerate_cpus` (RSDP→XSDT/RSDT→MADT walker) | `[x]` (chiuso 2026-05-19) | `e964a9d` | — |
-| MB14.c.2.a | INIT-SIPI ICR encoder (xAPIC + x2APIC) + dry-run `start_aps` orchestrator | `[x]` (chiuso 2026-05-19) | (this commit) | — |
-| MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[~]` (MB14.a + MB14.b + MB14.c.1 + MB14.c.2.a chiusi; MB14.c.2.b-f open) | — | — |
+| MB14.c.2.a | INIT-SIPI ICR encoder (xAPIC + x2APIC) + dry-run `start_aps` orchestrator | `[x]` (chiuso 2026-05-19) | `ad3b372` | — |
+| MB14.c.2.b.1 | Pure-function trampoline blob (16/32/64-bit) + temp GDT + temp identity PML4/PDPT/PD builders + byte-exact host tests | `[x]` (chiuso 2026-05-19) | (this commit) | — |
+| MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[~]` (MB14.a + MB14.b + MB14.c.1 + MB14.c.2.a + MB14.c.2.b.1 chiusi; MB14.c.2.b.2-f open) | — | — |
 
 ### P6.MB13 — `omni-capability` integration reale
 
@@ -1038,6 +1039,53 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
   - `StartApsMode::Live` esiste già nel surface API ma è marcato "downgrades silently" finché MB14.c.2.c non landa. Questa scelta riduce il churn: kmain non dovrà cambiare la signature della call al flip.
   - `trampoline_page = 0` forza dry-run anche con `mode = Live` — SIPI vector 0 salterebbe nel IVT, mai valido. Questo è un guardrail contro il bug più tipico ("ho dimenticato di passare l'indirizzo del trampolino").
   - **Pending validazione Proxmox:** confermare che il log `[mb14.c.2.a] start_aps targeted=0 sequenced=0 (dry-run)` appaia sul COM1 della VMID 103 (1 vCPU → 0 AP targeted).
+
+##### P6.MB14.c.2.b.1 — Pure-function trampoline builder
+
+- **Status:** `[x]` (chiuso 2026-05-19)
+- **Effort:** 0.4 giornate (delivered)
+- **Dependencies:** MB14.c.2.a ✅
+- **Rationale:** prima di emplazare 256 byte di codice macchina a `0x0000_8000` e identity-mappare la pagina, pin-down byte-per-byte del trampolino + GDT + page-table entries contro Intel SDM Vol 2 (instruction reference) e Vol 3A § 3.4.5 (segment descriptor) / § 4.5 (IA-32e paging). Una stray bit nel `mov cr0, eax` triple-faulta l'AP all'istante; una `PS=1` mal posizionata nel PDE causa `#GP` durante l'attivazione di `CR0.PG`. MB14.c.2.b.1 sposta quel rischio in `cargo test` host-side mantenendo invariata l'API che MB14.c.2.b.2 consumerà per scrivere fisicamente il blob.
+- **Deliverables:**
+  - **`crates/omni-kernel/src/bare_metal/mp_trampoline.rs`** (nuovo modulo, sibling di `mp.rs`):
+    - `build_trampoline_blob(base_paddr, temp_pml4_paddr, kernel_ap_entry) -> [u8; 256]` — emette il blob 16→32→64 bit con relocations puntuali (`0x0E` GDTR disp16, `0x1C` PM32 off32, `0x32` PML4 paddr, `0x5C` LM64 off32, `0x64` 64-bit entry imm64). Sezioni: `RM16=0x00..0x22` (cli/cld/xor ax/seg load/`66 0F 01 16 …` o32 lgdt/PE-set `0F 22 C0`/`66 EA …` o32 far jmp), `PM32=0x22..0x62` (data selector load/CR3 reloc/CR4.PAE/EFER.LME via rdmsr+wrmsr/CR0.PG+PE/`EA … 18 00` far jmp), `LM64=0x62..0x6E` (REX.W `48 B8 …` mov rax + `FF E0` jmp rax). Padding NOP fino a `GDT=0x70`.
+    - `build_temp_gdt() -> [u64; 4]` const fn: null + `0x00CF_9A00_0000_FFFF` (32-bit code) + `0x00CF_9200_0000_FFFF` (32-bit data) + `0x00AF_9A00_0000_FFFF` (64-bit code, L=1).
+    - `build_temp_gdtr(gdt_base) -> [u8; 6]` const fn — `lim16 || base32`.
+    - `pml4_entry_pdpt(child)` / `pdpt_entry_pd(child)` / `pd_entry_2mib(target)` const fn — PTE bit-pack (P/RW/PS) + frame mask `0x000F_FFFF_FFFF_F000` (4 KiB) / `0x000F_FFFF_FFE0_0000` (2 MiB).
+    - `build_temp_identity_paging(pdpt_paddr, pd_paddr) -> TempIdentityPaging { pml4, pdpt, pd }` const fn — identity-map dei primi 2 MiB via singolo PDE PS=1 con target_paddr=0.
+    - Costanti pubbliche `TRAMPOLINE_BLOB_SIZE=256`, `TRAMPOLINE_OFFSET_RM16/PM32/LM64/GDT/GDTR`, `TRAMPOLINE_GDT_ENTRIES=4`, `TRAMPOLINE_GDT_SIZE=32`, `TRAMPOLINE_GDTR_SIZE=6`, `TRAMPOLINE_SEL_CODE32=0x08/DATA32=0x10/CODE64=0x18`.
+  - **`crates/omni-kernel/src/bare_metal/mod.rs`** — registra `pub mod mp_trampoline`.
+  - **`crates/omni-kernel/src/lib.rs`** — hook in `kmain` post-MB14.c.2.a che chiama `build_trampoline_blob(0x8000, 0x9000, 0xFFFF_FFFF_8010_0000)` + `build_temp_gdt()`, conta i byte non-zero, e logga `[mb14.c.2.b.1] trampoline blob bytes=256 nonzero=N gdt_entries=4 (builder dry-run)`. Nessun write fisico — il blob viene dropped subito dopo il count.
+  - **+30 unit test** in `bare_metal::mp_trampoline::tests::*`:
+    - Blob prologue: `blob_starts_with_cli_cld`, `blob_loads_zero_segments_via_xor_ax_ax`.
+    - LGDT encoding: `blob_loads_gdt_via_o32_lgdt` (verifica `66 0F 01 16 LO HI` + reloc disp16).
+    - PE set: `blob_sets_pe_in_cr0` (`0F 20 C0` / `66 83 C8 01` / `0F 22 C0`).
+    - 16→32 far jmp: `blob_16to32_far_jump_targets_pm32_section` (verifica off32+sel16=0x0008).
+    - 32-bit transition: `blob_32bit_loads_data_selector_into_segregs`, `blob_32bit_loads_temp_pml4_into_cr3`, `blob_32bit_enables_pae_in_cr4`, `blob_32bit_sets_lme_via_efer_msr`, `blob_32bit_enables_paging_with_pe_pg`, `blob_32to64_far_jump_targets_lm64_section`.
+    - 64-bit tail: `blob_64bit_loads_kernel_entry_and_jumps` (REX.W + 8-byte imm + `FF E0`).
+    - Reloc isolation: `relocations_isolate_at_documented_offsets` (`0x32..0x36` PML4), `kernel_entry_relocation_changes_only_8_bytes` (`0x64..0x6C`).
+    - GDT: `gdt_has_four_entries_with_canonical_layout`, `gdt_32bit_code_descriptor_decodes_correctly`, `gdt_64bit_code_descriptor_has_long_mode_flag`, `gdtr_pseudo_desc_packs_limit_and_base`.
+    - GDT/GDTR embedding: `blob_embeds_gdt_at_documented_offset`, `blob_embeds_gdtr_at_documented_offset`.
+    - PTE: `pml4_entry_sets_present_and_writable_and_carries_frame`, `pml4_entry_masks_low_12_bits_of_input`, `pdpt_entry_pd_has_ps_clear`, `pd_entry_2mib_sets_ps_and_carries_2mib_frame`, `pd_entry_2mib_masks_low_21_bits_of_input`.
+    - Identity-paging: `identity_paging_links_pml4_pdpt_pd_in_order`, `identity_paging_zeroes_all_other_entries`.
+    - Invarianti layout: `blob_size_is_one_page_or_less`, `section_offsets_are_monotonically_increasing` (compile-time `const _ : () = assert!(…)`), `selectors_match_gdt_slot_indices`.
+  - Workspace test count 480+ → 510+; `cargo clippy --workspace --all-features --all-targets -- -D warnings` + `cargo clippy --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none -- -D warnings` clean. Build Info panel: Active=`MB14.c.2.b.1 tramp builder`, Next=`MB14.c.2.b.2 emplacement`, Track B=`MB1-MB13 OK, MB14.a-c.2.b.1 wip`, Phase 1 ≈ 87%.
+- **Note di progettazione:**
+  - Section offsets fissati a `RM16=0x00 / PM32=0x22 / LM64=0x62 / GDT=0x70 / GDTR=0x90`. La spaziatura PM32=0x22 (anziché 0x21) deriva dal fatto che il far-jmp 16→32 con prefisso `0x66` è 8 byte (`66 EA + off32 + sel16`), non 7 — early-iteration bug catturato dal test `blob_16to32_far_jump_targets_pm32_section` prima del commit.
+  - Il blob è 256 byte fissi anche se il codice utile è ~150 byte (terminato a `GDTR_OFF+6 = 0x96`). Il padding zero permette a MB14.c.2.b.2 di fare `copy_from_slice` su una page intera senza branch sui section bounds.
+  - `build_temp_identity_paging` mappa solo i primi 2 MiB (singolo PDE PS=1). Sufficiente per il path trampoline ↔ kernel_ap_entry se quest'ultimo è raggiunto via low-memory stub; per il caso higher-half kernel reale, MB14.c.2.b.2 estenderà la mappa (1 GiB o composizione con il PML4 kernel attivo).
+  - Tutte le primitive sono `const fn` (eccetto `build_trampoline_blob` che usa `let mut blob: [u8; 256]` + mutation), quindi MB14.c.2.b.2 può materializzare `pml4`/`pdpt`/`pd` come `const` statici se conveniente.
+- **Pending validazione Proxmox:** confermare che il log `[mb14.c.2.b.1] trampoline blob bytes=256 nonzero=…` appaia sul COM1 della VMID 103 (single-CPU, no AP wake).
+
+##### P6.MB14.c.2.b.2 — Emplacement bare-metal (next)
+
+- **Status:** `[ ]` (open)
+- **Effort stimato:** 0.5-1 giornata
+- **Dependencies:** MB14.c.2.b.1 ✅
+- **Rationale:** scrivere il blob a `0x0000_8000` + allocare 3 frame fisici per PML4/PDPT/PD temp + identity-mappare la pagina trampolino nel CR3 attivo + materializzare i contenuti delle 3 page-table — tutto via `BitmapFrameAllocator` + `PageMapper`. Mantiene `start_aps` in DryRun fino a MB14.c.2.c.
+- **Deliverables previsti:**
+  - Estensione `mp_trampoline` o nuovo `mp_emplacement` con `place_trampoline(allocator, mapper, kernel_ap_entry) -> EmplacedTrampoline { trampoline_paddr, temp_pml4_paddr }`.
+  - Hook in `kmain` post-MB14.c.2.b.1 (oggi dry-run-only) che esegue l'emplacement quando `topo.enabled_count() > 1` (AP-only path).
 
 #### P6.MB14.d — IPI vettore + TLB shootdown protocol
 

@@ -581,6 +581,33 @@ pub fn kmain(
                         early_console::write_str(
                             if report.dry_run { " (dry-run)\n" } else { " (live)\n" },
                         );
+
+                        // MB14.c.2.b.1 — exercise the pure-function trampoline
+                        // builders on the BSP so any cross-build regression
+                        // surfaces in the boot log before MB14.c.2.b.2 starts
+                        // emplacing the blob at physical 0x8000. No MMIO, no
+                        // physical writes — the builders return owned values
+                        // that we immediately drop after counting non-zero
+                        // bytes for the serial banner.
+                        let blob = bare_metal::mp_trampoline::build_trampoline_blob(
+                            0x0000_8000,
+                            0x0000_9000,
+                            0xFFFF_FFFF_8010_0000,
+                        );
+                        let mut blob_nonzero = 0usize;
+                        for byte in &blob {
+                            if *byte != 0 {
+                                blob_nonzero += 1;
+                            }
+                        }
+                        let gdt = bare_metal::mp_trampoline::build_temp_gdt();
+                        early_console::write_str("[mb14.c.2.b.1] trampoline blob bytes=");
+                        early_console::write_usize(blob.len());
+                        early_console::write_str(" nonzero=");
+                        early_console::write_usize(blob_nonzero);
+                        early_console::write_str(" gdt_entries=");
+                        early_console::write_usize(gdt.len());
+                        early_console::write_str(" (builder dry-run)\n");
                     } else {
                         early_console::write_str("[mb14.c.1] MADT walk FAILED — BSP only\n");
                     }

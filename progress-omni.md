@@ -580,7 +580,7 @@ wip`, Phase 1 ≈ 84%.
 
 ### 2.2 — Track B: Kernel core (`omni-kernel` bare-metal)
 
-**Status:** MB1-MB13 ✅ chiuse. MB14.a ✅ (per-CPU descriptor scaffold). MB14.b ✅ (`IA32_GS_BASE` per-CPU pointer + `swapgs` su syscall entry; GS-relative `current_cpu()`). Prossimo sub-block MB14.c (AP startup via INIT-SIPI-SIPI).
+**Status:** MB1-MB13 ✅ chiuse. MB14.a-c.2.b.1 ✅ chiusi (per-CPU descriptor, `IA32_GS_BASE`/`swapgs`, ACPI MADT enumerator, INIT-SIPI ICR encoder dry-run, pure-function trampoline builder 16→32→64 bit + temp GDT + identity-map primitives). Prossimo sub-block MB14.c.2.b.2 (emplacement bare-metal: alloc + identity-map della trampoline page + temp PML4 a CR3 attivo).
 
 | Milestone | Contenuto | Stato | Commit |
 |---|---|---|---|
@@ -606,7 +606,10 @@ wip`, Phase 1 ≈ 84%.
 | MB13.e | Closure: Ed25519 canonical provider + `StubCapabilityProvider` `#[cfg(test)]`-only + ADR-0006 | ✅ | `5e907f8` |
 | **MB13** | **omni-capability integration (Ed25519 verify) — chiuso** (ADR-0006) | ✅ | — |
 | MB14.a | Per-CPU descriptor scaffold + BSP LAPIC ID identification | ✅ | `3f38514` |
-| MB14.b | `IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()` | ✅ | (this commit) |
+| MB14.b | `IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()` | ✅ | `c30221f` |
+| MB14.c.1 | ACPI MADT cpu enumeration (RSDP→XSDT/RSDT walker) | ✅ | `e964a9d` |
+| MB14.c.2.a | INIT-SIPI ICR encoder (xAPIC + x2APIC) + dry-run `start_aps` | ✅ | `ad3b372` |
+| MB14.c.2.b.1 | Pure-function trampoline builder + temp GDT + identity-map primitives | ✅ | (this commit) |
 
 **Verifica MB1-MB12:**
 - `cargo test --workspace --all-features` → **426 pass / 0 fail** (era 393 post-MB11, +33 da MB12 — vedi CHANGELOG `[Unreleased] § Added` riga "Test delta")
