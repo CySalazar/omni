@@ -905,12 +905,11 @@ pub fn kmain(
             // so the invalidation is observable but inert) and broadcast
             // the IPI on vector `0xFD`. The local `invlpg` always runs;
             // the IPI broadcast occurs only when at least one AP is
-            // registered. With APs currently parked under `cli; hlt`
-            // (MB14.c.2.d) the broadcast is queued in each AP's LAPIC
-            // IRR until MB14.e enables maskable interrupts on the AP
-            // side — `ShootdownReport.acked` therefore stays at 0 in
-            // multi-CPU boots and is reported with a `(IRR queued; APs
-            // service post-MB14.e sti)` suffix.
+            // registered. With MB14.e.1 the AP entry stub now executes
+            // `sti` before its `hlt` park, so the 0xFD ISR fires on
+            // every AP and `ShootdownReport.acked` reaches `targeted`
+            // — the `(all APs acked)` suffix replaces the MB14.d-era
+            // `(IRR queued ...)` placeholder.
             {
                 let report =
                     mm::flush_tlb_range(crate::memory::VirtAddr(0x0000_0000_0000_8000), 0x1000);
@@ -929,8 +928,49 @@ pub fn kmain(
                 } else if report.complete() {
                     early_console::write_str(" (all APs acked)\n");
                 } else {
-                    early_console::write_str(" (IRR queued; APs service post-MB14.e sti)\n");
+                    early_console::write_str(" (timeout — AP ISR did not ack)\n");
                 }
+            }
+
+            // MB14.e.2 + MB14.e.3 — per-CPU run-queue scaffold smoke.
+            //
+            // Exercise the per-CPU run-queue API on the BSP: enqueue
+            // a sentinel task id, pop it locally, then enqueue a
+            // second sentinel and steal it from a different (idle) AP
+            // slot. No real task is created — the queue stores raw
+            // u64 ids, and the bridge to `RoundRobinScheduler` will
+            // land in MB14.f when AP dispatch goes live. This boot-log
+            // smoke confirms the queue + lock primitives are usable
+            // from the kernel runtime (no double-fault, no panic) on
+            // top of the lifecycle exercised by host-side tests.
+            {
+                use scheduling::PriorityClass;
+                let bsp_cpu = bare_metal::per_cpu::bsp().cpu_id();
+                let _ = bare_metal::per_cpu_run_queue::enqueue_on_cpu(
+                    bsp_cpu,
+                    0xE_E_E_E_E_2_u64,
+                    PriorityClass::Interactive,
+                );
+                let popped = bare_metal::per_cpu_run_queue::pop_for_cpu(bsp_cpu);
+                let local_ok = popped == Some(0xE_E_E_E_E_2);
+
+                // Stealing fallback: enqueue on cpu_id 0 (BSP), then
+                // request from cpu_id 1 (likely AP slot or empty AP
+                // slot if no APs enumerated) — `pop_for_cpu_with_stealing`
+                // must surface the BSP task via the steal path.
+                let _ = bare_metal::per_cpu_run_queue::enqueue_on_cpu(
+                    0,
+                    0xE_E_E_E_E_3_u64,
+                    PriorityClass::Background,
+                );
+                let stolen = bare_metal::per_cpu_run_queue::pop_for_cpu_with_stealing(1);
+                let steal_ok = stolen == Some(0xE_E_E_E_E_3);
+
+                early_console::write_str("[mb14.e] per_cpu_run_queue local=");
+                early_console::write_str(if local_ok { "ok" } else { "FAIL" });
+                early_console::write_str(" steal=");
+                early_console::write_str(if steal_ok { "ok" } else { "FAIL" });
+                early_console::write_str("\n");
             }
         } else {
             early_console::write_str("[lapic] LAPIC init FAILED — running without timer\n");

@@ -70,6 +70,7 @@ pub mod mp_trampoline;
 pub mod paging;
 pub mod panic;
 pub mod per_cpu;
+pub mod per_cpu_run_queue;
 pub mod pit_delay;
 pub mod syscall_entry;
 pub mod tlb_shootdown;

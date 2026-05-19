@@ -461,8 +461,11 @@ pub fn allocate_ap_stack_frame<const N: usize>(
 //      loads invalidate the hidden GS base).
 //   7. `ltr` the per-CPU TSS selector.
 //   8. `lock inc` the online-ack counter (BSP polls this).
-//   9. Park `cli; hlt; jmp $-2` — preemption / scheduler enrolment is
-//      MB14.e (per-CPU run-queue split).
+//   9. `sti` to unmask IPIs (MB14.e.1) so the per-CPU 0xFD TLB shootdown
+//      handler can fire. Scheduler enrolment / preemption is the MB14.e.2
+//      per-CPU run-queue split.
+//  10. `hlt; jmp $-2` — idle park; resumes on any unmasked IPI, then
+//      `iretq` returns straight back to the `hlt`.
 //
 // xAPIC-only: this path reads CPUID leaf 1 EBX[31:24] (8-bit). x2APIC
 // LAPIC IDs > 255 would alias here; MB14.f will switch to CPUID leaf
@@ -538,9 +541,18 @@ core::arch::global_asm!(
     "    ltr ax",
     // ---- Step 9: bump online-ack counter (BSP polls this) ----
     "    lock inc qword ptr [rip + AP_ONLINE_ACK]",
-    // ---- Step 10: park (interrupts disabled — MB14.e enables sti) ----
+    // ---- Step 10: enable maskable interrupts + park (MB14.e.1) ----
+    // The whole pre-park init sequence ran with IF=0 (set by the
+    // landing-stub's implicit `cli` and never flipped since). At this
+    // point GDT/IDT/TSS/GS_BASE are all wired so the local 0xFD ISR
+    // (and any future per-CPU vector) can safely fire on this AP. `sti`
+    // sets IF=1; the subsequent `hlt` halts the AP until any unmasked
+    // IPI arrives, at which point the handler runs on the per-CPU
+    // kernel stack (TSS.rsp0 from MB14.c.2.d) and `iretq` resumes here.
+    // The `jmp 80b` after `hlt` re-enters the wait state — IF remains
+    // set across `hlt`, so we do not re-issue `sti` per iteration.
+    "    sti",
     "80:",
-    "    cli",
     "    hlt",
     "    jmp 80b",
     // ---- park_unknown: LAPIC ID not in lapic_to_cpu table ----
