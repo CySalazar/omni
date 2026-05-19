@@ -52,6 +52,16 @@ workspace = true
 # neither of which build on `x86_64-unknown-none`. Pin path + version
 # directly with `default-features = false` to opt out cleanly.
 omni-types      = { path = "../omni-types", version = "0.2.0", default-features = false }
+# `omni-capability` integration (MB13.c). The kernel calls
+# `CapabilityToken::verify_signature` from `Ed25519CapabilityProvider`
+# to authenticate IPC capability tokens minted by user space. The
+# `bare-metal` feature propagates `omni-crypto/bare-metal`, which
+# disables the `rng` path that would otherwise pull `getrandom` into
+# the `x86_64-unknown-none` build (MB13.a). `default-features = false`
+# is critical: the crate's own `[features].default` is empty (no
+# behaviour change) but Cargo refuses to override workspace inheritance
+# from a downstream member, so the path + version form is used.
+omni-capability = { path = "../omni-capability", version = "0.2.0", default-features = false, features = ["bare-metal"] }
 # `serde` is required by `bare_metal::panic::PanicRecord` (derive
 # Serialize). The workspace pins `default-features = false` + `derive`
 # + `alloc`, so the kernel pulls `serde` without `std`. OIP-Kernel-012
@@ -101,3 +111,10 @@ mb12-userprobe = ["bare-metal"]
 
 [dev-dependencies]
 proptest = { workspace = true }
+# MB13.c — host-side capability tests need the userspace mint path
+# (`CapabilityToken::mint`, `OmniSigningKey::generate`). dev-dependencies
+# only apply to `cargo test`/`bench`, so the bare-metal `cargo build`
+# still resolves `omni-capability` with `bare-metal` features only.
+omni-capability = { path = "../omni-capability", version = "0.2.0", default-features = false, features = ["mint"] }
+omni-crypto     = { path = "../omni-crypto",     version = "0.2.0", default-features = false, features = ["rng"] }
+omni-types      = { path = "../omni-types",      version = "0.2.0", default-features = false, features = ["id-generation"] }

@@ -931,6 +931,8 @@ version = "0.2.0"
 dependencies = [
  "bootloader_api",
  "font8x8",
+ "omni-capability",
+ "omni-crypto",
  "omni-types",
  "proptest",
  "serde",
@@ -1954,7 +1956,6 @@ version = "1.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76"
 dependencies = [
- "getrandom 0.4.2",
  "serde_core",
 ]
 

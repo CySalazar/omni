@@ -58,6 +58,14 @@ pub enum Action {
     AgentSpawn,
     /// Send a message to another agent.
     AgentSend,
+    /// Enqueue a message on a kernel IPC channel (MB13.c). The matching
+    /// resource is [`Resource::IpcChannel`]; the kernel `IpcSend`
+    /// syscall consults a capability with this action.
+    IpcSend,
+    /// Dequeue a message from a kernel IPC channel (MB13.c). The
+    /// matching resource is [`Resource::IpcChannel`]; the kernel
+    /// `IpcReceive` syscall consults a capability with this action.
+    IpcRecv,
 }
 
 // =============================================================================
@@ -87,6 +95,10 @@ pub enum Resource {
     Agent(AgentId),
     /// A specific node.
     Node(NodeId),
+    /// A kernel IPC channel identified by its kernel-allocated id
+    /// (MB13.c). Paired with [`Action::IpcSend`] / [`Action::IpcRecv`].
+    /// Channel ids are opaque; equality is the only meaningful relation.
+    IpcChannel(u64),
 }
 
 impl Resource {
@@ -108,6 +120,10 @@ impl Resource {
             (Self::Model(a), Self::Model(b)) => a == b,
             (Self::Agent(a), Self::Agent(b)) => a == b,
             (Self::Node(a), Self::Node(b)) => a == b,
+            // IPC channels are opaque kernel ids: subset == equality.
+            // There is no wildcard for channels in MB13.c; an upstream
+            // grant for a different channel id never authorises another.
+            (Self::IpcChannel(a), Self::IpcChannel(b)) => a == b,
             // Cross-discriminant + (Any, concrete) → not a subset.
             _ => false,
         }
@@ -451,6 +467,78 @@ mod tests {
         };
         assert!(!read.is_subset_of(&write));
         assert!(!write.is_subset_of(&read));
+    }
+
+    #[test]
+    fn resource_ipc_channel_subset_is_equality() {
+        // Channel ids are opaque kernel handles — subset == equality.
+        let ch_a = Resource::IpcChannel(7);
+        let ch_b = Resource::IpcChannel(7);
+        let ch_c = Resource::IpcChannel(8);
+        assert!(ch_a.is_subset_of(&ch_b));
+        assert!(!ch_a.is_subset_of(&ch_c));
+        assert!(!ch_c.is_subset_of(&ch_a));
+    }
+
+    #[test]
+    fn resource_ipc_channel_is_subset_of_any() {
+        // Every concrete resource is a subset of `Any`; the IPC channel
+        // variant is no exception. This matters because attenuation may
+        // narrow `Any` down to a specific channel.
+        let concrete = Resource::IpcChannel(42);
+        assert!(concrete.is_subset_of(&Resource::Any));
+        assert!(!Resource::Any.is_subset_of(&concrete));
+    }
+
+    #[test]
+    fn resource_ipc_channel_disjoint_from_filesystem() {
+        // Cross-kind comparisons never satisfy the subset relation, so a
+        // filesystem capability can never accidentally authorise an IPC
+        // operation and vice versa.
+        let ch = Resource::IpcChannel(1);
+        let fs = Resource::Filesystem("/dev/null".to_string());
+        assert!(!ch.is_subset_of(&fs));
+        assert!(!fs.is_subset_of(&ch));
+    }
+
+    #[test]
+    fn action_ipc_send_recv_are_distinct() {
+        // Sanity check that the two MB13.c additions are not aliased by
+        // the derive(PartialEq) — protects against an accidental copy of
+        // a variant.
+        assert_ne!(Action::IpcSend, Action::IpcRecv);
+        assert_ne!(Action::IpcSend, Action::AgentSend);
+    }
+
+    #[test]
+    fn scope_ipc_send_subset_requires_matching_action_and_channel() {
+        let parent = Scope {
+            action: Action::IpcSend,
+            resource: Resource::IpcChannel(1),
+            window: TimeWindow::new(0, 100).unwrap(),
+            caveats: vec![],
+        };
+        let same = Scope {
+            action: Action::IpcSend,
+            resource: Resource::IpcChannel(1),
+            window: TimeWindow::new(10, 90).unwrap(),
+            caveats: vec![],
+        };
+        let other_action = Scope {
+            action: Action::IpcRecv,
+            resource: Resource::IpcChannel(1),
+            window: TimeWindow::new(10, 90).unwrap(),
+            caveats: vec![],
+        };
+        let other_channel = Scope {
+            action: Action::IpcSend,
+            resource: Resource::IpcChannel(2),
+            window: TimeWindow::new(10, 90).unwrap(),
+            caveats: vec![],
+        };
+        assert!(same.is_subset_of(&parent));
+        assert!(!other_action.is_subset_of(&parent));
+        assert!(!other_channel.is_subset_of(&parent));
     }
 
     #[test]

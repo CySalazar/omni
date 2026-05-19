@@ -211,6 +211,149 @@ impl KernelCapabilityCheck for StubCapabilityProvider {
     }
 }
 
+// =============================================================================
+// MB13.c — Ed25519CapabilityProvider
+// =============================================================================
+//
+// What this delivers vs. what's still pending:
+//
+// - **Delivered (MB13.c):** real Ed25519 signature verification of
+//   `omni_capability::CapabilityToken` blobs presented to the kernel.
+//   The provider also wraps the existing per-IPC shape-matching path so
+//   it can drop-in replace [`StubCapabilityProvider`] without touching
+//   the IPC registry.
+// - **Deferred (MB13.d):** the `IpcCreateChannel` syscall ABI extension
+//   that actually plumbs signed tokens from user space into the kernel.
+//   Until that lands, MB13.c provides the verification *machinery*
+//   (callable from kernel-internal tests and future syscall handlers)
+//   but is not yet wired into the IPC boot path. `StubCapabilityProvider`
+//   therefore remains the boot-wiring default until MB13.d.
+//
+// Design rationale:
+//
+// - Per-IPC checks (`KernelCapabilityCheck::verify`) stay O(1) shape
+//   matching — re-verifying an Ed25519 signature on every IPC send/recv
+//   would add ~50 µs per call (RustCrypto soft backend on bare-metal)
+//   for no security benefit, because the signature is invariant once
+//   accepted at channel creation.
+// - Signature verification is exposed as a dedicated method
+//   `verify_signed_token` that the MB13.d `IpcCreateChannel` handler
+//   will call ONCE per channel.
+// - The provider carries the kernel's own `NodeId` (used as the TEE
+//   attestation source against which `payload.subject` is matched).
+//   For MB13.c this is a fixed all-zero placeholder until `omni-tee`
+//   (P5) supplies a real attested identity.
+
+/// MB13.c — Ed25519-backed capability verifier.
+///
+/// Verifies the signature, time window, and TEE-binding of an
+/// [`omni_capability::CapabilityToken`] by delegating to
+/// [`omni_capability::CapabilityToken::verify_full`] with a fixed
+/// [`StubAttestation`] sourced from `self.node_id` and an empty
+/// [`RevocationList`]. Per-IPC checks fall back to the same
+/// shape-matching semantics as [`StubCapabilityProvider`].
+#[derive(Debug, Clone, Copy)]
+pub struct Ed25519CapabilityProvider {
+    /// `NodeId` this kernel claims as its TEE attestation identity. For
+    /// MB13.c this is the all-zero placeholder; a real attested value
+    /// will come from `omni-tee` (P5) once a TEE backend lands.
+    node_id_bytes: [u8; 32],
+}
+
+impl Ed25519CapabilityProvider {
+    /// Construct a provider bound to the supplied 32-byte TEE
+    /// attestation hash.
+    #[must_use]
+    pub const fn with_node_id(node_id_bytes: [u8; 32]) -> Self {
+        Self { node_id_bytes }
+    }
+
+    /// Construct a provider bound to the all-zero placeholder node id.
+    /// MB13.c uses this until `omni-tee` provides a real attested id.
+    #[must_use]
+    pub const fn placeholder() -> Self {
+        Self::with_node_id([0u8; 32])
+    }
+
+    /// Verify the token's signature only (no time / TEE / revocation
+    /// checks).
+    ///
+    /// Used by tests and by paths that have already validated the time
+    /// window through a separate clock source.
+    #[must_use]
+    #[allow(
+        clippy::unused_self,
+        reason = "Signature verification reads the token's embedded `issuer` key only; the \
+                  provider's stored `node_id_bytes` becomes relevant only in `verify_signed_token`. \
+                  Keeping the method on `&self` mirrors the `verify_signed_token` shape so callers \
+                  can swap between the two without restructuring."
+    )]
+    pub fn verify_signature_only(
+        &self,
+        token: &omni_capability::CapabilityToken,
+    ) -> CapabilityVerdict {
+        match token.verify_signature() {
+            Ok(()) => CapabilityVerdict::Authorised,
+            Err(_) => CapabilityVerdict::Denied,
+        }
+    }
+
+    /// Full verification: signature, time window, TEE binding, and
+    /// revocation status — i.e. exactly what
+    /// [`omni_capability::CapabilityToken::verify_full`] checks.
+    ///
+    /// The TEE attestation source is a [`StubAttestation`] bound to
+    /// `self.node_id_bytes`; the revocation list is empty (per-channel
+    /// revocation lands with MB13.d). Callers MUST supply a monotonic
+    /// `now` — at boot the kernel uses RTC seconds via
+    /// [`crate::bare_metal::arch::rtc_seconds`].
+    #[must_use]
+    pub fn verify_signed_token(
+        &self,
+        token: &omni_capability::CapabilityToken,
+        now: u64,
+    ) -> CapabilityVerdict {
+        let attestation = omni_capability::tee::StubAttestation {
+            fixed_node_id: omni_types::identity::NodeId::from_attestation_hash(self.node_id_bytes),
+        };
+        let revocation = omni_capability::revocation::RevocationList::new();
+        match token.verify_full(now, &attestation, &revocation) {
+            Ok(()) => CapabilityVerdict::Authorised,
+            Err(_) => CapabilityVerdict::Denied,
+        }
+    }
+}
+
+impl Default for Ed25519CapabilityProvider {
+    fn default() -> Self {
+        Self::placeholder()
+    }
+}
+
+impl KernelCapabilityCheck for Ed25519CapabilityProvider {
+    #[allow(
+        clippy::unused_self,
+        reason = "Per-IPC path keeps the same shape-match semantics as StubCapabilityProvider; \
+                  the provider's `node_id_bytes` is consumed by `verify_signed_token`, not here."
+    )]
+    fn verify(
+        &self,
+        token: &KernelCapabilityToken,
+        action: KernelAction,
+        resource: KernelResource,
+    ) -> CapabilityVerdict {
+        // Per-IPC path: O(1) action/resource shape match — same
+        // semantics as `StubCapabilityProvider`. Ed25519 signature
+        // verification is a one-shot operation done at channel
+        // creation via `verify_signed_token` (MB13.d).
+        if token.action == action && token.resource == resource {
+            CapabilityVerdict::Authorised
+        } else {
+            CapabilityVerdict::Denied
+        }
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
@@ -273,5 +416,134 @@ mod tests {
             KernelResource::IpcChannel(8),
         );
         assert_eq!(v, CapabilityVerdict::Denied);
+    }
+
+    // -------------------------------------------------------------------
+    // MB13.c — Ed25519CapabilityProvider
+    // -------------------------------------------------------------------
+    //
+    // The host test build has the full `omni-capability` userspace
+    // features (`mint`, `id-generation`, `rng`) available, so we can
+    // mint real Ed25519-signed tokens and exercise the verify path
+    // end-to-end. The bare-metal build of `omni-kernel` does not
+    // include these tests (the `cfg(test)` gate keeps them off).
+
+    use omni_capability::{
+        CapabilityToken,
+        scope::{Action, Resource, Scope, TimeWindow},
+    };
+    use omni_crypto::signing::OmniSigningKey;
+    use omni_types::identity::NodeId;
+
+    fn fresh_ipc_token(channel_id: u64) -> (CapabilityToken, NodeId, OmniSigningKey, u64) {
+        let issuer_key = OmniSigningKey::generate();
+        let node_bytes = [0xAB; 32];
+        let node_id = NodeId::from_attestation_hash(node_bytes);
+        let scope = Scope {
+            action: Action::IpcSend,
+            resource: Resource::IpcChannel(channel_id),
+            window: TimeWindow::new(100, 200).expect("valid window"),
+            caveats: alloc::vec::Vec::new(),
+        };
+        let token = CapabilityToken::mint(&issuer_key, node_id, scope, None).expect("mint");
+        // `now` chosen inside the window.
+        (token, node_id, issuer_key, 150)
+    }
+
+    #[test]
+    fn ed25519_signature_only_accepts_freshly_minted_token() {
+        let (token, _node, _key, _now) = fresh_ipc_token(7);
+        let provider = Ed25519CapabilityProvider::placeholder();
+        assert_eq!(
+            provider.verify_signature_only(&token),
+            CapabilityVerdict::Authorised
+        );
+    }
+
+    #[test]
+    fn ed25519_signature_only_rejects_tampered_payload() {
+        let (mut token, _node, _key, _now) = fresh_ipc_token(7);
+        // Mutate the scope window so the signature pre-image changes.
+        token.payload.scope.window = TimeWindow::new(0, u64::MAX).expect("widened window");
+        let provider = Ed25519CapabilityProvider::placeholder();
+        assert_eq!(
+            provider.verify_signature_only(&token),
+            CapabilityVerdict::Denied
+        );
+    }
+
+    #[test]
+    fn ed25519_verify_full_accepts_inside_window_with_matching_node() {
+        let (token, node, _key, now) = fresh_ipc_token(7);
+        let provider = Ed25519CapabilityProvider::with_node_id(*node.as_bytes());
+        assert_eq!(
+            provider.verify_signed_token(&token, now),
+            CapabilityVerdict::Authorised
+        );
+    }
+
+    #[test]
+    fn ed25519_verify_full_rejects_outside_window() {
+        let (token, node, _key, _now) = fresh_ipc_token(7);
+        let provider = Ed25519CapabilityProvider::with_node_id(*node.as_bytes());
+        // `now = 50` is before the token's `not_before = 100`.
+        assert_eq!(
+            provider.verify_signed_token(&token, 50),
+            CapabilityVerdict::Denied
+        );
+        // `now = 250` is past the token's `not_after = 200`.
+        assert_eq!(
+            provider.verify_signed_token(&token, 250),
+            CapabilityVerdict::Denied
+        );
+    }
+
+    #[test]
+    fn ed25519_verify_full_rejects_attestation_mismatch() {
+        // Mint a token bound to `node_a`; verify with a provider
+        // pretending to be `node_b`. TEE binding must fail.
+        let (token, _node_a, _key, now) = fresh_ipc_token(7);
+        let provider = Ed25519CapabilityProvider::with_node_id([0xCC; 32]);
+        assert_eq!(
+            provider.verify_signed_token(&token, now),
+            CapabilityVerdict::Denied
+        );
+    }
+
+    #[test]
+    fn ed25519_per_ipc_check_matches_stub_semantics() {
+        // The per-IPC `verify` call MUST keep shape-matching semantics
+        // so Ed25519CapabilityProvider can drop-in replace
+        // StubCapabilityProvider without regressing MB12 behaviour.
+        let token = KernelCapabilityToken {
+            subject: KernelPrincipal::from_bytes([0x42; 32]),
+            action: KernelAction::IpcSend,
+            resource: KernelResource::IpcChannel(11),
+        };
+        let provider = Ed25519CapabilityProvider::placeholder();
+        assert_eq!(
+            provider.verify(
+                &token,
+                KernelAction::IpcSend,
+                KernelResource::IpcChannel(11)
+            ),
+            CapabilityVerdict::Authorised
+        );
+        assert_eq!(
+            provider.verify(
+                &token,
+                KernelAction::IpcRecv,
+                KernelResource::IpcChannel(11)
+            ),
+            CapabilityVerdict::Denied
+        );
+        assert_eq!(
+            provider.verify(
+                &token,
+                KernelAction::IpcSend,
+                KernelResource::IpcChannel(12)
+            ),
+            CapabilityVerdict::Denied
+        );
     }
 }

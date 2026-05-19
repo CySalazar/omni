@@ -116,6 +116,13 @@ impl CapabilityToken {
     /// Returns [`OmniError::Capability`] with
     /// [`CapabilityErrorKind::MalformedToken`] only if canonical
     /// encoding fails (see [`TokenPayload::canonical_bytes`]).
+    ///
+    /// # Feature gating
+    ///
+    /// Available only under `feature = "mint"` (default-on for the
+    /// userspace build). Verify-only bare-metal consumers (the kernel)
+    /// disable this path because it requires a CSPRNG (`CapabilityId::new`).
+    #[cfg(feature = "mint")]
     pub fn mint(
         issuer_key: &OmniSigningKey,
         subject: NodeId,

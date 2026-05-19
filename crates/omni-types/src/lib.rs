@@ -83,11 +83,14 @@ extern crate alloc;
 
 pub mod encrypted;
 pub mod error;
-// `identity` is feature-gated behind `id-generation` (default ON) because
-// its UUIDv4 constructors pull `uuid` + `getrandom`, which have no
-// implementation on `x86_64-unknown-none` (the kernel target). The
-// kernel disables the default features and consumes only `wire`.
-#[cfg(feature = "id-generation")]
+// `identity` is feature-gated behind `id-types` (default ON via
+// `id-generation`) because its newtypes wrap `uuid::Uuid`. The
+// CSPRNG-driven `::new()` constructors live in the same module but are
+// gated separately behind `id-generation` so bare-metal builds can
+// reference the type names (`NodeId`, `CapabilityId`, …) for
+// verify-only paths without dragging `getrandom`. MB13.c split (see
+// the corresponding Cargo.toml comment).
+#[cfg(feature = "id-types")]
 pub mod identity;
 pub mod version;
 pub mod wire;
@@ -95,6 +98,6 @@ pub mod wire;
 // Re-export the most frequently used items at the crate root for ergonomic
 // imports (`use omni_types::{NodeId, OmniError, Result}`).
 pub use crate::error::{OmniError, Result};
-#[cfg(feature = "id-generation")]
+#[cfg(feature = "id-types")]
 pub use crate::identity::{AgentId, CapabilityId, ModelId, NodeId, SessionId};
 pub use crate::version::{OsVersion, ProtocolVersion};

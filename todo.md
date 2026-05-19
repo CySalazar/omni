@@ -1,6 +1,6 @@
 # OMNI OS — Implementation TODO
 
-> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB12** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0); MB13.a (SIMD force-soft) + **MB13.b (ET_DYN/PIE kernel, upper-half mapping)** chiusi 2026-05-19. Roadmap Phase 1 ~70% — il deliverable "IPC primitives operational (typed message passing)" è chiuso e il blocker boot-path triple-fault è risolto. **Prossimo blocco tecnico: MB13.c** = `omni-capability` come dep di `omni-kernel` (Ed25519 verify reale sostituisce `StubCapabilityProvider`).
+> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB12** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0); MB13.a (SIMD force-soft) + MB13.b (ET_DYN/PIE kernel, upper-half mapping) + **MB13.c (`omni-capability` integration + `Ed25519CapabilityProvider`)** chiusi 2026-05-19. Roadmap Phase 1 ~72% — il deliverable "IPC primitives operational (typed message passing)" è chiuso, il blocker boot-path triple-fault è risolto, e il kernel ora possiede una capability dispatch Ed25519-verified pronta per il wiring. **Prossimo blocco tecnico: MB13.d** = `IpcCreateChannel` syscall ABI extension per passare token postcard-encoded da userspace.
 > **Last updated:** 2026-05-19 (riallineamento post-MB12: aggiunti tier P6.MB sezioni MB1-MB13, Step 7 closure, P6.6 chiuso da MB12, P6.7 sbloccato da MB12, P3 Tamarin proof eseguito 2026-05-12, `docs/adr/0001..0005` tutti `accepted`. Branch corrente `feat/kernel-mb11-userspace` con HEAD `1a0fa3e`; PR verso `main` ancora da aprire).
 > **Storia stati precedenti:** 2026-05-18 (MB12 closure — IPC + multi-task user, ADR-0005, 426 tests). 2026-05-18 (Step 7.1-7.4 lift blanket allows + ADR-0003 + CI `blanket-allow-guard`). 2026-05-18 (MB11 closure — Ring 3 + per-process CR3, ADR-0004). 2026-05-18 (MB10 closure — kernel stack isolation, ADR-0002, PR #33 in `main`). 2026-05-18 (v0.2.0 release — MB1-MB9 + Track A, PR #29 in `main`). 2026-05-16 (MB4/MB5). 2026-05-15 (K5 QEMU smoke gate). 2026-05-12 (scaffolding pass P3-P6 verificato). 2026-05-10 (P1 + P2 chiusi). 2026-05-09 (P0 chiuso).
 > **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
@@ -797,12 +797,12 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 | MB10 | Kernel stack isolation + guard page | `[x]` | `8c1496a` | [0002](docs/adr/0002-mb10-kernel-stack-isolation.md) |
 | MB11 | Primo userspace Ring 3 + per-process CR3 + STAR fix | `[x]` | `22289e1` + `c743173` | [0004](docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md) |
 | MB12 | IPC reale (queue + capability stub + multi-task user) | `[x]` | `60f3a82` | [0005](docs/adr/0005-mb12-ipc-message-passing.md) |
-| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[~]`** (MB13.a + MB13.b chiusi 2026-05-19) | — | TBD ADR-0006 |
+| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[~]`** (MB13.a + MB13.b + MB13.c chiusi 2026-05-19; MB13.d/e open) | — | TBD ADR-0006 |
 | MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[ ]` | — | — |
 
 ### P6.MB13 — `omni-capability` integration reale
 
-- **Status:** `[~]` (MB13.a + MB13.b chiusi 2026-05-19; MB13.c/d/e ancora aperti)
+- **Status:** `[~]` (MB13.a + MB13.b + MB13.c chiusi 2026-05-19; MB13.d/e ancora aperti)
 - **Priority:** P6 / High
 - **Effort:** 1-2 giornate (gating SIMD + glue + nuovi test) + 0.5-1 giornata per il fix triple-fault
 - **Dependencies:** MB12 ✅; nessuna esterna
@@ -848,17 +848,27 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 
 #### P6.MB13.c — `omni-capability` come dep di `omni-kernel`
 
-- **Status:** `[ ]` (blocked-on `MB13.a`)
-- **Effort:** 1 giornata
-- **Deliverables:**
-  - `crates/omni-capability/Cargo.toml`: aggiungere feature `bare-metal = []` + propagation; verificare `no_std + alloc` compatibility.
-  - `crates/omni-kernel/Cargo.toml`: `omni-capability = { path = "../omni-capability", default-features = false, features = ["bare-metal"] }`.
-  - `omni_capability::scope::Action` + `Resource` (variants `#[non_exhaustive]` per semver-safety): aggiungere `Action::IpcSend`, `Action::IpcRecv`, `Resource::IpcChannel(u64)`.
-  - `crates/omni-kernel/src/capabilities.rs`: nuovo `Ed25519CapabilityProvider` che implementa `KernelCapabilityCheck::verify` chiamando `CapabilityToken::verify_full`; sostituisce `StubCapabilityProvider` nel boot wiring.
-- **Acceptance:**
-  - `cargo test -p omni-capability` resta verde (43 unit + 7 integration).
-  - `cargo test -p omni-kernel --all-features` mostra +N test (target ~6 unit) sul nuovo provider.
-  - `cargo clippy -p omni-kernel --target x86_64-unknown-none --no-default-features --features bare-metal -- -D warnings` clean.
+- **Status:** `[x]` (closed 2026-05-19)
+- **Effort:** 1 giornata (delivered)
+- **Deliverables (delivered):**
+  - **`crates/omni-types/Cargo.toml` + `src/lib.rs` + `src/identity.rs`** — split `id-generation` (default ON, runtime constructors) in `id-types` (types only, no `getrandom`) + `id-generation` (superset: `id-types` + `getrandom`). `uuid` dichiarata direttamente con `features = ["serde"]` (no `v4`) — la helper `random_uuid_bytes` ha sempre usato `Uuid::from_bytes` quindi `v4` non era necessaria. Net: `omni-types` ora compila su `x86_64-unknown-none` con solo `id-types`.
+  - **`crates/omni-capability/Cargo.toml`** — declares `omni-types/id-types` come hard requirement (path + version + explicit `default-features = false`); nuove feature `mint` (default-on, gates `CapabilityToken::mint` + `attenuation::attenuate` + `omni-types/id-generation` + `omni-crypto/rng`) e `bare-metal` (marker che forwarda `omni-crypto/bare-metal`). dev-deps re-enablano `mint` per i test.
+  - **`crates/omni-capability/src/scope.rs`** — aggiunte `Action::IpcSend`, `Action::IpcRecv`, `Resource::IpcChannel(u64)` (semver-safe via `#[non_exhaustive]`). Subset relation per `IpcChannel` è uguaglianza (handle opaco kernel; no wildcard MB13.c). +5 unit test.
+  - **`crates/omni-capability/src/{attenuation.rs,token.rs}`** — gating `#[cfg(feature = "mint")]` su `attenuate` e `CapabilityToken::mint`; verify path resta sempre disponibile. `use` statement gated correttamente per evitare unused-import warnings sulla build bare-metal.
+  - **`crates/omni-kernel/Cargo.toml`** — `omni-capability = { ..., default-features = false, features = ["bare-metal"] }` come dep runtime + dev-deps con `mint`/`id-generation`/`rng` per i test host.
+  - **`crates/omni-kernel/src/capabilities.rs`** — nuovo `Ed25519CapabilityProvider` con tre superfici: (a) `verify_signature_only(token)` — Ed25519 sig only; (b) `verify_signed_token(token, now)` — full verify via `CapabilityToken::verify_full` + `StubAttestation` bound a `node_id_bytes` + empty `RevocationList`; (c) `impl KernelCapabilityCheck::verify` — O(1) shape match identico allo stub (drop-in replacement per-IPC). Il provider è esposto al kernel ma **non ancora wired nei syscall IPC** — il plumbing dei token postcard via `IpcCreateChannel` è MB13.d. `StubCapabilityProvider` resta il default del boot wiring. +6 unit test.
+- **Acceptance (verified):**
+  - `cargo build -p omni-capability --target x86_64-unknown-none --no-default-features --features bare-metal` clean (era: `unresolved import omni_types::identity`).
+  - `cargo build -p omni-kernel --target x86_64-unknown-none --no-default-features --features bare-metal` clean.
+  - `cargo build -p omni-kernel --target x86_64-unknown-none --no-default-features --features mb12-userprobe` clean.
+  - `cargo build --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --no-default-features --features mb12-userprobe` clean.
+  - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean.
+  - `cargo clippy -p omni-kernel --target x86_64-unknown-none --no-default-features --features {bare-metal, mb12-userprobe} -- -D warnings` clean.
+  - `cargo clippy -p omni-capability --target x86_64-unknown-none --no-default-features --features bare-metal -- -D warnings` clean.
+  - `cargo test -p omni-capability` → 64 + 7 + 5 = 76 pass (5 new in `scope.rs`).
+  - `cargo test -p omni-kernel --lib capabilities` → 11/11 ok (6 new + 4 stub regressions + 1 carryover).
+  - `scripts/check-no-blanket-allow.sh` → ok (12 crate roots).
+  - Build Info panel updated a `Active = MB13.c Ed25519 cap provider`, `Next = MB13.d IpcCreateChannel ABI`, `Track B = MB1-MB12 OK, MB13.a/b/c OK`, `Phase 1 ≈ 72%`, `Tests = 432+ workspace pass`.
 
 #### P6.MB13.d — `IpcCreateChannel` syscall ABI extension
 

@@ -1,10 +1,10 @@
 # OMNI OS — Progress Report
 
-**Data snapshot:** 2026-05-19 (post MB13.b — ET_DYN/PIE kernel + upper-half dynamic mapping)
+**Data snapshot:** 2026-05-19 (post MB13.c — `omni-capability` integration + `Ed25519CapabilityProvider`)
 **Branch corrente:** `feat/kernel-mb11-userspace` (locale; in attesa di PR + merge in `main`)
-**HEAD:** post-MB13.b — bare-metal boot-path fix (kernel ELF in upper half, CR3 switch survive)
-**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a + MB13.b**).
-**Fase di roadmap:** Phase 0 → ingresso Phase 1 (microkernel proof-of-concept)
+**HEAD:** post-MB13.c — kernel TCB ora include `omni-capability` come verify-only dep + provider Ed25519 reale
+**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a + MB13.b + MB13.c**).
+**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~72% Track B
 
 ---
 
@@ -122,10 +122,58 @@ indici ≥ 256). Quella metà è clonata per riferimento da
 del triple-fault `mb12-userprobe` su Proxmox VMID 103 risolto a livello
 deterministico.
 
-Il prossimo blocco di lavoro è **MB13.c — `omni-capability` come dep di
-`omni-kernel`** (Ed25519 verify reale che sostituisce
-`StubCapabilityProvider`). A seguire MB13.d (`IpcCreateChannel` ABI
-esteso per token postcard) e MB13.e (PR + tag intermedio).
+Il blocco **MB13.c (`omni-capability` integration + `Ed25519CapabilityProvider`)**
+è stato chiuso il 2026-05-19. Quattro cambi atomici:
+
+(i) **`omni-types` split feature `id-generation` → `id-types` + `id-generation`**:
+`id-types` espone i tipi del modulo `identity` senza richiedere
+`getrandom`; `id-generation` (default ON, superset) abilita anche i
+costruttori `::new()` CSPRNG-backed. La dep `uuid` è ora dichiarata
+direttamente in `omni-types` con `features = ["serde"]` (senza `v4`),
+così la build bare-metal non trascina più la transitive su `rand`. La
+helper `random_uuid_bytes` e i metodi `::new()` su `AgentId`,
+`CapabilityId`, `SessionId` sono ora gated `#[cfg(feature = "id-generation")]`.
+
+(ii) **`omni-capability` nuove feature `mint` + `bare-metal`**:
+`default = ["mint"]` mantiene il comportamento userspace; `mint`
+abilita `omni-types/id-generation` + `omni-crypto/rng` (richiesti da
+`CapabilityToken::mint` e `attenuation::attenuate`); `bare-metal`
+forwarda `omni-crypto/bare-metal` e — combinato con
+`--no-default-features` — produce un build verify-only che compila su
+`x86_64-unknown-none`. I path mint sono gated
+`#[cfg(feature = "mint")]`; il path verify (`verify_signature`,
+`verify_full`) resta sempre disponibile. Aggiunte tre varianti
+semver-safe `#[non_exhaustive]`: `Action::IpcSend`, `Action::IpcRecv`,
+`Resource::IpcChannel(u64)`. Subset relation per `IpcChannel` è
+uguaglianza (handle opaco kernel).
+
+(iii) **`omni-kernel` ora dipende da `omni-capability`** con
+`default-features = false, features = ["bare-metal"]`. Le dev-deps
+abilitano `mint` + `id-generation` + `rng` per i test host, senza
+inquinare la build bare-metal (`cargo build --target x86_64-unknown-none`
+non pull dev-deps).
+
+(iv) **`Ed25519CapabilityProvider` in
+`crates/omni-kernel/src/capabilities.rs`** con tre superfici:
+`verify_signature_only(token)` (Ed25519 sig only),
+`verify_signed_token(token, now)` (full verify: signature + time +
+TEE binding via `StubAttestation` legato a `node_id_bytes` + empty
+`RevocationList`), e `verify(token, action, resource)` (impl
+`KernelCapabilityCheck` — O(1) shape match identico allo stub, così
+il provider è drop-in replacement al livello per-IPC). Il provider è
+disponibile nel kernel ma non ancora wired nei syscall IPC: il
+plumbing dei token postcard via `IpcCreateChannel` ABI è MB13.d.
+`StubCapabilityProvider` resta quindi il default del boot wiring fino
+a MB13.d. **+11 test host-side** (5 in `omni-capability::scope` +
+6 in `omni-kernel::capabilities`), workspace target ≥ 432 pass.
+
+Il prossimo blocco di lavoro è **MB13.d — `IpcCreateChannel` syscall
+ABI extension** (postcard-encoded token via `(send_token_ptr,
+recv_token_ptr)` opzionali, nuovi user ELFs in
+`bare_metal/userprobe_mb13.rs`, integration test
+`tests/mb13_capability_signed.rs`, swap del boot wiring da
+`StubCapabilityProvider` a `Ed25519CapabilityProvider`). A seguire
+MB13.e (PR + tag intermedio).
 
 ---
 
@@ -167,8 +215,9 @@ esteso per token postcard) e MB13.e (PR + tag intermedio).
 | MB11 | Primo userspace process Ring 3 + per-process CR3 (ADR-0004) | ✅ | `22289e1` + `c743173` |
 | MB12 | IPC reale (queue + capability stub + multi-task user) (ADR-0005) | ✅ | post-`c743173` |
 | MB13.a | `omni-crypto` bare-metal unblock (force-soft SIMD) | ✅ | `2398d5c` |
-| MB13.b | Boot-path fix: ET_DYN/PIE kernel + upper-half dynamic mapping | ✅ | (this commit) |
-| **MB13** | **omni-capability integration (Ed25519 verify) — MB13.c/d/e open** | 🟡 | — |
+| MB13.b | Boot-path fix: ET_DYN/PIE kernel + upper-half dynamic mapping | ✅ | `d9a0692` |
+| MB13.c | `omni-capability` integration + `Ed25519CapabilityProvider` | ✅ | (this commit) |
+| **MB13** | **omni-capability integration (Ed25519 verify) — MB13.d/e open** | 🟡 | — |
 
 **Verifica MB1-MB12:**
 - `cargo test --workspace --all-features` → **426 pass / 0 fail** (era 393 post-MB11, +33 da MB12 — vedi CHANGELOG `[Unreleased] § Added` riga "Test delta")
@@ -640,7 +689,7 @@ del kernel ELF in upper half.
 | Roadmap | Stato attuale |
 |---|---|
 | **Phase 0 — Foundation (mesi 0-6)** | ~75% (governance ✅, foundational crates ✅, OIP process ✅, funding/legal in corso) |
-| **Phase 1 — Microkernel POC (mesi 6-18)** | ~70% (boot ✅, paging ✅, scheduler ✅, syscall ✅, ELF loader ✅, kernel-stack isolation ✅, userspace Ring 3 + per-process CR3 ✅, **IPC concreto + multi-task user ✅ MB12**, **bare-metal smoke unblocked ✅ MB13.b** (ET_DYN/PIE kernel, upper-half mapping); mancano capability dispatch Ed25519-verified (MB13.c/d/e), driver model (P6.7), audit (P6.8)) |
+| **Phase 1 — Microkernel POC (mesi 6-18)** | ~72% (boot ✅, paging ✅, scheduler ✅, syscall ✅, ELF loader ✅, kernel-stack isolation ✅, userspace Ring 3 + per-process CR3 ✅, **IPC concreto + multi-task user ✅ MB12**, **bare-metal smoke unblocked ✅ MB13.b** (ET_DYN/PIE kernel, upper-half mapping), **Ed25519CapabilityProvider ✅ MB13.c** (verify-only + signature/time/TEE binding, drop-in compatibile con `KernelCapabilityCheck`); mancano syscall ABI extension (MB13.d), driver model (P6.7), audit (P6.8)) |
 | **Phase 2 — AI Runtime + Tier 0** | 0% (bloccato da Phase 1) |
 | **Phase 3-7** | 0% |
 

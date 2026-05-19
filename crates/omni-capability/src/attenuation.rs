@@ -24,11 +24,14 @@
 //! complete chain at use time, this rules out privilege escalation
 //! through attenuation.
 
+#[cfg(feature = "mint")]
 use omni_crypto::signing::OmniSigningKey;
 use omni_types::error::{CapabilityErrorKind, OmniError, Result};
 
 use crate::scope::{Caveat, Resource, Scope};
-use crate::token::{CapabilityToken, TokenPayload};
+use crate::token::CapabilityToken;
+#[cfg(feature = "mint")]
+use crate::token::TokenPayload;
 
 // =============================================================================
 // Caveat application — tighten one dimension of a Scope.
@@ -148,6 +151,13 @@ pub fn restrict_resource(scope: &Scope, new_resource: Resource) -> Result<Scope>
 /// Returns [`OmniError::Capability`] on any of:
 /// * The caveat sequence cannot be applied (`AttenuationViolation`).
 /// * The new payload cannot be canonicalised (`MalformedToken`).
+///
+/// # Feature gating
+///
+/// Available only under `feature = "mint"` (default-on for the
+/// userspace build). Verify-only bare-metal consumers (the kernel)
+/// disable this path because minting a child id requires a CSPRNG.
+#[cfg(feature = "mint")]
 pub fn attenuate(
     parent: &CapabilityToken,
     issuer_key: &OmniSigningKey,

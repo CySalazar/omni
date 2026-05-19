@@ -17,6 +17,95 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB13.c: `omni-capability` integration + `Ed25519CapabilityProvider`
+  (2026-05-19).** Lands the real Ed25519 signature-verification path
+  alongside the MB12 `StubCapabilityProvider`. The kernel now depends on
+  `omni-capability` (verify-only build) and can authenticate userspace
+  `CapabilityToken` blobs end-to-end. The new provider is wired into the
+  kernel surface but not yet plugged into the IPC syscall handlers —
+  the syscall ABI extension that plumbs tokens through `IpcCreateChannel`
+  ships as MB13.d. `StubCapabilityProvider` therefore remains the boot-
+  wiring default until MB13.d. This closes the Phase 1 deliverable
+  "capability-based security primitives implemented" at the verification
+  layer; the matching ABI plumbing closes the rest.
+
+  - **`crates/omni-types/Cargo.toml` + `src/lib.rs` + `src/identity.rs`**
+    — split `id-generation` (default-on, runtime constructors) into a
+    new lower-tier `id-types` feature that exposes the `identity`
+    module's *type definitions* without dragging `getrandom`. The
+    UUIDv4-minting `::new()` methods on `AgentId`, `CapabilityId`, and
+    `SessionId` plus the `random_uuid_bytes` helper are now feature-
+    gated to `id-generation`; the types themselves are available under
+    `id-types`. The `uuid` crate is pulled with `features = ["serde"]`
+    only (no `v4`) because the in-house `random_uuid_bytes` helper goes
+    through `Uuid::from_bytes` and never needs `uuid`'s rng path. Net
+    effect: `omni-types` compiles on `x86_64-unknown-none` with just
+    `id-types` enabled, which is what the kernel needs.
+  - **`crates/omni-capability/Cargo.toml`** — declares `omni-types`
+    and `omni-crypto` with explicit `default-features = false`,
+    enabling only `omni-types/id-types` for the library build. A new
+    `mint` feature (default-on) gates the userspace-only paths:
+    `CapabilityToken::mint`, `attenuation::attenuate`, and their
+    transitive `id-generation` + `omni-crypto/rng` dependencies. A new
+    `bare-metal` feature is a marker that forwards
+    `omni-crypto/bare-metal`; combined with `--no-default-features`,
+    it produces a verify-only build that compiles on
+    `x86_64-unknown-none`. Dev-dependencies override the deps to
+    re-enable `mint` / `id-generation` / `rng` for `cargo test`.
+  - **`crates/omni-capability/src/scope.rs`** — adds three semver-safe
+    `#[non_exhaustive]` variants used by the kernel IPC dispatcher:
+    `Action::IpcSend`, `Action::IpcRecv`, and `Resource::IpcChannel(u64)`.
+    Subset relation for `IpcChannel` is equality (opaque kernel handle —
+    no wildcard at MB13.c); 5 new unit tests pin the new variants'
+    behaviour, including cross-discriminant disjointness.
+  - **`crates/omni-capability/src/{attenuation.rs,token.rs}`** — gate
+    `attenuate` and `CapabilityToken::mint` behind `#[cfg(feature =
+    "mint")]`. The verify path (`verify_signature`, `verify_full`) stays
+    available without `mint`. Unused-import warnings on the
+    bare-metal build are silenced by cfg-gating the corresponding
+    `use` statements.
+  - **`crates/omni-kernel/Cargo.toml`** — adds `omni-capability` as a
+    runtime dep with `default-features = false, features = ["bare-metal"]`.
+    dev-dependencies enable `mint` so host tests can mint Ed25519-
+    signed tokens to exercise the new provider end-to-end. The bare-
+    metal `cargo build --target x86_64-unknown-none` is unaffected
+    because dev-deps are not pulled into non-test builds.
+  - **`crates/omni-kernel/src/capabilities.rs`** — adds
+    `Ed25519CapabilityProvider` with three methods:
+    - `verify_signature_only(token)` — Ed25519 signature verification
+      only, no time/TEE/revocation checks. Used by tests and by call
+      sites that have validated the time window separately.
+    - `verify_signed_token(token, now)` — full verification via
+      `CapabilityToken::verify_full` with a `StubAttestation` bound to
+      the provider's `node_id_bytes` and an empty `RevocationList`.
+      MB13.c uses an all-zero placeholder node id; the real attested
+      identity arrives with `omni-tee` (P5).
+    - `verify(token, action, resource)` (impl
+      `KernelCapabilityCheck`) — O(1) action/resource shape match
+      identical to `StubCapabilityProvider`, so the provider is a
+      drop-in replacement at the per-IPC level. Signature verification
+      is a one-shot done at channel creation (MB13.d).
+  - **Test delta (host-side):** +5 in `omni-capability` (new
+    `IpcSend`/`IpcRecv`/`IpcChannel` subset semantics) + 6 in
+    `omni-kernel` (`Ed25519CapabilityProvider` happy path, tampered
+    payload, window/attestation rejection, per-IPC shape match).
+    Workspace target: ≥ 432 pass (was 426 post-MB12).
+  - **Verification:**
+    - `cargo build -p omni-capability --target x86_64-unknown-none --no-default-features --features bare-metal` → clean (was: `unresolved import omni_types::identity`).
+    - `cargo build -p omni-kernel --target x86_64-unknown-none --no-default-features --features bare-metal` → clean.
+    - `cargo build -p omni-kernel --target x86_64-unknown-none --no-default-features --features mb12-userprobe` → clean.
+    - `cargo build --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none --no-default-features --features mb12-userprobe` → clean (ET_DYN, regression on MB13.b).
+    - `cargo clippy --workspace --all-targets --all-features -- -D warnings` → clean.
+    - `cargo clippy -p omni-kernel --target x86_64-unknown-none --no-default-features --features bare-metal -- -D warnings` → clean.
+    - `cargo clippy -p omni-kernel --target x86_64-unknown-none --no-default-features --features mb12-userprobe -- -D warnings` → clean.
+    - `cargo clippy -p omni-capability --target x86_64-unknown-none --no-default-features --features bare-metal -- -D warnings` → clean.
+    - `cargo test -p omni-capability` → 64 + 7 + 5 = 76 pass (5 new).
+    - `cargo test -p omni-kernel --lib capabilities` → 11/11 ok (6 new + 4 stub regressions + 1 carryover).
+    - `scripts/check-no-blanket-allow.sh` → ok (12 crate roots scanned).
+    - Build Info panel updated to `Active = MB13.c Ed25519 cap provider`,
+      `Next = MB13.d IpcCreateChannel ABI`, `Track B = MB1-MB12 OK,
+      MB13.a/b/c OK`, `Phase 1 ≈ 72%`, `Tests = 432+ workspace pass`.
+
 - **Kernel — MB13.b: ET_DYN/PIE kernel + upper-half dynamic mapping
   (2026-05-19).** Fixes the `mb11-userprobe` / `mb12-userprobe`
   triple-fault on Proxmox VMID 103 / QEMU+OVMF at root cause: the

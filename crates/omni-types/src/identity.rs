@@ -56,6 +56,11 @@ use zeroize::Zeroize;
 // Failure to obtain entropy is unrecoverable on a system that needs
 // authentication / capability tokens to function — we panic with a
 // stable message rather than swallow the error and emit predictable IDs.
+//
+// MB13.c gating: this helper compiles only when `id-generation` is on,
+// so bare-metal kernel builds (which only need the *types*) skip the
+// `getrandom` dependency entirely.
+#[cfg(feature = "id-generation")]
 fn random_uuid_bytes() -> [u8; 16] {
     let mut bytes = [0u8; 16];
     // Panic message is the stable contract: tests and probes can match on
@@ -308,6 +313,7 @@ impl AgentId {
     /// On Linux this means `getrandom(2)` returned an unrecoverable error.
     /// The panic message is part of the stable contract; do not change
     /// without bumping a major version.
+    #[cfg(feature = "id-generation")]
     #[must_use]
     pub fn new() -> Self {
         Self(Uuid::from_bytes(random_uuid_bytes()))
@@ -369,6 +375,7 @@ impl CapabilityId {
     /// # Panics
     ///
     /// See [`AgentId::new`]. Same CSPRNG, same panic semantics.
+    #[cfg(feature = "id-generation")]
     #[must_use]
     pub fn new() -> Self {
         Self(Uuid::from_bytes(random_uuid_bytes()))
@@ -430,6 +437,7 @@ impl SessionId {
     /// # Panics
     ///
     /// See [`AgentId::new`]. Same CSPRNG, same panic semantics.
+    #[cfg(feature = "id-generation")]
     #[must_use]
     pub fn new() -> Self {
         Self(Uuid::from_bytes(random_uuid_bytes()))
@@ -468,18 +476,22 @@ impl IdHex for SessionId {
 
 // Default impls for the runtime-generated identifiers. Provided as a
 // convenience for collections and tests; semantically equivalent to `new()`.
+// MB13.c: gated behind `id-generation` because `Self::new()` is.
+#[cfg(feature = "id-generation")]
 impl Default for AgentId {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "id-generation")]
 impl Default for CapabilityId {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "id-generation")]
 impl Default for SessionId {
     fn default() -> Self {
         Self::new()
