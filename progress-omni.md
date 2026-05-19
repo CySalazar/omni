@@ -440,17 +440,45 @@ Accumulato durante le 7 iterazioni di CI conformance su PR #29.
 21. ~~**Real boot manuale di `mb12-userprobe` (triple-fault).**~~ ✅
     **CHIUSO da MB13.b (2026-05-19).** Root cause: `kernel-runner/.cargo/
     config.toml` forzava ET_EXEC con `-C relocation-model=static` +
-    `-C link-arg=--no-pie`. `bootloader_api 0.11` non riloccaa ET_EXEC,
+    `-C link-arg=--no-pie`, e `kernel-runner/build.rs` aggiungeva
+    `--no-pie` *dopo* i flag del target spec via
+    `cargo:rustc-link-arg`. `bootloader_api 0.11` non riloccava ET_EXEC,
     quindi il kernel finiva in PML4[0] (`p_vaddr = 0x200000`).
     `AddressSpace::new_with_kernel_half` mirrora solo PML4 256..511,
     quindi il `mov cr3` in `enter_user_mode` perdeva l'istruzione
-    successiva → triple fault. Fix: rimossi i flag ET_EXEC (il target
-    spec è già PIE su Rust 1.83+) + impostato
-    `BOOTLOADER_CONFIG.mappings.dynamic_range_start = 0xFFFF_8000_0000_0000`,
-    così `bootloader 0.11` rilocca il kernel image, lo stack, il
-    `BootInfo`, il framebuffer e il direct-map RAM tutti in upper half.
-    Validazione smoke completa Proxmox VMID 103 deferred a deploy-time
-    di questa milestone.
+    successiva → triple fault. Fix: rimossi i flag ET_EXEC dal config
+    + rimosso `kernel-runner/build.rs` (il target spec è già PIE su
+    Rust 1.83+) + impostato `BOOTLOADER_CONFIG.mappings.
+    dynamic_range_start = 0xFFFF_8000_0000_0000`, così `bootloader 0.11`
+    rilocca il kernel image, lo stack, il `BootInfo`, il framebuffer e
+    il direct-map RAM tutti in upper half. **Validazione smoke Proxmox
+    VMID 103 (2026-05-19):** kernel ELF type `DYN (Position-Independent
+    Executable file)` (verificato via `readelf -h`); bootloader log
+    riporta `virtual_address_offset: 0xffff800000000000` ed `Entry
+    point at: 0xffff800000003590`; il boot della build di default
+    (desktop demo) raggiunge `[virtio] tablet ready` e renderizza il
+    Build Info panel sul framebuffer (Active=`MB13.b ET_DYN upper-half`,
+    Next=`MB13.c omni-capability dep`); il boot della build
+    `mb12-userprobe` supera il punto di triple-fault precedente e
+    raggiunge `[mb12] handing off to user tasks` (vedi nuovo finding § 22).
+
+22. ⚠️ **`mb12-userprobe` user-side serial output missing** (nuovo,
+    post-MB13.b 2026-05-19). Con MB13.b il smoke `mb12-userprobe` ora
+    boota fino a `[mb12] handing off to user tasks`, poi la VM va in
+    `stopped` senza emettere le righe attese `ping`, `[user] exit=0`,
+    `[user] exit=0`. Il triple-fault precedente è chiuso (era a
+    `[sched] entering Ring 3 via iretq`; ora la transizione Ring 3
+    avviene con successo, evidenziato dal fatto che il kernel stampa
+    "handing off to user tasks" *dopo* il CR3-switch e ritorna senza
+    panic). Ipotesi: (a) il dispatcher scheduler MB12.0a/b non chiama
+    `enter_user_mode` per la prima dispatch dopo aver registrato i
+    due processi (ASsumendo che il path "first-dispatch detection via
+    context.rsp == 0" non sia attivo nel boot path mb12), oppure
+    (b) i due user-task triggerano un fault non printato che termina
+    silenziosamente la VM. Tracciato come **MB13.b.follow-up** in
+    todo.md — fuori scope per MB13.b stricto sensu (che è il fix del
+    CR3 triple-fault), ma deve essere indagato prima della chiusura
+    di MB13 globale.
 
 ---
 
