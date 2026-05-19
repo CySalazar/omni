@@ -343,9 +343,13 @@ impl KernelIpcRegistry {
     /// and extracts the embedded subject as a [`KernelPrincipal`].
     ///
     /// When both slots are `None`, this delegates to
-    /// [`Self::create_channel`] with `StubCapabilityProvider` so the
-    /// legacy MB12 open-channel path (used by the `mb12-userprobe`
-    /// boot wiring) keeps working byte-for-byte. Per the MB13.d ABI,
+    /// [`Self::create_channel`] with the same
+    /// [`Ed25519CapabilityProvider`] supplied by the caller — the
+    /// per-IPC `verify` impl on that provider is identical O(1)
+    /// shape-matching to the (now `#[cfg(test)]`-only)
+    /// `StubCapabilityProvider`, so the legacy MB12 open-channel path
+    /// (used by the `mb12-userprobe` boot wiring) keeps working
+    /// byte-for-byte. Per the MB13.d ABI,
     /// `(send_token = None, recv_token = None)` is the explicit
     /// "no capability gating" signal.
     ///
@@ -373,13 +377,7 @@ impl KernelIpcRegistry {
         now: u64,
     ) -> KernelResult<ChannelId> {
         if send_token_bytes.is_none() && recv_token_bytes.is_none() {
-            return self.create_channel(
-                owner,
-                policy,
-                None,
-                None,
-                &crate::capabilities::StubCapabilityProvider,
-            );
+            return self.create_channel(owner, policy, None, None, provider);
         }
 
         if policy.queue_depth == 0 {

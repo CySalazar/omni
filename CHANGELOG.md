@@ -17,6 +17,69 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB13.e: closure of the `omni-capability` integration
+  cycle (2026-05-19).** Closes the last open MB13 acceptance criteria
+  by making `Ed25519CapabilityProvider` the canonical
+  `KernelCapabilityCheck` implementation reachable from every
+  `IpcCreateChannel` path, and demoting `StubCapabilityProvider` to
+  a `#[cfg(test)]`-only mock.
+
+  Three call sites previously instantiated
+  `StubCapabilityProvider` outside `#[cfg(test)]`:
+
+  - **`crates/omni-kernel/src/ipc.rs`** —
+    `KernelIpcRegistry::create_channel_signed`'s `(None, None)`
+    shortcut now forwards the caller-supplied
+    `Ed25519CapabilityProvider` to `create_channel` instead of
+    constructing a fresh stub. The per-IPC `verify` impl on either
+    provider is identical O(1) shape-matching, so the runtime
+    behaviour for open channels is unchanged byte-for-byte.
+  - **`crates/omni-kernel/src/bare_metal/syscall_entry.rs`** — the
+    legacy `(send_token = 0, recv_token = 0)` fast path now
+    instantiates `Ed25519CapabilityProvider::placeholder()` on the
+    kernel stack and hands it to `create_channel`, replacing the
+    inline stub. The signed-token path already used
+    `Ed25519CapabilityProvider`; both paths are now consistent.
+  - **`crates/omni-kernel/src/bare_metal/userprobe_mb12.rs`** —
+    comments updated; the actual call already routed through
+    `Ed25519CapabilityProvider::placeholder()` since MB13.d.
+
+  `StubCapabilityProvider` (struct + `KernelCapabilityCheck` impl)
+  is wrapped in `#[cfg(test)]` so it cannot be reached from the
+  production boot wiring. The kernel's own `#[cfg(test)]` unit
+  tests under `src/ipc.rs` and `src/capabilities.rs` continue to
+  use it as a minimal mock that exercises the registry without
+  pulling Ed25519 verification into the assertion. The host-side
+  integration test `tests/mb12_ipc_cross_process.rs` (a separate
+  test binary that does not see the library's `cfg(test)` gate) is
+  migrated to `Ed25519CapabilityProvider::placeholder()`.
+
+  Module-level docs in `crates/omni-kernel/src/capabilities.rs`
+  rewritten to reflect that `Ed25519CapabilityProvider` is now the
+  canonical provider (per-IPC verify = O(1) shape-match; one-shot
+  signature + time window + TEE binding at channel creation). The
+  ADR-0005 reference is preserved; ADR-0006 captures the MB13
+  migration closure.
+
+  - **`docs/adr/0006-mb13-omni-capability-integration.md`** — new
+    ADR (status `accepted`) consolidating the MB13.a → MB13.h work,
+    the three alternatives considered for each sub-block, and the
+    documented residuals (open-channel back-door for the userprobe
+    demo, all-zero TEE placeholder until `omni-tee` lands,
+    `force-soft` SIMD).
+
+  No runtime semantics change for any existing caller. `cargo build
+  -p omni-kernel --target x86_64-unknown-none --no-default-features
+  --features bare-metal` clean; idem `mb12-userprobe` and
+  `kernel-runner --features mb12-userprobe`. `cargo clippy
+  --workspace --all-targets --all-features -- -D warnings` clean.
+  Workspace test count unchanged at 447+ (no tests removed; the
+  integration test imports were rewritten in place).
+
+  Build Info panel: Active=`MB13.e closure + ADR-0006`,
+  Next=`MB14 MP/AP + TLB shootdown`,
+  Track B=`MB1-MB12 OK, MB13 closed`, Phase 1 ≈ 82%.
+
 - **Kernel — MB13.h: TSS `ltr` wiring + dedicated IST stacks for
   #DF / #PF (2026-05-19).** Closes the silent-stall root cause that
   MB13.g surfaced as a missing diagnostic line: even with the full

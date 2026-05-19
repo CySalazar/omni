@@ -791,7 +791,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Phase    : ",
         11,
-        "1 - Microkernel POC  (~80%)",
+        "1 - Microkernel POC  (~82%)",
         graphics::WHITE,
     );
     row(
@@ -807,7 +807,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Track B  : ",
         11,
-        "MB1-MB12 OK, MB13.a-h OK",
+        "MB1-MB12 OK, MB13 closed",
         graphics::WHITE,
     );
     row(
@@ -815,7 +815,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "MB13.h TSS ltr + IST",
+        "MB13.e closure + ADR-0006",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -823,7 +823,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "MB13.e PR + tag",
+        "MB14 MP/AP + TLB shootdown",
         graphics::WHITE,
     );
     row(

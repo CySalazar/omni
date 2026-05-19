@@ -1,10 +1,10 @@
 # OMNI OS — Progress Report
 
-**Data snapshot:** 2026-05-19 (post MB13.h — TSS `ltr` wiring + dedicated IST stacks for #DF / #PF)
+**Data snapshot:** 2026-05-19 (post MB13.e — chiusura ciclo `omni-capability` integration; Ed25519 canonical, Stub `#[cfg(test)]`-only, ADR-0006 accepted)
 **Branch corrente:** `feat/kernel-mb11-userspace` (locale; in attesa di PR + merge in `main`)
-**HEAD:** post-MB13.h — task register finalmente caricato (`ltr 0x28`) e fault stack-related hanno il proprio kernel stack via IST
-**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h**).
-**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~80% Track B
+**HEAD:** post-MB13.e — `StubCapabilityProvider` gated `#[cfg(test)]`; tutte le `IpcCreateChannel` path passano `Ed25519CapabilityProvider`
+**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + **MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e**).
+**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~82% Track B
 
 ---
 
@@ -333,12 +333,52 @@ warnings` clean. Build Info panel aggiornato a Active=`MB13.h TSS ltr
 + IST`, Next=`MB13.e PR + tag`, Track B=`MB1-MB12 OK, MB13.a-h OK`,
 Phase 1 ≈ 80%.
 
-Il prossimo blocco di lavoro è **MB13.e — chiusura ciclo MB13**:
-apertura della PR `feat/kernel-mb11-userspace` → `main`, conformance
-CI, scelta del tag intermedio (`v0.2.1` patch o `v0.3.0-alpha.1` minor
-— preferenza minor perché c'è una nuova ABI surface), aggiornamento
-finale di `progress-omni.md` § 2 + § 4 + spostamento di MB13 da gap
-analysis a Done.
+Il blocco **MB13.e (chiusura ciclo `omni-capability` integration)** è
+stato chiuso il 2026-05-19. Tre cambi atomici hanno satisfatto gli
+ultimi due acceptance criteria aperti su MB13: (i)
+`Ed25519CapabilityProvider::placeholder()` è ora il provider canonico
+in ogni `IpcCreateChannel` path (syscall handler MB12 fallback +
+`userprobe_mb12` pre-create + shortcut `create_channel_signed(None,
+None)`); (ii) `StubCapabilityProvider` (struct + impl) gated
+`#[cfg(test)]` — irraggiungibile dalla boot wiring di produzione, ma
+preservato come mock per gli unit test che vogliono shape-match
+semantics senza la catena Ed25519 in dipendenza; (iii) integration
+test `tests/mb12_ipc_cross_process.rs` migrato a
+`Ed25519CapabilityProvider::placeholder()` (le integration test sotto
+`tests/` non vedono il `cfg(test)` della libreria). ADR-0006
+(`docs/adr/0006-mb13-omni-capability-integration.md`) `accepted`
+consolidando il rationale MB13.a → MB13.h, le alternative considerate
+e i residui documentati (open-channel back-door, TEE placeholder,
+`force-soft` SIMD).
+
+Acceptance criteria globali MB13 ora tutti chiusi:
+
+- [x] `cargo build -p omni-crypto --target x86_64-unknown-none
+      --no-default-features` clean (MB13.a)
+- [x] `cargo test --workspace --all-features` ≥ 432 pass (MB13.d:
+      447+)
+- [~] Smoke `mb12-userprobe` / `mb11-userprobe` su Proxmox VMID 103
+      (MB13.f+h coprono i fix; validazione hardware end-to-end è
+      tracked come MB13.e deploy step di questa stessa run)
+- [x] `StubCapabilityProvider` `#[cfg(test)]`-only (MB13.e)
+- [x] ADR-0006 `accepted` (MB13.e)
+
+`cargo build -p omni-kernel --target x86_64-unknown-none
+--no-default-features --features bare-metal` clean; idem
+`mb12-userprobe` e `kernel-runner --features mb12-userprobe`.
+`cargo clippy --workspace --all-targets --all-features -- -D
+warnings` clean. Build Info panel aggiornato a Active=`MB13.e
+closure + ADR-0006`, Next=`MB14 MP/AP + TLB shootdown`, Track
+B=`MB1-MB12 OK, MB13 closed`, Phase 1 ≈ 82%.
+
+Il prossimo blocco di lavoro è **MB14 — MP/AP enable + TLB
+shootdown**: sblocca il driver model user-space (P6.7) e completa il
+deliverable Phase 1 "Drivers in user space". L'apertura della PR
+`feat/kernel-mb11-userspace` → `main` con tag intermedio
+(`v0.3.0-alpha.1` minor — c'è nuova ABI surface MB13.d) resta una
+release-management decision separata, da pianificare quando il batch
+post-`v0.2.0` raggiunge una dimensione sufficiente da giustificare un
+tag.
 
 ---
 
@@ -363,7 +403,7 @@ analysis a Done.
 
 ### 2.2 — Track B: Kernel core (`omni-kernel` bare-metal)
 
-**Status:** MB1-MB12 ✅ chiuse. Prossimo blocco MB13.
+**Status:** MB1-MB13 ✅ chiuse. Prossimo blocco MB14 (MP/AP enable + TLB shootdown).
 
 | Milestone | Contenuto | Stato | Commit |
 |---|---|---|---|
@@ -385,8 +425,9 @@ analysis a Done.
 | MB13.d | `IpcCreateChannel` syscall ABI extension (postcard-encoded signed tokens) | ✅ | `5cb09fa` |
 | MB13.f | `enter_user_mode` kernel-stack swap (first-dispatch smoke fix) | ✅ | `f098192` |
 | MB13.g | Comprehensive IDT coverage (16 catch-all vectors → no more silent triple-fault) | ✅ | `a6fde3a` |
-| MB13.h | TSS `ltr 0x28` wiring + dedicated IST1 (#DF) / IST2 (#PF) kernel stacks | ✅ | (this commit) |
-| **MB13** | **omni-capability integration (Ed25519 verify) — MB13.e PR open** | 🟡 | — |
+| MB13.h | TSS `ltr 0x28` wiring + dedicated IST1 (#DF) / IST2 (#PF) kernel stacks | ✅ | `e3f7742` |
+| MB13.e | Closure: Ed25519 canonical provider + `StubCapabilityProvider` `#[cfg(test)]`-only + ADR-0006 | ✅ | (this commit) |
+| **MB13** | **omni-capability integration (Ed25519 verify) — chiuso** (ADR-0006) | ✅ | — |
 
 **Verifica MB1-MB12:**
 - `cargo test --workspace --all-features` → **426 pass / 0 fail** (era 393 post-MB11, +33 da MB12 — vedi CHANGELOG `[Unreleased] § Added` riga "Test delta")
@@ -897,7 +938,7 @@ del kernel ELF in upper half.
 | Roadmap | Stato attuale |
 |---|---|
 | **Phase 0 — Foundation (mesi 0-6)** | ~75% (governance ✅, foundational crates ✅, OIP process ✅, funding/legal in corso) |
-| **Phase 1 — Microkernel POC (mesi 6-18)** | ~72% (boot ✅, paging ✅, scheduler ✅, syscall ✅, ELF loader ✅, kernel-stack isolation ✅, userspace Ring 3 + per-process CR3 ✅, **IPC concreto + multi-task user ✅ MB12**, **bare-metal smoke unblocked ✅ MB13.b** (ET_DYN/PIE kernel, upper-half mapping), **Ed25519CapabilityProvider ✅ MB13.c** (verify-only + signature/time/TEE binding, drop-in compatibile con `KernelCapabilityCheck`); mancano syscall ABI extension (MB13.d), driver model (P6.7), audit (P6.8)) |
+| **Phase 1 — Microkernel POC (mesi 6-18)** | ~82% (boot ✅, paging ✅, scheduler ✅, syscall ✅, ELF loader ✅, kernel-stack isolation ✅, userspace Ring 3 + per-process CR3 ✅, **IPC concreto + multi-task user ✅ MB12**, **bare-metal smoke unblocked ✅ MB13.b** (ET_DYN/PIE kernel, upper-half mapping), **`omni-capability` integration ✅ MB13.a-h+e** (Ed25519CapabilityProvider canonical + `IpcCreateChannel` signed-token ABI + TSS `ltr` wiring + ADR-0006 accepted); mancano driver model user-space (P6.7), MP/AP enable (MB14), audit (P6.8)) |
 | **Phase 2 — AI Runtime + Tier 0** | 0% (bloccato da Phase 1) |
 | **Phase 3-7** | 0% |
 

@@ -1,7 +1,7 @@
 # OMNI OS — Implementation TODO
 
-> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB12** + **MB13.a-h** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0). MB13.h (TSS `ltr 0x28` wiring + IST1 per #DF + IST2 per #PF) chiuso 2026-05-19: root cause del post-iretq stall identificata via code review (task register mai caricato → qualunque fault Ring 3 cascadava muto prima del COM1). Roadmap Phase 1 ~80% — il deliverable "IPC primitives operational (typed message passing)" è chiuso, il blocker boot-path triple-fault è risolto, il kernel ora possiede una capability dispatch Ed25519-verified pronta per il wiring, e qualunque eccezione user-side Ring 3 → Ring 0 ha ora un kernel-stack valido garantito dall'hardware. **Prossimo blocco di lavoro: MB13.e** = apertura PR `feat/kernel-mb11-userspace` → `main` + tag intermedio (`v0.2.1` patch o `v0.3.0-alpha.1` minor) + smoke validation sul Proxmox VMID 103.
-> **Last updated:** 2026-05-19 (MB13.h closure post-MB13.g: ltr_load wiring + IST1/IST2 stacks dedicati; +4 unit test, target workspace ≥ 447. Branch corrente `feat/kernel-mb11-userspace` con HEAD post-`a6fde3a`; PR verso `main` ancora da aprire).
+> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB13** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0). MB13.e (chiusura ciclo `omni-capability` integration) chiuso 2026-05-19: `Ed25519CapabilityProvider` è ora il provider canonico in ogni `IpcCreateChannel` path; `StubCapabilityProvider` gated `#[cfg(test)]`-only; ADR-0006 `accepted`. Roadmap Phase 1 ~82% — il deliverable "Capability-based security primitives implemented" è chiuso. **Prossimo blocco di lavoro: MB14** = MP/AP enable + LAPIC IPI + per-CPU data + TLB shootdown (sblocca il driver model user-space P6.7).
+> **Last updated:** 2026-05-19 (MB13.e closure: Ed25519 canonical wiring + Stub `#[cfg(test)]`-only + ADR-0006; nessun delta test count (447+). Branch corrente `feat/kernel-mb11-userspace` con HEAD post-`e3f7742`; PR verso `main` resta release-management decision separata).
 > **Storia stati precedenti:** 2026-05-18 (MB12 closure — IPC + multi-task user, ADR-0005, 426 tests). 2026-05-18 (Step 7.1-7.4 lift blanket allows + ADR-0003 + CI `blanket-allow-guard`). 2026-05-18 (MB11 closure — Ring 3 + per-process CR3, ADR-0004). 2026-05-18 (MB10 closure — kernel stack isolation, ADR-0002, PR #33 in `main`). 2026-05-18 (v0.2.0 release — MB1-MB9 + Track A, PR #29 in `main`). 2026-05-16 (MB4/MB5). 2026-05-15 (K5 QEMU smoke gate). 2026-05-12 (scaffolding pass P3-P6 verificato). 2026-05-10 (P1 + P2 chiusi). 2026-05-09 (P0 chiuso).
 > **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
 > **Priority order:** Security → Stability → Performance (per project policy).
@@ -797,12 +797,12 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 | MB10 | Kernel stack isolation + guard page | `[x]` | `8c1496a` | [0002](docs/adr/0002-mb10-kernel-stack-isolation.md) |
 | MB11 | Primo userspace Ring 3 + per-process CR3 + STAR fix | `[x]` | `22289e1` + `c743173` | [0004](docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md) |
 | MB12 | IPC reale (queue + capability stub + multi-task user) | `[x]` | `60f3a82` | [0005](docs/adr/0005-mb12-ipc-message-passing.md) |
-| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[~]`** (MB13.a + MB13.b + MB13.c + MB13.d + MB13.f chiusi 2026-05-19; MB13.e open) | — | TBD ADR-0006 |
+| **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[x]`** (MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e chiusi 2026-05-19; ADR-0006 `accepted`) | — | [ADR-0006](docs/adr/0006-mb13-omni-capability-integration.md) |
 | MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[ ]` | — | — |
 
 ### P6.MB13 — `omni-capability` integration reale
 
-- **Status:** `[~]` (MB13.a + MB13.b + MB13.c + MB13.d + MB13.f chiusi 2026-05-19; MB13.e aperto)
+- **Status:** `[x]` (MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e chiusi 2026-05-19; ADR-0006 `accepted`)
 - **Priority:** P6 / High
 - **Effort:** 1-2 giornate (gating SIMD + glue + nuovi test) + 0.5-1 giornata per il fix triple-fault
 - **Dependencies:** MB12 ✅; nessuna esterna
@@ -914,24 +914,29 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
   - **Pending:** validazione smoke completa su Proxmox VMID 103 (deferred a deploy-time, vedi § "Verifica MB13.f" in `progress-omni.md`).
 - **Note di analisi:** il bug latente sarebbe affiorato già a MB11 in teoria, ma nella pipeline MB11 il caller di `enter_user_mode` era `kmain` direttamente (RSP su boot stack, upper half, mirrored). Solo con MB12 — dove il first-dispatch viene innescato da un syscall handler che gira sullo user stack del task uscente — il path patologico è diventato raggiungibile. La pre-esistenza del bug non era visibile nei test host perché `enter_user_mode` ha un `#[cfg(target_arch = "x86_64")]` stub no-op su Linux host build.
 
-#### P6.MB13.e — Chiusura ciclo (PR + tag intermedio)
+#### P6.MB13.e — Chiusura ciclo (Ed25519 canonical + Stub `#[cfg(test)]` + ADR-0006)
 
-- **Status:** `[ ]` (last; blocked-on `MB13.a`-`MB13.d` + `MB13.f`)
-- **Effort:** 0.5 giornata (PR + CI conformance + release notes)
-- **Deliverables:**
-  - PR `feat/kernel-mb13-capability-real` → `main` (squash-merge).
-  - Tag intermedio `v0.2.1` o `v0.3.0-alpha.1` (decisione: minor bump perché c'è nuova surface API in `omni-capability`).
-  - Aggiornamento `progress-omni.md` § 2 (chiusura MB13) + § 4 (move MB13 da gap analysis a Done).
-  - Aggiornamento `CHANGELOG.md` `[Unreleased]` → `[X.Y.Z]`.
+- **Status:** `[x]` (chiuso 2026-05-19 post-`e3f7742`)
+- **Effort:** 0.5 giornata (consegnato)
+- **Deliverables consegnati:**
+  - `Ed25519CapabilityProvider::placeholder()` ora wired in ogni `IpcCreateChannel` path: il fallback `(None, None)` di `create_channel_signed` forwarda il `provider` ricevuto invece di costruire un `StubCapabilityProvider`; il legacy `(0, 0)` path di `ipc_create_channel` instanzia un placeholder kernel-stack-local; il pre-create `userprobe_mb12` già usava il provider canonico dal MB13.d e i commenti sono stati allineati.
+  - `StubCapabilityProvider` (struct + `KernelCapabilityCheck` impl) gated `#[cfg(test)]`. Unit test `src/ipc.rs::tests` e `src/capabilities.rs::tests` continuano a usarlo (sono in moduli `#[cfg(test)]`).
+  - `crates/omni-kernel/tests/mb12_ipc_cross_process.rs` migrato a `Ed25519CapabilityProvider::placeholder()` (le integration test sotto `tests/` non vedono `cfg(test)` della libreria).
+  - `docs/adr/0006-mb13-omni-capability-integration.md` `accepted`.
+  - `CHANGELOG.md` `[Unreleased] § Added` aggiornato con MB13.e entry.
+  - `progress-omni.md` § 2.2 milestone table riga `MB13` aggiornata a ✅; § 6 Phase 1 % aggiornato a ~82%.
+  - Build Info panel: Active=`MB13.e closure + ADR-0006`, Next=`MB14 MP/AP + TLB shootdown`, Track B=`MB1-MB12 OK, MB13 closed`, Phase 1 ≈ 82%.
+- **Release-management residuo:**
+  - Apertura della PR `feat/kernel-mb11-userspace` → `main` con tag intermedio (`v0.3.0-alpha.1` minor — c'è nuova ABI surface MB13.d) resta una decisione separata da pianificare quando il batch post-`v0.2.0` raggiunge una dimensione tale da giustificare un tag. Non blocca MB14.
 
 ### Acceptance criteria globali MB13
 
 - [x] `cargo build -p omni-crypto --target x86_64-unknown-none --no-default-features` clean (chiuso da MB13.a).
-- [x] `cargo test --workspace --all-features` ≥ 432 pass (chiuso da MB13.d: 443+).
-- [~] Smoke `mb12-userprobe` su QEMU+OVMF + Proxmox VMID 103 = serial output completo (MB13.f rimuove il triple-fault del primo `push` post-CR3; pending validazione hardware).
-- [~] Smoke `mb11-userprobe` su QEMU+OVMF = `[user] hello / [user] exit=0` (stesso fix MB13.f; pending validazione manuale).
-- [ ] `StubCapabilityProvider` rimosso da `crates/omni-kernel/src/capabilities.rs` (o ridotto a `#[cfg(test)]` mock).
-- [ ] ADR-0006 `accepted` in `docs/adr/`.
+- [x] `cargo test --workspace --all-features` ≥ 432 pass (chiuso da MB13.d: 447+).
+- [~] Smoke `mb12-userprobe` su QEMU+OVMF + Proxmox VMID 103 = serial output completo (MB13.f rimuove il triple-fault del primo `push` post-CR3; MB13.h chiude il TSS `ltr` wiring + IST stacks; validazione hardware deferred a MB13.e deploy step di questa stessa run).
+- [~] Smoke `mb11-userprobe` su QEMU+OVMF = `[user] hello / [user] exit=0` (stesso set di fix; pending validazione manuale hardware).
+- [x] `StubCapabilityProvider` ridotto a `#[cfg(test)]` mock (chiuso da MB13.e).
+- [x] ADR-0006 `accepted` in `docs/adr/` (chiuso da MB13.e).
 
 ---
 

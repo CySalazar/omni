@@ -8,12 +8,16 @@
 //!    keys held in TPM/Secure Enclave, indexed by `KernelCapabilityId`.
 //!    Trait surface only; implementation lands with `omni-capability`
 //!    integration (MB13+).
-//! 2. **MB12 lightweight IPC capability check.** The
-//!    [`KernelCapabilityCheck`] trait + [`StubCapabilityProvider`]
-//!    implementation enable cross-process IPC gating without dragging
-//!    `omni-capability` (and its `omni-crypto` SIMD dependency chain)
-//!    into the kernel's bare-metal build today. ADR-0005 captures the
-//!    security argument and the MB13 migration plan.
+//! 2. **MB12 / MB13 IPC capability check.** The
+//!    [`KernelCapabilityCheck`] trait + [`Ed25519CapabilityProvider`]
+//!    implementation enable cross-process IPC gating. `Ed25519CapabilityProvider`
+//!    is the canonical boot-time provider as of MB13.e; its per-IPC
+//!    `verify` impl is O(1) shape-matching, while one-shot signature /
+//!    time-window / TEE-binding verification happens at channel
+//!    creation via `verify_signed_token`. The historical
+//!    `StubCapabilityProvider` survives only behind `#[cfg(test)]` for
+//!    unit-test scaffolding. ADR-0005 captures the original security
+//!    argument; ADR-0006 documents the MB13.e migration closure.
 //!
 //! ## Design rationale (long-term, layer 1)
 //!
@@ -82,11 +86,12 @@ pub trait CapabilityTable {
 //   one-variant [`KernelResource`] enum (`IpcChannel(u64)`). Mirror of
 //   `omni-capability`'s vocabulary, restricted to what MB12 actually
 //   uses.
-// - A [`KernelCapabilityCheck`] trait + a [`StubCapabilityProvider`]
-//   implementation. The stub does action/resource shape-matching but no
-//   signature verification — Ed25519 verify becomes available with MB13
-//   once `omni-crypto-verify` (or `omni-crypto` with SIMD intrinsics
-//   gated) builds on `x86_64-unknown-none`.
+// - A [`KernelCapabilityCheck`] trait + the canonical
+//   [`Ed25519CapabilityProvider`] implementation. Per-IPC checks are
+//   O(1) shape-matching on action/resource; full Ed25519 signature
+//   verification + time window + TEE binding happens once per channel
+//   at creation via `verify_signed_token`. The legacy
+//   `StubCapabilityProvider` is `#[cfg(test)]`-only as of MB13.e.
 //
 // Why this is sound enough for Phase 1:
 //
@@ -177,9 +182,15 @@ pub enum CapabilityVerdict {
     Denied,
 }
 
-/// MB12 capability verifier. Exactly one implementation today
-/// ([`StubCapabilityProvider`]); MB13 swaps in a real Ed25519 verifier
-/// that consults a revocation list + TEE attestation table.
+/// Kernel-side capability verifier.
+///
+/// The canonical production implementation is
+/// [`Ed25519CapabilityProvider`] — it runs real Ed25519 signature +
+/// time-window + TEE-binding verification at channel creation, then
+/// falls back to O(1) action/resource shape-matching for the per-IPC
+/// hot path. [`StubCapabilityProvider`] remains as a `#[cfg(test)]`-only
+/// mock for unit tests that do not need to exercise the signature
+/// path.
 pub trait KernelCapabilityCheck {
     /// Verify that `token` authorises `action` on `resource`.
     fn verify(
@@ -190,12 +201,19 @@ pub trait KernelCapabilityCheck {
     ) -> CapabilityVerdict;
 }
 
-/// MB12 stub: trusts the token verbatim, only verifying that its
-/// `action`/`resource` fields match the requested operation. The
-/// signature step is the MB13 follow-up.
+/// Test-only mock that trusts the token verbatim.
+///
+/// Verifies only that the token's `action`/`resource` fields match
+/// the requested operation. Kept behind `#[cfg(test)]` so it cannot
+/// be reached from production boot wiring —
+/// [`Ed25519CapabilityProvider`] is the canonical provider as of
+/// MB13.e. Used by unit tests that want shape-match semantics
+/// without dragging the Ed25519 verification path into the assertion.
+#[cfg(test)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StubCapabilityProvider;
 
+#[cfg(test)]
 impl KernelCapabilityCheck for StubCapabilityProvider {
     fn verify(
         &self,
@@ -220,14 +238,14 @@ impl KernelCapabilityCheck for StubCapabilityProvider {
 // - **Delivered (MB13.c):** real Ed25519 signature verification of
 //   `omni_capability::CapabilityToken` blobs presented to the kernel.
 //   The provider also wraps the existing per-IPC shape-matching path so
-//   it can drop-in replace [`StubCapabilityProvider`] without touching
+//   it is a drop-in replacement for the legacy stub without touching
 //   the IPC registry.
-// - **Deferred (MB13.d):** the `IpcCreateChannel` syscall ABI extension
-//   that actually plumbs signed tokens from user space into the kernel.
-//   Until that lands, MB13.c provides the verification *machinery*
-//   (callable from kernel-internal tests and future syscall handlers)
-//   but is not yet wired into the IPC boot path. `StubCapabilityProvider`
-//   therefore remains the boot-wiring default until MB13.d.
+// - **Delivered (MB13.d):** the `IpcCreateChannel` syscall ABI extension
+//   that plumbs signed tokens from user space into the kernel and runs
+//   them through `verify_signed_token` at channel creation.
+// - **Delivered (MB13.e):** the boot wiring now hands an
+//   `Ed25519CapabilityProvider` to every `IpcCreateChannel` path; the
+//   historical `StubCapabilityProvider` is `#[cfg(test)]`-only.
 //
 // Design rationale:
 //
@@ -251,7 +269,7 @@ impl KernelCapabilityCheck for StubCapabilityProvider {
 /// [`omni_capability::CapabilityToken::verify_full`] with a fixed
 /// [`StubAttestation`] sourced from `self.node_id` and an empty
 /// [`RevocationList`]. Per-IPC checks fall back to the same
-/// shape-matching semantics as [`StubCapabilityProvider`].
+/// shape-matching semantics as the test-only `StubCapabilityProvider`.
 #[derive(Debug, Clone, Copy)]
 pub struct Ed25519CapabilityProvider {
     /// `NodeId` this kernel claims as its TEE attestation identity. For
@@ -333,8 +351,8 @@ impl Default for Ed25519CapabilityProvider {
 impl KernelCapabilityCheck for Ed25519CapabilityProvider {
     #[allow(
         clippy::unused_self,
-        reason = "Per-IPC path keeps the same shape-match semantics as StubCapabilityProvider; \
-                  the provider's `node_id_bytes` is consumed by `verify_signed_token`, not here."
+        reason = "Per-IPC path is O(1) shape-match; the provider's `node_id_bytes` is consumed \
+                  by `verify_signed_token` at channel creation, not on the hot path."
     )]
     fn verify(
         &self,
@@ -342,10 +360,9 @@ impl KernelCapabilityCheck for Ed25519CapabilityProvider {
         action: KernelAction,
         resource: KernelResource,
     ) -> CapabilityVerdict {
-        // Per-IPC path: O(1) action/resource shape match — same
-        // semantics as `StubCapabilityProvider`. Ed25519 signature
-        // verification is a one-shot operation done at channel
-        // creation via `verify_signed_token` (MB13.d).
+        // Per-IPC path: O(1) action/resource shape match. Ed25519
+        // signature verification is a one-shot operation done at
+        // channel creation via `verify_signed_token` (MB13.d).
         if token.action == action && token.resource == resource {
             CapabilityVerdict::Authorised
         } else {

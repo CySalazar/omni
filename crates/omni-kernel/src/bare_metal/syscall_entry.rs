@@ -407,9 +407,12 @@ mod ipc_handlers {
     /// ## Backwards compatibility
     ///
     /// When both `send_token_ptr` and `recv_token_ptr` are zero (the
-    /// MB12 calling convention), the handler falls through to the
-    /// legacy `StubCapabilityProvider` path so the `mb12-userprobe`
-    /// smoke keeps booting unchanged.
+    /// MB12 calling convention), the handler still goes through
+    /// [`Ed25519CapabilityProvider`] but skips the signed-token
+    /// decode path — the registry's `(None, None)` shortcut delegates
+    /// to `create_channel` with the same provider, whose per-IPC
+    /// `verify` impl is identical O(1) shape-matching. The
+    /// `mb12-userprobe` smoke keeps booting unchanged.
     ///
     /// When at least one pointer is non-zero, the handler:
     ///
@@ -444,18 +447,15 @@ mod ipc_handlers {
         let (current, _) = unsafe { current_principal_and_task() };
 
         // -----------------------------------------------------------------
-        // Legacy MB12 path — both pointers zero → open channel via stub.
+        // Legacy MB12 path — both pointers zero → open channel via the
+        // canonical Ed25519 provider (no signed-token decode required;
+        // the registry's `(None, None)` shortcut takes the fast path).
         // -----------------------------------------------------------------
         if send_token_ptr == 0 && recv_token_ptr == 0 {
+            let provider = crate::capabilities::Ed25519CapabilityProvider::placeholder();
             // SAFETY: IPC_REGISTRY not aliased; single-CPU.
             let res = unsafe {
-                ipc_registry_mut().create_channel(
-                    current,
-                    policy,
-                    None,
-                    None,
-                    &crate::capabilities::StubCapabilityProvider,
-                )
+                ipc_registry_mut().create_channel(current, policy, None, None, &provider)
             };
             return res.map_or(SYSCALL_ERROR, |ch| ch.0);
         }

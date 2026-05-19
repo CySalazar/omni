@@ -281,14 +281,14 @@ pub unsafe fn spawn_userprobe_mb12<const N: usize>(
     // (the synthetic principal is `KernelPrincipal::ZERO`; the channel
     // is open on both directions, matching the probes' assumption).
     //
-    // MB13.d: the boot wiring now resolves the verifier through
-    // `create_channel_signed` with both token slots `None`, which the
-    // registry forwards to `StubCapabilityProvider` to preserve the
-    // open-channel semantics the MB12 probes rely on. The behavioural
-    // outcome is identical to the MB12 pre-create call; the indirection
-    // documents that `Ed25519CapabilityProvider` is now the canonical
-    // boot-time provider and the stub is reached only via the
-    // open-channel shortcut.
+    // MB13.e: the boot wiring goes through `create_channel_signed`
+    // with both token slots `None`; the registry's `(None, None)`
+    // shortcut delegates to `create_channel` with the same
+    // `Ed25519CapabilityProvider` placeholder we hand in here. Per-IPC
+    // verify is identical O(1) shape-matching on either provider, so
+    // the open-channel semantics the MB12 probes rely on are preserved.
+    // `StubCapabilityProvider` is now `#[cfg(test)]`-only and unreachable
+    // from the boot path.
     //
     // SAFETY: IPC_REGISTRY singleton; single-CPU; no other borrow live.
     let _channel = unsafe {

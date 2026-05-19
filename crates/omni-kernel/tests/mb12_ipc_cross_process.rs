@@ -40,7 +40,8 @@ use omni_kernel::bare_metal::elf_loader::{Elf64, PF_R, PF_W, PF_X};
 use omni_kernel::bare_metal::paging::PageMapper;
 use omni_kernel::bare_metal::userprobe_mb12::{USERPROBE_RECEIVER_ELF, USERPROBE_SENDER_ELF};
 use omni_kernel::capabilities::{
-    KernelAction, KernelCapabilityToken, KernelPrincipal, KernelResource, StubCapabilityProvider,
+    Ed25519CapabilityProvider, KernelAction, KernelCapabilityToken, KernelPrincipal,
+    KernelResource,
 };
 use omni_kernel::ipc::{
     BackpressurePolicy, ChannelId, ChannelPolicy, KernelIpcRegistry, MessageEnvelope, MessageKind,
@@ -153,7 +154,7 @@ fn both_userprobe_elfs_load_into_separate_address_spaces() {
 
 #[test]
 fn cross_process_send_then_receive_round_trip() {
-    let stub = StubCapabilityProvider;
+    let stub = Ed25519CapabilityProvider::placeholder();
     let mut registry = KernelIpcRegistry::new();
     let sender_task = TaskId(10);
     let receiver_task = TaskId(11);
@@ -196,7 +197,7 @@ fn receiver_parks_then_wakes_on_subsequent_send() {
     // Mirrors the QEMU smoke ordering: receiver arrives first with
     // blocking=true on an empty queue; sender then enqueues and the
     // registry signals which task to wake.
-    let stub = StubCapabilityProvider;
+    let stub = Ed25519CapabilityProvider::placeholder();
     let mut registry = KernelIpcRegistry::new();
     let sender_task = TaskId(10);
     let receiver_task = TaskId(11);
@@ -243,7 +244,7 @@ fn block_policy_full_queue_parks_sender_and_wakes_on_drain() {
     // Mirrors the bandwidth-limited path: a `Block`-policy channel
     // with a depth of 1 forces the second send to park; the
     // subsequent receive wakes the parked sender.
-    let stub = StubCapabilityProvider;
+    let stub = Ed25519CapabilityProvider::placeholder();
     let mut registry = KernelIpcRegistry::new();
     let s1 = TaskId(10);
     let s2 = TaskId(20);
@@ -281,7 +282,7 @@ fn block_policy_full_queue_parks_sender_and_wakes_on_drain() {
 
 #[test]
 fn capability_send_subject_mismatch_denied_cross_process() {
-    let stub = StubCapabilityProvider;
+    let stub = Ed25519CapabilityProvider::placeholder();
     let mut registry = KernelIpcRegistry::new();
 
     // Owner mints a send-token bound to principal 42.
@@ -319,7 +320,7 @@ fn capability_send_subject_mismatch_denied_cross_process() {
 
 #[test]
 fn capability_recv_subject_mismatch_denied_cross_process() {
-    let stub = StubCapabilityProvider;
+    let stub = Ed25519CapabilityProvider::placeholder();
     let mut registry = KernelIpcRegistry::new();
 
     let recv_tok = KernelCapabilityToken {
@@ -361,7 +362,7 @@ fn capability_recv_subject_mismatch_denied_cross_process() {
 
 #[test]
 fn destroy_only_by_owner_across_synthetic_processes() {
-    let stub = StubCapabilityProvider;
+    let stub = Ed25519CapabilityProvider::placeholder();
     let mut registry = KernelIpcRegistry::new();
     let owner = TaskId(1);
     let intruder = TaskId(99);
@@ -391,7 +392,7 @@ fn destroy_only_by_owner_across_synthetic_processes() {
 #[test]
 fn channel_id_monotonic_across_two_creates_one_destroy() {
     // Documents the MB12 id-allocation invariant: ids are not reused.
-    let stub = StubCapabilityProvider;
+    let stub = Ed25519CapabilityProvider::placeholder();
     let mut registry = KernelIpcRegistry::new();
     let owner = TaskId(1);
 
