@@ -110,6 +110,8 @@ Icon
 ehthumbs.db
 desktop.ini
 
+# DOE Framework specific
+doe-framework/start.md
 doe-framework/.startup-prompt.txt
 
 # Python bytecode cache (e.g., from /scripts/lint-oips.py)
