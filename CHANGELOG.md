@@ -17,6 +17,77 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB14.c.2.a: INIT-SIPI ICR encoder + dry-run start_aps orchestrator (2026-05-19).**
+  Pins the bit-exact layout of the Interrupt Command Register against
+  Intel SDM Vol 3A § 10.6.1 (xAPIC) and § 10.12.9 (x2APIC) — the
+  foundation MB14.c.2.b (real-mode trampoline) and MB14.c.2.c (live
+  INIT-SIPI fire + ack barrier) will build on. No LAPIC MMIO is
+  performed in this sub-block: the orchestrator iterates the discovered
+  topology, builds and encodes the canonical INIT/SIPI/SIPI sequence
+  for every enabled non-BSP AP, and discards the encoded values. This
+  moves the highest-leverage failure mode (a stray bit in the ICR
+  triple-faults the BSP) into a host-side `cargo test` regression
+  instead of a 6-hour QEMU debug session.
+
+  Three additive changes:
+
+  - **`crates/omni-kernel/src/bare_metal/mp.rs`** — adds the ICR-shaped
+    enums `IcrDeliveryMode` (Fixed / LowestPriority / SMI / NMI / INIT
+    / StartUp), `IcrDestinationMode` (Physical / Logical), `IcrLevel`
+    (Deassert / Assert), `IcrTriggerMode` (Edge / Level),
+    `IcrDestinationShorthand` (NoShorthand / Self / AllIncludingSelf /
+    AllExcludingSelf), all `#[repr(u8)]` with the spec encoding values.
+    `IcrCommand { vector, delivery_mode, destination_mode, level,
+    trigger_mode, shorthand, destination_apic_id }` carries the
+    intent; the const constructors `IcrCommand::init_assert(apic_id)`
+    and `IcrCommand::sipi(apic_id, trampoline_page)` produce the two
+    canonical IPIs the AP wake-up algorithm uses. The pure-function
+    encoders `encode_icr_xapic(cmd) -> (u32, u32)` (high/low dwords for
+    LAPIC offsets `0x310` / `0x300`) and `encode_icr_x2apic(cmd) -> u64`
+    (single MSR write to `IA32_X2APIC_ICR` = `0x830`) translate to
+    wire format. The orchestrator `start_aps(topology, bsp_apic_id,
+    trampoline_page, mode) -> StartApsReport` iterates `topology.entries()`,
+    skips the BSP and any disabled CPU, builds and encodes the canonical
+    INIT + SIPI + SIPI sequence for every remaining AP, and reports
+    `{ targeted, sequenced, dry_run }`. `StartApsMode::Live` is part of
+    the API surface from this sub-block so MB14.c.2.c does not need to
+    change the kmain call site, but it silently downgrades to `DryRun`
+    until the live LAPIC ICR write path lands.
+  - **`crates/omni-kernel/src/lib.rs`** — hooks `start_aps` in `kmain`
+    immediately after the MB14.c.1 enumerate_cpus log block. The call
+    passes the BSP LAPIC ID (the same `lid` read for the MB14.a
+    descriptor seed), `trampoline_page = 0x08` (the canonical physical
+    address `0x0000_8000` the MB14.c.2.b real-mode trampoline will
+    occupy), and `StartApsMode::DryRun`. Output on COM1 is a single
+    `[mb14.c.2.a] start_aps targeted=N sequenced=N (dry-run)` line.
+  - **+13 host-side unit tests** in `bare_metal::mp::tests`:
+    `xapic_init_encoding_matches_intel_layout` (asserts low=`0x4500` /
+    high=`0x0100_0000` for INIT to APIC ID 1),
+    `xapic_sipi_encoding_matches_intel_layout` (asserts low=`0x4608`
+    for SIPI page=`0x08` to APIC ID 1),
+    `xapic_destination_truncates_to_eight_bits` (asserts the encoder
+    drops the upper 24 bits when emitting xAPIC layout),
+    `x2apic_init_encoding_packs_destination_in_high_dword` /
+    `x2apic_sipi_packs_trampoline_and_destination` (assert the full
+    32-bit ID survives in the upper half of the 64-bit MSR),
+    `encoder_emits_zero_for_default_init_fields` (sanity on the
+    zero-by-default fields), `shorthand_all_excluding_self_encodes_to_bits_18_19`
+    (covers the MB14.d use case), and 6 `start_aps_*` orchestrator
+    tests that pin BSP exclusion by APIC ID match (not by entry
+    position), disabled-CPU skipping, the `trampoline_page=0` → forced
+    dry-run guard, the `Live` → `DryRun` silent downgrade, and the
+    uniprocessor (1 vCPU) case which targets zero APs without underflow.
+    Workspace test count: 467 → 480.
+
+  No production behaviour changes on the bare-metal kernel beyond the
+  single new serial log line; the bring-up path is unchanged. The
+  encoder is `const fn` so MB14.d (TLB shootdown via Fixed-delivery
+  IPI to `AllExcludingSelf`) can build compile-time IPI constants
+  without a runtime translation step. Build Info panel updated:
+  `Active = "MB14.c.2.a ICR encoder"`,
+  `Next = "MB14.c.2.b trampoline @0x8000"`,
+  `Track B = "MB1-MB13 OK, MB14.a-c.2.a wip"`, `Phase 1 ≈ 86%`.
+
 - **Kernel — MB14.c.1: ACPI MADT cpu enumeration (2026-05-19).**
   Decodes the firmware-supplied MADT table to discover the set of
   logical CPUs the platform exposes — the prerequisite for the

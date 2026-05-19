@@ -379,6 +379,346 @@ pub unsafe fn enumerate_cpus(_rsdp_phys: u64, _phys_offset: u64) -> Option<CpuTo
     None
 }
 
+// =============================================================================
+// MB14.c.2.a — INIT-SIPI-SIPI ICR encoder + dry-run orchestrator.
+//
+// MB14.c.2 is the multi-step "wake the APs" milestone:
+//
+//   .a  pure-function ICR encoding (this block)         ← THIS SUB-BLOCK
+//   .b  real-mode trampoline @ physical 0x8000          ← NEXT
+//   .c  live INIT-SIPI fire + ack barrier + kmain_ap    ← NEXT
+//
+// The split exists so each sub-step lands behind a green workspace test
+// suite. The encoder is the highest-leverage piece to validate first:
+// every bit of the Interrupt Command Register matters (a stray bit in
+// `delivery_mode` triple-faults the BSP), and host-side unit tests pin
+// the encoding against the Intel SDM Vol 3A § 10.6.1 reference layout
+// without any QEMU round-trip.
+//
+// References:
+//   - Intel SDM Vol 3A § 10.6.1   "Interrupt Command Register (ICR)"
+//   - Intel SDM Vol 3A § 10.12.9  "ICR Operation in x2APIC Mode"
+//   - Intel MP Spec v1.4 § B.4    "BSP Initialization of APs"
+// =============================================================================
+
+/// Delivery mode field of the ICR (bits 8..11 in xAPIC and x2APIC).
+///
+/// MB14.c.2.a uses [`Init`] and [`StartUp`]; other variants are listed
+/// for completeness so the encoder is reusable from MB14.d (TLB
+/// shootdown via Fixed-delivery IPI). Encoding values come from Intel
+/// SDM Vol 3A Table 10-6.
+///
+/// [`Init`]: IcrDeliveryMode::Init
+/// [`StartUp`]: IcrDeliveryMode::StartUp
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum IcrDeliveryMode {
+    /// `000` — Fixed: deliver to all listed destinations at the same vector.
+    Fixed = 0b000,
+    /// `001` — Lowest Priority (xAPIC only; reserved on x2APIC).
+    LowestPriority = 0b001,
+    /// `010` — SMI: vector field must be 0.
+    Smi = 0b010,
+    /// `100` — NMI: vector field is ignored.
+    Nmi = 0b100,
+    /// `101` — INIT: triggers an INIT IPI. Vector field must be 0 unless
+    /// `level = Deassert` (then must be 0 as well — the level toggles
+    /// the deassert variant which the post-Pentium MP startup does not
+    /// require). MB14.c.2 uses the assert form.
+    Init = 0b101,
+    /// `110` — Start-Up (SIPI): vector is the trampoline page number.
+    StartUp = 0b110,
+}
+
+/// Destination mode: physical APIC IDs vs. logical addressing.
+/// MB14.c.2 uses [`Physical`] exclusively.
+///
+/// [`Physical`]: IcrDestinationMode::Physical
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum IcrDestinationMode {
+    /// `0` — Physical: destination field is an APIC ID.
+    Physical = 0,
+    /// `1` — Logical: destination field is a logical APIC group.
+    Logical = 1,
+}
+
+/// Level bit. Intel SDM § 10.6.1: must be `Assert` for every IPI
+/// flavour we send (the legacy deassert form is for INIT-deassert on
+/// pre-Pentium 4 systems and is documented as obsolete).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum IcrLevel {
+    /// `0` — Deassert (legacy, obsolete on modern CPUs).
+    Deassert = 0,
+    /// `1` — Assert.
+    Assert = 1,
+}
+
+/// Trigger mode. INIT and SIPI both use [`Edge`]; level-triggered is
+/// used only for INIT-deassert which we do not emit.
+///
+/// [`Edge`]: IcrTriggerMode::Edge
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum IcrTriggerMode {
+    /// `0` — Edge triggered.
+    Edge = 0,
+    /// `1` — Level triggered.
+    Level = 1,
+}
+
+/// Destination shorthand (bits 18..19).
+///
+/// MB14.c.2 uses [`NoShorthand`] (target specific APIC IDs); the other
+/// variants are listed for completeness so MB14.d can use
+/// [`AllExcludingSelf`] for broadcast TLB shootdown.
+///
+/// [`NoShorthand`]: IcrDestinationShorthand::NoShorthand
+/// [`AllExcludingSelf`]: IcrDestinationShorthand::AllExcludingSelf
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum IcrDestinationShorthand {
+    /// `00` — No shorthand: use the destination field.
+    NoShorthand = 0b00,
+    /// `01` — Self: send to the issuing CPU only.
+    Self_ = 0b01,
+    /// `10` — All including self.
+    AllIncludingSelf = 0b10,
+    /// `11` — All excluding self.
+    AllExcludingSelf = 0b11,
+}
+
+/// High-level INIT/SIPI/IPI command. Pure data — the encoder functions
+/// translate this to the wire-format ICR value(s).
+#[derive(Debug, Clone, Copy)]
+pub struct IcrCommand {
+    /// Bits 0..7 — interrupt vector. For INIT this is 0; for SIPI this
+    /// is the trampoline page number (`trampoline_phys >> 12`, must be
+    /// in the range `0x00..=0xFF`).
+    pub vector: u8,
+    /// Bits 8..10.
+    pub delivery_mode: IcrDeliveryMode,
+    /// Bit 11.
+    pub destination_mode: IcrDestinationMode,
+    /// Bit 14.
+    pub level: IcrLevel,
+    /// Bit 15.
+    pub trigger_mode: IcrTriggerMode,
+    /// Bits 18..19.
+    pub shorthand: IcrDestinationShorthand,
+    /// xAPIC: bits 56..63 of the high dword (only 8 bits). x2APIC: bits
+    /// 32..63 of the 64-bit MSR (full 32-bit APIC ID). The encoder
+    /// truncates to 8 bits when emitting xAPIC layout.
+    pub destination_apic_id: u32,
+}
+
+impl IcrCommand {
+    /// Canonical INIT IPI in assert-edge form (Intel MP Spec § B.4 step 1).
+    #[must_use]
+    pub const fn init_assert(apic_id: u32) -> Self {
+        Self {
+            vector: 0,
+            delivery_mode: IcrDeliveryMode::Init,
+            destination_mode: IcrDestinationMode::Physical,
+            level: IcrLevel::Assert,
+            trigger_mode: IcrTriggerMode::Edge,
+            shorthand: IcrDestinationShorthand::NoShorthand,
+            destination_apic_id: apic_id,
+        }
+    }
+
+    /// Canonical Start-Up IPI (Intel MP Spec § B.4 steps 4 & 6 — both
+    /// SIPIs are encoded identically; the BSP just sends two of them
+    /// with the 200 µs spacing recommended by the spec).
+    ///
+    /// `trampoline_page` is the 4 KiB-aligned physical page number that
+    /// holds the 16-bit AP entry code: e.g. `trampoline_phys=0x0000_8000`
+    /// → `trampoline_page=0x08`.
+    #[must_use]
+    pub const fn sipi(apic_id: u32, trampoline_page: u8) -> Self {
+        Self {
+            vector: trampoline_page,
+            delivery_mode: IcrDeliveryMode::StartUp,
+            destination_mode: IcrDestinationMode::Physical,
+            level: IcrLevel::Assert,
+            trigger_mode: IcrTriggerMode::Edge,
+            shorthand: IcrDestinationShorthand::NoShorthand,
+            destination_apic_id: apic_id,
+        }
+    }
+}
+
+/// Encode an [`IcrCommand`] for xAPIC MMIO.
+///
+/// Returns `(low, high)`: the high dword is written first to LAPIC
+/// offset `0x310` (`ICR_HI`), then the low dword to `0x300` (`ICR_LO`),
+/// which is what actually fires the IPI.
+///
+/// Layout (Intel SDM Vol 3A § 10.6.1 Figure 10-12):
+///
+/// ```text
+/// LOW (offset 0x300)
+///   bits  0..7   vector
+///   bits  8..10  delivery_mode
+///   bit  11      destination_mode
+///   bit  12      delivery_status (RO — write-as-zero)
+///   bit  14      level
+///   bit  15      trigger_mode
+///   bits 18..19  destination_shorthand
+///
+/// HIGH (offset 0x310)
+///   bits 56..63  destination_apic_id (8 bits — xAPIC truncates)
+/// ```
+#[must_use]
+pub const fn encode_icr_xapic(cmd: IcrCommand) -> (u32, u32) {
+    let low: u32 = (cmd.vector as u32)
+        | ((cmd.delivery_mode as u32) << 8)
+        | ((cmd.destination_mode as u32) << 11)
+        | ((cmd.level as u32) << 14)
+        | ((cmd.trigger_mode as u32) << 15)
+        | ((cmd.shorthand as u32) << 18);
+    // xAPIC destination is the upper 8 bits of the high dword (bits
+    // 56..63 of the 64-bit ICR, which is the top byte of ICR_HI).
+    let high: u32 = (cmd.destination_apic_id & 0xFF) << 24;
+    (low, high)
+}
+
+/// Encode an [`IcrCommand`] for x2APIC MSR access. The ICR is a single
+/// 64-bit MSR at `IA32_X2APIC_ICR` (`0x830`); the destination ID
+/// occupies the full 32-bit upper half.
+///
+/// Layout (Intel SDM Vol 3A § 10.12.9 Figure 10-28):
+///
+/// ```text
+///   bits  0..7   vector
+///   bits  8..10  delivery_mode
+///   bit  11      destination_mode
+///   bit  14      level
+///   bit  15      trigger_mode
+///   bits 18..19  destination_shorthand
+///   bits 32..63  destination_apic_id (full 32-bit)
+/// ```
+///
+/// Note that bit 12 (`delivery_status`) is *not* present in x2APIC
+/// (the SDM marks it reserved-zero and writes-as-zero).
+#[must_use]
+pub const fn encode_icr_x2apic(cmd: IcrCommand) -> u64 {
+    let low: u64 = (cmd.vector as u64)
+        | ((cmd.delivery_mode as u64) << 8)
+        | ((cmd.destination_mode as u64) << 11)
+        | ((cmd.level as u64) << 14)
+        | ((cmd.trigger_mode as u64) << 15)
+        | ((cmd.shorthand as u64) << 18);
+    let high: u64 = (cmd.destination_apic_id as u64) << 32;
+    low | high
+}
+
+/// Outcome of a [`start_aps`] orchestrator call. Carries enough detail
+/// for the kmain logger to surface "we would have woken N APs" without
+/// reaching into private state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartApsReport {
+    /// Number of APs (enabled, non-BSP entries) the orchestrator
+    /// targeted.
+    pub targeted: usize,
+    /// Number of APs the orchestrator successfully sent the full
+    /// INIT-SIPI-SIPI sequence to. In MB14.c.2.a `mode == DryRun` this
+    /// equals `targeted` (no actual MMIO occurs); in live mode it can
+    /// be lower if the ICR busy poll times out.
+    pub sequenced: usize,
+    /// `true` if the orchestrator skipped emitting MMIO because either
+    /// `mode = DryRun` or `trampoline_page = 0`.
+    pub dry_run: bool,
+}
+
+/// Operational mode for [`start_aps`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartApsMode {
+    /// MB14.c.2.a default. The orchestrator computes every ICR value
+    /// it *would* write but does not touch LAPIC MMIO. Used to exercise
+    /// the encoder + per-AP iteration on real hardware without risking
+    /// a triple-fault from a malformed ICR before MB14.c.2.b ships the
+    /// trampoline.
+    DryRun,
+    /// MB14.c.2.c — full INIT-SIPI fire with ack-barrier poll.
+    /// **Not implemented in MB14.c.2.a.** Calling [`start_aps`] in
+    /// this mode currently downgrades silently to [`DryRun`]; the
+    /// downgrade is recorded in [`StartApsReport::dry_run`].
+    ///
+    /// [`DryRun`]: StartApsMode::DryRun
+    Live,
+}
+
+/// Walk the discovered [`CpuTopology`] and emit the INIT-SIPI-SIPI
+/// sequence to every enabled non-BSP AP.
+///
+/// `bsp_apic_id` is read from LAPIC ID by MB14.a; it is excluded from
+/// the target set so the BSP does not INIT itself.
+///
+/// `trampoline_page` is the 4 KiB-aligned physical page number where
+/// the real-mode AP entry will live (MB14.c.2.b). A value of `0` (or
+/// any non-startup-vector page outside `0x00..=0xFF`) forces dry-run.
+///
+/// `mode` is [`StartApsMode::DryRun`] in MB14.c.2.a. MB14.c.2.c will
+/// add the live branch.
+///
+/// Returns a [`StartApsReport`] suitable for serial logging from kmain.
+#[must_use]
+pub fn start_aps(
+    topology: &CpuTopology,
+    bsp_apic_id: u32,
+    trampoline_page: u8,
+    mode: StartApsMode,
+) -> StartApsReport {
+    // MB14.c.2.a invariant: the live ICR-write path is not wired yet
+    // (MB14.c.2.c will add it). Both `mode == DryRun` and `mode == Live`
+    // therefore produce the same observable behaviour — encode every
+    // ICR value, discard it, return `dry_run = true`. A `trampoline_page`
+    // of 0 also forces dry-run since SIPI vector 0 would jump to address
+    // 0x00000 in real mode, which is the IVT.
+    let dry_run = mode == StartApsMode::DryRun
+        || mode == StartApsMode::Live  // downgrade until MB14.c.2.c
+        || trampoline_page == 0;
+
+    let mut targeted = 0usize;
+    let mut sequenced = 0usize;
+    for cpu in topology.entries() {
+        if !cpu.enabled || cpu.apic_id == bsp_apic_id {
+            continue;
+        }
+        targeted += 1;
+
+        // Build the canonical three-step sequence; encoding it is what
+        // MB14.c.2.a actually exercises end-to-end. The encoded values
+        // are intentionally discarded under DryRun — the next sub-block
+        // will feed them into the LAPIC ICR write path.
+        let init = IcrCommand::init_assert(cpu.apic_id);
+        let sipi = IcrCommand::sipi(cpu.apic_id, trampoline_page);
+
+        // Two `let _` so a future "test the encoder is even called per
+        // AP" host invariant becomes a simple "did targeted == sequenced
+        // hold". The compiler optimises both into no-ops under DryRun.
+        if cpu.x2apic {
+            let _ = encode_icr_x2apic(init);
+            let _ = encode_icr_x2apic(sipi);
+            let _ = encode_icr_x2apic(sipi);
+        } else {
+            let _ = encode_icr_xapic(init);
+            let _ = encode_icr_xapic(sipi);
+            let _ = encode_icr_xapic(sipi);
+        }
+
+        sequenced += 1;
+    }
+
+    StartApsReport {
+        targeted,
+        sequenced,
+        dry_run,
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::indexing_slicing,
@@ -550,5 +890,214 @@ mod tests {
         }
         let buf = make_madt(&ics);
         assert!(matches!(parse_madt(&buf), Err(MadtError::TooManyCpus)));
+    }
+
+    // =====================================================================
+    // MB14.c.2.a — INIT-SIPI ICR encoder tests.
+    //
+    // Every bit position is pinned to the Intel SDM Vol 3A § 10.6.1 layout.
+    // A regression in any of the encoder helpers would otherwise only show
+    // up as a triple-faulted AP on real silicon (or a phantom IPI that
+    // wakes up the wrong CPU); these tests turn a 6-hour QEMU debug session
+    // into a 50 ms cargo test failure.
+    // =====================================================================
+
+    /// Helper: build the canonical INIT IPI for the given APIC ID and run
+    /// it through the xAPIC encoder. Returns `(low, high)`.
+    fn xapic_init(apic_id: u32) -> (u32, u32) {
+        encode_icr_xapic(IcrCommand::init_assert(apic_id))
+    }
+
+    /// Helper: build the canonical SIPI for the given APIC ID and
+    /// trampoline page, run it through the xAPIC encoder.
+    fn xapic_sipi(apic_id: u32, page: u8) -> (u32, u32) {
+        encode_icr_xapic(IcrCommand::sipi(apic_id, page))
+    }
+
+    #[test]
+    fn xapic_init_encoding_matches_intel_layout() {
+        // INIT assert-edge to APIC ID 1:
+        //   vector             = 0      → bits 0..7   = 0
+        //   delivery_mode      = INIT=5 → bits 8..10  = 0b101 → 0x0500
+        //   destination_mode   = PHY=0  → bit 11      = 0
+        //   level              = ASR=1  → bit 14      = 0x4000
+        //   trigger_mode       = EDG=0  → bit 15      = 0
+        //   shorthand          = NONE=0 → bits 18..19 = 0
+        // LOW = 0x0500 | 0x4000 = 0x4500
+        // HIGH = 1 << 24 = 0x0100_0000
+        let (low, high) = xapic_init(1);
+        assert_eq!(low, 0x4500, "INIT low bits");
+        assert_eq!(high, 0x0100_0000, "INIT high bits (APIC ID 1)");
+    }
+
+    #[test]
+    fn xapic_sipi_encoding_matches_intel_layout() {
+        // SIPI to APIC ID 1, trampoline page 0x08 (phys 0x0000_8000):
+        //   vector             = 0x08  → bits 0..7  = 0x08
+        //   delivery_mode      = SUP=6 → bits 8..10 = 0b110 → 0x0600
+        //   level              = ASR=1 → bit 14     = 0x4000
+        //   (rest as INIT)
+        // LOW = 0x08 | 0x0600 | 0x4000 = 0x4608
+        // HIGH = 1 << 24 = 0x0100_0000
+        let (low, high) = xapic_sipi(1, 0x08);
+        assert_eq!(low, 0x4608, "SIPI low bits");
+        assert_eq!(high, 0x0100_0000, "SIPI high bits (APIC ID 1)");
+    }
+
+    #[test]
+    fn xapic_destination_truncates_to_eight_bits() {
+        // APIC ID 0x1234_5678 — the high bits must be dropped by the
+        // xAPIC encoder. The truncated byte is 0x78.
+        let (_, high) = encode_icr_xapic(IcrCommand::init_assert(0x1234_5678));
+        assert_eq!(high, 0x7800_0000, "xAPIC truncates to 8-bit ID");
+    }
+
+    #[test]
+    fn x2apic_init_encoding_packs_destination_in_high_dword() {
+        // x2APIC: same low-dword encoding, but the destination is the
+        // full 32-bit upper half. APIC ID 0x1234_5678 stays intact.
+        let icr = encode_icr_x2apic(IcrCommand::init_assert(0x1234_5678));
+        assert_eq!(icr & 0xFFFF_FFFF, 0x4500, "x2APIC low half (INIT)");
+        assert_eq!(icr >> 32, 0x1234_5678, "x2APIC high half = full APIC ID");
+    }
+
+    #[test]
+    fn x2apic_sipi_packs_trampoline_and_destination() {
+        // SIPI to APIC ID 0xCAFE_BABE, trampoline page 0x80.
+        let icr = encode_icr_x2apic(IcrCommand::sipi(0xCAFE_BABE, 0x80));
+        let low = (icr & 0xFFFF_FFFF) as u32;
+        assert_eq!(low & 0xFF, 0x80, "SIPI vector = trampoline page");
+        assert_eq!((low >> 8) & 0b111, 0b110, "delivery_mode = StartUp");
+        assert_eq!((low >> 14) & 1, 1, "level = Assert");
+        assert_eq!(icr >> 32, 0xCAFE_BABE, "x2APIC keeps full 32-bit ID");
+    }
+
+    #[test]
+    fn encoder_emits_zero_for_default_init_fields() {
+        // Sanity: the bits we leave at default (destination_mode=Physical,
+        // trigger_mode=Edge, shorthand=NoShorthand) really are zero.
+        let (low, _) = xapic_init(0);
+        assert_eq!(low & (1 << 11), 0, "destination_mode physical");
+        assert_eq!(low & (1 << 15), 0, "trigger_mode edge");
+        assert_eq!(low & (0b11 << 18), 0, "no shorthand");
+    }
+
+    #[test]
+    fn shorthand_all_excluding_self_encodes_to_bits_18_19() {
+        // MB14.d will use this shorthand for broadcast TLB shootdown.
+        let cmd = IcrCommand {
+            vector: 0x42,
+            delivery_mode: IcrDeliveryMode::Fixed,
+            destination_mode: IcrDestinationMode::Physical,
+            level: IcrLevel::Assert,
+            trigger_mode: IcrTriggerMode::Edge,
+            shorthand: IcrDestinationShorthand::AllExcludingSelf,
+            destination_apic_id: 0,
+        };
+        let (low, _) = encode_icr_xapic(cmd);
+        assert_eq!((low >> 18) & 0b11, 0b11, "AllExcludingSelf shorthand");
+    }
+
+    /// Build a [`CpuTopology`] with the supplied entries — host-side
+    /// shorthand so the start_aps tests stay readable.
+    fn topology_from(cpus: &[CpuEntry]) -> CpuTopology {
+        let mut entries = [CpuEntry {
+            apic_id: 0,
+            acpi_uid: 0,
+            enabled: false,
+            x2apic: false,
+        }; MAX_CPUS];
+        let mut count = 0;
+        for cpu in cpus {
+            if let Some(slot) = entries.get_mut(count) {
+                *slot = *cpu;
+            }
+            count += 1;
+        }
+        CpuTopology { entries, count }
+    }
+
+    fn make_cpu(apic_id: u32, enabled: bool, x2apic: bool) -> CpuEntry {
+        CpuEntry {
+            apic_id,
+            acpi_uid: apic_id,
+            enabled,
+            x2apic,
+        }
+    }
+
+    #[test]
+    fn start_aps_dry_run_targets_every_enabled_non_bsp() {
+        // BSP=0 + AP=1 + AP=2 (all enabled) → 2 APs targeted.
+        let topo = topology_from(&[
+            make_cpu(0, true, false),
+            make_cpu(1, true, false),
+            make_cpu(2, true, false),
+        ]);
+        let r = start_aps(&topo, 0, 0x08, StartApsMode::DryRun);
+        assert_eq!(r.targeted, 2);
+        assert_eq!(r.sequenced, 2);
+        assert!(r.dry_run);
+    }
+
+    #[test]
+    fn start_aps_skips_bsp_even_when_listed_first() {
+        // BSP apic_id is taken from the LAPIC, not implicitly entry 0.
+        // Verify the orchestrator excludes the BSP by APIC ID match,
+        // regardless of where it appears in the topology.
+        let topo = topology_from(&[
+            make_cpu(3, true, false), // BSP
+            make_cpu(0, true, false), // AP
+            make_cpu(1, true, false), // AP
+        ]);
+        let r = start_aps(&topo, 3, 0x08, StartApsMode::DryRun);
+        assert_eq!(r.targeted, 2);
+    }
+
+    #[test]
+    fn start_aps_skips_disabled_entries() {
+        let topo = topology_from(&[
+            make_cpu(0, true, false),  // BSP
+            make_cpu(1, false, false), // disabled AP
+            make_cpu(2, true, false),  // enabled AP
+        ]);
+        let r = start_aps(&topo, 0, 0x08, StartApsMode::DryRun);
+        assert_eq!(r.targeted, 1, "disabled AP must not be targeted");
+    }
+
+    #[test]
+    fn start_aps_with_trampoline_zero_forces_dry_run() {
+        // Even mode=Live downgrades to dry_run when trampoline_page=0
+        // (SIPI vector 0 would jump into the IVT — never valid).
+        let topo = topology_from(&[
+            make_cpu(0, true, false),
+            make_cpu(1, true, false),
+        ]);
+        let r = start_aps(&topo, 0, 0, StartApsMode::Live);
+        assert!(r.dry_run);
+    }
+
+    #[test]
+    fn start_aps_mode_live_downgrades_in_mb14_c_2_a() {
+        // The live ICR-write path is not implemented in this sub-block;
+        // calling with Live must report dry_run=true (silent downgrade
+        // documented on StartApsMode::Live).
+        let topo = topology_from(&[
+            make_cpu(0, true, false),
+            make_cpu(1, true, false),
+        ]);
+        let r = start_aps(&topo, 0, 0x08, StartApsMode::Live);
+        assert!(r.dry_run, "Live downgrades until MB14.c.2.c");
+        assert_eq!(r.targeted, 1);
+    }
+
+    #[test]
+    fn start_aps_returns_zero_targets_on_uniprocessor() {
+        // The Proxmox dev VM is 1 vCPU by default; the orchestrator
+        // must handle this gracefully without underflow.
+        let topo = topology_from(&[make_cpu(0, true, false)]);
+        let r = start_aps(&topo, 0, 0x08, StartApsMode::DryRun);
+        assert_eq!(r.targeted, 0);
+        assert_eq!(r.sequenced, 0);
     }
 }

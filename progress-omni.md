@@ -1,10 +1,10 @@
 # OMNI OS — Progress Report
 
-**Data snapshot:** 2026-05-19 (post MB14.c.1 — ACPI MADT cpu enumeration: pure-function `parse_madt` + bare-metal `enumerate_cpus` RSDP→XSDT/RSDT walker + kmain hook log-only)
+**Data snapshot:** 2026-05-19 (post MB14.c.2.a — INIT-SIPI ICR encoder pure-function (xAPIC + x2APIC) + dry-run `start_aps` orchestrator pinned to Intel SDM Vol 3A § 10.6.1 / § 10.12.9, +13 unit test host-side)
 **Branch corrente:** `feat/kernel-mb11-userspace` (locale; in attesa di PR + merge in `main`)
-**HEAD:** post-MB14.c.1 — `bare_metal::mp::enumerate_cpus(rsdp, phys_off)` decodifica il MADT e logga `[mb14.c.1] MADT cpus=N enabled=M` + per-entry `apic_id`/`x2apic`/`enabled`; nessun AP avviato in questa sub-task (read-only)
-**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e + MB14.a + MB14.b + **MB14.c.1**).
-**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~85% Track B
+**HEAD:** post-MB14.c.2.a — `bare_metal::mp::start_aps(&topo, lid, 0x08, DryRun)` chiamato in `kmain` post-MB14.c.1 e logga `[mb14.c.2.a] start_aps targeted=N sequenced=N (dry-run)`; nessuna LAPIC MMIO emessa in questa sub-task (encoder-only, real-mode trampoline + live fire arrivano in MB14.c.2.b/c)
+**Versione:** `0.2.0` rilasciata 2026-05-18; lavoro post-release accumulato su `[Unreleased]` (MB10 + Step 7.1-7.4 + MB11.1-MB11.9 + MB12.0a-MB12.9 + MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e + MB14.a + MB14.b + MB14.c.1 + **MB14.c.2.a**).
+**Fase di roadmap:** Phase 0 → Phase 1 (microkernel proof-of-concept), ~86% Track B
 
 ---
 
@@ -1117,7 +1117,7 @@ del kernel ELF in upper half.
 | Roadmap | Stato attuale |
 |---|---|
 | **Phase 0 — Foundation (mesi 0-6)** | ~75% (governance ✅, foundational crates ✅, OIP process ✅, funding/legal in corso) |
-| **Phase 1 — Microkernel POC (mesi 6-18)** | ~82% (boot ✅, paging ✅, scheduler ✅, syscall ✅, ELF loader ✅, kernel-stack isolation ✅, userspace Ring 3 + per-process CR3 ✅, **IPC concreto + multi-task user ✅ MB12**, **bare-metal smoke unblocked ✅ MB13.b** (ET_DYN/PIE kernel, upper-half mapping), **`omni-capability` integration ✅ MB13.a-h+e** (Ed25519CapabilityProvider canonical + `IpcCreateChannel` signed-token ABI + TSS `ltr` wiring + ADR-0006 accepted); mancano driver model user-space (P6.7), MP/AP enable (MB14), audit (P6.8)) |
+| **Phase 1 — Microkernel POC (mesi 6-18)** | ~86% (boot ✅, paging ✅, scheduler ✅, syscall ✅, ELF loader ✅, kernel-stack isolation ✅, userspace Ring 3 + per-process CR3 ✅, **IPC concreto + multi-task user ✅ MB12**, **bare-metal smoke unblocked ✅ MB13.b** (ET_DYN/PIE kernel, upper-half mapping), **`omni-capability` integration ✅ MB13.a-h+e** (Ed25519CapabilityProvider canonical + `IpcCreateChannel` signed-token ABI + TSS `ltr` wiring + ADR-0006 accepted), **MP/AP foundation in corso ✅ MB14.a-c.2.a** (per-CPU descriptor + `IA32_GS_BASE`/`swapgs` + ACPI MADT cpu enumeration + INIT-SIPI ICR encoder pinned a Intel SDM Vol 3A); mancano driver model user-space (P6.7), real-mode trampoline + live INIT-SIPI fire (MB14.c.2.b/c), audit (P6.8)) |
 | **Phase 2 — AI Runtime + Tier 0** | 0% (bloccato da Phase 1) |
 | **Phase 3-7** | 0% |
 

@@ -791,7 +791,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Phase    : ",
         11,
-        "1 - Microkernel POC  (~85%)",
+        "1 - Microkernel POC  (~86%)",
         graphics::WHITE,
     );
     row(
@@ -807,7 +807,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Track B  : ",
         11,
-        "MB1-MB13 OK, MB14.a-c.1 wip",
+        "MB1-MB13 OK, MB14.a-c.2.a wip",
         graphics::WHITE,
     );
     row(
@@ -815,7 +815,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "MB14.c.1 MADT cpu enum",
+        "MB14.c.2.a ICR encoder",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -823,7 +823,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "MB14.c.2 INIT-SIPI trampoline",
+        "MB14.c.2.b trampoline @0x8000",
         graphics::WHITE,
     );
     row(

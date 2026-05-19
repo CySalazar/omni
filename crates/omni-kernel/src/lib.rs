@@ -551,6 +551,36 @@ pub fn kmain(
                             early_console::write_str(cpu.enabled.then_some(" enabled").unwrap_or(" disabled"));
                             early_console::write_str("\n");
                         }
+
+                        // MB14.c.2.a — INIT-SIPI-SIPI orchestrator (dry-run).
+                        //
+                        // No LAPIC MMIO occurs: the orchestrator iterates the
+                        // discovered topology, builds + encodes the canonical
+                        // INIT/SIPI/SIPI ICR values for every enabled non-BSP
+                        // AP, and discards them. The real-mode trampoline at
+                        // physical 0x8000 lands in MB14.c.2.b, after which
+                        // MB14.c.2.c will flip this call to `StartApsMode::Live`.
+                        //
+                        // We pass `trampoline_page = 0x08` (corresponding to
+                        // the planned 0x0000_8000 physical address) so the
+                        // SIPI vector field is already in its canonical form
+                        // for the encoder tests. With `mode = DryRun` the
+                        // orchestrator is guaranteed to make no MMIO accesses
+                        // regardless of trampoline_page — the value is purely
+                        // a label for the log.
+                        let report = bare_metal::mp::start_aps(
+                            &topo,
+                            lid,
+                            0x08,
+                            bare_metal::mp::StartApsMode::DryRun,
+                        );
+                        early_console::write_str("[mb14.c.2.a] start_aps targeted=");
+                        early_console::write_usize(report.targeted);
+                        early_console::write_str(" sequenced=");
+                        early_console::write_usize(report.sequenced);
+                        early_console::write_str(
+                            if report.dry_run { " (dry-run)\n" } else { " (live)\n" },
+                        );
                     } else {
                         early_console::write_str("[mb14.c.1] MADT walk FAILED — BSP only\n");
                     }

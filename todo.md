@@ -1,7 +1,7 @@
 # OMNI OS — Implementation TODO
 
-> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB13** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0). MB14.a (per-CPU descriptor scaffold) ✅ + MB14.b (`IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()`) ✅ + MB14.c.1 (ACPI MADT cpu enumeration: pure-function `parse_madt` + bare-metal `enumerate_cpus` con RSDP→XSDT/RSDT walker) ✅ chiusi 2026-05-19. Roadmap Phase 1 ~85% Track B. **Prossimo sub-block: MB14.c.2** = INIT-SIPI-SIPI orchestrator + real-mode trampoline a `0x8000`; poi MB14.d/e (TLB shootdown broadcast), MB14.f (per-CPU scheduler split).
-> **Last updated:** 2026-05-19 (MB14.c.1 closure: `bare_metal::mp::parse_madt` decoder pure-function su `&[u8]` (Processor Local APIC type 0x00 + Processor Local x2APIC type 0x09, IO APIC & altri ICS skipped), `bare_metal::mp::enumerate_cpus(rsdp_phys, phys_offset)` come unsafe wrapper bare-metal che cerca la tabella MADT via RSDP→XSDT/RSDT chain modellato su `arch::find_pm1a_cnt_from_fadt`, hook in `kmain` post-MB14.b che logga `[mb14.c.1] MADT cpus=N enabled=M` + per-entry `apic_id`/`x2apic`/`enabled`; +12 unit test `bare_metal::mp::tests::*`; workspace test count 455+ → 467+. Branch corrente `feat/kernel-mb11-userspace`; PR verso `main` resta release-management decision separata).
+> **Status:** **Phase 1 (Microkernel POC) in pieno corso** — Phase 0 chiusa (P0/P1/P2 ✅; P3/P4 parziali per dipendenze esterne — funding/cryptographer). Track A desktop ✅ (M1-M5 + M3b). Track B kernel ✅ **MB1-MB13** chiusi sul branch `feat/kernel-mb11-userspace` (post-v0.2.0). MB14.a (per-CPU descriptor scaffold) ✅ + MB14.b (`IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()`) ✅ + MB14.c.1 (ACPI MADT cpu enumeration: pure-function `parse_madt` + bare-metal `enumerate_cpus` con RSDP→XSDT/RSDT walker) ✅ + MB14.c.2.a (INIT-SIPI ICR encoder xAPIC + x2APIC + dry-run `start_aps` orchestrator) ✅ chiusi 2026-05-19. Roadmap Phase 1 ~86% Track B. **Prossimo sub-block: MB14.c.2.b** = real-mode trampoline a `0x8000` (16→32→64-bit) + identity-map della pagina trampolino + GDT/PML4 temporanee; poi MB14.c.2.c (live `start_aps` + ack barrier + `kmain_ap` + ADR-0007), MB14.d/e (TLB shootdown broadcast), MB14.f (per-CPU scheduler split).
+> **Last updated:** 2026-05-19 (MB14.c.2.a closure: `IcrDeliveryMode`/`IcrDestinationMode`/`IcrLevel`/`IcrTriggerMode`/`IcrDestinationShorthand` enums `#[repr(u8)]`, `IcrCommand::{init_assert, sipi}` const constructors, `encode_icr_xapic(cmd) -> (u32, u32)` + `encode_icr_x2apic(cmd) -> u64` pure-function encoders pinned to Intel SDM Vol 3A § 10.6.1 / § 10.12.9, `start_aps(topology, bsp_apic_id, trampoline_page, mode) -> StartApsReport` con `StartApsMode::{DryRun, Live}` (Live downgrades silently fino a MB14.c.2.c), hook in `kmain` post-MB14.c.1 che logga `[mb14.c.2.a] start_aps targeted=N sequenced=N (dry-run)`; +13 unit test `bare_metal::mp::tests::xapic_init_encoding_matches_intel_layout`/`xapic_sipi_*`/`xapic_destination_truncates_to_eight_bits`/`x2apic_init_*`/`x2apic_sipi_packs_*`/`encoder_emits_zero_*`/`shorthand_all_excluding_self_*`/`start_aps_dry_run_*`/`start_aps_skips_bsp_*`/`start_aps_skips_disabled_*`/`start_aps_with_trampoline_zero_*`/`start_aps_mode_live_downgrades_*`/`start_aps_returns_zero_targets_*`; workspace test count 467+ → 480+. Branch corrente `feat/kernel-mb11-userspace`; PR verso `main` resta release-management decision separata).
 > **Storia stati precedenti:** 2026-05-18 (MB12 closure — IPC + multi-task user, ADR-0005, 426 tests). 2026-05-18 (Step 7.1-7.4 lift blanket allows + ADR-0003 + CI `blanket-allow-guard`). 2026-05-18 (MB11 closure — Ring 3 + per-process CR3, ADR-0004). 2026-05-18 (MB10 closure — kernel stack isolation, ADR-0002, PR #33 in `main`). 2026-05-18 (v0.2.0 release — MB1-MB9 + Track A, PR #29 in `main`). 2026-05-16 (MB4/MB5). 2026-05-15 (K5 QEMU smoke gate). 2026-05-12 (scaffolding pass P3-P6 verificato). 2026-05-10 (P1 + P2 chiusi). 2026-05-09 (P0 chiuso).
 > **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
 > **Priority order:** Security → Stability → Performance (per project policy).
@@ -800,8 +800,9 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 | **MB13** | **`omni-capability` integration reale (Ed25519) + bare-metal smoke fix + SIMD `force-soft`** | **`[x]`** (MB13.a + MB13.b + MB13.c + MB13.d + MB13.f + MB13.g + MB13.h + MB13.e chiusi 2026-05-19; ADR-0006 `accepted`) | `5e907f8` | [ADR-0006](docs/adr/0006-mb13-omni-capability-integration.md) |
 | MB14.a | Per-CPU descriptor scaffold + BSP LAPIC ID identification | `[x]` (chiuso 2026-05-19) | `3f38514` | — |
 | MB14.b | `IA32_GS_BASE` per-CPU pointer + `swapgs` syscall entry + GS-relative `current_cpu()` | `[x]` (chiuso 2026-05-19) | `c30221f` | — |
-| MB14.c.1 | ACPI MADT parser + bare-metal `enumerate_cpus` (RSDP→XSDT/RSDT→MADT walker) | `[x]` (chiuso 2026-05-19) | (this commit) | — |
-| MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[~]` (MB14.a + MB14.b + MB14.c.1 chiusi; MB14.c.2-f open) | — | — |
+| MB14.c.1 | ACPI MADT parser + bare-metal `enumerate_cpus` (RSDP→XSDT/RSDT→MADT walker) | `[x]` (chiuso 2026-05-19) | `e964a9d` | — |
+| MB14.c.2.a | INIT-SIPI ICR encoder (xAPIC + x2APIC) + dry-run `start_aps` orchestrator | `[x]` (chiuso 2026-05-19) | (this commit) | — |
+| MB14 | MP/AP enable + TLB shootdown cross-AS (Phase 1.5) | `[~]` (MB14.a + MB14.b + MB14.c.1 + MB14.c.2.a chiusi; MB14.c.2.b-f open) | — | — |
 
 ### P6.MB13 — `omni-capability` integration reale
 
@@ -989,13 +990,17 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 
 #### P6.MB14.c — AP startup via INIT-SIPI-SIPI + real-mode trampoline
 
-- **Status:** `[~]` (MB14.c.1 chiuso 2026-05-19; MB14.c.2 open)
+- **Status:** `[~]` (MB14.c.1 + MB14.c.2.a chiusi 2026-05-19; MB14.c.2.b + MB14.c.2.c open)
 - **Effort stimato:** 2-3 giornate (la più complessa di MB14)
 - **Dependencies:** MB14.b ✅
 - **Rationale:** ogni Application Processor parte in real mode a `0xFFFF_FFF0`. Per portarli in long mode serve un trampoline 16→32→64 bit a una pagina fisica nota (tipicamente `0x8000`), che inizializza GDT, abilita PAE+LME+paging e salta al kernel entry per-AP. Il BSP scrive (INIT, SIPI, SIPI) al LAPIC ICR di ogni AP.
-- **Deliverables previsti:**
+- **Sub-block plan** (deciso 2026-05-19 — splittato per landing incrementale):
+  - **MB14.c.2.a** ✅ — ICR encoder (xAPIC + x2APIC) pure-function + dry-run `start_aps` orchestrator. No LAPIC MMIO; encoding pinned by host-side tests vs Intel SDM Vol 3A § 10.6.1.
+  - **MB14.c.2.b** (next) — real-mode trampoline a `0x8000` (16→32→64-bit) + identity-map della pagina trampolino + GDT/PML4 temporanee.
+  - **MB14.c.2.c** (next) — flip `start_aps` da `DryRun` a `Live`: scrive ICR_HI/ICR_LO (o `IA32_X2APIC_ICR` MSR), wait 10 ms INIT clear, SIPI×2 con 200 µs spacing, ack barrier via atomic counter alimentato dal trampolino, allocazione per-AP `PerCpu` slot + `kmain_ap` entry. ADR-0007 `accepted` a questa chiusura.
+- **Deliverables previsti (MB14.c.2.b + MB14.c.2.c):**
   - Trampoline a `0x8000` (codice 16-bit assembly + paging table embedded).
-  - `bare_metal::mp::start_aps(num_cpus, &mut frame_alloc)` orchestrator (INIT 10ms, SIPI×2, attesa ack via shared atomic).
+  - `bare_metal::mp::start_aps` flippato a live mode (oggi sempre dry-run).
   - Per-AP `kmain_ap` entry che setta GS_BASE proprio, completa init, entra in scheduler loop.
   - ADR-0007 (status `accepted` a chiusura).
 
@@ -1016,6 +1021,23 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
   - `CpuEntry.acpi_uid` widened a `u32` per uniformità tra xAPIC (8-bit acpi_processor_id) e x2APIC (32-bit acpi_processor_uid). `CpuEntry.x2apic: bool` consente all'orchestrator MB14.c.2 di scegliere fra xAPIC ICR encoding (memory-mapped) e x2APIC MSR encoding (`IA32_X2APIC_ICR`).
   - `MAX_CPUS = 32` lascia margine per Proxmox dev VM (2-4 vCPU oggi) e desktop-class workload futuri. MB14.e raise quando i per-CPU run-queue saranno dimensionati.
   - **Pending:** validazione smoke su Proxmox VMID 103 a deploy-time per confermare che il MADT della VM venga letto correttamente (tipicamente 1 entry abilitata, perché la VM ha 1 vCPU di default).
+
+##### P6.MB14.c.2.a — INIT-SIPI ICR encoder + dry-run orchestrator
+
+- **Status:** `[x]` (chiuso 2026-05-19)
+- **Effort:** 0.4 giornate (delivered)
+- **Dependencies:** MB14.c.1 ✅
+- **Rationale:** prima di toccare LAPIC MMIO o costruire il trampolino real-mode, pin-down al layout-bit-esatto dell'Interrupt Command Register. Una stray bit in `delivery_mode` triple-faulta il BSP; una stray bit nel campo destination manda l'IPI alla CPU sbagliata. MB14.c.2.a sposta quel rischio in `cargo test` host-side via codifiche pure-function pinned al Intel SDM Vol 3A § 10.6.1 (xAPIC) / § 10.12.9 (x2APIC). Il dry-run orchestrator esercita lo stesso loop per-AP che MB14.c.2.c userà, in modo che il rischio residuo della prossima sotto-step sia limitato al solo trampolino + LAPIC MMIO write.
+- **Deliverables:**
+  - **`crates/omni-kernel/src/bare_metal/mp.rs`** — `IcrDeliveryMode` (Fixed/LowestPriority/SMI/NMI/INIT/StartUp), `IcrDestinationMode` (Physical/Logical), `IcrLevel` (Deassert/Assert), `IcrTriggerMode` (Edge/Level), `IcrDestinationShorthand` (NoShorthand/Self/AllIncludingSelf/AllExcludingSelf) — tutti `#[repr(u8)]` con valori spec. `IcrCommand { vector, delivery_mode, destination_mode, level, trigger_mode, shorthand, destination_apic_id }` + costruttori `init_assert(apic_id)` e `sipi(apic_id, trampoline_page)`. `encode_icr_xapic(cmd) -> (u32, u32)` (high/low dwords) + `encode_icr_x2apic(cmd) -> u64` (single MSR write). `start_aps(topology, bsp_apic_id, trampoline_page, mode) -> StartApsReport` con `StartApsMode::{DryRun, Live}` (Live downgrades silently a DryRun fino a MB14.c.2.c).
+  - **`crates/omni-kernel/src/lib.rs`** — hook in `kmain` post-MB14.c.1 che chiama `bare_metal::mp::start_aps(&topo, lid, 0x08, DryRun)` e logga `[mb14.c.2.a] start_aps targeted=N sequenced=N (dry-run)`.
+  - **+13 unit test** in `bare_metal::mp::tests`: `xapic_init_encoding_matches_intel_layout` (low=0x4500/high=0x0100_0000 per apic_id=1), `xapic_sipi_encoding_matches_intel_layout` (low=0x4608 per page=0x08), `xapic_destination_truncates_to_eight_bits`, `x2apic_init_encoding_packs_destination_in_high_dword`, `x2apic_sipi_packs_trampoline_and_destination`, `encoder_emits_zero_for_default_init_fields`, `shorthand_all_excluding_self_encodes_to_bits_18_19`, `start_aps_dry_run_targets_every_enabled_non_bsp`, `start_aps_skips_bsp_even_when_listed_first`, `start_aps_skips_disabled_entries`, `start_aps_with_trampoline_zero_forces_dry_run`, `start_aps_mode_live_downgrades_in_mb14_c_2_a`, `start_aps_returns_zero_targets_on_uniprocessor`. Workspace test count 467+ → 480+; `cargo clippy --workspace --all-features --all-targets -- -D warnings` + `cargo clippy --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none -- -D warnings` clean.
+  - Build Info panel: Active=`MB14.c.2.a ICR encoder`, Next=`MB14.c.2.b trampoline @0x8000`, Track B=`MB1-MB13 OK, MB14.a-c.2.a wip`, Phase 1 ≈ 86%.
+- **Note di progettazione:**
+  - L'encoder è `const fn` per permettere la generazione di costanti compile-time (es. `const INIT_BROADCAST: u64 = encode_icr_x2apic(...)` per MB14.d), e per garantire zero overhead al call site.
+  - `StartApsMode::Live` esiste già nel surface API ma è marcato "downgrades silently" finché MB14.c.2.c non landa. Questa scelta riduce il churn: kmain non dovrà cambiare la signature della call al flip.
+  - `trampoline_page = 0` forza dry-run anche con `mode = Live` — SIPI vector 0 salterebbe nel IVT, mai valido. Questo è un guardrail contro il bug più tipico ("ho dimenticato di passare l'indirizzo del trampolino").
+  - **Pending validazione Proxmox:** confermare che il log `[mb14.c.2.a] start_aps targeted=0 sequenced=0 (dry-run)` appaia sul COM1 della VMID 103 (1 vCPU → 0 AP targeted).
 
 #### P6.MB14.d — IPI vettore + TLB shootdown protocol
 
