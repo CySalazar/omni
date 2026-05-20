@@ -86,6 +86,7 @@ extern crate alloc;
 pub mod capabilities;
 pub mod driver_manifest;
 pub mod ipc;
+pub mod kaslr;
 pub mod known_issuers;
 pub mod memory;
 pub mod mm;
@@ -338,6 +339,11 @@ pub fn kmain(
     // huge-page aware and resolves those entries correctly.
     // -------------------------------------------------------------------------
     let phys_offset_mb2 = boot_info.physical_memory_offset.into_option().unwrap_or(0);
+    // P6.7.8.1 — publish the bootloader direct-map offset to the
+    // bare-metal global so the driver-framework syscall handlers
+    // (`MmioMap`) can rebuild a `PageMapper` without threading the
+    // value through the syscall trampoline. Single-shot write at boot.
+    bare_metal::set_phys_offset(phys_offset_mb2);
     let cr3_raw = arch::read_cr3();
     // `mut` because MB10's `spawn_kernel_task` will call `pager.map_4k` to
     // map each task's kernel stack into the isolated VA range.

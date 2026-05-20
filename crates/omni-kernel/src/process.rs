@@ -43,6 +43,9 @@ use crate::capabilities::KernelPrincipal;
 #[cfg(feature = "bare-metal")]
 use crate::ipc::ChannelId;
 
+#[cfg(feature = "bare-metal")]
+use alloc::vec::Vec;
+
 /// Outstanding `IpcReceive` that this process issued before parking.
 ///
 /// MB12 drain-at-dispatch: when an `IpcReceive` with `blocking = true`
@@ -67,6 +70,27 @@ pub struct PendingReceive {
     pub dst_ptr: u64,
     /// Maximum number of bytes the user buffer can hold.
     pub dst_cap: u64,
+}
+
+/// One driver-MMIO mapping installed via the `MmioMap` syscall
+/// (`OIP-Driver-Framework-013` § S2.2).
+///
+/// The kernel records each successful map on the calling process's
+/// [`ProcessControlBlock`] so the mapping can be torn down at process
+/// exit (§ S2.4).
+///
+/// Only the user-half VA + length is tracked here — the underlying
+/// physical BAR pages are owned by the device, not by the frame
+/// allocator, so teardown unmaps the leaf PTEs without returning
+/// any frame to [`crate::memory::BitmapFrameAllocator`].
+#[cfg(feature = "bare-metal")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MmioMapping {
+    /// Page-aligned user VA where the mapping was installed.
+    pub va_base: u64,
+    /// Number of 4 KiB pages covered by the mapping. The total VA
+    /// span is `len_pages * 0x1000` bytes.
+    pub len_pages: u32,
 }
 
 /// A userspace process (`Ring 3`).
@@ -96,6 +120,15 @@ pub struct ProcessControlBlock {
     /// scheduler dispatch path clears this and copies the message
     /// payload before returning to Ring 3.
     pub pending_receive: Option<PendingReceive>,
+    /// `MmioMap` mappings owned by this process (OIP-013 § S2.4).
+    /// Empty for non-driver processes.
+    pub mmio_mappings: Vec<MmioMapping>,
+    /// Per-process random offset into the reserved driver MMIO PML4
+    /// slot, generated lazily on the first successful `MmioMap`
+    /// (OIP-013 § S2.5). `0` means "not yet randomized"; subsequent
+    /// mappings within the same process are allocated linearly from
+    /// `mmio_va_cursor`.
+    pub mmio_va_cursor: u64,
 }
 
 #[cfg(feature = "bare-metal")]
@@ -232,6 +265,8 @@ impl ProcessControlBlock {
                 next_user_stack_slot,
                 principal,
                 pending_receive: None,
+                mmio_mappings: Vec::new(),
+                mmio_va_cursor: 0,
             },
         );
 
@@ -265,6 +300,8 @@ mod tests {
             next_user_stack_slot: 1,
             principal: KernelPrincipal::ZERO,
             pending_receive: None,
+            mmio_mappings: Vec::new(),
+            mmio_va_cursor: 0,
         }
     }
 
@@ -297,5 +334,27 @@ mod tests {
         assert_eq!(pr.channel, ChannelId(7));
         assert_eq!(pr.dst_ptr, 0x4000_4000);
         assert_eq!(pr.dst_cap, 256);
+    }
+
+    #[test]
+    fn fresh_pcb_has_empty_mmio_table() {
+        let pcb = make_pcb();
+        assert!(pcb.mmio_mappings.is_empty());
+        assert_eq!(pcb.mmio_va_cursor, 0);
+    }
+
+    #[test]
+    fn mmio_mappings_round_trip() {
+        let mut pcb = make_pcb();
+        pcb.mmio_mappings.push(MmioMapping {
+            va_base: 0x0000_0085_1234_0000,
+            len_pages: 2,
+        });
+        pcb.mmio_va_cursor = 0x0000_0085_1234_2000;
+        assert_eq!(pcb.mmio_mappings.len(), 1);
+        let first = pcb.mmio_mappings.first().expect("one mapping pushed");
+        assert_eq!(first.va_base, 0x0000_0085_1234_0000);
+        assert_eq!(first.len_pages, 2);
+        assert_eq!(pcb.mmio_va_cursor, 0x0000_0085_1234_2000);
     }
 }

@@ -364,6 +364,15 @@ impl RoundRobinScheduler {
         self.processes.iter().find(|p| p.task.id.0 == id.0)
     }
 
+    /// P6.7.8.1 — look up the PCB for the given `TaskId` for mutation.
+    /// Used by the `MmioMap` syscall handler to record the per-process
+    /// MMIO mapping table entry on a successful install, and by
+    /// `task_exit` to drain the table at teardown.
+    #[cfg(feature = "bare-metal")]
+    pub fn process_mut(&mut self, id: TaskId) -> Option<&mut crate::process::ProcessControlBlock> {
+        self.processes.iter_mut().find(|p| p.task.id.0 == id.0)
+    }
+
     /// MB10 — returns the next kernel-stack VA slot, advancing the bump
     /// allocator. Returns `None` if the isolated range is exhausted
     /// (would require ~1 G task spawns).

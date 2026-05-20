@@ -40,6 +40,45 @@
 pub mod address_space;
 pub mod ap_dispatch;
 pub mod arch;
+
+// =============================================================================
+// Global bootloader direct-map offset
+//
+// `kmain` reads `BootInfo.physical_memory_offset` once and publishes it
+// here so subsystems that run after init (LAPIC init, syscall handlers,
+// driver framework) can rebuild a `PageMapper` without threading the
+// value through every callsite. Writers are `kmain` only (one-shot at
+// boot); readers may race but the value is constant for the lifetime
+// of the boot image. `Relaxed` ordering is sufficient — there is no
+// data the offset coordinates with.
+// =============================================================================
+
+/// Bootloader-supplied direct-map offset, in the canonical kernel-half
+/// virtual address space (`BootInfo.physical_memory_offset`).
+///
+/// Reads before [`set_phys_offset`] return `0`, which surfaces as a
+/// translate-fault rather than a silent miss when a driver framework
+/// path tries to walk page tables before kmain has run.
+pub static PHYS_OFFSET: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// One-shot setter for the bootloader direct-map offset. Called by
+/// `kmain` early in boot, before any user-process spawn or syscall
+/// dispatch can observe the value.
+#[inline]
+pub fn set_phys_offset(value: u64) {
+    PHYS_OFFSET.store(value, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Read the bootloader direct-map offset.
+///
+/// Returns `0` before [`set_phys_offset`] has been called — callers
+/// that hit this case SHOULD treat the read as an internal kernel
+/// invariant violation (kmain ordering bug) and reject the operation.
+#[must_use]
+#[inline]
+pub fn phys_offset() -> u64 {
+    PHYS_OFFSET.load(core::sync::atomic::Ordering::Relaxed)
+}
 #[cfg(target_arch = "x86_64")]
 pub mod context_switch;
 #[cfg(target_arch = "x86_64")]

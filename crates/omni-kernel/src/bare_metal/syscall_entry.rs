@@ -22,7 +22,12 @@
 //! | R8       | a4                    |
 //! | R9       | a5                    |
 //!
-//! Return value is in RAX. `u64::MAX` is the error sentinel.
+//! Return values are in RAX (primary) and, for the OIP-013 driver-framework
+//! `MmioMap` path, additionally RDX (POSIX-aligned errno code). RDX is
+//! preserved unchanged through every instruction between
+//! `call kernel_syscall_dispatch` and the user-mode `sysretq` / `iretq`.
+//! `u64::MAX` in RAX remains the legacy single-register error sentinel
+//! for syscalls that have not migrated to the rich return path.
 
 #![allow(
     unsafe_code,
@@ -33,7 +38,7 @@
     reason = "RAX number is u64 by ABI but the dispatch enum tag fits u32"
 )]
 
-use crate::syscall::{SyscallDispatcher, SyscallNumber};
+use crate::syscall::{SyscallDispatcher, SyscallNumber, SyscallReturn};
 use crate::{KernelError, KernelResult};
 
 // -----------------------------------------------------------------------
@@ -690,6 +695,12 @@ fn task_exit(code: u64) -> KernelResult<u64> {
             super::early_console::write_str("\n");
             let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
             if let Some(current) = sched.current_task_id() {
+                // P6.7.8.1 — OIP-013 § S2.4: tear down every `MmioMap`
+                // mapping owned by the exiting process before retiring
+                // its PCB. Done while the caller's CR3 is still active
+                // so the `invlpg` inside the helper invalidates the
+                // entries that user code may have just touched.
+                mmio_map_handlers::tear_down_mmio_mappings(current);
                 let _ = sched.dequeue(current);
                 // MB12: if another task is still runnable, hand the CPU
                 // over to it. `yield_current(Terminated)` keeps the
@@ -707,6 +718,314 @@ fn task_exit(code: u64) -> KernelResult<u64> {
     {
         let _ = code;
         Ok(0)
+    }
+}
+
+// -----------------------------------------------------------------------
+// MmioMap (OIP-013 § S2, P6.7.8.1)
+//
+// The handler exists only in the bare-metal build (it needs FRAME_ALLOC,
+// SCHEDULER, the active CR3, and the bootloader direct-map offset). On
+// host tests the dispatcher route returns `EINVAL` so the trait shape
+// is exercised without the singletons.
+// -----------------------------------------------------------------------
+
+/// Per-process linear allocator cap inside the reserved driver-MMIO
+/// PML4 slot. One slot covers 512 GiB — enough for every BAR the
+/// Phase 1 driver fleet will ever map; the static cap keeps the
+/// arithmetic auditable.
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+const DRIVER_MMIO_VA_BASE: u64 = 0x0000_0080_0000_0000;
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+const DRIVER_MMIO_VA_END: u64 = 0x0000_0100_0000_0000;
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+const DRIVER_MMIO_RANGE: u64 = DRIVER_MMIO_VA_END - DRIVER_MMIO_VA_BASE;
+
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+mod mmio_map_handlers {
+    use super::{DRIVER_MMIO_RANGE, DRIVER_MMIO_VA_BASE, DRIVER_MMIO_VA_END};
+    use crate::bare_metal;
+    use crate::bare_metal::address_space::AddressSpace;
+    use crate::bare_metal::paging::{PTE_NO_EXEC, PTE_PRESENT, PTE_USER, PTE_WRITABLE, PageMapper};
+    use crate::driver_manifest::is_driver_framework_action;
+    use crate::kaslr::KaslrRng;
+    use crate::memory::{PhysAddr, VirtAddr};
+    use crate::process::MmioMapping;
+    use crate::syscall::{SyscallReturn, syscall_errno};
+    use omni_capability::CapabilityToken;
+    use omni_capability::scope::{Action, Resource};
+
+    /// Page-cache-disable (`PCD`). Bit 4 of a 4 KiB leaf PTE: forces
+    /// uncached access for memory-mapped device registers (OIP-013
+    /// § S2.2 step 2).
+    const PTE_PCD: u64 = 1 << 4;
+    /// Page-write-through (`PWT`). Bit 3 of a 4 KiB leaf PTE: pairs
+    /// with `PCD` to encode "strong uncached" on `x86_64` (OIP-013
+    /// § S2.2 step 2).
+    const PTE_PWT: u64 = 1 << 3;
+
+    /// Maximum accepted size for the postcard-encoded
+    /// [`CapabilityToken`] presented through `MmioMap`. Identical
+    /// bound to the MB13.d `IpcCreateChannel` handler so user space
+    /// can reuse one mint pipeline. Real tokens are ~200 bytes.
+    const MAX_TOKEN_BYTES: usize = 1024;
+
+    /// Validate that `[ptr, ptr + len)` lies entirely in the user
+    /// half. Mirrors the IPC-side helper so the two paths cannot
+    /// drift on the validation contract.
+    fn user_range_ok(ptr: u64, len: u64) -> bool {
+        if len == 0 {
+            return true;
+        }
+        let Some(end) = ptr.checked_add(len) else {
+            return false;
+        };
+        end <= bare_metal::usermode::USER_HALF_END
+    }
+
+    /// `MmioMap (70)` — OIP-013 § S2.
+    ///
+    /// ## ABI
+    ///
+    /// The SysV-linux syscall argument layout maps OIP-013 § S2's
+    /// register-name labels to the kernel's canonical
+    /// `(a0..=a5)` slots:
+    ///
+    /// | Slot | Reg | Role                                |
+    /// |------|-----|-------------------------------------|
+    /// | a0   | RDI | `phys_base` (page-aligned)          |
+    /// | a1   | RSI | `len` (multiple of 4 KiB, non-zero) |
+    /// | a2   | RDX | `flags` (bit 0 = WC; rest reserved) |
+    /// | a3   | R10 | `cap_ptr` (user VA, postcard token) |
+    /// | a4   | R8  | `cap_len` (≤ `MAX_TOKEN_BYTES`)     |
+    ///
+    /// Returns a [`SyscallReturn`] whose `rax` holds the page-aligned
+    /// user VA on success or `0` on error; `rdx` is `0` on success or
+    /// one of the [`syscall_errno`] codes on error.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single-syscall handler keeps the auth + map + record sequence in one place \
+                  so the OIP-013 § S2 invariants stay locally auditable"
+    )]
+    pub(super) fn mmio_map(args: [u64; 6]) -> SyscallReturn {
+        let phys_base = args[0];
+        let len = args[1];
+        let flags = args[2];
+        let cap_ptr = args[3];
+        let cap_len = args[4];
+
+        // -------------------------------------------------------------
+        // EINVAL: alignment + reserved flag bits.
+        // -------------------------------------------------------------
+        if phys_base & 0xFFF != 0 || len == 0 || len & 0xFFF != 0 {
+            return SyscallReturn::err(syscall_errno::EINVAL);
+        }
+        if flags & !1 != 0 {
+            return SyscallReturn::err(syscall_errno::EINVAL);
+        }
+        // OIP-013 § S2.2 step 2: WC requires PAT to be configured.
+        // PAT init is not yet wired in Phase 1 — reject explicitly so
+        // user space does not silently fall back to UC and corrupt
+        // an MMIO write-combining buffer.
+        if flags & 1 != 0 {
+            return SyscallReturn::err(syscall_errno::ENOSYS);
+        }
+
+        // -------------------------------------------------------------
+        // EFAULT: capability-token pointer + length.
+        // -------------------------------------------------------------
+        if cap_ptr == 0 || cap_len == 0 {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+        let Ok(cap_len_usize) = usize::try_from(cap_len) else {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        };
+        if cap_len_usize > MAX_TOKEN_BYTES {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+        if !user_range_ok(cap_ptr, cap_len) {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+
+        // Copy the token into a kernel-side stack buffer so subsequent
+        // verification cannot be poisoned by user concurrent mutation.
+        let mut buf = [0u8; MAX_TOKEN_BYTES];
+        // SAFETY: `user_range_ok` verified the source lies in the
+        // user half; the active CR3 is the caller's own AS, so the
+        // hardware PT walk faults on any missing page before the
+        // copy returns garbage. `cap_len_usize` ≤ buf.len() by the
+        // cap above.
+        unsafe {
+            core::ptr::copy_nonoverlapping(cap_ptr as *const u8, buf.as_mut_ptr(), cap_len_usize);
+        }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "cap_len_usize ≤ MAX_TOKEN_BYTES = buf.len() by the cap above"
+        )]
+        let token_bytes = &buf[..cap_len_usize];
+
+        // -------------------------------------------------------------
+        // EACCES: signature, time window, TEE binding, action, resource.
+        // -------------------------------------------------------------
+        let Ok(token) = omni_types::wire::decode_canonical::<CapabilityToken>(token_bytes) else {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        };
+        let now = u64::from(bare_metal::arch::rtc_seconds());
+        let provider = crate::capabilities::Ed25519CapabilityProvider::placeholder();
+        if provider.verify_signed_token(&token, now)
+            != crate::capabilities::CapabilityVerdict::Authorised
+        {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        }
+        // Defense in depth: outside callers cannot reach here without
+        // posting a driver-framework action, but pin the check.
+        if !is_driver_framework_action(token.payload.scope.action) {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        }
+        if token.payload.scope.action != Action::MmioMap {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        }
+        let claim = Resource::MmioRegion { phys_base, len };
+        if !claim.is_subset_of(&token.payload.scope.resource) {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        }
+
+        // -------------------------------------------------------------
+        // Allocate driver-VA range + install leaf PTEs in the caller's
+        // address space.
+        // -------------------------------------------------------------
+        let Ok(len_pages_u64) = u64::checked_div(len, 0x1000).ok_or(()) else {
+            return SyscallReturn::err(syscall_errno::EINVAL);
+        };
+        // OIP-013 caps `len_pages` to fit u32 (each driver mapping is
+        // a small BAR, well below 2^32 pages = 16 TiB). Reject any
+        // pathological size.
+        let Ok(len_pages) = u32::try_from(len_pages_u64) else {
+            return SyscallReturn::err(syscall_errno::EINVAL);
+        };
+
+        // SAFETY: SYSCALL path is single-CPU under the kernel mutex;
+        // SCHEDULER + FRAME_ALLOC are not otherwise aliased.
+        unsafe {
+            let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+            let alloc = &mut *core::ptr::addr_of_mut!(crate::FRAME_ALLOC);
+
+            let Some(current) = sched.current_task_id() else {
+                return SyscallReturn::err(syscall_errno::EFAULT);
+            };
+            let Some(pcb) = sched.process_mut(current) else {
+                return SyscallReturn::err(syscall_errno::EFAULT);
+            };
+
+            // Lazy KASLR: first MmioMap call randomizes the cursor.
+            // Subsequent calls allocate linearly from there.
+            if pcb.mmio_va_cursor == 0 {
+                let mut rng = KaslrRng::new();
+                // Allocate at least `len` bytes ahead of `_END` so the
+                // first mapping fits; `usable_range` is the addressable
+                // span excluding the tail reserved by the request size.
+                let usable_range = DRIVER_MMIO_RANGE.saturating_sub(len);
+                if usable_range == 0 {
+                    return SyscallReturn::err(syscall_errno::ENOSPC);
+                }
+                let raw = rng.next_u64();
+                let offset = (raw % usable_range) & !0xFFF;
+                pcb.mmio_va_cursor = DRIVER_MMIO_VA_BASE + offset;
+            }
+
+            let va_base = pcb.mmio_va_cursor;
+            let Some(va_end) = va_base.checked_add(len) else {
+                return SyscallReturn::err(syscall_errno::ENOSPC);
+            };
+            if va_end > DRIVER_MMIO_VA_END {
+                return SyscallReturn::err(syscall_errno::ENOSPC);
+            }
+
+            let phys_offset = bare_metal::phys_offset();
+            if phys_offset == 0 {
+                // kmain ordering bug: PHYS_OFFSET should be set well
+                // before any user-space syscall can land.
+                return SyscallReturn::err(syscall_errno::EFAULT);
+            }
+            let address_space: AddressSpace = pcb.address_space;
+            let mut mapper = PageMapper::new(phys_offset, address_space.pml4_phys);
+
+            let install_flags =
+                PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NO_EXEC | PTE_PCD | PTE_PWT;
+
+            let mut installed: u64 = 0;
+            let mut ok = true;
+            while installed < len {
+                let virt = VirtAddr(va_base + installed);
+                let phys = PhysAddr(phys_base + installed);
+                if !address_space.map_user_4k(&mut mapper, virt, phys, install_flags, alloc) {
+                    ok = false;
+                    break;
+                }
+                // Invalidate the TLB entry for the new VA — the active
+                // CR3 is the caller's own AS, so the next user-space
+                // load/store from `virt` must observe the freshly
+                // installed PTE.
+                AddressSpace::invlpg(virt);
+                installed += 0x1000;
+            }
+
+            if !ok {
+                // Rollback: unmap whatever we just installed. The
+                // mapping points at device-owned physical addresses
+                // so no frame is returned to the allocator.
+                let mut rolled: u64 = 0;
+                while rolled < installed {
+                    let _ = mapper.unmap_4k(VirtAddr(va_base + rolled));
+                    AddressSpace::invlpg(VirtAddr(va_base + rolled));
+                    rolled += 0x1000;
+                }
+                return SyscallReturn::err(syscall_errno::ENOSPC);
+            }
+
+            pcb.mmio_va_cursor = va_end;
+            pcb.mmio_mappings.push(MmioMapping { va_base, len_pages });
+
+            SyscallReturn::ok(va_base)
+        }
+    }
+
+    /// Tear down every MMIO mapping owned by the calling process.
+    /// Invoked from `task_exit` (OIP-013 § S2.4) before the PCB is
+    /// retired.
+    ///
+    /// MMIO frames are device-owned; we only unmap the leaf PTEs and
+    /// invalidate the TLB. Returning `None` is correct — the caller
+    /// does not need an error path because the PCB itself is about to
+    /// be removed.
+    pub(super) fn tear_down_mmio_mappings(task: crate::scheduling::TaskId) {
+        // SAFETY: SYSCALL path is single-CPU; SCHEDULER not aliased.
+        unsafe {
+            let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+            let Some(pcb) = sched.process_mut(task) else {
+                return;
+            };
+            let phys_offset = bare_metal::phys_offset();
+            if phys_offset == 0 {
+                return;
+            }
+            let address_space: AddressSpace = pcb.address_space;
+            let mut mapper = PageMapper::new(phys_offset, address_space.pml4_phys);
+            // Drain the table so a re-spawn into the same PCB slot
+            // never inherits the stale mapping descriptors.
+            let mappings = core::mem::take(&mut pcb.mmio_mappings);
+            pcb.mmio_va_cursor = 0;
+            for m in &mappings {
+                let bytes = u64::from(m.len_pages) * 0x1000;
+                let mut off: u64 = 0;
+                while off < bytes {
+                    let va = VirtAddr(m.va_base + off);
+                    let _ = mapper.unmap_4k(va);
+                    AddressSpace::invlpg(va);
+                    off += 0x1000;
+                }
+            }
+        }
     }
 }
 
@@ -825,15 +1144,20 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                 }
             }
 
-            // OIP-013 driver framework (P6.7.3 skeleton). Handlers are
-            // explicitly enumerated rather than absorbed by the catch-all
-            // so an accidental drop of a variant becomes a compiler error
-            // (the dispatcher trait would no longer be exhaustive).
-            // Bodies return `NotYetImplemented` until the framework impl
-            // (driver_manifest verification + IOMMU domain alloc + MSI-X
-            // vector alloc) lands in the P6.7.8 sub-tasks.
-            SyscallNumber::MmioMap
-            | SyscallNumber::DmaMap
+            // OIP-013 driver framework. `MmioMap` is handled via the
+            // rich two-register path (`dispatch_full`); landing here
+            // means the single-register fallback was used (host-test
+            // build or an explicit `dispatch` caller). Report `EACCES`
+            // via the legacy error sentinel so the contract is loud.
+            SyscallNumber::MmioMap => {
+                let _ = args;
+                Err(KernelError::CapabilityDenied)
+            }
+            // Remaining driver-framework + TEE syscalls are still
+            // scaffolded; landing in this arm rather than the catch-all
+            // forces a compiler error when a future commit forgets to
+            // re-route one of them.
+            SyscallNumber::DmaMap
             | SyscallNumber::IrqAttach
             | SyscallNumber::DriverLoad
             | SyscallNumber::TeeTdcall
@@ -846,18 +1170,53 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
             _ => Err(KernelError::NotYetImplemented),
         }
     }
+
+    /// Two-register dispatch (OIP-013 § S2). Routes `MmioMap` to the
+    /// rich handler that fills both `rax` (`va_base`) and `rdx`
+    /// (errno); every other syscall keeps the default
+    /// `SyscallReturn::ok` wrapping of the single-register path.
+    fn dispatch_full(
+        &mut self,
+        number: SyscallNumber,
+        args: [u64; 6],
+    ) -> KernelResult<SyscallReturn> {
+        match number {
+            SyscallNumber::MmioMap => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(mmio_map_handlers::mmio_map(args))
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    // Host-test path: surface the same error code
+                    // user space would see so the trait contract is
+                    // observable without the singletons.
+                    let _ = args;
+                    Ok(SyscallReturn::err(crate::syscall::syscall_errno::EACCES))
+                }
+            }
+            other => self.dispatch(other, args).map(SyscallReturn::ok),
+        }
+    }
 }
 
 // -----------------------------------------------------------------------
 // C-ABI dispatch entry (called from assembly stubs)
 // -----------------------------------------------------------------------
 
-/// Translate a raw syscall number + register args into a `KernelResult`, then
-/// flatten to a `u64` for the ABI boundary.
+/// Translate a raw syscall number + register args into a [`SyscallReturn`].
 ///
-/// `u64::MAX` ([`SYSCALL_ERROR`]) is the error sentinel. This function is NOT
-/// gated on `cfg(target_arch = "x86_64")` so host tests (on aarch64 dev
-/// machines) can call it directly.
+/// Returns the two-register pair `(rax, rdx)`. Most syscalls only fill
+/// `rax`; the `MmioMap` path (OIP-013 § S2) additionally fills `rdx`
+/// with a POSIX-aligned errno code on failure. The `SysV` AMD64 ABI
+/// returns a `#[repr(C)]` struct of two `u64` fields in `(rax, rdx)`,
+/// so the assembly trampolines do not need explicit handling beyond
+/// preserving `rdx` across the return path.
+///
+/// `(rax = u64::MAX, rdx = 0)` ([`SYSCALL_ERROR`]) remains the legacy
+/// single-register error sentinel for syscalls that have not migrated
+/// to the rich path. This function is NOT gated on
+/// `cfg(target_arch = "x86_64")` so host tests can call it directly.
 #[unsafe(no_mangle)]
 extern "C" fn kernel_syscall_dispatch(
     number: u32,
@@ -867,7 +1226,7 @@ extern "C" fn kernel_syscall_dispatch(
     a3: u64,
     a4: u64,
     a5: u64,
-) -> u64 {
+) -> SyscallReturn {
     let args = [a0, a1, a2, a3, a4, a5];
 
     let n = match number {
@@ -897,12 +1256,12 @@ extern "C" fn kernel_syscall_dispatch(
         73 => SyscallNumber::DriverLoad,
         74 => SyscallNumber::TeeTdcall,
         75 => SyscallNumber::TeeMsr,
-        _ => return SYSCALL_ERROR,
+        _ => return SyscallReturn::ok(SYSCALL_ERROR),
     };
 
     KernelSyscallDispatcher
-        .dispatch(n, args)
-        .unwrap_or(SYSCALL_ERROR)
+        .dispatch_full(n, args)
+        .unwrap_or(SyscallReturn::ok(SYSCALL_ERROR))
 }
 
 // -----------------------------------------------------------------------
@@ -976,7 +1335,8 @@ mod tests {
     #[test]
     fn dispatcher_unknown_number_returns_error() {
         let ret = kernel_syscall_dispatch(999, 0, 0, 0, 0, 0, 0);
-        assert_eq!(ret, SYSCALL_ERROR);
+        assert_eq!(ret.rax, SYSCALL_ERROR);
+        assert_eq!(ret.rdx, 0);
     }
 
     #[test]
@@ -985,17 +1345,26 @@ mod tests {
         assert_eq!(result, Err(KernelError::NotYetImplemented));
     }
 
-    // ---- OIP-013 / OIP-016 driver framework skeleton (P6.7.3) ------------
+    // ---- OIP-013 / OIP-016 driver framework skeleton -----------------------
     //
-    // The handlers return `NotYetImplemented` until the first-party driver
-    // implementations land (P6.7.8). These tests pin that contract so an
-    // accidental fall-through to a real handler — without the matching
-    // capability check — would surface as a failing test.
+    // `MmioMap (70)` is now wired (P6.7.8.1) and dispatches via the rich
+    // two-register path. The host test build does not have the bare-metal
+    // singletons, so the override returns the `EACCES` sentinel; the
+    // legacy `dispatch` arm reports `CapabilityDenied` so an accidental
+    // single-register fallthrough is still caught.
+    //
+    // The remaining four driver-framework + TEE syscalls keep their
+    // `NotYetImplemented` contract until their handlers land.
 
     #[test]
-    fn dispatcher_driver_framework_syscalls_return_not_yet_implemented() {
+    fn dispatcher_mmio_map_returns_capability_denied_on_legacy_arm() {
+        let result = KernelSyscallDispatcher.dispatch(SyscallNumber::MmioMap, [0; 6]);
+        assert_eq!(result, Err(KernelError::CapabilityDenied));
+    }
+
+    #[test]
+    fn dispatcher_remaining_driver_framework_syscalls_return_not_yet_implemented() {
         for n in [
-            SyscallNumber::MmioMap,
             SyscallNumber::DmaMap,
             SyscallNumber::IrqAttach,
             SyscallNumber::DriverLoad,
@@ -1012,16 +1381,38 @@ mod tests {
     }
 
     #[test]
-    fn kernel_syscall_dispatch_driver_framework_numbers_route_to_sentinel() {
-        // ABI numbers 70..=75 must reach the dispatcher (not the `_ =>`
-        // catch-all that returns `SYSCALL_ERROR` outside dispatch). The
-        // dispatcher then returns `NotYetImplemented`, which the C-ABI
-        // wrapper flattens to `SYSCALL_ERROR` until the real handlers
-        // land. Both layers therefore produce `SYSCALL_ERROR` today;
-        // the test will need to be updated when the handlers are wired.
-        for n in 70..=75 {
+    fn dispatcher_full_mmio_map_surfaces_eaccess_on_host() {
+        // Host-test build has no `FRAME_ALLOC` / `SCHEDULER` singletons,
+        // so the rich override returns `EACCES` directly so the trait
+        // shape is exercised without the bare-metal statics.
+        let ret = KernelSyscallDispatcher
+            .dispatch_full(SyscallNumber::MmioMap, [0; 6])
+            .expect("dispatch_full never propagates KernelError for MmioMap");
+        assert_eq!(ret.rax, 0);
+        assert_eq!(ret.rdx, crate::syscall::syscall_errno::EACCES);
+    }
+
+    #[test]
+    fn kernel_syscall_dispatch_driver_framework_numbers_route() {
+        // ABI numbers 70..=75: `MmioMap (70)` returns the `EACCES`
+        // errno via the rich path; the remaining slots still funnel
+        // to the `NotYetImplemented` sentinel under the legacy
+        // unwrap_or fallback.
+        for n in 70..=75u32 {
             let ret = kernel_syscall_dispatch(n, 0, 0, 0, 0, 0, 0);
-            assert_eq!(ret, SYSCALL_ERROR, "number {n} did not flatten to sentinel");
+            if n == 70 {
+                assert_eq!(ret.rax, 0, "mmio_map should report rax=0 on error");
+                assert_eq!(
+                    ret.rdx,
+                    crate::syscall::syscall_errno::EACCES,
+                    "mmio_map should report rdx=EACCES on host build"
+                );
+            } else {
+                assert_eq!(
+                    ret.rax, SYSCALL_ERROR,
+                    "number {n} did not flatten to sentinel"
+                );
+            }
         }
     }
 
@@ -1032,7 +1423,8 @@ mod tests {
         // userspace cannot accidentally invoke a not-yet-defined slot.
         for n in 76..=79 {
             let ret = kernel_syscall_dispatch(n, 0, 0, 0, 0, 0, 0);
-            assert_eq!(ret, SYSCALL_ERROR, "reserved number {n} leaked");
+            assert_eq!(ret.rax, SYSCALL_ERROR, "reserved number {n} leaked");
+            assert_eq!(ret.rdx, 0);
         }
     }
 
@@ -1040,13 +1432,15 @@ mod tests {
     fn kernel_syscall_dispatch_time_syscall_succeeds() {
         // Number 50 = TimeMonotonicNanos; must return something other than u64::MAX.
         let ret = kernel_syscall_dispatch(50, 0, 0, 0, 0, 0, 0);
-        assert_ne!(ret, SYSCALL_ERROR);
+        assert_ne!(ret.rax, SYSCALL_ERROR);
+        assert_eq!(ret.rdx, 0);
     }
 
     #[test]
     fn kernel_syscall_dispatch_unknown_returns_sentinel() {
         let ret = kernel_syscall_dispatch(0xDEAD, 0, 0, 0, 0, 0, 0);
-        assert_eq!(ret, u64::MAX);
+        assert_eq!(ret.rax, u64::MAX);
+        assert_eq!(ret.rdx, 0);
     }
 
     #[test]

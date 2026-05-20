@@ -128,6 +128,65 @@ pub enum SyscallNumber {
 }
 
 // -----------------------------------------------------------------------------
+// Two-register return value (OIP-013 § S2)
+// -----------------------------------------------------------------------------
+
+/// Two-register syscall return value.
+///
+/// The single-register dispatch path returns its value in `RAX`. Some
+/// syscalls — initially `MmioMap` per `OIP-Driver-Framework-013` § S2 —
+/// also report a POSIX-style error code in `RDX`. The `#[repr(C)]`
+/// layout matches the System V AMD64 return convention for a struct
+/// of two `INTEGER`-class fields: `rax = first u64`, `rdx = second
+/// u64`. The kernel's `extern "C"` syscall dispatcher returns this
+/// type by value; the assembly trampoline preserves RDX through to
+/// the user-mode `sysretq` / `iretq` so user space observes the pair.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SyscallReturn {
+    /// Primary return value (`RAX`). Convention: non-zero on success
+    /// for handlers that return a handle/VA/length; zero on hard
+    /// errors when paired with a non-zero `rdx`.
+    pub rax: u64,
+    /// Secondary return value (`RDX`). `0` on success; one of the
+    /// [`syscall_errno`] codes on error.
+    pub rdx: u64,
+}
+
+impl SyscallReturn {
+    /// Build a successful return with the supplied primary value and
+    /// `rdx = 0` (no error).
+    #[must_use]
+    pub const fn ok(rax: u64) -> Self {
+        Self { rax, rdx: 0 }
+    }
+
+    /// Build an error return with `rax = 0` and the supplied errno
+    /// code in `rdx`.
+    #[must_use]
+    pub const fn err(errno: u64) -> Self {
+        Self { rax: 0, rdx: errno }
+    }
+}
+
+/// POSIX-aligned syscall errno codes used in the two-register return
+/// path. Numbering follows Linux `errno-base.h` for the subset that
+/// `OIP-Driver-Framework-013` § S2.3 references.
+pub mod syscall_errno {
+    /// Permission denied — capability verification failed.
+    pub const EACCES: u64 = 13;
+    /// Bad address — user pointer or length is invalid.
+    pub const EFAULT: u64 = 14;
+    /// Invalid argument — alignment, range, or reserved bits.
+    pub const EINVAL: u64 = 22;
+    /// No space left — driver VA range exhausted.
+    pub const ENOSPC: u64 = 28;
+    /// Function not implemented — feature requires runtime support
+    /// that has not been initialised (e.g. PAT for WC mappings).
+    pub const ENOSYS: u64 = 38;
+}
+
+// -----------------------------------------------------------------------------
 // Syscall dispatcher trait
 // -----------------------------------------------------------------------------
 
@@ -141,6 +200,21 @@ pub trait SyscallDispatcher {
     /// arguments (the `x86_64` ABI fits in 6 GPRs). Returns the syscall
     /// result code or [`crate::KernelError`].
     fn dispatch(&mut self, number: SyscallNumber, args: [u64; 6]) -> KernelResult<u64>;
+
+    /// Dispatches a syscall and returns both `RAX` and `RDX`.
+    ///
+    /// Default implementation defers to [`Self::dispatch`] and wraps
+    /// the result as [`SyscallReturn::ok`] on success or
+    /// `SyscallReturn::err(syscall_errno::EINVAL)` on a `KernelError`.
+    /// Handlers that need the richer two-register ABI (e.g. `MmioMap`)
+    /// override this method to return the specific errno.
+    fn dispatch_full(
+        &mut self,
+        number: SyscallNumber,
+        args: [u64; 6],
+    ) -> KernelResult<SyscallReturn> {
+        self.dispatch(number, args).map(SyscallReturn::ok)
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -175,5 +249,46 @@ mod tests {
     #[test]
     fn syscall_number_fits_in_u32() {
         assert_eq!(core::mem::size_of::<SyscallNumber>(), 4);
+    }
+
+    // ---- Two-register return path (OIP-013 § S2) -------------------------
+
+    #[test]
+    fn syscall_return_ok_zero_errno() {
+        let r = SyscallReturn::ok(0x4000_0000);
+        assert_eq!(r.rax, 0x4000_0000);
+        assert_eq!(r.rdx, 0);
+    }
+
+    #[test]
+    fn syscall_return_err_zero_rax() {
+        let r = SyscallReturn::err(syscall_errno::EACCES);
+        assert_eq!(r.rax, 0);
+        assert_eq!(r.rdx, 13);
+    }
+
+    #[test]
+    fn syscall_return_is_two_u64_struct() {
+        // Repr(C) on x86_64 places two u64 fields in (rax, rdx) at the
+        // SysV ABI boundary. Pin the layout so a re-order would surface
+        // as a failing test before the ABI breaks. Field-offset checks
+        // are sufficient — the SysV "two INTEGER fields ≤ 16 bytes →
+        // return in (rax, rdx)" rule is keyed on the in-memory layout.
+        assert_eq!(core::mem::size_of::<SyscallReturn>(), 16);
+        assert_eq!(core::mem::align_of::<SyscallReturn>(), 8);
+        let r = SyscallReturn { rax: 1, rdx: 2 };
+        assert_eq!(r.rax, 1);
+        assert_eq!(r.rdx, 2);
+        assert_eq!(core::mem::offset_of!(SyscallReturn, rax), 0);
+        assert_eq!(core::mem::offset_of!(SyscallReturn, rdx), 8);
+    }
+
+    #[test]
+    fn syscall_errno_codes_are_posix_aligned() {
+        assert_eq!(syscall_errno::EACCES, 13);
+        assert_eq!(syscall_errno::EFAULT, 14);
+        assert_eq!(syscall_errno::EINVAL, 22);
+        assert_eq!(syscall_errno::ENOSPC, 28);
+        assert_eq!(syscall_errno::ENOSYS, 38);
     }
 }
