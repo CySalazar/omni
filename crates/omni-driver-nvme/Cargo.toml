@@ -1,0 +1,52 @@
+# =============================================================================
+# omni-driver-nvme — NVMe first-party user-space driver scaffold
+# =============================================================================
+# First-party driver for NVMe 1.4-compliant PCIe SSDs (PCI class
+# `0x01:0x08:0x02`). Specified by `OIP-Driver-NVMe-014` § S1-S6 and loaded
+# via the `DriverLoad` syscall flow specified by
+# `OIP-Driver-Framework-013` § S5.
+#
+# This is the **P6.7.8.4 scaffold** delivery: skeleton-only `no_std + alloc`
+# library that locks the public surface (NVMe PCI class match, controller
+# register offsets, admin/IO queue depth bounds, PRP transfer model, 13-step
+# bring-up FSM) without wiring any syscall path. The bootable image sibling
+# (`crates/omni-driver-nvme-image`, excluded from the default workspace
+# matrix like `kernel-runner`) lands in a follow-up sub-step (P6.7.8.5)
+# together with the actual `MmioMap`/`DmaMap`/`IrqAttach` invocations.
+#
+# Pattern mirrors `omni-driver-net-virtio` (P6.7.8.2): the lib hosts the
+# auditable logic compiled in the default workspace matrix; the runtime
+# ELF lives in the excluded sibling image crate. Same split as
+# `omni-kernel` ↔ `kernel-runner`.
+# =============================================================================
+
+[package]
+name             = "omni-driver-nvme"
+description      = "OMNI OS first-party NVMe user-space driver (OIP-Driver-NVMe-014 § S1-S6 scaffold)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[lints]
+workspace = true
+
+# -----------------------------------------------------------------------------
+# Dependencies
+# -----------------------------------------------------------------------------
+# The scaffold is deliberately dependency-light: no `omni-types`, no
+# `omni-capability`, no `omni-crypto`. The driver's eventual capability
+# surface (MmioMap / DmaMap / IrqAttach / DriverLoad) is mediated by the
+# kernel; the user-space driver process only needs to issue raw syscalls
+# and shape its own data structures. We will reintroduce dependencies in
+# the bring-up step when the FSM starts touching real types (`BlkRequest`
+# from a new `omni-types::blk` module per OIP-014 Reference Implementation).
+[dependencies]
+
+[dev-dependencies]

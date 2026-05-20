@@ -919,6 +919,10 @@ name = "omni-driver-net-virtio"
 version = "0.2.0"
 
 [[package]]
+name = "omni-driver-nvme"
+version = "0.2.0"
+
+[[package]]
 name = "omni-hal"
 version = "0.2.0"
 dependencies = [

@@ -81,4 +81,13 @@ allowed-prefixes = ["Omni", "omni"]
 # Every public item must have a doc comment (also enforced via
 # `missing_docs = "warn"` in workspace lints). This setting tightens
 # the check on private items where it materially aids review.
-doc-valid-idents = ["OMNI", "TEE", "TDX", "SEV-SNP", "AGPL", "AEAD", "HKDF", "BLAKE3", "SHA-256", "SHA3-256", "Ed25519", "X25519", "ChaCha20", "ChaCha20-Poly1305", "Argon2", "Argon2id", "P2P", "FF1", "FF3-1", "STARK", "SNARK", "MoE", "OIP", "RustCrypto", "KiB", "MiB", "GiB", "SemVer", "UUIDv4", "UUIDv7", "Curve25519", "Poly1305"]
+doc-valid-idents = ["OMNI", "TEE", "TDX", "SEV-SNP", "AGPL", "AEAD", "HKDF", "BLAKE3", "SHA-256", "SHA3-256", "Ed25519", "X25519", "ChaCha20", "ChaCha20-Poly1305", "Argon2", "Argon2id", "P2P", "FF1", "FF3-1", "STARK", "SNARK", "MoE", "OIP", "RustCrypto", "KiB", "MiB", "GiB", "SemVer", "UUIDv4", "UUIDv7", "Curve25519", "Poly1305",
+    # Driver framework + first-party drivers (OIP-013 / OIP-014 / OIP-015 / OIP-016).
+    # These appear repeatedly across the user-space driver crates and the kernel
+    # syscall surfaces; backticking each occurrence inline would bury the prose.
+    "NVMe", "NVMHCI", "PCIe", "IOMMU", "IOAPIC", "MSI-X",
+    "MmioMap", "DmaMap", "IrqAttach", "DriverLoad", "DriverUnload",
+    "PciConfigRead", "PciConfigWrite",
+    "MmioRegion", "DmaWindow", "IrqLine", "PciDevice",
+    "BAR0", "BAR4", "ECAM", "BLK", "PRP", "PRP1", "PRP2", "SGL",
+]

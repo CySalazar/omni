@@ -48,6 +48,7 @@ members = [
     # added when each driver enters bring-up (`*-image`, sibling to the lib
     # the same way `kernel-runner` is the bootable sibling of `omni-kernel`).
     "crates/omni-driver-net-virtio",
+    "crates/omni-driver-nvme",
 ]
 
 # Fuzz harnesses live in their own ephemeral packages outside the
