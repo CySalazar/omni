@@ -49,6 +49,7 @@ members = [
     # the same way `kernel-runner` is the bootable sibling of `omni-kernel`).
     "crates/omni-driver-net-virtio",
     "crates/omni-driver-nvme",
+    "crates/omni-driver-e1000e",
 ]
 
 # Fuzz harnesses live in their own ephemeral packages outside the

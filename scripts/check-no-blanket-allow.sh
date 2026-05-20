@@ -55,6 +55,7 @@ SCOPED_CRATES=(
     "crates/omni-shell"
     "crates/omni-driver-net-virtio"
     "crates/omni-driver-nvme"
+    "crates/omni-driver-e1000e"
 )
 
 files=""

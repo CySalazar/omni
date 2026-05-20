@@ -15,6 +15,68 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ## [Unreleased]
 
+### Added
+
+- **Drivers — P6.7.8.6 e1000e (M2) crate scaffold (2026-05-20).** New
+  `crates/omni-driver-e1000e` lands as a full workspace member
+  (`no_std + alloc` library, `#![cfg_attr(not(test), no_std)]`), mirroring
+  the `omni-driver-net-virtio` (P6.7.8.2) and `omni-driver-nvme`
+  (P6.7.8.4) skeletons. The crate locks the e1000e-side public surface
+  required by `OIP-Driver-Net-015` § S5 + § S8 and the Intel 82574L
+  Gigabit Ethernet Controller datasheet § 10 without wiring any syscall
+  path. Five `pub` modules:
+  - `pci_ids`: Intel vendor `0x8086` + five v0.3 device IDs (`0x10D3`
+    82574L, `0x153A` I217-LM, `0x153B` I217-V, `0x15A1` I218-LM,
+    `0x15A3` I219-LM), `is_e1000e_device(vendor, device) -> bool`
+    matcher consumed by the manifest table and the driver's ECAM walk.
+  - `controller_regs`: CSR offsets `CTRL/STATUS/MDIC/ICR/ITR/IMS/IMC/
+    RCTL/TCTL/RDBAL..RDT/TDBAL..TDT/RAL0/RAH0` + field bits
+    (`CTRL.RST=bit26`, `STATUS.LU=bit1`, `IMC_DISABLE_ALL=0xFFFFFFFF`,
+    `RCTL.{EN,BAM,SECRC,BSIZE}`, `TCTL.{EN,PSP,CT,COLD}`,
+    `RAH.AV=bit31`) + `rctl_enable_value()` / `tctl_enable_value()`
+    const composers + 128 KiB `CSR_REGION_BYTES` + `const _: () =
+    assert!(...)` compile-time layout invariants.
+  - `ring_config`: power-of-two ring depth bounds (`1..=4096`) +
+    `rx_buffer_count` bounds (`1..=8192`) + manifest defaults
+    (`256` rings, `512` buffers) + 16-byte legacy descriptors +
+    2 KiB RX buffer size + validators with `checked_mul`/`checked_add`
+    overflow guards.
+  - `interrupts`: IMS/IMC/ICR bit positions `TXDW=bit0`, `LSC=bit2`,
+    `RXT0=bit7` + `ENABLED_IMS=0x85` (OIP-015 § S5.1 step 10 mandate)
+    + `icr_has_rx/has_tx/has_link_change` const classifiers.
+  - `bringup`: 13-step `Phase` enum (`PciEnumeration → MmioMap →
+    DisableInterrupts → GlobalReset → ReadMac → PhyInit → SetupRxRing
+    → PostRxBuffers → SetupTxRing → ConfigureRxTx → EnableInterrupts
+    → AttachIrq → RegisterNetChannel → Ready`) + terminal `Failed=14`
+    + `BringUp { phase, retries }` state-machine driver with
+    `MAX_RETRIES=3` budget mirrored from P6.7.8.3 / P6.7.8.4 +
+    `Event::{Advance, Retry, Abort(BringUpError)}` + 10-variant
+    `BringUpError` + 15-variant `StepKind` projection. Actual
+    `MmioMap`/`DmaMap`/`IrqAttach` syscall invocations remain deferred
+    to the bootable image sibling `omni-driver-e1000e-image`
+    (P6.7.8.7).
+  Companion files:
+  - `crates/omni-driver-e1000e/manifest.toml` developer-authored TOML v1
+    template with shape OIP-013 § S5.1 + OIP-015 § S1 (`[meta]` /
+    `[capabilities]` 128 KiB MMIO + 4 GiB IOVA / `[matchers]` listing
+    all five vendor/device pairs / `[net]` block matching
+    `ring_config` defaults).
+  - Root `Cargo.toml` `[workspace.members]` extended.
+  - `scripts/check-no-blanket-allow.sh` `SCOPED_CRATES` extended
+    (14 → 15 crate-root files scanned).
+  - Build Info panel (`crates/omni-kernel/src/bare_metal/demo.rs::
+    render_buildinfo`): Active=`P6.7.8.6 e1000e (M2) scaffold`,
+    Next=`P6.7.8.7 e1000e image sibling`, Phase=`1 - Microkernel POC
+    (~99.6%)`, Tests=`864 workspace pass`.
+  +61 new host-side tests (7 pci_ids + 10 controller_regs + 7 interrupts
+  + 15 ring_config + 22 bringup). Workspace test count 803 → **864 pass
+  / 0 fail** (`cargo test --workspace --all-features -- --test-threads=1`).
+  All gates clean: workspace clippy + bare-metal + mb12-userprobe +
+  kernel-runner + net-virtio-image + nvme-image (all
+  `x86_64-unknown-none --release`); fmt; check-no-blanket-allow
+  (15 crate-root files); rustdoc bare-metal + workspace; lint-oips
+  (0 error / 0 warning across 19 file).
+
 ### Changed
 
 - **Kernel — P6.7.3.bis realign driver_manifest skeleton to OIP-013 Appendix B
