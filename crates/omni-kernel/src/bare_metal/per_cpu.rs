@@ -218,6 +218,17 @@ pub fn register_ap(cpu_id: u32, lapic_id: u32) -> Option<&'static PerCpu> {
     let idx = (cpu_id as usize).checked_sub(1)?;
     let slot = AP_SLOTS.get(idx)?;
     slot.seed(cpu_id, lapic_id, false);
+    // MB14.f.1 follow-up — stamp the slot's self-pointer at offset 0.
+    // The AP's `kmain_ap` asm writes `IA32_GS_BASE` with the slot
+    // address; the very next `current_cpu()` call from this AP reads
+    // `gs:[0]` (the slot's `self_ptr` field) expecting to recover
+    // `&PerCpu`. Without this stamp the field is `0`, and the first
+    // method call on the resulting NULL pointer (e.g.
+    // `current_cpu().is_bsp()` from `kernel_lapic_timer_tick` after
+    // the AP timer fires) faults at `cr2 = 0x10` (the offset of
+    // `is_bsp` inside `PerCpu`).
+    let slot_addr = core::ptr::from_ref::<PerCpu>(slot) as u64;
+    slot.self_ptr.store(slot_addr, Ordering::Release);
     Some(slot)
 }
 
@@ -545,5 +556,22 @@ mod tests {
         let b = ap_online_ack_addr();
         assert_ne!(a, 0);
         assert_eq!(a, b);
+    }
+
+    /// MB14.f.1 follow-up — `register_ap` must stamp the slot's
+    /// `self_ptr` to its own address so an AP `mov rax, gs:[0]`
+    /// recovers `&PerCpu`. Without this stamp the AP timer handler
+    /// `current_cpu().is_bsp()` page-faults at `cr2 = 0x10` (the
+    /// `is_bsp` offset). Pin the invariant so a future refactor of
+    /// `register_ap` cannot regress this without surfacing in CI.
+    #[test]
+    fn register_ap_stamps_self_pointer_at_offset_zero() {
+        // Pick a cpu_id distinct from earlier register_ap tests to
+        // avoid relying on slot-level idempotency: each call rewrites
+        // the slot's self_ptr to its own address, so even a re-used
+        // slot must end up with self_ptr = &slot after this call.
+        let slot = register_ap(4, 0xAB).expect("slot 4 must register");
+        let expected = core::ptr::from_ref(slot) as u64;
+        assert_eq!(slot.self_ptr(), expected);
     }
 }
