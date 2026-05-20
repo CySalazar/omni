@@ -79,6 +79,77 @@ pub fn set_phys_offset(value: u64) {
 pub fn phys_offset() -> u64 {
     PHYS_OFFSET.load(core::sync::atomic::Ordering::Relaxed)
 }
+
+// =============================================================================
+// Boot PML4 (boot CR3) anchor
+//
+// `kmain` records the bootloader-built PML4 physical base here so the
+// `DriverLoad (73)` syscall handler can clone its kernel-half into the
+// new driver process's address space without depending on the calling
+// process's CR3 (which is the loader, not the kernel image). Single
+// one-shot writer at boot; `Relaxed` ordering for the same reason as
+// [`PHYS_OFFSET`].
+// =============================================================================
+
+/// Bootloader-built PML4 physical address, low 12 bits zero.
+///
+/// Reads before [`set_boot_cr3`] return `0` and surface as an
+/// `EFAULT`-equivalent at the syscall layer, exactly as
+/// [`PHYS_OFFSET`] does.
+pub static BOOT_CR3: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// One-shot setter for the boot PML4 physical address. Called by
+/// `kmain` after reading `CR3` and before any user-process spawn.
+#[inline]
+pub fn set_boot_cr3(value: u64) {
+    BOOT_CR3.store(value & !0xFFF, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Read the boot PML4 physical address.
+#[must_use]
+#[inline]
+pub fn boot_cr3() -> u64 {
+    BOOT_CR3.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod boot_cr3_tests {
+    use super::{boot_cr3, set_boot_cr3};
+    use core::sync::atomic::Ordering;
+
+    /// `set_boot_cr3` masks the low 12 bits so callers can pass the
+    /// raw CR3 register value (which carries PCD/PWT/PCID flags below
+    /// the page-aligned PML4 base).
+    #[test]
+    fn set_boot_cr3_masks_low_12_bits() {
+        // Save + restore the global so other host tests are not
+        // perturbed by this one running first (the global is shared
+        // across the whole test process).
+        let prior = super::BOOT_CR3.load(Ordering::Relaxed);
+        set_boot_cr3(0x0010_0000 | 0xABC);
+        assert_eq!(boot_cr3(), 0x0010_0000);
+        super::BOOT_CR3.store(prior, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn boot_cr3_returns_zero_when_unset_observer() {
+        // Pin the contract: a fresh observer would read 0 (the AtomicU64
+        // default) — captured here by snapshotting before our test
+        // mutation and asserting after restore.
+        let prior = super::BOOT_CR3.load(Ordering::Relaxed);
+        super::BOOT_CR3.store(0, Ordering::Relaxed);
+        assert_eq!(boot_cr3(), 0);
+        super::BOOT_CR3.store(prior, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn set_boot_cr3_round_trips_aligned_value() {
+        let prior = super::BOOT_CR3.load(Ordering::Relaxed);
+        set_boot_cr3(0xDEAD_F000);
+        assert_eq!(boot_cr3(), 0xDEAD_F000);
+        super::BOOT_CR3.store(prior, Ordering::Relaxed);
+    }
+}
 #[cfg(target_arch = "x86_64")]
 pub mod context_switch;
 #[cfg(target_arch = "x86_64")]

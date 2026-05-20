@@ -345,6 +345,11 @@ pub fn kmain(
     // value through the syscall trampoline. Single-shot write at boot.
     bare_metal::set_phys_offset(phys_offset_mb2);
     let cr3_raw = arch::read_cr3();
+    // P6.7.8.8 — publish the boot PML4 physical base so the
+    // `DriverLoad (73)` syscall handler can clone the kernel-half into
+    // the new driver process's address space without depending on the
+    // calling process's CR3 (loader != kernel image).
+    bare_metal::set_boot_cr3(cr3_raw);
     // `mut` because MB10's `spawn_kernel_task` will call `pager.map_4k` to
     // map each task's kernel stack into the isolated VA range.
     let mut pager = paging::PageMapper::new(phys_offset_mb2, memory::PhysAddr(cr3_raw & !0xFFF));

@@ -1776,6 +1776,281 @@ mod irq_attach_handlers {
     }
 }
 
+// -----------------------------------------------------------------------
+// DriverLoad (OIP-013 § S5, P6.7.8.8)
+//
+// Wires the `SyscallNo = 73` handler that ingests an omni-pack v1 blob
+// (header + postcard manifest + Ed25519 signature + ELF image), verifies
+// the manifest end-to-end (BLAKE3 image hash + Ed25519 signature against
+// `KNOWN_ISSUERS`), then spawns the driver as a Ring 3 task via
+// `ProcessControlBlock::spawn_from_elf`. Returns the spawned task id in
+// `rax` on success; `rdx` is `0` on success or a POSIX errno on error.
+//
+// Attenuated child-token deposit (§ S5.3 step 8) and the per-driver
+// capability-namespace bootstrap are deliberately deferred to the next
+// sub-step (P6.7.8.9): drivers in P6.7.8.8 reach `_start` but the
+// `MmioMap`/`DmaMap`/`IrqAttach` calls inside them still require a
+// token presented through a separate, manually-minted path. The split
+// keeps the ELF loader + signature chain decoupled from the capability
+// store wiring.
+// -----------------------------------------------------------------------
+
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+mod driver_load_handlers {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use crate::bare_metal;
+    use crate::driver_manifest::{
+        DriverManifestError, decode_omni_pack, hydrate_manifest, is_driver_framework_action,
+        postcard_decode_manifest, verify_manifest,
+    };
+    use crate::memory::PhysAddr;
+    use crate::process::ProcessControlBlock;
+    use crate::scheduling::PriorityClass;
+    use crate::syscall::{SyscallReturn, syscall_errno};
+    use omni_capability::CapabilityToken;
+    use omni_capability::scope::{Action, Resource};
+
+    /// Maximum accepted size for the postcard-encoded
+    /// [`CapabilityToken`] presented through `DriverLoad`. Same bound
+    /// as the sibling `MmioMap`/`DmaMap`/`IrqAttach` handlers.
+    const MAX_TOKEN_BYTES: usize = 1024;
+
+    /// OIP-013 § S5.2: pack blob is at most 32 MiB total (header,
+    /// manifest, signature, and image combined). Anything larger is
+    /// rejected before the kernel allocates the holding buffer, so the
+    /// worst-case footprint of a single `DriverLoad` is bounded.
+    const MAX_PACK_BYTES: u64 = 32 * 1024 * 1024;
+
+    /// Validate that `[ptr, ptr + len)` lies entirely in the user
+    /// half. Mirrors the helper used by the sibling driver-framework
+    /// handlers so the two paths cannot drift on the validation
+    /// contract.
+    fn user_range_ok(ptr: u64, len: u64) -> bool {
+        if len == 0 {
+            return true;
+        }
+        let Some(end) = ptr.checked_add(len) else {
+            return false;
+        };
+        end <= bare_metal::usermode::USER_HALF_END
+    }
+
+    /// Translate an [`omni_capability::CapabilityToken`] decoded from
+    /// user memory into an authorization verdict. Returns the verified
+    /// token on `Authorised`, else an errno.
+    fn verify_token(token_bytes: &[u8]) -> Result<CapabilityToken, u64> {
+        let token = omni_types::wire::decode_canonical::<CapabilityToken>(token_bytes)
+            .map_err(|_| syscall_errno::EACCES)?;
+        let now = u64::from(bare_metal::arch::rtc_seconds());
+        let provider = crate::capabilities::Ed25519CapabilityProvider::placeholder();
+        if provider.verify_signed_token(&token, now)
+            != crate::capabilities::CapabilityVerdict::Authorised
+        {
+            return Err(syscall_errno::EACCES);
+        }
+        if !is_driver_framework_action(token.payload.scope.action) {
+            return Err(syscall_errno::EACCES);
+        }
+        if token.payload.scope.action != Action::DriverLoad {
+            return Err(syscall_errno::EACCES);
+        }
+        // OIP-013 § S5.2: `DriverLoad` requires `Resource::Any`. The
+        // token's scope MAY be exactly `Any` or any concrete resource
+        // — the subset check covers both: `concrete.is_subset_of(&Any)`.
+        // We additionally insist the scope's resource IS `Any` to
+        // foreclose a token scoped to e.g. a single PCI device being
+        // accepted for an arbitrary image load.
+        if token.payload.scope.resource != Resource::Any {
+            return Err(syscall_errno::EACCES);
+        }
+        Ok(token)
+    }
+
+    /// Translate a [`DriverManifestError`] into the POSIX errno code
+    /// the syscall ABI returns on failure. Mirrors the mapping baked
+    /// into OIP-013 § S5.3 (`EINVAL` for parse / hash issues, `EACCES`
+    /// for issuer / signature issues).
+    fn manifest_errno(err: DriverManifestError) -> u64 {
+        match err {
+            DriverManifestError::MalformedPack
+            | DriverManifestError::PackTooLarge
+            | DriverManifestError::ImageHashMismatch => syscall_errno::EINVAL,
+            DriverManifestError::UnknownIssuer | DriverManifestError::SignatureInvalid => {
+                syscall_errno::EACCES
+            }
+        }
+    }
+
+    /// `DriverLoad (73)` — OIP-013 § S5.
+    ///
+    /// ## ABI
+    ///
+    /// | Slot | Reg | Role                                       |
+    /// |------|-----|--------------------------------------------|
+    /// | a1   | RSI | `pack_ptr` (omni-pack v1 blob, user VA)    |
+    /// | a2   | RDX | `pack_len` (≤ `MAX_PACK_BYTES`)            |
+    /// | a3   | R10 | `cap_ptr` (user VA, postcard token)        |
+    /// | a4   | R8  | `cap_len` (≤ `MAX_TOKEN_BYTES`)            |
+    ///
+    /// `a0` is reserved and ignored. Returns a [`SyscallReturn`] whose
+    /// `rax` holds the spawned task id on success or `0` on error;
+    /// `rdx` is `0` on success or one of the [`syscall_errno`] codes
+    /// on error.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single-syscall handler keeps the auth + decode + verify + spawn sequence \
+                  locally auditable per OIP-013 § S5.3"
+    )]
+    pub(super) fn driver_load(args: [u64; 6]) -> SyscallReturn {
+        let pack_ptr = args[1];
+        let pack_len = args[2];
+        let cap_ptr = args[3];
+        let cap_len = args[4];
+
+        // -------------------------------------------------------------
+        // EFAULT: capability token pointer / length.
+        // -------------------------------------------------------------
+        if cap_ptr == 0 || cap_len == 0 {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+        let Ok(cap_len_usize) = usize::try_from(cap_len) else {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        };
+        if cap_len_usize > MAX_TOKEN_BYTES {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+        if !user_range_ok(cap_ptr, cap_len) {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+
+        // -------------------------------------------------------------
+        // EFAULT/EINVAL: pack pointer + length.
+        // -------------------------------------------------------------
+        if pack_ptr == 0 {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+        if pack_len == 0 || pack_len > MAX_PACK_BYTES {
+            return SyscallReturn::err(syscall_errno::EINVAL);
+        }
+        if !user_range_ok(pack_ptr, pack_len) {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+        let Ok(pack_len_usize) = usize::try_from(pack_len) else {
+            return SyscallReturn::err(syscall_errno::EINVAL);
+        };
+
+        // -------------------------------------------------------------
+        // Copy the capability token into a kernel stack buffer.
+        // -------------------------------------------------------------
+        let mut token_buf = [0u8; MAX_TOKEN_BYTES];
+        // SAFETY: `user_range_ok` confirmed the source range lies in
+        // the user half; the active CR3 is the caller's own AS so the
+        // hardware walk faults on missing pages.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                cap_ptr as *const u8,
+                token_buf.as_mut_ptr(),
+                cap_len_usize,
+            );
+        }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "cap_len_usize ≤ MAX_TOKEN_BYTES = token_buf.len()"
+        )]
+        let token_bytes = &token_buf[..cap_len_usize];
+
+        // -------------------------------------------------------------
+        // EACCES: token signature, action, resource.
+        // -------------------------------------------------------------
+        let _token = match verify_token(token_bytes) {
+            Ok(t) => t,
+            Err(e) => return SyscallReturn::err(e),
+        };
+
+        // -------------------------------------------------------------
+        // Copy the pack blob into a kernel-side Vec. The bump allocator
+        // never reclaims, but a v0.3 boot triggers only a handful of
+        // DriverLoad calls (one per first-party driver) so the
+        // amortized cost is bounded by the heap size.
+        // -------------------------------------------------------------
+        let mut pack_buf: Vec<u8> = vec![0u8; pack_len_usize];
+        // SAFETY: `user_range_ok` confirmed the source range lies in
+        // the user half; `pack_buf.len() == pack_len_usize` by the
+        // `vec!` initialiser.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                pack_ptr as *const u8,
+                pack_buf.as_mut_ptr(),
+                pack_len_usize,
+            );
+        }
+
+        // -------------------------------------------------------------
+        // omni-pack v1 envelope decode (§ S5.3 step 3) + postcard
+        // manifest body decode (step 4).
+        // -------------------------------------------------------------
+        let sections = match decode_omni_pack(&pack_buf) {
+            Ok(s) => s,
+            Err(e) => return SyscallReturn::err(manifest_errno(e)),
+        };
+        let body = match postcard_decode_manifest(sections.manifest) {
+            Ok(b) => b,
+            Err(e) => return SyscallReturn::err(manifest_errno(e)),
+        };
+        let manifest = hydrate_manifest(body, *sections.signature);
+
+        // -------------------------------------------------------------
+        // EINVAL/EACCES: full manifest verify (BLAKE3 image hash, then
+        // KNOWN_ISSUERS lookup, then Ed25519 signature). The order is
+        // pinned by `verify_manifest` itself.
+        // -------------------------------------------------------------
+        if let Err(e) = verify_manifest(&manifest, sections.image) {
+            return SyscallReturn::err(manifest_errno(e));
+        }
+
+        // -------------------------------------------------------------
+        // Spawn the driver process. `ProcessControlBlock::spawn_from_elf`
+        // owns the ELF parse + per-process PML4 clone + user-stack +
+        // scheduler enrollment; we just supply the kernel singletons.
+        // -------------------------------------------------------------
+        let boot_pml4 = bare_metal::boot_cr3();
+        if boot_pml4 == 0 {
+            // kmain ordering bug: BOOT_CR3 should be set before any
+            // user-space syscall can land.
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+        let phys_off = bare_metal::phys_offset();
+        if phys_off == 0 {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+
+        // SAFETY: SYSCALL path is single-CPU under the kernel mutex;
+        // SCHEDULER + FRAME_ALLOC are not otherwise aliased.
+        let result = unsafe {
+            let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+            let alloc = &mut *core::ptr::addr_of_mut!(crate::FRAME_ALLOC);
+            let mut mapper = bare_metal::paging::PageMapper::new(phys_off, PhysAddr(boot_pml4));
+
+            ProcessControlBlock::spawn_from_elf(
+                sections.image,
+                PhysAddr(boot_pml4),
+                &mut mapper,
+                alloc,
+                sched,
+                PriorityClass::System,
+                crate::capabilities::KernelPrincipal::ZERO,
+            )
+        };
+
+        result.map_or_else(
+            |_| SyscallReturn::err(syscall_errno::ENOSPC),
+            |task_id| SyscallReturn::ok(task_id.0),
+        )
+    }
+}
+
 struct KernelSyscallDispatcher;
 
 impl SyscallDispatcher for KernelSyscallDispatcher {
@@ -1891,22 +2166,25 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                 }
             }
 
-            // OIP-013 driver framework. `MmioMap`, `DmaMap`, and
-            // `IrqAttach` are handled via the rich two-register path
-            // (`dispatch_full`); landing here means the single-register
-            // fallback was used (host-test build or an explicit
-            // `dispatch` caller). Report `CapabilityDenied` so the
-            // contract is loud and observable in host tests without
-            // the bare-metal singletons.
-            SyscallNumber::MmioMap | SyscallNumber::DmaMap | SyscallNumber::IrqAttach => {
+            // OIP-013 driver framework. `MmioMap`, `DmaMap`,
+            // `IrqAttach`, and `DriverLoad` are handled via the rich
+            // two-register path (`dispatch_full`); landing here means
+            // the single-register fallback was used (host-test build or
+            // an explicit `dispatch` caller). Report `CapabilityDenied`
+            // so the contract is loud and observable in host tests
+            // without the bare-metal singletons.
+            SyscallNumber::MmioMap
+            | SyscallNumber::DmaMap
+            | SyscallNumber::IrqAttach
+            | SyscallNumber::DriverLoad => {
                 let _ = args;
                 Err(KernelError::CapabilityDenied)
             }
-            // Remaining driver-framework + TEE syscalls are still
-            // scaffolded; landing in this arm rather than the catch-all
-            // forces a compiler error when a future commit forgets to
-            // re-route one of them.
-            SyscallNumber::DriverLoad | SyscallNumber::TeeTdcall | SyscallNumber::TeeMsr => {
+            // Remaining TEE syscalls are still scaffolded; landing in
+            // this arm rather than the catch-all forces a compiler
+            // error when a future commit forgets to re-route one of
+            // them.
+            SyscallNumber::TeeTdcall | SyscallNumber::TeeMsr => {
                 let _ = args;
                 Err(KernelError::NotYetImplemented)
             }
@@ -1952,6 +2230,17 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                 #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
                 {
                     Ok(irq_attach_handlers::irq_attach(args))
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Ok(SyscallReturn::err(crate::syscall::syscall_errno::EACCES))
+                }
+            }
+            SyscallNumber::DriverLoad => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(driver_load_handlers::driver_load(args))
                 }
                 #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
                 {
@@ -2111,25 +2400,27 @@ mod tests {
 
     // ---- OIP-013 / OIP-016 driver framework skeleton -----------------------
     //
-    // `MmioMap (70)` is now wired (P6.7.8.1) and dispatches via the rich
-    // two-register path. The host test build does not have the bare-metal
-    // singletons, so the override returns the `EACCES` sentinel; the
-    // legacy `dispatch` arm reports `CapabilityDenied` so an accidental
+    // `MmioMap (70)`, `DmaMap (71)`, `IrqAttach (72)`, and `DriverLoad (73)`
+    // are all wired (P6.7.8.1 / P6.7.8.3 / P6.7.8.8) and dispatch via the
+    // rich two-register path. The host test build does not link the
+    // bare-metal singletons, so the override returns the `EACCES` sentinel;
+    // the legacy `dispatch` arm reports `CapabilityDenied` so an accidental
     // single-register fallthrough is still caught.
     //
-    // The remaining four driver-framework + TEE syscalls keep their
-    // `NotYetImplemented` contract until their handlers land.
+    // The remaining TEE syscalls keep their `NotYetImplemented` contract
+    // until their handlers land.
 
     #[test]
     fn dispatcher_driver_framework_legacy_arm_returns_capability_denied() {
-        // P6.7.8.3: `MmioMap`, `DmaMap`, and `IrqAttach` all reach
-        // their rich handler via `dispatch_full`. The legacy
+        // P6.7.8.8: `MmioMap`, `DmaMap`, `IrqAttach`, and `DriverLoad`
+        // all reach their rich handler via `dispatch_full`. The legacy
         // single-register `dispatch` path returns `CapabilityDenied`
         // so an accidental fallthrough surfaces.
         for n in [
             SyscallNumber::MmioMap,
             SyscallNumber::DmaMap,
             SyscallNumber::IrqAttach,
+            SyscallNumber::DriverLoad,
         ] {
             let result = KernelSyscallDispatcher.dispatch(n, [0; 6]);
             assert_eq!(
@@ -2141,12 +2432,8 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_remaining_driver_framework_syscalls_return_not_yet_implemented() {
-        for n in [
-            SyscallNumber::DriverLoad,
-            SyscallNumber::TeeTdcall,
-            SyscallNumber::TeeMsr,
-        ] {
+    fn dispatcher_remaining_tee_syscalls_return_not_yet_implemented() {
+        for n in [SyscallNumber::TeeTdcall, SyscallNumber::TeeMsr] {
             let result = KernelSyscallDispatcher.dispatch(n, [0; 6]);
             assert_eq!(
                 result,
@@ -2169,11 +2456,15 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_full_dma_map_and_irq_attach_surface_eaccess_on_host() {
-        // P6.7.8.3: same host-side contract as MmioMap — the rich
+    fn dispatcher_full_dma_map_irq_attach_and_driver_load_surface_eaccess_on_host() {
+        // P6.7.8.8: same host-side contract as MmioMap — the rich
         // handlers return EACCES because the bare-metal singletons
         // are not linked into the host test binary.
-        for n in [SyscallNumber::DmaMap, SyscallNumber::IrqAttach] {
+        for n in [
+            SyscallNumber::DmaMap,
+            SyscallNumber::IrqAttach,
+            SyscallNumber::DriverLoad,
+        ] {
             let ret = KernelSyscallDispatcher
                 .dispatch_full(n, [0; 6])
                 .expect("dispatch_full never propagates KernelError for driver-framework syscalls");
@@ -2188,14 +2479,15 @@ mod tests {
 
     #[test]
     fn kernel_syscall_dispatch_driver_framework_numbers_route() {
-        // ABI numbers 70..=75: `MmioMap (70)`, `DmaMap (71)`, and
-        // `IrqAttach (72)` go through the rich two-register path and
-        // surface `EACCES` on the host build (no SCHEDULER/FRAME_ALLOC).
-        // `DriverLoad (73)` and TEE syscalls (74/75) still funnel to
-        // the `NotYetImplemented` sentinel via the legacy unwrap_or.
+        // ABI numbers 70..=75: `MmioMap (70)`, `DmaMap (71)`,
+        // `IrqAttach (72)`, and `DriverLoad (73)` all go through the
+        // rich two-register path and surface `EACCES` on the host
+        // build (no SCHEDULER/FRAME_ALLOC). TEE syscalls (74/75)
+        // still funnel to the `NotYetImplemented` sentinel via the
+        // legacy unwrap_or.
         for n in 70..=75u32 {
             let ret = kernel_syscall_dispatch(n, 0, 0, 0, 0, 0, 0);
-            if (70..=72).contains(&n) {
+            if (70..=73).contains(&n) {
                 assert_eq!(
                     ret.rax, 0,
                     "syscall {n} should report rax=0 on host error path"
