@@ -26,17 +26,19 @@ Key deliverables:
 
 **Goal:** custom Rust microkernel boots on bare-metal x86_64 with TEE and basic services.
 
+**Tracking status (2026-05-20, post `v0.3.0-alpha.1` + P6.7.8.9):** ≈ 99.9 % closed. Remaining gaps are P6.7.8.10 (driver-shared SDK helper that consumes the capability deposit window), P6.7.9 driver live bring-up + Proxmox smoke, P5.2/P5.3 TEE backends (funding-dependent), and P6.8 external audit (funding-dependent).
+
 Key deliverables:
 
-- Microkernel boots on x86_64 hardware with Intel TDX or AMD SEV-SNP.
-- IPC primitives operational (typed message passing).
-- Capability-based security primitives implemented.
-- Memory management, scheduling, interrupt handling.
-- Drivers (in user space): NVMe storage, Ethernet/Wi-Fi networking, TEE.
-- Boot loader (UEFI-based).
-- Minimal shell sufficient for development.
-- No AI yet — focus on a solid kernel foundation.
-- First external security audit of kernel + capability system.
+- ✅ Microkernel boots on x86_64 hardware (UEFI, `bootloader 0.11`); ⬜ Intel TDX / AMD SEV-SNP TEE attestation (funding-dependent, P5.2/P5.3).
+- ✅ IPC primitives operational (typed message passing) — MB12.
+- ✅ Capability-based security primitives implemented — MB13 + P6.7.8.9 capability deposit trampoline.
+- ✅ Memory management, scheduling, interrupt handling — MB1–MB14.
+- 🔄 Drivers (in user space): NVMe storage, Ethernet/Wi-Fi networking, TEE. virtio-net + NVMe + e1000e scaffolds + bootable image siblings landed (P6.7.8.0–7); `DriverLoad (73)` syscall handler + capability deposit trampoline landed (P6.7.8.8–9); next is the driver-shared SDK helper (P6.7.8.10) and live driver bring-up + Proxmox hardware smoke (P6.7.9). TEE backend gated on P5.2/P5.3.
+- ✅ Boot loader (UEFI-based) — `kernel-runner` + `bootloader 0.11`.
+- ⬜ Minimal shell sufficient for development — desktop demo + terminal echo are live; a real REPL is post-Phase-1.
+- ✅ No AI yet — respected.
+- ⬜ First external security audit of kernel + capability system (P6.8, funding-dependent).
 
 ### Phase 2 — AI Runtime Service and Tier 0 (months 18–30)
 

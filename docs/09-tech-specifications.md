@@ -204,7 +204,9 @@ OMNI OS targets a `no_std` future (P6 — kernel transition) where the foundatio
 | `omni-crypto` | `#![no_std]` + `extern crate alloc` | Mandatory from P1.2. CSPRNG uses `getrandom` which auto-detects platform (Linux: `getrandom(2)`; falls back when in `no_std` host with appropriate feature). |
 | `omni-capability` | `#![no_std]` + `extern crate alloc` | Mandatory from P1.3. Bloom filter implemented in-crate to avoid pulling a `std`-only dependency. |
 | `omni-tee` | `#![no_std]` + `extern crate alloc` | Mandatory from P5. |
-| `omni-kernel` | `#![no_std]` + `#![no_main]` | Bare metal. |
+| `omni-kernel` | `#![no_std]` + `#![no_main]` | Bare metal. Active on `x86_64-unknown-none` since v0.2.0; kernel CSPRNG (`crates/omni-kernel/src/entropy.rs`) replaces `getrandom`-backed paths under the `bare-metal` feature so no platform CSPRNG dep is pulled (P6.7.8.9). |
+| `omni-driver-net-virtio`, `omni-driver-nvme`, `omni-driver-e1000e` | `#![cfg_attr(not(test), no_std)]` + `extern crate alloc` | Workspace-member driver libs (P6.7.8.2/4/6). Host build keeps `std` only for the test harness. |
+| `omni-driver-net-virtio-image`, `omni-driver-nvme-image`, `omni-driver-e1000e-image` | `#![no_std]` + `#![no_main]` | Workspace-excluded bootable Ring 3 ELF siblings (P6.7.8.3/5/7). Built on `x86_64-unknown-none`; defensive `PanicOnAlloc` global allocator. |
 | `omni-hal` | `#![no_std]` | HAL trait surface only. |
 | Service crates (`omni-runtime`, `omni-mesh`, `omni-tokenization`) | `std` allowed | Userspace daemons. |
 | User-facing crates (`omni-sdk`, `omni-agent`, `omni-shell`) | `std` | Userspace. |
@@ -219,4 +221,4 @@ This document is updated:
 - On any version bump of MSRV or core dependencies.
 - At each release.
 
-Last review: 2026-05-10 (P1 implementation: workspace dependency set frozen, RustCrypto-only crypto base, full `no_std + alloc` for foundational layer).
+Last review: 2026-05-20 (post `v0.3.0-alpha.1` + P6.7.8.9 closure: kernel adds `rand_core 0.6` + `rand_chacha 0.3` + `spin 0.9` direct deps — all `default-features = false`, no `getrandom` on the bare-metal build — and three driver crates land as workspace members alongside their bootable image siblings).

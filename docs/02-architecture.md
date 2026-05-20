@@ -8,16 +8,17 @@ OMNI OS is structured in concentric layers, from a custom Rust microkernel up to
 
 ## Implementation status
 
-| Layer | Crates | State (2026-05-10) |
+| Layer | Crates | State (2026-05-20, post `v0.3.0-alpha.1` + P6.7.8.9) |
 |---|---|---|
-| Foundational | `omni-types`, `omni-crypto`, `omni-capability` | **Implemented** (P1 closed). 131 unit tests + 7 integration tests + 4 trybuild compile-fail tests, all green. `no_std + alloc`. `omni-crypto` carries the `AWAITING_CRYPTO_REVIEW` marker pending P3.2. |
-| TEE root of trust | `omni-tee` | Trait surface (`omni_capability::tee::AttestationSource`) declared in P1; concrete backends (Intel TDX, AMD SEV-SNP) land in P5. |
-| Microkernel | `omni-kernel` | Stub. Bare-metal `no_std + no_main` transition is Phase 1 (P6). |
-| Hardware Abstraction | `omni-hal` | Stub. P5–P6. |
+| Foundational | `omni-types`, `omni-crypto`, `omni-capability` | **Implemented** (P1 closed). `no_std + alloc`, RFC test vectors per primitive. `omni-crypto` carries the `AWAITING_CRYPTO_REVIEW` marker pending P3.2 cryptographer review. |
+| TEE root of trust | `omni-tee` | Trait surface declared (`omni_capability::tee::AttestationSource` + `StubAttestation`); concrete Intel TDX / AMD SEV-SNP backends land in P5.2 / P5.3 (funding-dependent). |
+| **Microkernel** | `omni-kernel` | **MB1–MB14 cycle closed (v0.3.0-alpha.1, 2026-05-20).** Bare-metal `no_std + no_main` on `x86_64-unknown-none` via UEFI (`bootloader 0.11`). Frame allocator, 4-level paging, IDT, SYSCALL/SYSRET + INT 0x80, ELF64 loader, scheduler, LAPIC preemption, Ring 3 + per-process CR3, IPC + multi-task, kernel-stack isolation, MP boot (AP INIT-SIPI live), TLB shootdown, per-CPU run queues, x2APIC, AP dispatch + cross-CPU context switch (MB14.h.2 + `SCHED_LOCK`). Track A desktop (GOP framebuffer, bitmap font, software cursor, PS/2 + VirtIO tablet, widget toolkit, WM, RTC clock, ACPI S5, Build Info panel) all live. |
+| **User-space driver framework** | `omni-kernel` (`driver_manifest`, `cap_deposit`, `driver_cap_issuer`, `entropy`, `known_issuers`), `omni-driver-net-virtio`, `omni-driver-nvme`, `omni-driver-e1000e` (+ workspace-excluded bootable `*-image` siblings) | **`OIP-013/014/015/016` Active.** Full `OIP-013` syscall set wired: `MmioMap (70)`, `DmaMap (71)`, `IrqAttach (72)`, `DriverLoad (73)`. Kernel-side capability infrastructure: `ChaCha20Rng` CSPRNG seeded from `RDRAND` + `RDTSC`, Ed25519 driver-capability issuer signing key, 32 KiB read-only capability deposit window mapped per driver at user-VA `0x0010_0000`. Three first-party driver scaffolds + bring-up FSMs + bootable image siblings landed (P6.7.8.0–9). Next: P6.7.8.10 driver-shared SDK helper for token lookup, then live driver bring-up + Proxmox hardware smoke. |
+| Hardware Abstraction | `omni-hal` | Stub. P6–P7. |
 | System services | `omni-runtime`, `omni-mesh`, `omni-tokenization` | Stubs. Phase 2+. The `omni-tokenization` crate is the only one authorised to enable `omni-types`'s `_tokenization_provider` feature flag (the construction gate for `EncryptedString` and friends). |
 | User-facing | `omni-sdk`, `omni-agent`, `omni-shell` | Stubs. Phase 2+. |
 
-See [`/todo.md`](../todo.md) for the active backlog and [`/CHANGELOG.md`](../CHANGELOG.md) for the per-release record.
+See [`/todo.md`](../todo.md) for the active backlog, [`/progress-omni.md`](../progress-omni.md) for the latest snapshot, and [`/CHANGELOG.md`](../CHANGELOG.md) for the per-release record.
 
 ## High-level system layers
 

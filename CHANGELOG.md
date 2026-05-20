@@ -17,6 +17,256 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — P6.7.8.9 capability deposit trampoline (2026-05-20).** Closes
+  `OIP-013` § S5.3 step 8, previously deferred at P6.7.8.8. After a
+  `DriverLoad (73)` syscall verifies the omni-pack signature chain and
+  spawns the driver process, the kernel now mints signed
+  `CapabilityToken`s for every `Resource` declared in the driver's
+  manifest and pre-installs them in a read-only window in the driver's
+  address space — drivers no longer hit `EACCES` on their first
+  `MmioMap` / `DmaMap` / `IrqAttach` / `PciConfigRead`+`Write` call.
+  Three new kernel modules:
+  - `crates/omni-kernel/src/entropy.rs` — Phase-1 kernel CSPRNG.
+    `seed_from_hw_32()` extracts 32 bytes by mixing `RDRAND`
+    (CPUID 1/ECX bit 30 gated, 10-retry per 64-bit chunk) and
+    `RDTSC` jitter through a `SplitMix64` finalizer across four
+    `u64` chunks. The seed feeds a `ChaCha20Rng` from
+    `rand_chacha 0.3`; the `KernelCsprng` wrapper exposes
+    `next_16_bytes()` for `CapabilityId` minting plus
+    `add_entropy(&[u8])` and `reseed([u8; 32])` for Phase-2 entropy
+    folding (designed but not yet wired — planned consumers are the
+    IRQ handler chain and the network drivers once
+    `OIP-Driver-Net-015` bring-up lands). The global is a
+    `spin::Mutex<Option<KernelCsprng>>` accessed via
+    `with_csprng(|rng| …)`.
+  - `crates/omni-kernel/src/driver_cap_issuer.rs` — kernel-side
+    Ed25519 signing key. `DRIVER_CAP_ISSUER_SEED` is a fixed
+    `[0xCAFEBABE × 8]` DEV-ONLY placeholder; substitution by a
+    TEE-derived sealing key (Intel TDX TDREPORT / AMD SEV-SNP
+    `SNP_DERIVE_KEY`) is deferred to P5.2 and a dedicated key-custody
+    OIP. The kernel signing role is deliberately separated from the
+    `KNOWN_ISSUERS` table (which verifies driver-manifest signatures
+    in `verify_manifest`) so a compromise of either trust root does
+    not implicitly compromise the other.
+  - `crates/omni-kernel/src/cap_deposit.rs` — wire-format encoder +
+    bare-metal installer. The deposit layout is `OMNICAPS` magic +
+    `u32` version `1` + `u32` count + `[u32 action_tag, u32
+    resource_tag, u32 token_offset, u32 token_len]` × N entry
+    descriptors + packed postcard `CapabilityToken` blobs. The window
+    is mapped read-only (`PTE_PRESENT|PTE_USER|PTE_NO_EXEC`) at
+    `DRIVER_CAP_DEPOSIT_VA = 0x0000_0000_0010_0000` (1 MiB; chosen
+    below the ELF default load address `0x40_0000`, above the NULL
+    guard region, and disjoint from the user stack VA range and the
+    driver-MMIO PML4 slot) and spans `DRIVER_CAP_DEPOSIT_PAGES = 8`
+    pages (`DRIVER_CAP_DEPOSIT_LEN = 32 KiB`), sized for the
+    worst-case 64-entry × ~150-byte postcard token. `encode_deposit_
+    page(caps, boot_seconds, subject_node_id_bytes)` mints one token
+    per declared `Resource` (`mmio_regions → Action::MmioMap`,
+    `dma_windows → DmaMap`, `irq_lines → IrqAttach`, `pci_devices →
+    PciConfigRead + PciConfigWrite`) with `CapabilityId::from_bytes(
+    KERNEL_CSPRNG.next_16_bytes())`, `subject = NodeId::from_
+    attestation_hash(provider.node_id_bytes())`, a 90-day
+    `TimeWindow`, and an Ed25519 signature from the kernel issuer
+    key; the bare-metal `deposit_for_driver` then allocates eight
+    frames, maps them into the driver address space, and pours the
+    encoded bytes through the kernel direct-map.
+  - **Bypass of `omni-capability/mint`.** `CapabilityId::from_bytes`
+    is `pub const fn` (no feature gate) and `CapabilityToken::sign_
+    payload` is unconditional, so the kernel constructs `TokenPayload`
+    directly and signs it without enabling the `mint` feature path —
+    which would otherwise pull `omni-types/id-generation` and
+    `getrandom`, neither of which build on `x86_64-unknown-none`.
+    Documented in the `entropy.rs` and `cap_deposit.rs` module
+    docstrings so the choice is auditable.
+- **Kernel — `driver_load_handlers::driver_load` extension.** After
+  `ProcessControlBlock::spawn_from_elf` returns `Ok(task_id)`, the
+  handler now reads the new PCB through `sched.process_mut(task_id)`,
+  builds a `PageMapper` from `BOOT_CR3`, and invokes
+  `cap_deposit::deposit_for_driver(&manifest.capabilities,
+  boot_seconds, subject_node, &address_space, &mut mapper, alloc)`. On
+  success the deposit VA is recorded in `pcb.cap_deposit_va`. A
+  deposit failure leaves the driver process alive without
+  capabilities (first `MmioMap` → `EACCES`, observable in user space);
+  atomic spawn rollback (`scheduler.cancel_spawn(task_id)`) is tracked
+  as P6.7.8.10.
+- **Kernel — `ProcessControlBlock` field.** New optional
+  `cap_deposit_va: Option<u64>` (`None` for processes without a
+  deposit, e.g. `mb11-userprobe` / `mb12-userprobe`) lets later
+  inspectors locate the deposit window without parsing the PML4.
+- **Kernel — `Ed25519CapabilityProvider::node_id_bytes()` accessor.**
+  `pub const fn` returning the provider's 32-byte TEE attestation
+  hash so the deposit encoder can pin every minted token's `subject`
+  to the kernel's own node identity (verifies under the placeholder
+  provider until `omni-tee` lands a real attested value in P5).
+- **Build Info panel (`render_buildinfo`).** `Active = P6.7.8.9 cap
+  deposit trampoline` (cyan), `Next = P6.7.8.10 driver-shared SDK`,
+  `Phase = 1 - Microkernel POC (~99.9%)`, `Tests = 885 workspace
+  pass`.
+- **Tests.** +19 host-side tests across the three new modules:
+  - `entropy::tests` (7): `seed_from_hw_returns_32_bytes` +
+    `seed_from_hw_changes_on_subsequent_calls` +
+    `from_seed_is_deterministic` + `next_16_bytes_advances_state` +
+    `add_entropy_changes_subsequent_output` + `reseed_replaces_state`
+    + `with_csprng_returns_consistent_stream_after_init_for_test`.
+  - `driver_cap_issuer::tests` (3): signing-key round-trip + Ed25519
+    verifiable signature + placeholder-seed pattern pin.
+  - `cap_deposit::tests` (9): header layout pin + buffer length
+    matches window + entry descriptor layout +
+    **end-to-end `verify_signed_token` round-trip** under the
+    placeholder provider + PCI device emits two tokens
+    (`PciConfigRead` + `PciConfigWrite`) + `TokenCountExceeded` over
+    `MAX_ENTRIES` + `align_up` basics + `TimeWindow` helper + host
+    stub returns `HostStub` outside bare-metal builds.
+  Workspace test count `867 → 885 pass / 0 fail` (`cargo test
+  --workspace --all-features -- --test-threads=1`).
+- **New Cargo dependencies** under `crates/omni-kernel/Cargo.toml`:
+  `rand_core = { version = "0.6", default-features = false }`,
+  `rand_chacha = { version = "0.3", default-features = false }`,
+  `spin = { version = "0.9", default-features = false, features =
+  ["mutex", "spin_mutex"] }`. Bare-metal compile keeps `getrandom`
+  out of the dependency closure (`cargo build -p omni-kernel --target
+  x86_64-unknown-none --features bare-metal` verified).
+- **Spike doc.** `docs/plans/p6-7-8-9-cap-deposit-trampoline.md`
+  archives the design rationale, file inventory, and acceptance
+  workflow for future reference.
+- **Acceptance gates.** All clean: workspace clippy, bare-metal
+  clippy (`omni-kernel` + `mb12-userprobe`), `kernel-runner` clippy,
+  three driver-image siblings clippy (all `x86_64-unknown-none
+  --release`); `cargo fmt --all -- --check`; `scripts/check-no-
+  blanket-allow.sh` `ok (scanned 15 crate-root files)`; `RUSTDOCFLAGS
+  =-D warnings cargo doc -p omni-kernel --features bare-metal
+  --target x86_64-unknown-none --no-deps` + workspace; `python3
+  scripts/lint-oips.py` `0 error(s), 0 warning(s) across 19 file(s)`.
+- **Proxmox VMID 103 smoke (2026-05-20).** UEFI image deployed; serial
+  log shows the canonical sequence `[mb14.a] → [mb14.h.2] sched_lock=
+  ok per_cpu_in_sched=ok set_rsp0_for_cpu=ok → [elf] probe OK →
+  [virtio] tablet ready`, zero panic / fault / warning. Framebuffer
+  screenshot (1280×800, GOP) confirms the Build Info panel renders
+  the updated `Active`/`Next`/`Phase`/`Tests` fields.
+
+- **Kernel — P6.7.8.8 `DriverLoad (73)` syscall handler (2026-05-20).**
+  Wires the previously-stubbed `NotYetImplemented` arm end-to-end per
+  `OIP-013` § S5.3. New
+  `crates/omni-kernel/src/bare_metal/syscall_entry.rs::driver_load_
+  handlers` module (`#[cfg(all(feature = "bare-metal", target_os =
+  "none", not(test)))]`) exposes `driver_load(args) -> SyscallReturn`
+  via the two-register rich path. The handler chain:
+  - User-pointer validation for `cap_ptr`/`cap_len` (≤
+    `MAX_TOKEN_BYTES = 1024`) and `pack_ptr`/`pack_len` (≤
+    `MAX_PACK_BYTES = 32 MiB`).
+  - Postcard `CapabilityToken` decode via
+    `omni_types::wire::decode_canonical` +
+    `Ed25519CapabilityProvider::placeholder().verify_signed_token`
+    (signature + time-window + TEE binding) + `is_driver_framework_
+    action` guard + `Action::DriverLoad` exactness + defence-in-depth
+    `Resource::Any` pin (a token scoped to a specific PCI device or
+    MMIO region is rejected for the generic load surface).
+  - Heap-side `Vec<u8>` allocation of `pack_len` bytes and user →
+    kernel copy through the calling process's live CR3.
+  - `decode_omni_pack` envelope validation + `postcard_decode_manifest`
+    body decode + `hydrate_manifest(body, signature)` reconstruction.
+  - Full `verify_manifest(&manifest, image_bytes)` chain: BLAKE3 image
+    hash check + `KNOWN_ISSUERS` lookup + Ed25519 manifest-signature
+    verify.
+  - `ProcessControlBlock::spawn_from_elf(image_bytes, PhysAddr(boot_
+    pml4), &mut mapper, alloc, sched, PriorityClass::System,
+    KernelPrincipal::ZERO)` with the new
+    `bare_metal::BOOT_CR3` static (one-shot publish in `kmain` after
+    `arch::read_cr3()`, same pattern as `PHYS_OFFSET`).
+  - Returns `SyscallReturn::ok(task_id.0)` on success;
+    `SyscallReturn::err(syscall_errno::ENOSPC)` on spawn failure.
+  - Errno mapping in `manifest_errno`: `MalformedPack` / `PackTooLarge`
+    / `ImageHashMismatch → EINVAL`; `UnknownIssuer` / `SignatureInvalid
+    → EACCES`.
+- **Kernel — dispatcher wiring.** `SyscallNumber::DriverLoad` moved
+  from the `NotYetImplemented` tail arm to the
+  `MmioMap | DmaMap | IrqAttach` legacy group (returns
+  `CapabilityDenied` as a defensive sentinel for the single-register
+  fallback path); `dispatch_full` adds a `DriverLoad` arm routing to
+  `driver_load_handlers::driver_load` on bare-metal or
+  `SyscallReturn::err(EACCES)` on the host build (no `FRAME_ALLOC` /
+  `SCHEDULER` / `BOOT_CR3` singletons available).
+- **Kernel — `bare_metal::BOOT_CR3` accessor.** New `AtomicU64` +
+  `set_boot_cr3(value)` (low-12-bit mask defensive — accepts raw CR3
+  with PCD/PWT/PCID flags below the PML4 base alignment) + `boot_cr3()`
+  with `Relaxed` ordering. The syscall handler reads `boot_cr3()` to
+  hand `spawn_from_elf` the kernel image's PML4 (the calling
+  process's CR3 is the loader's, not the kernel image — the
+  kernel-half clone target must be the boot PML4).
+- **Build Info panel (`render_buildinfo`).** `Active = P6.7.8.8
+  DriverLoad syscall` (cyan), `Next = P6.7.8.9 cap deposit
+  trampoline`, `Phase = 1 - Microkernel POC (~99.8%)`, `Tests = 867
+  workspace pass`.
+- **Tests.** +3 host-side tests:
+  `bare_metal::boot_cr3_tests::set_boot_cr3_masks_low_12_bits` +
+  `boot_cr3_returns_zero_when_unset_observer` +
+  `set_boot_cr3_round_trips_aligned_value`. Existing dispatcher tests
+  adjusted (1:1 rename + arm-set widening — no net change).
+  Workspace test count `864 → 867 pass / 0 fail`.
+- **Acceptance gates.** All clean: workspace clippy, bare-metal
+  clippy + `mb12-userprobe`, `kernel-runner` clippy, three
+  driver-image siblings clippy, fmt, `check-no-blanket-allow.sh`
+  (15 crate-root files), rustdoc bare-metal + workspace, lint-oips
+  (0 error / 0 warning across 19 files).
+- **Deferred to P6.7.8.9.** Token-deposit trampoline (`OIP-013` §
+  S5.3 step 8 — pre-install attenuated child tokens at well-known
+  user-VA slots before the first dispatch tick). Drivers spawned by
+  P6.7.8.8 reach `_start` but their `MmioMap` / `DmaMap` /
+  `IrqAttach` calls still need a separately-presented token. The
+  split decouples the ELF loader + signature chain from the
+  capability-store wiring.
+
+- **Driver — P6.7.8.7 e1000e bootable image sibling (2026-05-20).**
+  New `crates/omni-driver-e1000e-image/` lands as the workspace-
+  excluded sibling for the M2 Ethernet driver. Mirrors the
+  `omni-driver-nvme-image` (P6.7.8.5), `omni-driver-net-virtio-image`
+  (P6.7.8.3), and `kernel-runner` ↔ `omni-kernel` split: the lib
+  crate `omni-driver-e1000e` (P6.7.8.6) hosts the auditable bring-up
+  FSM + ring/register definitions on the host, the image crate
+  produces the actual bootable Ring 3 ELF that `DriverLoad (73)`
+  ingests.
+  - `Cargo.toml`: `no_std + no_main`, target
+    `x86_64-unknown-none`, profile `release` `lto=true` `codegen-
+    units=1` `opt-level=z` `panic=abort` `strip=debuginfo`; single
+    runtime dep `omni-driver-e1000e` via path; `.cargo/config.toml`
+    inherits workspace `rustflags`.
+  - `src/main.rs`: `_start` `#[unsafe(no_mangle)] pub extern "C" fn`
+    constructs `BringUp::new()` at `Phase::PciEnumeration`, drives the
+    13-step FSM through `Event::Advance` until terminal, then
+    `sys_exit(0)` on `Phase::Ready` or `sys_exit(1)` otherwise. A
+    `syscall5` inline-asm helper is pre-wired for
+    `MmioMap (70)` / `DmaMap (71)` / `IrqAttach (72)` but gated
+    `#[allow(dead_code)]` until P6.7.8.9 lands the capability deposit
+    trampoline.
+  - Defensive `PanicOnAlloc` global allocator panics on any heap call
+    (the FSM is `Copy`, so no allocation is expected at runtime; any
+    accidental heap touch surfaces loudly via `TaskExit(2)`).
+  - Syscall numbers `SYS_TASK_EXIT = 11`, `SYS_WRITE_CONSOLE = 60`,
+    `SYS_MMIO_MAP = 70`, `SYS_DMA_MAP = 71`, `SYS_IRQ_ATTACH = 72`
+    pinned locally to avoid a workspace dependency cycle with
+    `omni-kernel`.
+  - Workspace `Cargo.toml` `[workspace.exclude]` extended;
+    `.gitignore` extended with the per-crate `target/` directory.
+- **Build Info panel (`render_buildinfo`).** `Active = P6.7.8.7
+  e1000e image sibling` (cyan), `Next = P6.7.8.8 DriverLoad syscall
+  wire`, `Phase = 1 - Microkernel POC (~99.7%)`, `Tests = 864
+  workspace pass` (invariant — sibling crates are bare-metal-only
+  and inherit the FSM tests from the library crate landed in
+  P6.7.8.6).
+- **Build artifact.** `cargo build --manifest-path crates/omni-
+  driver-e1000e-image/Cargo.toml --target x86_64-unknown-none
+  --release` produces `target/x86_64-unknown-none/release/omni-
+  driver-e1000e-image` (≈1896 B), ready for future `DriverLoad`
+  ingestion once the omni-pack v1 wrapper (`omni-driver-pack`,
+  Forge tooling) is available.
+- **Acceptance gates.** All clean: workspace clippy, bare-metal
+  clippy (`omni-kernel` + `mb12-userprobe`), `kernel-runner` clippy,
+  three driver-image siblings clippy (`net-virtio-image`,
+  `nvme-image`, `e1000e-image`, all `x86_64-unknown-none --release`),
+  fmt, `check-no-blanket-allow.sh` `ok (scanned 15 crate-root
+  files)`, rustdoc bare-metal + workspace, lint-oips
+  (0 error / 0 warning across 19 files).
+
 - **Drivers — P6.7.8.6 e1000e (M2) crate scaffold (2026-05-20).** New
   `crates/omni-driver-e1000e` lands as a full workspace member
   (`no_std + alloc` library, `#![cfg_attr(not(test), no_std)]`), mirroring
