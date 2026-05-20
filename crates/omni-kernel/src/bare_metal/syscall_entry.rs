@@ -2028,7 +2028,7 @@ mod driver_load_handlers {
 
         // SAFETY: SYSCALL path is single-CPU under the kernel mutex;
         // SCHEDULER + FRAME_ALLOC are not otherwise aliased.
-        let result = unsafe {
+        let spawn_result = unsafe {
             let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
             let alloc = &mut *core::ptr::addr_of_mut!(crate::FRAME_ALLOC);
             let mut mapper = bare_metal::paging::PageMapper::new(phys_off, PhysAddr(boot_pml4));
@@ -2043,11 +2043,67 @@ mod driver_load_handlers {
                 crate::capabilities::KernelPrincipal::ZERO,
             )
         };
+        let Ok(task_id) = spawn_result else {
+            return SyscallReturn::err(syscall_errno::ENOSPC);
+        };
 
-        result.map_or_else(
-            |_| SyscallReturn::err(syscall_errno::ENOSPC),
-            |task_id| SyscallReturn::ok(task_id.0),
-        )
+        // -------------------------------------------------------------
+        // P6.7.8.9 — capability deposit trampoline. Mint signed tokens
+        // for every capability declared in the manifest and map a
+        // read-only window in the driver's address space at the
+        // well-known VA `DRIVER_CAP_DEPOSIT_VA`. The driver's `_start`
+        // looks the tokens up by `(action_tag, resource_tag)` and
+        // presents them on the relevant `MmioMap`/`DmaMap`/`IrqAttach`
+        // calls. Per OIP-013 § S5.3 step 8 the lifetime is 90 days.
+        //
+        // Failure mode: a deposit-error after a successful spawn leaves
+        // the driver process alive but without any capabilities — its
+        // first `MmioMap` will EACCES out. We accept this so the
+        // failure path is observable in user space; a future revision
+        // (P6.7.8.10) can wire a `scheduler.cancel_spawn(task_id)` to
+        // unwind the spawn atomically when a deposit fails.
+        // -------------------------------------------------------------
+        let boot_seconds = u64::from(bare_metal::arch::rtc_seconds());
+        let provider = crate::capabilities::Ed25519CapabilityProvider::placeholder();
+        let subject_node = provider.node_id_bytes();
+        let deposit_va = {
+            // SAFETY: single-CPU syscall path; SCHEDULER + FRAME_ALLOC
+            // not otherwise aliased; the address space pointer is read
+            // out of the PCB before any other SCHEDULER access.
+            unsafe {
+                let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+                let alloc = &mut *core::ptr::addr_of_mut!(crate::FRAME_ALLOC);
+                let Some(pcb) = sched.process_mut(task_id) else {
+                    return SyscallReturn::err(syscall_errno::EFAULT);
+                };
+                let address_space = pcb.address_space;
+                let mut mapper = bare_metal::paging::PageMapper::new(phys_off, PhysAddr(boot_pml4));
+                let deposit = crate::cap_deposit::deposit_for_driver(
+                    &manifest.capabilities,
+                    boot_seconds,
+                    subject_node,
+                    &address_space,
+                    &mut mapper,
+                    alloc,
+                );
+                deposit.unwrap_or(0)
+            }
+        };
+        if deposit_va != 0 {
+            // SAFETY: single-CPU syscall path; re-borrow SCHEDULER to
+            // record the deposit VA. `task_id` was just inserted by
+            // `spawn_from_elf` so `process_mut` cannot return `None`
+            // unless someone else removed the PCB between the lines —
+            // not possible single-CPU.
+            unsafe {
+                let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+                if let Some(pcb) = sched.process_mut(task_id) {
+                    pcb.cap_deposit_va = Some(deposit_va);
+                }
+            }
+        }
+
+        SyscallReturn::ok(task_id.0)
     }
 }
 

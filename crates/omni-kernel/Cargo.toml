@@ -83,6 +83,20 @@ bootloader_api = { version = "0.11", optional = true, default-features = false }
 # `bare_metal::font` to render text on the GOP framebuffer. Zero dependencies,
 # zero allocation. Gated under `bare-metal` so host builds are unaffected.
 font8x8        = { version = "0.3", optional = true, default-features = false }
+# `rand_core` + `rand_chacha` back the Phase-1 kernel CSPRNG used by
+# P6.7.8.9 to mint `CapabilityToken` identifiers at `DriverLoad` time.
+# Both are pulled with `default-features = false`: `rand_core` then has
+# no features (in particular no `getrandom`, which does not build on
+# `x86_64-unknown-none`) and `rand_chacha` drops `std` + `serde1`. The
+# `omni-crypto[bare-metal]` path keeps its own `rand_core` optional
+# slot disabled, so on bare-metal the only `rand_core` consumer is the
+# kernel itself.
+rand_core      = { version = "0.6", default-features = false }
+rand_chacha    = { version = "0.3", default-features = false }
+# `spin` provides the no_std `Mutex` used by the global `KERNEL_CSPRNG`
+# wrapper. The `mutex` + `spin_mutex` features are enabled explicitly
+# (default would also bring `lazy`/`barrier` which we do not need).
+spin           = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
 
 [features]
 default     = []

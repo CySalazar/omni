@@ -182,6 +182,11 @@ pub struct ProcessControlBlock {
     /// `IrqAttach` attachments owned by this process (OIP-013 § S4.4).
     /// Empty for non-driver processes.
     pub irq_attachments: Vec<IrqAttachment>,
+    /// User-VA base of the capability deposit page batch
+    /// (P6.7.8.9, [`crate::cap_deposit::DRIVER_CAP_DEPOSIT_VA`]).
+    /// `None` for non-driver processes spawned without a deposit
+    /// (developer mode, mb11/mb12 userprobe).
+    pub cap_deposit_va: Option<u64>,
 }
 
 #[cfg(feature = "bare-metal")]
@@ -322,6 +327,7 @@ impl ProcessControlBlock {
                 mmio_va_cursor: 0,
                 dma_mappings: Vec::new(),
                 irq_attachments: Vec::new(),
+                cap_deposit_va: None,
             },
         );
 
@@ -359,6 +365,7 @@ mod tests {
             mmio_va_cursor: 0,
             dma_mappings: Vec::new(),
             irq_attachments: Vec::new(),
+            cap_deposit_va: None,
         }
     }
 

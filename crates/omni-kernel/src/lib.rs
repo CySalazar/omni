@@ -83,8 +83,11 @@
 // transparently.
 extern crate alloc;
 
+pub mod cap_deposit;
 pub mod capabilities;
+pub mod driver_cap_issuer;
 pub mod driver_manifest;
+pub mod entropy;
 pub mod ipc;
 pub mod kaslr;
 pub mod known_issuers;

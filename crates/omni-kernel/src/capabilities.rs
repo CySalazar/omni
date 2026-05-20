@@ -293,6 +293,14 @@ impl Ed25519CapabilityProvider {
         Self::with_node_id([0u8; 32])
     }
 
+    /// Borrow the 32-byte TEE attestation hash this provider claims.
+    /// Used by `DriverLoad` (P6.7.8.9) to set the `subject` of every
+    /// minted capability token so it verifies under this provider.
+    #[must_use]
+    pub const fn node_id_bytes(&self) -> [u8; 32] {
+        self.node_id_bytes
+    }
+
     /// Verify the token's signature only (no time / TEE / revocation
     /// checks).
     ///
