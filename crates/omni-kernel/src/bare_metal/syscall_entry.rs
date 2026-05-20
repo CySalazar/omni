@@ -719,7 +719,13 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                 // Approximate monotonic time from the CMOS RTC seconds register.
                 // Accuracy: ±1 second (RTC resolution). A high-resolution TSC-
                 // based implementation is deferred to P6.6 (TSC calibration).
+                // `cfg(test)` short-circuits the CMOS port I/O — `outb`/`inb`
+                // are Ring 0 instructions and would SIGSEGV in the host test
+                // binary; the dispatcher contract only requires Ok(u64).
+                #[cfg(not(test))]
                 let secs = super::arch::rtc_seconds();
+                #[cfg(test)]
+                let secs: u32 = 0;
                 Ok(u64::from(secs) * 1_000_000_000)
             }
 

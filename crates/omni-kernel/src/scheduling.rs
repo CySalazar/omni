@@ -581,7 +581,7 @@ impl Scheduler for RoundRobinScheduler {
         // The process metadata is captured by Copy *before* the mutable
         // borrow of `self.tasks` for `from_rsp_ptr`; this avoids a
         // simultaneous immutable + mutable borrow of `self`.
-        #[cfg(all(feature = "bare-metal", target_arch = "x86_64"))]
+        #[cfg(all(feature = "bare-metal", target_arch = "x86_64", not(test)))]
         let process_dispatch: Option<(u64, u64, u64, u64, u64)> = self
             .processes
             .iter()
@@ -596,7 +596,7 @@ impl Scheduler for RoundRobinScheduler {
                 )
             });
 
-        #[cfg(all(feature = "bare-metal", target_arch = "x86_64"))]
+        #[cfg(all(feature = "bare-metal", target_arch = "x86_64", not(test)))]
         if let Some((kernel_stack_va, cr3_phys, user_entry, user_stack_top, saved_rsp)) =
             process_dispatch
         {
@@ -659,7 +659,7 @@ impl Scheduler for RoundRobinScheduler {
 
         // SAFETY: single-CPU, non-preemptive; both stack frames are valid
         // kernel memory established by spawn_kernel_task or a prior switch.
-        #[cfg(all(feature = "bare-metal", target_arch = "x86_64"))]
+        #[cfg(all(feature = "bare-metal", target_arch = "x86_64", not(test)))]
         #[allow(
             clippy::borrow_as_ptr,
             reason = "raw *mut u64 deliberately passed by FFI to context_switch asm"

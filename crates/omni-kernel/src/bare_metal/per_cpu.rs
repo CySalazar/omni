@@ -360,12 +360,14 @@ pub fn init_gs_base(pc: &'static PerCpu) {
     }
 }
 
-/// Field-stamp-only path used by non-x86_64 hosts AND by `cfg(test)`
-/// builds on any target. The `wrmsr` instruction is Ring 0; running it
-/// from a userland test binary on `x86_64-unknown-linux-gnu` would
-/// raise #GP and the host kernel would deliver SIGSEGV (the historical
-/// cargo-test failure tracked against this suite). The field-stamp half
-/// is independently verifiable and is what tests exercise.
+/// Field-stamp-only path for non-bare-metal builds.
+///
+/// Covers non-x86_64 hosts AND `cfg(test)` on any target. The `wrmsr`
+/// instruction is Ring 0; running it from a userland test binary on
+/// `x86_64-unknown-linux-gnu` would raise #GP and the host kernel
+/// would deliver SIGSEGV (the historical cargo-test failure tracked
+/// against this suite). The field-stamp half is independently
+/// verifiable and is what tests exercise.
 #[cfg(any(not(target_arch = "x86_64"), test))]
 pub fn init_gs_base(pc: &'static PerCpu) {
     let pc_ptr = core::ptr::from_ref::<PerCpu>(pc) as u64;
