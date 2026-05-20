@@ -663,11 +663,20 @@ extern "C" fn kernel_lapic_timer_tick() {
 /// on this CPU, run the cooperative `yield_current` path so the next
 /// task is on-CPU before the `iretq` restores the trap frame.
 ///
-/// Re-entrancy: if another scheduler call is already on this CPU's stack
-/// (e.g. a cooperative `TaskYield` syscall in flight when the timer fired),
-/// `IN_SCHEDULER` is set and we skip the yield to avoid recursing into the
-/// scheduler. The flag will be cleared by the outer call and the next tick
-/// will pick the resched up.
+/// Re-entrancy / cross-CPU concurrency (MB14.h.2):
+///
+/// - **Per-CPU recursion guard.** On bare-metal MP each CPU consults its
+///   own `PerCpu::enter_scheduler` flag; a tick that arrives while the
+///   same CPU is mid-yield (e.g. a cooperative `TaskYield` syscall still
+///   on the stack) short-circuits without touching `SCHEDULER`.
+/// - **Cross-CPU lock.** Even if both BSP and an AP pass their per-CPU
+///   guard simultaneously, `scheduling::try_acquire_sched_lock` ensures
+///   exactly one CPU enters the `yield_current` body at a time; the
+///   other returns and retries on its next tick.
+/// - **Host fallback.** The legacy global `IN_SCHEDULER` / `NEED_RESCHED`
+///   path remains active on `target_os = "linux"` test builds where
+///   `current_cpu()` collapses to `&BSP` and a single mutex would
+///   serialise just as effectively.
 // The early-return guard at the top is `return;` followed by the unsafe
 // block; on host builds (`target_os = "linux"`) the unsafe block is
 // `#[cfg]`-ed out, so `return;` becomes the last statement and clippy
@@ -676,18 +685,12 @@ extern "C" fn kernel_lapic_timer_tick() {
 #[allow(clippy::needless_return)]
 #[unsafe(no_mangle)]
 extern "C" fn kernel_check_need_resched() {
-    use core::sync::atomic::Ordering;
-
-    // MB14.g — consume the per-CPU resched flag set by
-    // `kernel_lapic_timer_tick` running on this same CPU. MB14.h.1
-    // wires the AP-side observer dispatcher (see
-    // `super::ap_dispatch::kernel_ap_dispatch_observe` / ADR-0009): the
-    // AP branch now consults its per-CPU run-queue every tick and
-    // increments `dispatch_observations` for each pick, but does *not*
-    // context-switch (that's MB14.h.2). The flag consumption itself is
-    // BSP/AP-symmetric so the per-CPU contract observed by host-side
-    // tests (`take_resched` flips once then returns false) holds on
-    // every logical CPU.
+    // MB14.g + MB14.h.2 — consume the per-CPU resched flag set by
+    // `kernel_lapic_timer_tick` running on this same CPU, then take
+    // the per-CPU recursion guard. AP branch dispatches through
+    // `kernel_ap_dispatch_observe` which now performs a live
+    // `yield_current` under `SCHED_LOCK` (MB14.h.2 promotion of the
+    // MB14.h.1 observer; see ADR-0010 § Decision).
     #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
     {
         let cpu = super::per_cpu::current_cpu();
@@ -695,14 +698,26 @@ extern "C" fn kernel_check_need_resched() {
             return;
         }
         if !cpu.is_bsp() {
-            // MB14.h.1 — AP observer dispatcher: drains one task id
-            // from the per-CPU run-queue (with work-stealing fallback)
-            // and increments the per-CPU observation counter. The
-            // popped id is discarded — no context switch is performed.
+            // MB14.h.2 — AP live dispatcher: takes per-CPU
+            // `in_scheduler` + cross-CPU `SCHED_LOCK`, runs
+            // `SCHEDULER.yield_current` with TSS.rsp0 routed via
+            // `set_rsp0_for_cpu`, then releases both. The
+            // `dispatch_observations` counter still bumps for
+            // diagnostics (BSP boot smoke + future regressions).
             super::ap_dispatch::kernel_ap_dispatch_observe();
             return;
         }
-        if crate::scheduling::IN_SCHEDULER.load(Ordering::Acquire) {
+        // BSP cooperative path. Use the per-CPU recursion guard so a
+        // future bare-metal flow that yields the BSP from a syscall
+        // handler (e.g. an IPC-block path that hits a timer tick mid-
+        // syscall) cannot recurse.
+        if !cpu.enter_scheduler() {
+            return;
+        }
+        // Cross-CPU lock — another CPU's yield may be in flight on
+        // SCHEDULER even though our per-CPU guard is clear.
+        if !crate::scheduling::try_acquire_sched_lock() {
+            cpu.leave_scheduler();
             return;
         }
     }
@@ -712,6 +727,7 @@ extern "C" fn kernel_check_need_resched() {
     // builds short-circuit above and never reach this branch.
     #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
     {
+        use core::sync::atomic::Ordering;
         if !crate::scheduling::NEED_RESCHED.swap(false, Ordering::AcqRel)
             || crate::scheduling::IN_SCHEDULER.load(Ordering::Acquire)
         {
@@ -719,21 +735,20 @@ extern "C" fn kernel_check_need_resched() {
         }
     }
 
-    // SAFETY: single-CPU on the BSP at the moment of this call —
-    // `SCHEDULER` is not concurrently aliased (the cooperative path is
-    // gated by `IN_SCHEDULER`, the AP path short-circuits above). We
-    // grab a mutable reference for the duration of one `yield_current`
-    // and release `IN_SCHEDULER` before returning.
+    // SAFETY: BSP at the moment of this call holds both its per-CPU
+    // `in_scheduler` guard AND the global `SCHED_LOCK` (MB14.h.2). The
+    // AP cooperative path arrives via `kernel_ap_dispatch_observe`
+    // which takes the same pair before invoking `yield_current`, so
+    // `SCHEDULER` is single-mutator for the duration of this block.
     #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
     unsafe {
         use crate::scheduling::Scheduler;
         let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
-        let Some(cur) = sched.current_task_id() else {
-            return;
-        };
-        crate::scheduling::IN_SCHEDULER.store(true, Ordering::Release);
-        let _ = sched.yield_current(cur, crate::scheduling::TaskState::Runnable);
-        crate::scheduling::IN_SCHEDULER.store(false, Ordering::Release);
+        if let Some(cur) = sched.current_task_id() {
+            let _ = sched.yield_current(cur, crate::scheduling::TaskState::Runnable);
+        }
+        crate::scheduling::release_sched_lock();
+        super::per_cpu::current_cpu().leave_scheduler();
     }
 }
 

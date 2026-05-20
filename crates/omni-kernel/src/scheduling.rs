@@ -35,7 +35,7 @@
 )]
 
 use alloc::vec::Vec;
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{KernelError, KernelResult};
 
@@ -63,7 +63,51 @@ pub static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
 /// (or `preempt`). The timer interrupt's `check_need_resched` consults this to
 /// avoid recursing into the scheduler if the previous yield (e.g. from a
 /// cooperative `TaskYield` syscall) is still on the stack.
+///
+/// **MB14.h.2 (bare-metal MP) — superseded by the per-CPU equivalent.**
+/// On bare-metal x86_64 the BSP and every AP now consult
+/// `super::bare_metal::per_cpu::current_cpu().enter_scheduler()` /
+/// `leave_scheduler()` instead of this global, so a concurrent BSP+AP
+/// yield cannot poison a sibling CPU's guard. This static remains
+/// active on host / `target_os = "linux"` test builds where
+/// `current_cpu()` collapses to a single descriptor and the global
+/// flag's single-CPU semantics still hold.
 pub static IN_SCHEDULER: AtomicBool = AtomicBool::new(false);
+
+/// MB14.h.2 — cross-CPU coarse spinlock serialising mutations of the
+/// global `SCHEDULER` (`tasks` / `processes` / `run_queues` legacy mirror).
+///
+/// The BSP and every AP attempt `try_acquire` before entering
+/// `RoundRobinScheduler::yield_current`; the winner runs the scheduler
+/// body, the loser short-circuits (the next tick will retry). Coarse
+/// because Phase 1 has only one scheduler instance — a finer-grained
+/// per-CPU dispatch table fragmenting `SCHEDULER` is a P6.7+ refactor
+/// (see ADR-0010 § Negative consequences).
+///
+/// Pairs with `super::bare_metal::per_cpu::PerCpu::enter_scheduler`:
+/// the per-CPU flag stops *re-entrant* scheduler calls on the *same* CPU;
+/// `SCHED_LOCK` stops *concurrent* scheduler calls across *different*
+/// CPUs. Both must hold for the duration of one `yield_current` body.
+pub static SCHED_LOCK: AtomicBool = AtomicBool::new(false);
+
+/// MB14.h.2 — non-blocking attempt to claim the cross-CPU scheduler lock.
+///
+/// Returns `true` if the caller now owns the lock (and must release it
+/// via [`release_sched_lock`]); `false` if another CPU holds it.
+/// Callers should short-circuit on `false` rather than spinning so the
+/// IRQ tail returns promptly — the next timer tick will retry.
+#[must_use]
+pub fn try_acquire_sched_lock() -> bool {
+    SCHED_LOCK
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+/// MB14.h.2 — release the cross-CPU scheduler lock. Must only be
+/// called after a successful [`try_acquire_sched_lock`].
+pub fn release_sched_lock() {
+    SCHED_LOCK.store(false, Ordering::Release);
+}
 
 // -----------------------------------------------------------------------------
 // Task identifier
@@ -665,7 +709,13 @@ impl Scheduler for RoundRobinScheduler {
             process_dispatch
         {
             let kernel_stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
-            crate::bare_metal::tss::set_rsp0(kernel_stack_top);
+            // MB14.h.2 — route the TSS.rsp0 write through the per-CPU
+            // helper so an AP running this code updates its own
+            // `AP_TSS[cpu_id - 1]` slot instead of the BSP TSS. The
+            // BSP keeps writing the legacy static via
+            // `set_rsp0_for_cpu(0, _)` → `set_rsp0`.
+            let cpu_id = crate::bare_metal::per_cpu::current_cpu().cpu_id();
+            let _ = crate::bare_metal::tss::set_rsp0_for_cpu(cpu_id, kernel_stack_top);
 
             // MB12 first-dispatch detection: a freshly-spawned user task
             // has `context.rsp = 0` (the sentinel from `spawn_from_elf`).

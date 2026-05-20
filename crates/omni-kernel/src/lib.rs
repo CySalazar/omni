@@ -1131,6 +1131,42 @@ pub fn kmain(
                     early_console::write_str("[mb14.h.1] ap_dispatch BSP-only — no AP enrolled\n");
                 }
             }
+
+            // MB14.h.2 — cross-CPU context switch primitives smoke.
+            //
+            // Exercise the three new APIs introduced by MB14.h.2 from
+            // the BSP so a regression in any of them surfaces as a
+            // boot-time `FAIL` rather than a silent triple-fault at
+            // the next AP timer tick:
+            //
+            // 1. `try_acquire_sched_lock` / `release_sched_lock` —
+            //    mutual exclusion on the global SCHED_LOCK.
+            // 2. `PerCpu::enter_scheduler` / `leave_scheduler` —
+            //    per-CPU recursion guard round-trip.
+            // 3. `tss::set_rsp0_for_cpu(0, _)` — BSP-side write that
+            //    must succeed unconditionally; an out-of-range AP
+            //    cpu_id must be rejected.
+            //
+            // None of the calls cross-CPU here; the bare-metal AP
+            // dispatcher (`kernel_ap_dispatch_observe`) is the path
+            // that combines all three in production.
+            {
+                let lock_ok =
+                    scheduling::try_acquire_sched_lock() && !scheduling::try_acquire_sched_lock();
+                scheduling::release_sched_lock();
+                let bsp = bare_metal::per_cpu::bsp();
+                let guard_ok = bsp.enter_scheduler() && !bsp.enter_scheduler();
+                bsp.leave_scheduler();
+                let tss_ok = bare_metal::tss::set_rsp0_for_cpu(0, 0xFFFF_C000_0000_0000)
+                    && !bare_metal::tss::set_rsp0_for_cpu(0xFFFF, 0xDEAD_BEEF);
+                early_console::write_str("[mb14.h.2] sched_lock=");
+                early_console::write_str(if lock_ok { "ok" } else { "FAIL" });
+                early_console::write_str(" per_cpu_in_sched=");
+                early_console::write_str(if guard_ok { "ok" } else { "FAIL" });
+                early_console::write_str(" set_rsp0_for_cpu=");
+                early_console::write_str(if tss_ok { "ok" } else { "FAIL" });
+                early_console::write_str("\n");
+            }
         } else {
             early_console::write_str("[lapic] LAPIC init FAILED — running without timer\n");
         }

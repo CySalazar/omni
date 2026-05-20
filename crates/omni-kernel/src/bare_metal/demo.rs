@@ -1032,7 +1032,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Track B  : ",
         11,
-        "MB1-MB13 OK, MB14.a-h.1 wip",
+        "MB1-MB13 OK, MB14.a-h.2 wip",
         graphics::WHITE,
     );
     row(
@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "MB14.h.1 AP observe loop",
+        "MB14.h.2 cross-CPU ctx swap",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1048,7 +1048,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "MB14.h.2 cross-CPU ctx switch",
+        "MB14 PR + v0.3.0-alpha.1",
         graphics::WHITE,
     );
     row(
@@ -1056,7 +1056,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Tests    : ",
         11,
-        "639+ workspace pass",
+        "650+ workspace pass",
         graphics::WHITE,
     );
     row(6, cx_r, "Author   : ", 11, "cySalazar", graphics::WHITE);
