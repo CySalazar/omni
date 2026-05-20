@@ -1,0 +1,69 @@
+# =============================================================================
+# omni-driver-e1000e-image — bootable Ring 3 Intel e1000e driver image (P6.7.8.7)
+# =============================================================================
+# Specified by `OIP-Driver-Net-015` § S5 + § S8 and consumed by the kernel
+# `DriverLoad (73)` syscall per `OIP-Driver-Framework-013` § S5.3 step 9.
+# The crate compiles the user-space e1000e driver into a `no_std + no_main`
+# ELF64 (target `x86_64-unknown-none`) that the kernel ingests via
+# `spawn_from_elf`. The ELF entry point is `_start`; it consumes the
+# capability tokens passed by the kernel through the `DriverLoad`
+# protocol and drives the 13-step bring-up FSM in
+# `omni_driver_e1000e::bringup`.
+#
+# Excluded from the default workspace `cargo build` matrix (see the root
+# `Cargo.toml` `[workspace.exclude]` list) — the host-side `--target`
+# requires a cross-toolchain that not every developer machine has. CI
+# builds the image explicitly via:
+#
+#   cargo build --manifest-path crates/omni-driver-e1000e-image/Cargo.toml \
+#               --target x86_64-unknown-none --release
+#
+# The resulting ELF is fed to `omni-driver-pack` (OMNI Forge, user-space)
+# together with the developer-authored `manifest.toml` from
+# `crates/omni-driver-e1000e/manifest.toml` to produce the `omni-pack v1`
+# binary container the kernel validates.
+#
+# Pattern mirrors the `omni-driver-nvme-image` sibling that landed in
+# P6.7.8.5, the `omni-driver-net-virtio-image` sibling that landed in
+# P6.7.8.3, and the `omni-kernel` ↔ `kernel-runner` split that powers the
+# bare-metal boot path.
+# =============================================================================
+
+[package]
+name             = "omni-driver-e1000e-image"
+description      = "OMNI OS Intel e1000e driver — bootable Ring 3 ELF image (consumed by DriverLoad)"
+version          = "0.2.0"
+edition          = "2024"
+rust-version     = "1.85"
+authors          = ["cySalazar <cySalazar@cySalazar.com>"]
+license          = "AGPL-3.0-only"
+repository       = "https://github.com/CySalazar/omni"
+homepage         = "https://omni-os.org"
+keywords         = ["operating-system", "driver", "ethernet", "network"]
+categories       = ["os", "embedded"]
+publish          = false
+
+[[bin]]
+name = "omni-driver-e1000e-image"
+path = "src/main.rs"
+
+[dependencies]
+# Pull the auditable lib in as `path` — no version pin since both
+# crates ship in the same repo and bump together.
+omni-driver-e1000e = { path = "../omni-driver-e1000e" }
+
+# The image deliberately avoids depending on `omni-types`, `omni-capability`,
+# `omni-crypto` at this stage: P6.7.8.7 wires only the syscall ABI side
+# (raw `syscall` instructions with the OIP-013 numeric codes). When the
+# bring-up loop starts decoding capability tokens server-side
+# (P6.7.8.x post-DriverLoad-wired), the deps will be reintroduced.
+
+[profile.release]
+lto             = true
+codegen-units   = 1
+panic           = "abort"
+strip           = "debuginfo"
+opt-level       = "z"
+
+[profile.dev]
+panic = "abort"

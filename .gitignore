@@ -14,6 +14,7 @@
 /disk-image/target/
 /crates/omni-driver-net-virtio-image/target/
 /crates/omni-driver-nvme-image/target/
+/crates/omni-driver-e1000e-image/target/
 **/*.rs.bk
 *.pdb
 
