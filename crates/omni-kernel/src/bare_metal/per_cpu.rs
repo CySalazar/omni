@@ -100,6 +100,15 @@ const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
 ///   schedule their own next pick without cross-CPU thrash. The static
 ///   flag in `scheduling` stays for host / test builds (where there is
 ///   only one CPU and `current_cpu()` collapses to `&BSP`).
+/// - `dispatch_observations`: MB14.h.1 — per-CPU counter incremented by
+///   the AP-side observer dispatcher in
+///   [`super::ap_dispatch::kernel_ap_dispatch_observe`] every time it
+///   successfully pops a task from this CPU's run-queue (or steals one
+///   from a sibling). Observer mode does **not** context-switch — it
+///   drops the popped id; the BSP boot-time smoke uses this counter to
+///   prove the AP timer ISR reached the dispatcher and the per-CPU
+///   run-queue is reachable from Ring 0 on the AP. The real cross-CPU
+///   context switch lands in MB14.h.2 (see ADR-0009).
 #[derive(Debug)]
 #[repr(C)]
 pub struct PerCpu {
@@ -110,6 +119,7 @@ pub struct PerCpu {
     kernel_rsp: AtomicU64,
     tick_count: AtomicU64,
     need_resched: AtomicBool,
+    dispatch_observations: AtomicU64,
 }
 
 impl PerCpu {
@@ -125,6 +135,7 @@ impl PerCpu {
             kernel_rsp: AtomicU64::new(0),
             tick_count: AtomicU64::new(0),
             need_resched: AtomicBool::new(false),
+            dispatch_observations: AtomicU64::new(0),
         }
     }
 
@@ -202,6 +213,28 @@ impl PerCpu {
     #[must_use]
     pub fn resched_pending(&self) -> bool {
         self.need_resched.load(Ordering::Acquire)
+    }
+
+    /// MB14.h.1 — record one observer-mode dispatch pick on this CPU.
+    ///
+    /// Called from
+    /// [`super::ap_dispatch::kernel_ap_dispatch_observe`] every time it
+    /// successfully pops a task id from the per-CPU run-queue (or steals
+    /// one from a sibling). Observer mode discards the popped id; the
+    /// counter exists exclusively so the BSP boot-time smoke can confirm
+    /// the AP timer ISR reached the dispatcher.
+    pub fn inc_dispatch_observation(&self) {
+        self.dispatch_observations.fetch_add(1, Ordering::Release);
+    }
+
+    /// MB14.h.1 — read this CPU's observer-mode dispatch counter.
+    ///
+    /// Polled by the BSP smoke in
+    /// [`crate::kmain`](crate) after enqueuing a sentinel task on this
+    /// CPU's run-queue, to assert the AP ran the observer at least once.
+    #[must_use]
+    pub fn dispatch_observations(&self) -> u64 {
+        self.dispatch_observations.load(Ordering::Acquire)
     }
 
     /// Address that `gs:[0]` resolves to after [`init_gs_base`].
@@ -663,6 +696,43 @@ mod tests {
         b.inc_tick();
         assert_eq!(a.tick_count(), 2);
         assert_eq!(b.tick_count(), 1);
+    }
+
+    // -----------------------------------------------------------------
+    // MB14.h.1 — per-CPU observer-mode dispatch counter.
+    // -----------------------------------------------------------------
+
+    /// Fresh descriptor reports zero dispatch observations.
+    #[test]
+    fn dispatch_observations_default_zero() {
+        let pc = PerCpu::new_uninit();
+        assert_eq!(pc.dispatch_observations(), 0);
+    }
+
+    /// `inc_dispatch_observation` is monotonic on a single descriptor.
+    #[test]
+    fn inc_dispatch_observation_is_monotonic_per_descriptor() {
+        let pc = PerCpu::new_uninit();
+        pc.inc_dispatch_observation();
+        pc.inc_dispatch_observation();
+        pc.inc_dispatch_observation();
+        pc.inc_dispatch_observation();
+        assert_eq!(pc.dispatch_observations(), 4);
+    }
+
+    /// Two descriptors keep independent dispatch counters — pins the
+    /// per-CPU isolation guarantee MB14.h.1 relies on (the BSP smoke
+    /// reads `ap_slot(1).dispatch_observations()` without touching the
+    /// BSP's own counter).
+    #[test]
+    fn dispatch_counters_are_per_descriptor() {
+        let a = PerCpu::new_uninit();
+        let b = PerCpu::new_uninit();
+        a.inc_dispatch_observation();
+        a.inc_dispatch_observation();
+        b.inc_dispatch_observation();
+        assert_eq!(a.dispatch_observations(), 2);
+        assert_eq!(b.dispatch_observations(), 1);
     }
 
     /// MB14.f.1 follow-up — `register_ap` must stamp the slot's

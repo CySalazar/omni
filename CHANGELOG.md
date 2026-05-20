@@ -17,6 +17,87 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB14.h.1: AP-side observer dispatcher (2026-05-20).**
+  Wires the LAPIC timer IRQ tail on every Application Processor through
+  a new observer-mode dispatcher that pops a task id from the per-CPU
+  run-queue (with work-stealing fallback) on every tick and increments
+  a per-CPU `dispatch_observations` counter — *no* context switch is
+  performed (that's MB14.h.2, captured as roadmap in ADR-0009). The
+  step proves the AP timer ISR reaches the per-CPU run-queue
+  deterministically without touching any shared mutable scheduler
+  state, collapsing the MB14.h.2 risk surface to the cross-CPU
+  context-switch primitives alone.
+
+  Five additive changes:
+
+  - **`crates/omni-kernel/src/bare_metal/per_cpu.rs`** — `PerCpu`
+    grows a `dispatch_observations: AtomicU64` field with
+    `inc_dispatch_observation()` (Release) + `dispatch_observations()`
+    (Acquire) accessors. The field sits after `need_resched` so the
+    GS-relative `gs:[0]` self-pointer invariant (MB14.b) is preserved
+    byte-for-byte. +3 host-side tests pin the default-zero, monotonic,
+    per-descriptor-isolation contract.
+
+  - **`crates/omni-kernel/src/bare_metal/ap_dispatch.rs`** (new) —
+    `kernel_ap_dispatch_observe()` `extern "C"`: reads
+    `current_cpu()`, short-circuits on BSP (defence-in-depth — the
+    BSP keeps the cooperative `yield_current` path), calls
+    `per_cpu_run_queue::pop_for_cpu_with_stealing(cpu_id)` and, on
+    `Some(_)`, increments the per-CPU observation counter and
+    discards the popped id. Host stub for non-bare-metal builds keeps
+    the symbol resolvable from `cargo test --workspace`. +1 host test
+    pins the stub.
+
+  - **`crates/omni-kernel/src/bare_metal/lapic.rs`** —
+    `kernel_check_need_resched` AP branch now calls
+    `ap_dispatch::kernel_ap_dispatch_observe()` after consuming the
+    per-CPU `need_resched` flag (previously the AP branch only
+    drained the flag and returned). BSP path is unchanged — still
+    falls through to the cooperative `yield_current` under
+    `IN_SCHEDULER`.
+
+  - **`crates/omni-kernel/src/lib.rs`** — `kmain` boot-time smoke
+    inserted immediately after the MB14.g per-CPU plumbing block.
+    Guarded on `per_cpu::registered_ap_count() > 0`: enqueues a
+    sentinel id on `cpu_id = 1` via
+    `per_cpu_run_queue::enqueue_on_cpu`, then busy-polls
+    `ap_slot(1).dispatch_observations()` for up to 200 M iterations
+    (≈ 1 s on modern silicon). Logs
+    `[mb14.h.1] ap_dispatch observed=N (ok | timeout — AP did not observe)`
+    or `[mb14.h.1] ap_dispatch BSP-only — no AP enrolled` on
+    single-CPU dev VMs. The 200 M budget is an order of magnitude
+    above the first AP tick post-`kernel_ap_lapic_init`.
+
+  - **`crates/omni-kernel/src/bare_metal/mod.rs`** — registers the
+    new `ap_dispatch` submodule between `address_space` and `arch`.
+
+  Build Info panel updated:
+  - `Active` = `MB14.h.1 AP observe loop`
+  - `Next`   = `MB14.h.2 cross-CPU ctx switch`
+  - `Track B` = `MB1-MB13 OK, MB14.a-h.1 wip`
+  - `Phase`  = `1 - Microkernel POC  (~96%)`
+  - `Tests`  = `639+ workspace pass`
+
+  Validation gates pass clean:
+  `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-features --all-targets -- -D warnings`,
+  `cargo clippy -p omni-kernel --target x86_64-unknown-none --no-default-features --features bare-metal -- -D warnings`,
+  `cargo clippy --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none -- -D warnings`,
+  `cargo clippy -p omni-kernel --target x86_64-unknown-none --no-default-features --features mb12-userprobe -- -D warnings`,
+  `RUSTDOCFLAGS=-D warnings cargo doc -p omni-kernel --features bare-metal --no-deps`,
+  `bash scripts/check-no-blanket-allow.sh`,
+  `cargo test --workspace --all-features` (639 pass).
+
+  Pre-existing SIGSEGV on `cargo test -p omni-kernel --lib` remains a
+  carryover (item §4.5 #16 in `progress-omni.md`; mitigated via
+  `--test-threads=1` which produces a clean 332-pass run).
+
+  ADR-0009 (`docs/adr/0009-mb14h-ap-dispatch-loop.md`) **accepted** —
+  captures the observer-mode design end-to-end plus the safety
+  invariants and sub-step sequencing for MB14.h.2 (`SCHEDULER`
+  serialisation, per-CPU `IN_SCHEDULER`, `set_rsp0_for_cpu`, IST
+  sharing). MB14.h.2 will open ADR-0010 on closure.
+
 - **Kernel — MB14.g: per-CPU plumbing (TICK_COUNT / NEED_RESCHED +
   scheduler routing) (2026-05-20).** Moves the LAPIC tick counter and
   the resched flag from a single global pair into each CPU's `PerCpu`

@@ -1043,6 +1043,63 @@ pub fn kmain(
                 early_console::write_str(if routed_ok { "ok" } else { "FAIL" });
                 early_console::write_str("\n");
             }
+
+            // MB14.h.1 — AP-side observer dispatcher smoke.
+            //
+            // Enqueue a sentinel task id on the first registered AP
+            // (`cpu_id = 1`) and busy-poll the AP's per-CPU
+            // `dispatch_observations` counter. The AP's LAPIC periodic
+            // timer (armed in `kernel_ap_lapic_init`) fires the
+            // `omni_lapic_timer_handler` stub, which calls
+            // `kernel_check_need_resched`; the MB14.h.1 wire (this
+            // milestone) routes the AP branch through
+            // `bare_metal::ap_dispatch::kernel_ap_dispatch_observe`,
+            // which pops the sentinel from `per_cpu_run_queue` and
+            // increments the per-CPU counter — observer-mode only, no
+            // context switch (MB14.h.2 ADR-0009). On Proxmox / QEMU the
+            // first AP tick post-`sti` arrives within a few ms; the
+            // 200 M iteration budget (≈ 1 s on modern silicon) leaves
+            // ample headroom while staying bounded under timeout.
+            //
+            // If no AP came online (single-CPU dev VM) the smoke logs
+            // `BSP-only` and short-circuits — the BSP must not consume
+            // the sentinel itself (its resched trampoline runs the
+            // legacy `yield_current` path, not the observer).
+            {
+                use scheduling::PriorityClass;
+                if bare_metal::per_cpu::registered_ap_count() > 0 {
+                    const AP_DISPATCH_POLL_ITERATIONS: u64 = 200_000_000;
+                    let target_cpu_id: u32 = 1;
+                    let _ = bare_metal::per_cpu_run_queue::enqueue_on_cpu(
+                        target_cpu_id,
+                        0xE_E_E_E_E_4_u64,
+                        PriorityClass::Background,
+                    );
+                    let mut observed: u64 = 0;
+                    if let Some(slot) = bare_metal::per_cpu::ap_slot(target_cpu_id) {
+                        for _ in 0..AP_DISPATCH_POLL_ITERATIONS {
+                            observed = slot.dispatch_observations();
+                            if observed > 0 {
+                                break;
+                            }
+                            core::hint::spin_loop();
+                        }
+                    }
+                    early_console::write_str("[mb14.h.1] ap_dispatch observed=");
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "diagnostic write_usize takes usize; observation count fits trivially"
+                    )]
+                    early_console::write_usize(observed as usize);
+                    if observed > 0 {
+                        early_console::write_str(" (ok)\n");
+                    } else {
+                        early_console::write_str(" (timeout — AP did not observe)\n");
+                    }
+                } else {
+                    early_console::write_str("[mb14.h.1] ap_dispatch BSP-only — no AP enrolled\n");
+                }
+            }
         } else {
             early_console::write_str("[lapic] LAPIC init FAILED — running without timer\n");
         }

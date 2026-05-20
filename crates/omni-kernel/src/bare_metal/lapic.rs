@@ -679,11 +679,13 @@ extern "C" fn kernel_check_need_resched() {
     use core::sync::atomic::Ordering;
 
     // MB14.g — consume the per-CPU resched flag set by
-    // `kernel_lapic_timer_tick` running on this same CPU. Until MB14.h
-    // wires an AP-side dispatch loop, only the BSP runs the scheduler
-    // body — the AP path consumes its flag (so it does not re-fire on
-    // every successive tick) and returns. The flag consumption itself
-    // is BSP/AP-symmetric so the per-CPU contract observed by host-side
+    // `kernel_lapic_timer_tick` running on this same CPU. MB14.h.1
+    // wires the AP-side observer dispatcher (see
+    // `super::ap_dispatch::kernel_ap_dispatch_observe` / ADR-0009): the
+    // AP branch now consults its per-CPU run-queue every tick and
+    // increments `dispatch_observations` for each pick, but does *not*
+    // context-switch (that's MB14.h.2). The flag consumption itself is
+    // BSP/AP-symmetric so the per-CPU contract observed by host-side
     // tests (`take_resched` flips once then returns false) holds on
     // every logical CPU.
     #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
@@ -693,8 +695,11 @@ extern "C" fn kernel_check_need_resched() {
             return;
         }
         if !cpu.is_bsp() {
-            // AP dispatch loop arrives in MB14.h; for now just drain
-            // the flag so the next tick's request_resched can re-arm.
+            // MB14.h.1 — AP observer dispatcher: drains one task id
+            // from the per-CPU run-queue (with work-stealing fallback)
+            // and increments the per-CPU observation counter. The
+            // popped id is discarded — no context switch is performed.
+            super::ap_dispatch::kernel_ap_dispatch_observe();
             return;
         }
         if crate::scheduling::IN_SCHEDULER.load(Ordering::Acquire) {
