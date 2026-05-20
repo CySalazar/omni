@@ -1047,19 +1047,38 @@ pub fn kmain(
             // MB14.h.1 — AP-side observer dispatcher smoke.
             //
             // Enqueue a sentinel task id on the first registered AP
-            // (`cpu_id = 1`) and busy-poll the AP's per-CPU
-            // `dispatch_observations` counter. The AP's LAPIC periodic
-            // timer (armed in `kernel_ap_lapic_init`) fires the
-            // `omni_lapic_timer_handler` stub, which calls
+            // (`cpu_id = 1`) and wait for any AP to observe it. The
+            // AP's LAPIC periodic timer (armed in `kernel_ap_lapic_init`)
+            // fires the `omni_lapic_timer_handler` stub, which calls
             // `kernel_check_need_resched`; the MB14.h.1 wire (this
             // milestone) routes the AP branch through
             // `bare_metal::ap_dispatch::kernel_ap_dispatch_observe`,
-            // which pops the sentinel from `per_cpu_run_queue` and
-            // increments the per-CPU counter — observer-mode only, no
-            // context switch (MB14.h.2 ADR-0009). On Proxmox / QEMU the
-            // first AP tick post-`sti` arrives within a few ms; the
-            // 200 M iteration budget (≈ 1 s on modern silicon) leaves
-            // ample headroom while staying bounded under timeout.
+            // which pops a task id from `per_cpu_run_queue` (with
+            // work-stealing fallback) and increments that AP's per-CPU
+            // counter — observer-mode only, no context switch
+            // (MB14.h.2 ADR-0009).
+            //
+            // Because `pop_for_cpu_with_stealing` may **steal** the
+            // sentinel from `cpu_id=1`'s queue to a sibling AP that
+            // happened to fire its timer first, the smoke sums
+            // observations across every registered AP slot rather than
+            // polling slot `1` alone — the question being answered is
+            // "did *any* AP observe the queue?", which is the
+            // MB14.h.1 reachability invariant.
+            //
+            // The poll budget is **anchored on BSP tick count**, not on
+            // busy-loop iterations: on QEMU TCG (kvm=0) emulated CPU
+            // cycles do not match wall-time, so a fixed iteration count
+            // can race past the AP's first LAPIC tick before any AP
+            // has had the chance to fire. Using
+            // `bsp().tick_count()` as the clock source keeps the
+            // budget meaningful on both TCG and KVM: after K BSP ticks
+            // the APs have had K equivalent ticks too (the LAPIC
+            // periodic timer is per-CPU but armed with identical
+            // initial-count + divider on every CPU by
+            // `kernel_ap_lapic_init`). K = 32 ticks gives ≈ 5 s on
+            // QEMU TCG (≈ 160 ms per tick) and ≈ tens of ms on real
+            // silicon, an order of magnitude above the first AP tick.
             //
             // If no AP came online (single-CPU dev VM) the smoke logs
             // `BSP-only` and short-circuits — the BSP must not consume
@@ -1068,23 +1087,35 @@ pub fn kmain(
             {
                 use scheduling::PriorityClass;
                 if bare_metal::per_cpu::registered_ap_count() > 0 {
-                    const AP_DISPATCH_POLL_ITERATIONS: u64 = 200_000_000;
+                    const AP_DISPATCH_TICK_BUDGET: u64 = 32;
                     let target_cpu_id: u32 = 1;
                     let _ = bare_metal::per_cpu_run_queue::enqueue_on_cpu(
                         target_cpu_id,
                         0xE_E_E_E_E_4_u64,
                         PriorityClass::Background,
                     );
-                    let mut observed: u64 = 0;
-                    if let Some(slot) = bare_metal::per_cpu::ap_slot(target_cpu_id) {
-                        for _ in 0..AP_DISPATCH_POLL_ITERATIONS {
-                            observed = slot.dispatch_observations();
-                            if observed > 0 {
-                                break;
+                    let bsp = bare_metal::per_cpu::bsp();
+                    let start_tick = bsp.tick_count();
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "MAX_AP_SLOTS = MAX_CPUS - 1 = 31 fits u32 trivially"
+                    )]
+                    let max_ap = bare_metal::per_cpu::MAX_AP_SLOTS as u32;
+                    let observed: u64 = loop {
+                        let mut total: u64 = 0;
+                        for cpu_id in 1u32..=max_ap {
+                            if let Some(slot) = bare_metal::per_cpu::ap_slot(cpu_id) {
+                                total = total.saturating_add(slot.dispatch_observations());
                             }
-                            core::hint::spin_loop();
                         }
-                    }
+                        if total > 0 {
+                            break total;
+                        }
+                        if bsp.tick_count().saturating_sub(start_tick) >= AP_DISPATCH_TICK_BUDGET {
+                            break total;
+                        }
+                        core::hint::spin_loop();
+                    };
                     early_console::write_str("[mb14.h.1] ap_dispatch observed=");
                     #[allow(
                         clippy::cast_possible_truncation,
