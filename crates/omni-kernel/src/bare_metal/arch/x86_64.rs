@@ -482,7 +482,7 @@ pub fn rtc_time() -> (u8, u8, u8) {
 
 /// Reads the CR3 register (physical base address of the PML4 page table).
 ///
-/// Returns the raw CR3 value; bits [11:0] are flags (PCID / ignored in
+/// Returns the raw CR3 value; bits \[11:0\] are flags (PCID / ignored in
 /// simple setups). Mask with `!0xFFF` to obtain the PML4 physical address.
 #[inline]
 pub fn read_cr3() -> u64 {

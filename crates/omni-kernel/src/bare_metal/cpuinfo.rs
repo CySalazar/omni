@@ -21,8 +21,8 @@
 //! ## Why pure-function formatters
 //!
 //! The actual `CPUID` instruction is x86_64-only (`unsafe`); the
-//! formatters that build the printable strings ([`format_family_model`],
-//! [`format_feature_summary`]) are pure data transformations and are
+//! formatters that build the printable strings (`format_family_model`,
+//! `format_feature_summary`) are pure data transformations and are
 //! pinned by host-side `cargo test`.
 //!
 //! ## References
@@ -255,11 +255,11 @@ pub fn trim_brand(buf: &[u8; BRAND_LEN]) -> &[u8] {
 /// Decoded `(family, model, stepping)` triple from CPUID leaf 1 EAX.
 ///
 /// Per Intel SDM Vol 2 — CPUID:
-/// - `stepping` = EAX[3:0]
-/// - `model_id_base` = EAX[7:4]
-/// - `family_id_base` = EAX[11:8]
-/// - `model_id_ext` = EAX[19:16]
-/// - `family_id_ext` = EAX[27:20]
+/// - `stepping` = EAX\[3:0\]
+/// - `model_id_base` = EAX\[7:4\]
+/// - `family_id_base` = EAX\[11:8\]
+/// - `model_id_ext` = EAX\[19:16\]
+/// - `family_id_ext` = EAX\[27:20\]
 ///
 /// Effective family:
 /// - If `family_id_base == 0x0F` → `family = family_id_base + family_id_ext`.
@@ -396,7 +396,7 @@ enum FeatureSource {
 /// mnemonic + separators is well under this.
 pub const FEATURE_SUMMARY_LEN: usize = 96;
 
-/// Pure function: format the active subset of [`FEATURE_TABLE`] as a
+/// Pure function: format the active subset of `FEATURE_TABLE` as a
 /// space-separated ASCII byte buffer.
 ///
 /// The output is null-padded to [`FEATURE_SUMMARY_LEN`]; callers use
@@ -519,7 +519,7 @@ static SNAPSHOT_READY: AtomicU32 = AtomicU32::new(0);
 static mut SNAPSHOT_STORAGE: CpuSnapshot = CpuSnapshot::empty();
 
 /// One-shot initialiser: collect CPUID once and stash in
-/// [`SNAPSHOT_STORAGE`]. Safe to call multiple times; subsequent calls
+/// `SNAPSHOT_STORAGE`. Safe to call multiple times; subsequent calls
 /// short-circuit.
 pub fn init() {
     if SNAPSHOT_READY.load(Ordering::Acquire) != 0 {

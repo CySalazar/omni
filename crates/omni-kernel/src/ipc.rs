@@ -344,7 +344,7 @@ impl KernelIpcRegistry {
     ///
     /// When both slots are `None`, this delegates to
     /// [`Self::create_channel`] with the same
-    /// [`Ed25519CapabilityProvider`] supplied by the caller — the
+    /// `Ed25519CapabilityProvider` supplied by the caller — the
     /// per-IPC `verify` impl on that provider is identical O(1)
     /// shape-matching to the (now `#[cfg(test)]`-only)
     /// `StubCapabilityProvider`, so the legacy MB12 open-channel path
@@ -354,7 +354,7 @@ impl KernelIpcRegistry {
     /// "no capability gating" signal.
     ///
     /// `now` is the kernel monotonic timestamp passed to
-    /// [`Ed25519CapabilityProvider::verify_signed_token`]; on bare-metal
+    /// `Ed25519CapabilityProvider::verify_signed_token`; on bare-metal
     /// the syscall handler sources it from
     /// [`crate::bare_metal::arch::rtc_seconds`].
     ///

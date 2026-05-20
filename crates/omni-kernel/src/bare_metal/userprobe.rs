@@ -6,10 +6,10 @@
 //! Until that PR lands, this module holds the boot-wiring glue:
 //!
 //! - [`USERPROBE_ELF`] — placeholder embedded ELF bytes (currently
-//!   reuses the MB5 [`TEST_ELF`] header-only ELF for syntactic
+//!   reuses the MB5 `TEST_ELF` header-only ELF for syntactic
 //!   parity; the real probe replaces the bytes).
 //! - [`spawn_userprobe`] — orchestrator entry point: parses the ELF,
-//!   builds an [`AddressSpace`], allocates a user stack, registers the
+//!   builds an `AddressSpace`, allocates a user stack, registers the
 //!   `ProcessControlBlock` with the scheduler.
 //!
 //! Once the real probe is embedded, [`spawn_userprobe`] becomes the

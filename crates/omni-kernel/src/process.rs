@@ -1,6 +1,6 @@
 //! Userspace process abstraction (MB11, ADR-0004 § 6).
 //!
-//! A [`ProcessControlBlock`] wraps the MB10 [`TaskControlBlock`] with
+//! A [`ProcessControlBlock`] wraps the MB10 `TaskControlBlock` with
 //! the new pieces required to run a Ring 3 process:
 //!
 //! - A per-process [`AddressSpace`] (its own CR3, kernel-half mirrored).

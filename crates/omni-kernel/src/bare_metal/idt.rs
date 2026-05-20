@@ -17,7 +17,7 @@
 //! ## Catch-all vectors (MB13.g)
 //!
 //! All remaining synchronous vectors share two generic handlers
-//! ([`kernel_handle_exception_noerr`] / [`kernel_handle_exception_witherr`])
+//! (`kernel_handle_exception_noerr` / `kernel_handle_exception_witherr`)
 //! that record `vec=NN` followed by the [`ExceptionFrame`] — giving us
 //! post-mortem visibility on previously-silent triple-faults (e.g., a
 //! mis-built iretq frame faulting to #SS or #NP and cascading to #DF on

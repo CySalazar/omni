@@ -73,7 +73,7 @@ pub const SHOOTDOWN_FULL_FLUSH: u64 = u64::MAX;
 
 /// Shared shootdown descriptor.
 ///
-/// One global instance ([`SHOOTDOWN`]); the BSP populates it before
+/// One global instance (`SHOOTDOWN`); the BSP populates it before
 /// raising the IPI, and every AP-side handler reads it (with `Acquire`
 /// ordering) before issuing `invlpg` and incrementing [`Self::ack`].
 #[repr(C)]
@@ -130,7 +130,7 @@ const ACK_POLL_ITERATIONS: u64 = 200_000_000;
 pub struct ShootdownReport {
     /// Number of registered APs the BSP expected to ack.
     pub targeted: usize,
-    /// Number of APs that acked within [`ACK_POLL_ITERATIONS`].
+    /// Number of APs that acked within `ACK_POLL_ITERATIONS`.
     pub acked: usize,
     /// Number of pages the local CPU `invlpg`-ed before broadcasting.
     pub local_pages: u64,

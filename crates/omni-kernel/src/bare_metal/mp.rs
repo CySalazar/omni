@@ -288,7 +288,7 @@ fn read_u32_le(buf: &[u8], off: usize) -> u32 {
 /// `phys_offset.wrapping_add(rsdp_phys)` must point at a valid RSDP,
 /// and every ACPI table physical address reachable from there must lie
 /// within the mapped physical-memory window. The same invariants the
-/// FADT walker in [`super::arch::find_pm1a_cnt_from_fadt`] depends on.
+/// FADT walker in `super::arch::find_pm1a_cnt_from_fadt` depends on.
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn enumerate_cpus(rsdp_phys: u64, phys_offset: u64) -> Option<CpuTopology> {
     let madt_phys = unsafe { find_table_phys(rsdp_phys, phys_offset, b"APIC")? };

@@ -12,7 +12,7 @@
 //! - **`AP_SLOTS`** is an array of [`MAX_CPUS - 1`] descriptors, one per
 //!   Application Processor. The BSP populates the slots pre-fire via
 //!   [`register_ap`]; the AP itself reads the slot pointer the BSP
-//!   stamped into [`super::mp_ap_entry::AP_RUNTIME_CONTROL`] and parks
+//!   stamped into `super::mp_ap_entry::AP_RUNTIME_CONTROL` and parks
 //!   it in its `gs:[0]` via `wrmsr` (MB14.c.2.d landing code).
 //! - **`GS_BASE` per-CPU pointer (MB14.b).** [`init_gs_base`] writes the
 //!   address of the supplied descriptor into the two GS-base MSRs:
@@ -116,7 +116,7 @@ impl PerCpu {
     /// MB14.c.2.d — set the per-CPU kernel stack top (read by the AP
     /// entry stub before any push/pop). `Release` so the AP — which
     /// loads this with a plain `mov` after observing the slot pointer
-    /// via [`AP_RUNTIME_CONTROL`] — sees the latest value.
+    /// via `AP_RUNTIME_CONTROL` — sees the latest value.
     pub fn set_kernel_rsp(&self, rsp_top: u64) {
         self.kernel_rsp.store(rsp_top, Ordering::Release);
     }
@@ -208,7 +208,7 @@ pub fn init_bsp(lapic_id: u32) {
 ///
 /// The slot reference returned is `'static` because it aliases
 /// `AP_SLOTS[cpu_id - 1]`, which is a `static`. The BSP stores this
-/// address inside [`super::mp_ap_entry::AP_RUNTIME_CONTROL`] so the AP
+/// address inside `super::mp_ap_entry::AP_RUNTIME_CONTROL` so the AP
 /// can recover it after the CR3 switch.
 #[must_use]
 pub fn register_ap(cpu_id: u32, lapic_id: u32) -> Option<&'static PerCpu> {

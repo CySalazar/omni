@@ -112,6 +112,18 @@ jobs:
   bare-metal-build:
     name: bare-metal build (x86_64-unknown-none)
     runs-on: ubuntu-24.04
+    # Override workflow-level `RUSTFLAGS: -D warnings` so the
+    # `.cargo/config.toml` force-soft cfgs for poly1305/chacha20/curve25519/sha2
+    # (MB13.a, required to dodge the LLVM SIMD legalisation ICE on
+    # x86_64-unknown-none) are not stomped. Env-level RUSTFLAGS fully replaces
+    # config-level `target.<triple>.rustflags`; cargo does not merge the two.
+    env:
+      RUSTFLAGS: >-
+        -D warnings
+        --cfg poly1305_force_soft
+        --cfg chacha20_force_soft
+        --cfg curve25519_dalek_backend="serial"
+        --cfg sha2_backend="soft"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

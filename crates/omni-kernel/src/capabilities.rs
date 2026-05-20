@@ -188,7 +188,7 @@ pub enum CapabilityVerdict {
 /// [`Ed25519CapabilityProvider`] — it runs real Ed25519 signature +
 /// time-window + TEE-binding verification at channel creation, then
 /// falls back to O(1) action/resource shape-matching for the per-IPC
-/// hot path. [`StubCapabilityProvider`] remains as a `#[cfg(test)]`-only
+/// hot path. `StubCapabilityProvider` remains as a `#[cfg(test)]`-only
 /// mock for unit tests that do not need to exercise the signature
 /// path.
 pub trait KernelCapabilityCheck {
@@ -267,8 +267,8 @@ impl KernelCapabilityCheck for StubCapabilityProvider {
 /// Verifies the signature, time window, and TEE-binding of an
 /// [`omni_capability::CapabilityToken`] by delegating to
 /// [`omni_capability::CapabilityToken::verify_full`] with a fixed
-/// [`StubAttestation`] sourced from `self.node_id` and an empty
-/// [`RevocationList`]. Per-IPC checks fall back to the same
+/// `StubAttestation` sourced from `self.node_id` and an empty
+/// `RevocationList`. Per-IPC checks fall back to the same
 /// shape-matching semantics as the test-only `StubCapabilityProvider`.
 #[derive(Debug, Clone, Copy)]
 pub struct Ed25519CapabilityProvider {
@@ -320,7 +320,7 @@ impl Ed25519CapabilityProvider {
     /// revocation status — i.e. exactly what
     /// [`omni_capability::CapabilityToken::verify_full`] checks.
     ///
-    /// The TEE attestation source is a [`StubAttestation`] bound to
+    /// The TEE attestation source is a `StubAttestation` bound to
     /// `self.node_id_bytes`; the revocation list is empty (per-channel
     /// revocation lands with MB13.d). Callers MUST supply a monotonic
     /// `now` — at boot the kernel uses RTC seconds via

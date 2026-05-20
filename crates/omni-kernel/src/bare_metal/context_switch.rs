@@ -159,7 +159,7 @@ unsafe extern "C" {
 /// 3. Six zero-initialised callee-saved registers (RBP, RBX, R12, R13, R14, R15)
 ///    in the order `context_switch` pops them (words 3 through 8 of the frame).
 ///
-/// Returns the initial RSP value to store in the task's [`CpuContext`].
+/// Returns the initial RSP value to store in the task's `CpuContext`.
 ///
 /// # Safety
 ///

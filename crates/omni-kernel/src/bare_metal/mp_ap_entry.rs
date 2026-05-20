@@ -7,7 +7,7 @@
 //! per-AP RSP, wire `GS_BASE` / `KERNEL_GS_BASE` to the AP slot, `lgdt`
 //! / `lidt` / `ltr` against the BSP's kernel descriptor tables, reload
 //! data segments, then park `cli; hlt`). The BSP populates a runtime
-//! control block ([`AP_RUNTIME_CONTROL`]) pre-fire that tells each AP
+//! control block (`AP_RUNTIME_CONTROL`) pre-fire that tells each AP
 //! exactly which per-CPU slot, stack top, and TSS selector to use.
 //!
 //! Companion to [`mp_trampoline`](super::mp_trampoline) /
@@ -41,7 +41,7 @@
 //!
 //! | Offset    | Size  | Content                                           |
 //! |----------:|------:|---------------------------------------------------|
-//! | `0x000`   | 256 B | Trampoline blob (see [`mp_trampoline`])           |
+//! | `0x000`   | 256 B | Trampoline blob (see [`super::mp_trampoline`])    |
 //! | `0x100`   | 32 B  | AP landing stub (this module)                     |
 //! | `0x140`   | 8  B  | `AP_ACK_COUNTER` — `AtomicU64`, BSP reads it      |
 //! | `0x148`   | 8  B  | `AP_KERNEL_CR3` — BSP writes pre-fire             |
