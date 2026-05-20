@@ -39,6 +39,15 @@ members = [
     # it is std-enabled (it runs as a host userspace service with KVM
     # ioctls, OCI image cache, subprocess management for virtio backends).
     "crates/omni-container",
+    # First-party user-space drivers (OIP-Driver-Framework-013 § R3, phased
+    # delivery in OIP-Driver-Net-015 / OIP-Driver-NVMe-014 / OIP-Driver-TEE-016).
+    # Each driver crate is `no_std + alloc` so its logic compiles cleanly in
+    # the workspace matrix (clippy / test / cargo doc); the bootable image
+    # sibling that turns each lib into a no_main ELF (loaded by the kernel
+    # via `DriverLoad`, OIP-013 § S5) lives in a separate excluded crate
+    # added when each driver enters bring-up (`*-image`, sibling to the lib
+    # the same way `kernel-runner` is the bootable sibling of `omni-kernel`).
+    "crates/omni-driver-net-virtio",
 ]
 
 # Fuzz harnesses live in their own ephemeral packages outside the

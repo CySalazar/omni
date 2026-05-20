@@ -53,6 +53,7 @@ SCOPED_CRATES=(
     "crates/omni-sdk"
     "crates/omni-agent"
     "crates/omni-shell"
+    "crates/omni-driver-net-virtio"
 )
 
 files=""
