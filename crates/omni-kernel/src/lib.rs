@@ -506,6 +506,19 @@ pub fn kmain(
         if bare_metal::lapic::lapic_init(phys_offset_mb2) {
             early_console::write_str("[lapic] timer started  vector=0x20\n");
 
+            // MB14.f.2 — surface the LAPIC mode the firmware left us in
+            // (xAPIC by default on QEMU/Proxmox; x2APIC if a BIOS opts
+            // in pre-kernel). The kernel never flips the bit at runtime;
+            // every primitive (`lapic_eoi`, `lapic_send_ipi`,
+            // `read_lapic_id`, `kernel_ap_lapic_init`) routes via MSRs
+            // when this flag is set, and via xAPIC MMIO otherwise.
+            early_console::write_str("[mb14.f] lapic_mode=");
+            early_console::write_str(if bare_metal::lapic::is_x2apic_enabled() {
+                "x2APIC\n"
+            } else {
+                "xAPIC\n"
+            });
+
             // MB14.a — seed the BSP per-CPU descriptor. LAPIC base is now
             // mapped (lapic_init wrote LAPIC_BASE) so read_lapic_id can
             // observe the physical ID, which the descriptor stores under

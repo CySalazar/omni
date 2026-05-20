@@ -449,9 +449,13 @@ pub fn allocate_ap_stack_frame<const N: usize>(
 //   never returns from this function, so reloading a real per-CPU GDT
 //   is deferred to MB14.c.2.d.
 //
-// MB14.c.2.d body — per-CPU initialisation sequence:
+// MB14.c.2.d body — per-CPU initialisation sequence, extended in
+// MB14.f.1 + MB14.f.2 + MB14.f.3:
 //
-//   1. Read xAPIC ID (CPUID leaf 1, EBX[31:24]).
+//   1. Read x2APIC ID (CPUID leaf 0xB sub-leaf 0, EDX). The 32-bit
+//      value subsumes the 8-bit xAPIC ID — in xAPIC mode EDX equals
+//      EBX[31:24] zero-extended — so the same `mov ebx, edx` works in
+//      either mode (MB14.f.2 widening).
 //   2. Linear-search `AP_RUNTIME_CONTROL.lapic_to_cpu[]` for our cpu_id.
 //   3. Load RSP from `cpu_kstack_top[cpu_id]` (no stack until now).
 //   4. `lgdt` the kernel GDT and `lidt` the kernel IDT.
@@ -460,16 +464,19 @@ pub fn allocate_ap_stack_frame<const N: usize>(
 //      pointer (MUST be after the `mov gs, dx` zero — segment-register
 //      loads invalidate the hidden GS base).
 //   7. `ltr` the per-CPU TSS selector.
-//   8. `lock inc` the online-ack counter (BSP polls this).
-//   9. `sti` to unmask IPIs (MB14.e.1) so the per-CPU 0xFD TLB shootdown
-//      handler can fire. Scheduler enrolment / preemption is the MB14.e.2
-//      per-CPU run-queue split.
-//  10. `hlt; jmp $-2` — idle park; resumes on any unmasked IPI, then
+//   8. **MB14.f.1 + MB14.f.3** — `call kernel_ap_lapic_init`. Enables
+//      the local LAPIC (SIVR + TPR) and arms the periodic timer at
+//      vector `0x20`. Without this, Fixed-delivery IPIs (e.g. the
+//      `0xFD` TLB shootdown vector) never reach the IDT on this AP —
+//      the MB14.e.4 ack-timeout root cause.
+//   9. `lock inc` the online-ack counter (BSP polls this).
+//  10. `sti` to unmask IPIs (MB14.e.1) so the local 0xFD TLB shootdown
+//      handler and the per-CPU timer can fire. Per-CPU dispatch
+//      enrolment is deferred to MB14.g; the AP timer handler currently
+//      EOIs early (`current_cpu().is_bsp() == false` short-circuit in
+//      `kernel_lapic_timer_tick`).
+//  11. `hlt; jmp $-2` — idle park; resumes on any unmasked IPI, then
 //      `iretq` returns straight back to the `hlt`.
-//
-// xAPIC-only: this path reads CPUID leaf 1 EBX[31:24] (8-bit). x2APIC
-// LAPIC IDs > 255 would alias here; MB14.f will switch to CPUID leaf
-// 0xB sub-leaf 0 EDX when x2APIC support actually matters.
 //
 // Note: `extern` blocks cannot carry rustdoc; document via this comment.
 #[cfg(all(target_arch = "x86_64", target_os = "none", not(test)))]
@@ -479,10 +486,16 @@ core::arch::global_asm!(
     ".type kmain_ap, @function",
     "kmain_ap:",
     "    cli",
-    // ---- Step 1: read xAPIC ID via CPUID leaf 1 EBX[31:24] ----
-    "    mov eax, 1",
+    // ---- Step 1 (MB14.f.2): read x2APIC ID via CPUID leaf 0xB sub-leaf 0 EDX ----
+    // EDX yields the 32-bit ID in both xAPIC and x2APIC modes; in xAPIC
+    // mode it equals EBX[31:24] zero-extended (Intel SDM Vol 2 — CPUID
+    // leaf 0BH: "x2APIC ID the current logical processor"). Leaf 0xB is
+    // supported on every x86_64 CPU since Nehalem (2008) and on every
+    // KVM/QEMU/Proxmox-exposed virtual CPU.
+    "    mov eax, 0x0B",
+    "    xor ecx, ecx",
     "    cpuid",
-    "    shr ebx, 24",
+    "    mov ebx, edx",
     // ---- Step 2: linear-search lapic_to_cpu[] for our cpu_id ----
     "    lea rdi, [rip + AP_RUNTIME_CONTROL]",
     "    xor r8d, r8d",
@@ -536,9 +549,23 @@ core::arch::global_asm!(
     "    shr rdx, 32",
     "    mov ecx, 0xC0000102",
     "    wrmsr",
-    // ---- Step 8: ltr <per-CPU TSS selector> ----
+    // ---- Step 7b: ltr <per-CPU TSS selector> ----
     "    mov ax, word ptr [rdi + {off_sel} + r8*2]",
     "    ltr ax",
+    // ---- Step 8 (MB14.f.1 + MB14.f.3): enable the local LAPIC + arm
+    //      its periodic timer at vector 0x20. The Rust callee
+    //      `kernel_ap_lapic_init` is `extern "C"`, no arguments, no
+    //      return value. Caller-saved registers (rax, rcx, rdx, rsi,
+    //      rdi, r8-r11) may be clobbered — at this point rdi (the
+    //      AP_RUNTIME_CONTROL pointer) and r8 (cpu_id) are no longer
+    //      needed by the remaining steps (rip-relative addressing only),
+    //      so clobbering them is safe.
+    //
+    //      RSP at the call site is the freshly-loaded per-CPU kernel
+    //      stack top (step 3), which is page-aligned (and therefore
+    //      16-byte aligned) — exactly what the System V AMD64 ABI
+    //      requires at the `call` site.
+    "    call kernel_ap_lapic_init",
     // ---- Step 9: bump online-ack counter (BSP polls this) ----
     "    lock inc qword ptr [rip + AP_ONLINE_ACK]",
     // ---- Step 10: enable maskable interrupts + park (MB14.e.1) ----

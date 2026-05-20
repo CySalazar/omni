@@ -17,6 +17,87 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB14.f: AP LAPIC enable + x2APIC awareness + per-AP timer
+  (2026-05-20).** Closes the MB14.e.4 follow-up (TLB shootdown ack
+  timeout on AP) and lands the x2APIC infrastructure that future
+  server-class topologies require. Single ADR (0008) accepted.
+
+  Six additive changes:
+
+  - **`crates/omni-kernel/src/bare_metal/lapic.rs`** — new
+    `pub extern "C" fn kernel_ap_lapic_init()` (`#[unsafe(no_mangle)]`)
+    invoked from the `kmain_ap` global_asm! body. Reads the BSP-
+    observed `X2APIC_MODE` AtomicBool; if set, flips `IA32_APIC_BASE`
+    bits 10+11 on this AP's MSR (the flip is per-CPU and the BSP-side
+    write does not propagate); then calls `program_lapic_local(mode)`
+    which writes SIVR (`LAPIC_ENABLE | 0xFF`), TPR=0, LVT timer
+    (periodic, vector 0x20), timer divider, and timer initial count.
+    Mode-aware: xAPIC path uses the bootloader-mapped MMIO window,
+    x2APIC path uses the canonical Intel SDM Vol 3A Table 10-6 MSR
+    addresses (`MSR = 0x800 + (mmio_offset >> 4)`). Same module:
+    new `LapicMode::{XApic, X2Apic}` enum, `detect_lapic_mode()`
+    (reads `IA32_APIC_BASE` bit 10), `is_x2apic_enabled()`, and
+    mode-aware refactors of `lapic_eoi`, `lapic_send_ipi`,
+    `lapic_icr_busy`, and `read_lapic_id` (x2APIC path returns the
+    full 32-bit ID via `IA32_X2APIC_APICID` MSR `0x802`).
+    `kernel_lapic_timer_tick` + `kernel_check_need_resched`
+    short-circuit on `current_cpu().is_bsp() == false`: AP timer
+    ticks EOI early without touching the `static mut TICK_COUNT`
+    (BSP-only writer) or the global `NEED_RESCHED` flag — keeping
+    the BSP scheduler race-free until MB14.g lands per-CPU dispatch.
+  - **`crates/omni-kernel/src/bare_metal/mp_ap_entry.rs`** — `kmain_ap`
+    global_asm! body extended in two places. Step 1 (LAPIC ID read)
+    promoted from `mov eax, 1; cpuid; shr ebx, 24` (CPUID leaf 1
+    EBX[31:24], 8-bit xAPIC ID) to `mov eax, 0x0B; xor ecx, ecx;
+    cpuid; mov ebx, edx` (CPUID leaf 0xB sub-leaf 0 EDX, 32-bit
+    x2APIC ID — identical to the zero-extended leaf 1 value in xAPIC
+    mode per Intel SDM Vol 2 — CPUID leaf 0BH; supported on every
+    x86_64 CPU since Nehalem). Step 8 (between `ltr` and the
+    `lock inc AP_ONLINE_ACK`) gains a `call kernel_ap_lapic_init`
+    so every AP leaves its init sequence with the local LAPIC
+    enabled and the periodic timer armed. RSP at the call site is
+    the freshly-loaded per-CPU kernel stack top (page-aligned →
+    16-byte aligned), satisfying the System V AMD64 ABI.
+  - **`crates/omni-kernel/src/lib.rs`** — `kmain` logs `[mb14.f]
+    lapic_mode=xAPIC|x2APIC` right after `lapic_init` succeeds. The
+    Build Info panel rows now read `Active = MB14.f AP LAPIC +
+    x2APIC`, `Next = MB14.g AP dispatch + PR`, `Track B = MB1-MB13
+    OK, MB14.a-f wip`, `Tests = 592+ workspace pass`.
+  - **`docs/adr/0008-mb14f-per-cpu-scheduling-protocol.md`** — new
+    ADR `accepted` capturing the MB14.e.4 root-cause confirmation
+    (hypothesis (a): AP LAPIC was never enabled — SIVR bit 8 cleared
+    → Intel SDM Vol 3A § 10.4.3 silent IPI drop), the .1/.2/.3
+    sub-block decomposition, and the alternatives considered
+    (BSP-driven IPI to every AP, runtime x2APIC flip, `TICK_COUNT`
+    promotion to `AtomicU64` — all rejected with explicit rationale).
+  - **+6 host-side tests** in `bare_metal::lapic::tests`:
+    `lapic_mode_variants_compare_independently`,
+    `x2apic_msr_addresses_match_intel_sdm_table_10_6`,
+    `apic_base_msr_layout_matches_intel_sdm`,
+    `x2apic_mode_flag_defaults_to_xapic_before_init`,
+    `xapic_mmio_offsets_pinned_against_intel_sdm_table_10_1`,
+    `x2apic_msr_offsets_match_mmio_via_canonical_shift` (algebraic
+    relation `MSR = 0x800 + (mmio_offset >> 4)`).
+  - **Workspace test count** 586+ → 592+.
+
+  Build matrix verification (every command exits 0, no warnings):
+  `cargo build -p omni-kernel --target x86_64-unknown-none
+  --no-default-features --features bare-metal`,
+  `cargo build --manifest-path kernel-runner/Cargo.toml --target
+  x86_64-unknown-none`,
+  `cargo build --manifest-path kernel-runner/Cargo.toml --target
+  x86_64-unknown-none --features mb12-userprobe`,
+  `cargo clippy --workspace --all-features --all-targets -- -D
+  warnings`,
+  `cargo clippy -p omni-kernel --target x86_64-unknown-none
+  --no-default-features --features bare-metal -- -D warnings`,
+  `cargo clippy -p omni-kernel --target x86_64-unknown-none
+  --no-default-features --features mb12-userprobe -- -D warnings`,
+  `cargo clippy --manifest-path kernel-runner/Cargo.toml --target
+  x86_64-unknown-none -- -D warnings`. The pre-existing SIGSEGV on
+  `cargo test -p omni-kernel --lib` remains carry-over (item §4.5 #16
+  in `progress-omni.md`) — unrelated to MB14.f.
+
 - **Kernel — MB14.c.2.b.2: bare-metal trampoline emplacement (2026-05-19).**
   Materialises the pure-function builders of MB14.c.2.b.1 into actual
   physical memory: three frames from the global `BitmapFrameAllocator`
