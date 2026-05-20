@@ -61,13 +61,13 @@ pub const CPU_ID_UNINIT: u32 = u32::MAX;
 /// `IA32_GS_BASE` — active GS base while running in kernel mode.
 /// Holds the per-CPU pointer between `swapgs` flips on Ring 3 → Ring 0
 /// transitions (and the inverse before sysretq / iretq returns).
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(test)))]
 const MSR_GS_BASE: u32 = 0xC000_0101;
 
 /// `IA32_KERNEL_GS_BASE` — shadow GS base. `swapgs` exchanges this with
 /// the active `GS_BASE`, so userspace can keep its own value while the
 /// kernel keeps the per-CPU pointer parked here.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(test)))]
 const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
 
 /// Per-CPU descriptor. One instance per logical CPU; MB14.a allocated
@@ -341,7 +341,7 @@ pub fn bsp() -> &'static PerCpu {
 /// privileged (Ring 0) but otherwise side-effect-free: they affect
 /// only the addressing base used by GS-segment overrides on this
 /// logical CPU.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(test)))]
 pub fn init_gs_base(pc: &'static PerCpu) {
     let pc_ptr = core::ptr::from_ref::<PerCpu>(pc) as u64;
     // Stamp the self-pointer first so it is observable the instant the
@@ -360,8 +360,13 @@ pub fn init_gs_base(pc: &'static PerCpu) {
     }
 }
 
-/// No-op stub for non-x86_64 host builds.
-#[cfg(not(target_arch = "x86_64"))]
+/// Field-stamp-only path used by non-x86_64 hosts AND by `cfg(test)`
+/// builds on any target. The `wrmsr` instruction is Ring 0; running it
+/// from a userland test binary on `x86_64-unknown-linux-gnu` would
+/// raise #GP and the host kernel would deliver SIGSEGV (the historical
+/// cargo-test failure tracked against this suite). The field-stamp half
+/// is independently verifiable and is what tests exercise.
+#[cfg(any(not(target_arch = "x86_64"), test))]
 pub fn init_gs_base(pc: &'static PerCpu) {
     let pc_ptr = core::ptr::from_ref::<PerCpu>(pc) as u64;
     pc.self_ptr.store(pc_ptr, Ordering::Release);
@@ -373,7 +378,7 @@ pub fn init_gs_base(pc: &'static PerCpu) {
 ///
 /// Ring 0 only. The caller must ensure `msr` accepts the value and is
 /// architecturally defined (no reserved bits set).
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(test)))]
 unsafe fn wrmsr(msr: u32, value: u64) {
     #[allow(
         clippy::cast_possible_truncation,
