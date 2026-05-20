@@ -79,8 +79,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # `--test-threads=1` works around the pre-existing SIGSEGV in
+      # `bare_metal::paging::tests::TestArena` (carryover from v0.2.0).
+      # The arena pretends an `alloc_zeroed` heap region is the
+      # "physical" memory window at `PHYS_BASE = 0x0100_0000` and lets
+      # `PageMapper` dereference `phys_offset + phys_addr`. Under the
+      # parallel test harness, sibling arenas can overlap and a page-
+      # table write in one test scribbles into another's allocation,
+      # producing an OOB dereference. Serialising the test binary
+      # sidesteps the race; the proper fix (refactor `TestArena` to
+      # isolate or `Mutex`-serialise the affected tests) is tracked as
+      # a follow-up after Track B closure.
       - name: cargo test --workspace --all-features
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --all-features -- --test-threads=1
 
   # ---------------------------------------------------------------------------
   # doc — link check + warnings-as-errors so docs don't rot silently.
