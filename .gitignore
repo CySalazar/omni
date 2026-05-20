@@ -13,6 +13,7 @@
 /kernel-runner/target/
 /disk-image/target/
 /crates/omni-driver-net-virtio-image/target/
+/crates/omni-driver-nvme-image/target/
 **/*.rs.bk
 *.pdb
 
