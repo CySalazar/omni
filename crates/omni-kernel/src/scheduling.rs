@@ -35,7 +35,7 @@
 )]
 
 use alloc::vec::Vec;
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{KernelError, KernelResult};
 
@@ -63,7 +63,51 @@ pub static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
 /// (or `preempt`). The timer interrupt's `check_need_resched` consults this to
 /// avoid recursing into the scheduler if the previous yield (e.g. from a
 /// cooperative `TaskYield` syscall) is still on the stack.
+///
+/// **MB14.h.2 (bare-metal MP) — superseded by the per-CPU equivalent.**
+/// On bare-metal x86_64 the BSP and every AP now consult
+/// `super::bare_metal::per_cpu::current_cpu().enter_scheduler()` /
+/// `leave_scheduler()` instead of this global, so a concurrent BSP+AP
+/// yield cannot poison a sibling CPU's guard. This static remains
+/// active on host / `target_os = "linux"` test builds where
+/// `current_cpu()` collapses to a single descriptor and the global
+/// flag's single-CPU semantics still hold.
 pub static IN_SCHEDULER: AtomicBool = AtomicBool::new(false);
+
+/// MB14.h.2 — cross-CPU coarse spinlock serialising mutations of the
+/// global `SCHEDULER` (`tasks` / `processes` / `run_queues` legacy mirror).
+///
+/// The BSP and every AP attempt `try_acquire` before entering
+/// `RoundRobinScheduler::yield_current`; the winner runs the scheduler
+/// body, the loser short-circuits (the next tick will retry). Coarse
+/// because Phase 1 has only one scheduler instance — a finer-grained
+/// per-CPU dispatch table fragmenting `SCHEDULER` is a P6.7+ refactor
+/// (see ADR-0010 § Negative consequences).
+///
+/// Pairs with `super::bare_metal::per_cpu::PerCpu::enter_scheduler`:
+/// the per-CPU flag stops *re-entrant* scheduler calls on the *same* CPU;
+/// `SCHED_LOCK` stops *concurrent* scheduler calls across *different*
+/// CPUs. Both must hold for the duration of one `yield_current` body.
+pub static SCHED_LOCK: AtomicBool = AtomicBool::new(false);
+
+/// MB14.h.2 — non-blocking attempt to claim the cross-CPU scheduler lock.
+///
+/// Returns `true` if the caller now owns the lock (and must release it
+/// via [`release_sched_lock`]); `false` if another CPU holds it.
+/// Callers should short-circuit on `false` rather than spinning so the
+/// IRQ tail returns promptly — the next timer tick will retry.
+#[must_use]
+pub fn try_acquire_sched_lock() -> bool {
+    SCHED_LOCK
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+/// MB14.h.2 — release the cross-CPU scheduler lock. Must only be
+/// called after a successful [`try_acquire_sched_lock`].
+pub fn release_sched_lock() {
+    SCHED_LOCK.store(false, Ordering::Release);
+}
 
 // -----------------------------------------------------------------------------
 // Task identifier
@@ -473,6 +517,70 @@ impl RoundRobinScheduler {
         Ok(id)
     }
 
+    /// MB14.g — enqueue a task on a specific CPU's run-queue.
+    ///
+    /// Dual-write contract:
+    /// 1. The legacy `self.run_queues[priority]` mirror is pushed so the
+    ///    existing BSP dispatch paths (and every host-side unit test)
+    ///    keep working unchanged during the MB14.g transition window.
+    /// 2. On bare-metal builds the task is also pushed into
+    ///    [`crate::bare_metal::per_cpu_run_queue`] under `cpu_id`, where
+    ///    the MB14.h AP-side dispatch loop will pull it via
+    ///    `pop_for_cpu_with_stealing`. On host / test builds step 2 is a
+    ///    no-op because the per-CPU table aliases a single global and
+    ///    cross-test interleaving would obscure the legacy-mirror
+    ///    assertions.
+    ///
+    /// Returns `true` if the per-CPU table accepted the push (or `true`
+    /// vacuously on host/test); `false` only when `cpu_id >= MAX_CPUS`
+    /// on bare-metal — the legacy mirror is still populated in that
+    /// case, so the task is reachable through the BSP dispatch path.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "priority as usize < NUM_PRIORITY_CLASSES by enum repr"
+    )]
+    pub fn enqueue_for_cpu(&mut self, cpu_id: u32, task: TaskId, priority: PriorityClass) -> bool {
+        // Step 1 — legacy mirror push (BSP / host source of truth).
+        self.run_queues[priority as usize].push(task.0);
+        // Step 2 — per-CPU dispatch table (bare-metal only; see doc).
+        #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+        {
+            crate::bare_metal::per_cpu_run_queue::enqueue_on_cpu(cpu_id, task.0, priority)
+        }
+        #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+        {
+            let _ = cpu_id;
+            true
+        }
+    }
+
+    /// MB14.g — pick the next runnable task for `cpu_id`, consulting the
+    /// per-CPU run-queue (with work-stealing fallback) on bare-metal
+    /// builds. Removes the picked task from the legacy
+    /// `self.run_queues` mirror so the two sources stay coherent. On
+    /// host / test builds delegates to [`Self::pick_next`] for parity
+    /// with single-CPU unit tests.
+    ///
+    /// Returns `None` if every CPU's queue is empty.
+    pub fn pick_next_for_cpu(&mut self, cpu_id: u32) -> Option<TaskId> {
+        #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+        {
+            let picked = crate::bare_metal::per_cpu_run_queue::pop_for_cpu_with_stealing(cpu_id)?;
+            // Drop the same task from the legacy mirror — defensive
+            // sync so a follow-up MB14.h that rewires BSP `pick_next`
+            // through this helper does not surface a stale id.
+            for queue in &mut self.run_queues {
+                queue.retain(|&id| id != picked);
+            }
+            Some(TaskId(picked))
+        }
+        #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+        {
+            let _ = cpu_id;
+            self.pick_next()
+        }
+    }
+
     /// Test helper: create a minimal TCB with a zeroed context and enqueue it.
     #[cfg(test)]
     #[allow(
@@ -601,7 +709,13 @@ impl Scheduler for RoundRobinScheduler {
             process_dispatch
         {
             let kernel_stack_top = kernel_stack_va + KERNEL_STACK_SIZE;
-            crate::bare_metal::tss::set_rsp0(kernel_stack_top);
+            // MB14.h.2 — route the TSS.rsp0 write through the per-CPU
+            // helper so an AP running this code updates its own
+            // `AP_TSS[cpu_id - 1]` slot instead of the BSP TSS. The
+            // BSP keeps writing the legacy static via
+            // `set_rsp0_for_cpu(0, _)` → `set_rsp0`.
+            let cpu_id = crate::bare_metal::per_cpu::current_cpu().cpu_id();
+            let _ = crate::bare_metal::tss::set_rsp0_for_cpu(cpu_id, kernel_stack_top);
 
             // MB12 first-dispatch detection: a freshly-spawned user task
             // has `context.rsp = 0` (the sentinel from `spawn_from_elf`).
@@ -748,6 +862,67 @@ mod tests {
         let mut sched = RoundRobinScheduler::new();
         let t = sched.mock_enqueue(PriorityClass::RealTime);
         assert!(sched.preempt(t).is_ok());
+    }
+
+    // -------------------------------------------------------------------------
+    // MB14.g — `enqueue_for_cpu` / `pick_next_for_cpu` API surface.
+    //
+    // The per-CPU dispatch table is `#[cfg]`-gated to bare-metal in the
+    // production code; on host tests the new methods fall back to the
+    // existing single-CPU run-queues mirror. The assertions below pin
+    // the host fallback so future MB14.h refactors that touch the bare-
+    // metal branch cannot accidentally regress the host contract.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn enqueue_for_cpu_host_falls_back_to_local_mirror() {
+        let mut sched = RoundRobinScheduler::new();
+        let id = sched.allocate_task_id();
+        // Reserve the TCB entry — `register_process` is the canonical
+        // build path, but a minimal mock_enqueue-style TCB suffices here.
+        sched.tasks.push(TaskControlBlock {
+            id,
+            state: TaskState::Runnable,
+            priority: PriorityClass::Interactive,
+            context: CpuContext::default(),
+            kernel_stack_phys: 0,
+            kernel_stack_va: 0,
+        });
+        assert!(sched.enqueue_for_cpu(0, id, PriorityClass::Interactive));
+        // Legacy mirror sees the task; per-CPU table is a no-op on host.
+        assert_eq!(sched.pick_next(), Some(id));
+    }
+
+    #[test]
+    fn pick_next_for_cpu_host_delegates_to_pick_next() {
+        let mut sched = RoundRobinScheduler::new();
+        let t = sched.mock_enqueue(PriorityClass::System);
+        // Host build: per-CPU table is empty, but pick_next_for_cpu
+        // falls back to pick_next which reads the legacy mirror.
+        assert_eq!(sched.pick_next_for_cpu(0), Some(t));
+        assert_eq!(sched.pick_next_for_cpu(0), None);
+    }
+
+    #[test]
+    fn enqueue_for_cpu_respects_priority_order_on_legacy_mirror() {
+        let mut sched = RoundRobinScheduler::new();
+        let low = sched.allocate_task_id();
+        let high = sched.allocate_task_id();
+        for (id, prio) in [(low, PriorityClass::Idle), (high, PriorityClass::System)] {
+            sched.tasks.push(TaskControlBlock {
+                id,
+                state: TaskState::Runnable,
+                priority: prio,
+                context: CpuContext::default(),
+                kernel_stack_phys: 0,
+                kernel_stack_va: 0,
+            });
+            assert!(sched.enqueue_for_cpu(0, id, prio));
+        }
+        // System (0) wins over Idle (5).
+        assert_eq!(sched.pick_next_for_cpu(0), Some(high));
+        assert_eq!(sched.pick_next_for_cpu(0), Some(low));
+        assert_eq!(sched.pick_next_for_cpu(0), None);
     }
 
     // -------------------------------------------------------------------------

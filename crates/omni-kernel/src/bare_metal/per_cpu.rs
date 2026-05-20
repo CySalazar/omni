@@ -89,6 +89,38 @@ const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
 ///   the AP entry stub to materialise `RSP` before any push/pop. Stays
 ///   `0` for the BSP (which has been running on the boot stack since
 ///   reset).
+/// - `tick_count`: MB14.g — LAPIC periodic-timer tick counter, owned by
+///   this CPU. Incremented by `kernel_lapic_timer_tick` running on
+///   whichever CPU received the interrupt; previously a single
+///   `static mut TICK_COUNT` global, which race-shifted to per-CPU once
+///   APs began servicing their own timers (MB14.f).
+/// - `need_resched`: MB14.g — per-CPU rearm flag for the cooperative
+///   resched trampoline. Replaces the global `scheduling::NEED_RESCHED`
+///   on bare-metal builds so the BSP and every AP can independently
+///   schedule their own next pick without cross-CPU thrash. The static
+///   flag in `scheduling` stays for host / test builds (where there is
+///   only one CPU and `current_cpu()` collapses to `&BSP`).
+/// - `dispatch_observations`: MB14.h.1 — per-CPU counter incremented by
+///   the AP-side dispatcher in
+///   [`super::ap_dispatch::kernel_ap_dispatch_observe`] every time it
+///   successfully pops a task from this CPU's run-queue (or steals one
+///   from a sibling). MB14.h.2 promotes the dispatcher from observer
+///   (pop+discard) to live yield (`SCHEDULER.yield_current`); the
+///   counter remains a long-lived diagnostic so a future regression in
+///   the AP timer path surfaces as `observed=0` on the next boot. See
+///   ADR-0010 § Decision.
+/// - `in_scheduler`: MB14.h.2 — per-CPU recursion guard for the
+///   cooperative `yield_current` path (replaces the global
+///   `scheduling::IN_SCHEDULER` static for bare-metal MP builds). Set
+///   on entry by `kernel_check_need_resched` / `kernel_ap_dispatch_observe`
+///   before they take `SCHED_LOCK` and call into `SCHEDULER`; cleared on
+///   exit. A re-entrant tick on the same CPU (e.g. a cooperative
+///   `TaskYield` syscall still on the stack when the timer fires)
+///   observes the flag set and short-circuits — exactly the recursion
+///   prevention the global flag delivered on single-CPU builds, now
+///   per-CPU so concurrent BSP+AP yields cannot poison each other's
+///   guard. The legacy global flag remains active on host / non-x86_64
+///   builds where `current_cpu()` collapses to `&BSP`.
 #[derive(Debug)]
 #[repr(C)]
 pub struct PerCpu {
@@ -97,6 +129,10 @@ pub struct PerCpu {
     lapic_id: AtomicU32,
     is_bsp: AtomicBool,
     kernel_rsp: AtomicU64,
+    tick_count: AtomicU64,
+    need_resched: AtomicBool,
+    dispatch_observations: AtomicU64,
+    in_scheduler: AtomicBool,
 }
 
 impl PerCpu {
@@ -110,6 +146,10 @@ impl PerCpu {
             lapic_id: AtomicU32::new(CPU_ID_UNINIT),
             is_bsp: AtomicBool::new(false),
             kernel_rsp: AtomicU64::new(0),
+            tick_count: AtomicU64::new(0),
+            need_resched: AtomicBool::new(false),
+            dispatch_observations: AtomicU64::new(0),
+            in_scheduler: AtomicBool::new(false),
         }
     }
 
@@ -150,6 +190,100 @@ impl PerCpu {
     #[must_use]
     pub fn is_initialised(&self) -> bool {
         self.cpu_id() != CPU_ID_UNINIT
+    }
+
+    /// MB14.g — increment this CPU's monotonic timer-tick counter.
+    ///
+    /// Called from the LAPIC periodic-timer ISR (`kernel_lapic_timer_tick`)
+    /// running on whichever CPU received the interrupt. Each CPU writes
+    /// only its own counter; cross-CPU reads use `Acquire`.
+    pub fn inc_tick(&self) {
+        self.tick_count.fetch_add(1, Ordering::Release);
+    }
+
+    /// MB14.g — read this CPU's monotonic timer-tick counter.
+    #[must_use]
+    pub fn tick_count(&self) -> u64 {
+        self.tick_count.load(Ordering::Acquire)
+    }
+
+    /// MB14.g — signal that this CPU should run the cooperative resched
+    /// trampoline at the next interrupt-tail safe point. `Release` so the
+    /// matching `take_resched` reads paired data in coherent order.
+    pub fn request_resched(&self) {
+        self.need_resched.store(true, Ordering::Release);
+    }
+
+    /// MB14.g — consume the resched flag (atomic swap to `false`).
+    /// Returns `true` if a resched was pending. Called from the IRQ-tail
+    /// trampoline.
+    #[must_use]
+    pub fn take_resched(&self) -> bool {
+        self.need_resched.swap(false, Ordering::AcqRel)
+    }
+
+    /// MB14.g — peek the resched flag without consuming it (test
+    /// helper / diagnostic).
+    #[must_use]
+    pub fn resched_pending(&self) -> bool {
+        self.need_resched.load(Ordering::Acquire)
+    }
+
+    /// MB14.h.1 — record one observer-mode dispatch pick on this CPU.
+    ///
+    /// Called from
+    /// [`super::ap_dispatch::kernel_ap_dispatch_observe`] every time it
+    /// successfully pops a task id from the per-CPU run-queue (or steals
+    /// one from a sibling). Observer mode discards the popped id; the
+    /// counter exists exclusively so the BSP boot-time smoke can confirm
+    /// the AP timer ISR reached the dispatcher.
+    pub fn inc_dispatch_observation(&self) {
+        self.dispatch_observations.fetch_add(1, Ordering::Release);
+    }
+
+    /// MB14.h.1 — read this CPU's observer-mode dispatch counter.
+    ///
+    /// Polled by the BSP smoke in
+    /// [`crate::kmain`](crate) after enqueuing a sentinel task on this
+    /// CPU's run-queue, to assert the AP ran the observer at least once.
+    #[must_use]
+    pub fn dispatch_observations(&self) -> u64 {
+        self.dispatch_observations.load(Ordering::Acquire)
+    }
+
+    /// MB14.h.2 — try to claim this CPU's scheduler-recursion guard.
+    ///
+    /// Returns `true` if the guard was previously clear (the caller now
+    /// owns it) and `false` if a re-entrant scheduler call is already
+    /// in flight on this CPU. The caller must pair every `true` return
+    /// with exactly one [`Self::leave_scheduler`] call.
+    ///
+    /// Replaces the global `scheduling::IN_SCHEDULER` static for
+    /// bare-metal MP builds where each AP runs its own cooperative
+    /// `yield_current` path: a tick that arrives while the previous
+    /// yield is still on this CPU's stack short-circuits cleanly
+    /// without poisoning a sibling CPU's guard.
+    #[must_use]
+    pub fn enter_scheduler(&self) -> bool {
+        // `compare_exchange` with `AcqRel` on success / `Acquire` on
+        // failure: the success edge publishes to a paired `leave_scheduler`
+        // store; the failure edge synchronises with the prior `enter`
+        // that observed the guard clear.
+        self.in_scheduler
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// MB14.h.2 — release this CPU's scheduler-recursion guard. Must
+    /// only be called after a successful [`Self::enter_scheduler`].
+    pub fn leave_scheduler(&self) {
+        self.in_scheduler.store(false, Ordering::Release);
+    }
+
+    /// MB14.h.2 — peek the scheduler-recursion guard (diagnostic only).
+    #[must_use]
+    pub fn is_in_scheduler(&self) -> bool {
+        self.in_scheduler.load(Ordering::Acquire)
     }
 
     /// Address that `gs:[0]` resolves to after [`init_gs_base`].
@@ -563,6 +697,137 @@ mod tests {
         let b = ap_online_ack_addr();
         assert_ne!(a, 0);
         assert_eq!(a, b);
+    }
+
+    // -----------------------------------------------------------------
+    // MB14.g — per-CPU tick counter + need_resched flag.
+    // -----------------------------------------------------------------
+
+    /// Fresh descriptor reports `tick_count = 0` and `need_resched = false`.
+    #[test]
+    fn tick_and_resched_default_zero() {
+        let pc = PerCpu::new_uninit();
+        assert_eq!(pc.tick_count(), 0);
+        assert!(!pc.resched_pending());
+    }
+
+    /// `inc_tick` produces a monotonic counter scoped to this descriptor.
+    #[test]
+    fn inc_tick_is_monotonic_per_descriptor() {
+        let pc = PerCpu::new_uninit();
+        pc.inc_tick();
+        pc.inc_tick();
+        pc.inc_tick();
+        assert_eq!(pc.tick_count(), 3);
+    }
+
+    /// `request_resched` flips the flag; `take_resched` consumes it.
+    #[test]
+    fn need_resched_request_then_take_round_trip() {
+        let pc = PerCpu::new_uninit();
+        assert!(!pc.resched_pending());
+        pc.request_resched();
+        assert!(pc.resched_pending());
+        assert!(pc.take_resched());
+        assert!(!pc.resched_pending());
+        // Second take returns false (flag was consumed).
+        assert!(!pc.take_resched());
+    }
+
+    /// Two descriptors keep their own tick counters — pinning the
+    /// per-CPU isolation guarantee MB14.g relies on.
+    #[test]
+    fn tick_counters_are_per_descriptor() {
+        let a = PerCpu::new_uninit();
+        let b = PerCpu::new_uninit();
+        a.inc_tick();
+        a.inc_tick();
+        b.inc_tick();
+        assert_eq!(a.tick_count(), 2);
+        assert_eq!(b.tick_count(), 1);
+    }
+
+    // -----------------------------------------------------------------
+    // MB14.h.1 — per-CPU observer-mode dispatch counter.
+    // -----------------------------------------------------------------
+
+    /// Fresh descriptor reports zero dispatch observations.
+    #[test]
+    fn dispatch_observations_default_zero() {
+        let pc = PerCpu::new_uninit();
+        assert_eq!(pc.dispatch_observations(), 0);
+    }
+
+    /// `inc_dispatch_observation` is monotonic on a single descriptor.
+    #[test]
+    fn inc_dispatch_observation_is_monotonic_per_descriptor() {
+        let pc = PerCpu::new_uninit();
+        pc.inc_dispatch_observation();
+        pc.inc_dispatch_observation();
+        pc.inc_dispatch_observation();
+        pc.inc_dispatch_observation();
+        assert_eq!(pc.dispatch_observations(), 4);
+    }
+
+    /// Two descriptors keep independent dispatch counters — pins the
+    /// per-CPU isolation guarantee MB14.h.1 relies on (the BSP smoke
+    /// reads `ap_slot(1).dispatch_observations()` without touching the
+    /// BSP's own counter).
+    #[test]
+    fn dispatch_counters_are_per_descriptor() {
+        let a = PerCpu::new_uninit();
+        let b = PerCpu::new_uninit();
+        a.inc_dispatch_observation();
+        a.inc_dispatch_observation();
+        b.inc_dispatch_observation();
+        assert_eq!(a.dispatch_observations(), 2);
+        assert_eq!(b.dispatch_observations(), 1);
+    }
+
+    // -----------------------------------------------------------------
+    // MB14.h.2 — per-CPU scheduler recursion guard.
+    // -----------------------------------------------------------------
+
+    /// Fresh descriptor reports its scheduler guard clear.
+    #[test]
+    fn in_scheduler_default_false() {
+        let pc = PerCpu::new_uninit();
+        assert!(!pc.is_in_scheduler());
+    }
+
+    /// First `enter_scheduler` claims the guard; second call refuses.
+    /// `leave_scheduler` releases it; a follow-up `enter` claims again.
+    #[test]
+    fn enter_scheduler_is_mutually_exclusive_per_descriptor() {
+        let pc = PerCpu::new_uninit();
+        assert!(pc.enter_scheduler());
+        assert!(pc.is_in_scheduler());
+        // Re-entrant attempt on the same descriptor must fail.
+        assert!(!pc.enter_scheduler());
+        pc.leave_scheduler();
+        assert!(!pc.is_in_scheduler());
+        // After leave, the descriptor is claimable again.
+        assert!(pc.enter_scheduler());
+        pc.leave_scheduler();
+    }
+
+    /// Two descriptors hold independent guards — pinning the per-CPU
+    /// isolation guarantee MB14.h.2 relies on (BSP holding its scheduler
+    /// guard cannot block an AP claiming its own guard concurrently).
+    #[test]
+    fn scheduler_guards_are_per_descriptor() {
+        let a = PerCpu::new_uninit();
+        let b = PerCpu::new_uninit();
+        assert!(a.enter_scheduler());
+        // a is busy, but b is independent.
+        assert!(b.enter_scheduler());
+        assert!(a.is_in_scheduler());
+        assert!(b.is_in_scheduler());
+        a.leave_scheduler();
+        assert!(!a.is_in_scheduler());
+        // b still held.
+        assert!(b.is_in_scheduler());
+        b.leave_scheduler();
     }
 
     /// MB14.f.1 follow-up — `register_ap` must stamp the slot's

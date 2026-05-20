@@ -170,12 +170,14 @@ static mut FRAME_ALLOC: memory::BitmapFrameAllocator<{ FRAME_BITMAP_WORDS }> =
 #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
 static mut SCHEDULER: scheduling::RoundRobinScheduler = scheduling::RoundRobinScheduler::new();
 
-/// LAPIC timer tick counter — incremented on every IDT vector 0x20 interrupt.
-///
-/// Written exclusively from [`bare_metal::lapic::kernel_lapic_timer_tick`]
-/// (single-CPU, non-preemptive — no synchronisation needed at this stage).
-#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
-pub static mut TICK_COUNT: u64 = 0;
+// MB14.g — the per-CPU tick counter previously lived here as a single
+// `pub static mut TICK_COUNT: u64 = 0;` global, written only by the LAPIC
+// timer ISR on the BSP. Once APs began servicing their own timers
+// (MB14.f) keeping the global meant either racing the AP writers or
+// gating them out via `current_cpu().is_bsp()`. MB14.g moves the counter
+// into `PerCpu::tick_count` (one atomic per logical CPU) — see
+// `bare_metal::per_cpu::PerCpu::inc_tick`. No external readers of the
+// old symbol existed at the time of removal (grep `crate::TICK_COUNT`).
 
 // Idle task — lowest-priority loop; runs when no other task is runnable.
 #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
@@ -983,6 +985,186 @@ pub fn kmain(
                 early_console::write_str(if local_ok { "ok" } else { "FAIL" });
                 early_console::write_str(" steal=");
                 early_console::write_str(if steal_ok { "ok" } else { "FAIL" });
+                early_console::write_str("\n");
+            }
+
+            // MB14.g — per-CPU tick + need_resched + scheduler routing smoke.
+            //
+            // Reads the BSP's `PerCpu.tick_count` immediately after the
+            // LAPIC timer has been armed; the value will be 0 until the
+            // first periodic tick fires post-`sti`, but the accessor
+            // must return without faulting (proves `gs:[0]` is live and
+            // the descriptor layout matches MB14.g additions). The
+            // `request_resched` / `take_resched` round-trip exercises
+            // the per-CPU flag without depending on a real ISR. The
+            // final block calls `SCHEDULER.enqueue_for_cpu` +
+            // `pick_next_for_cpu` so any future refactor that breaks
+            // the dual-write contract surfaces at boot — not only in
+            // the host-side tests.
+            {
+                let cpu = bare_metal::per_cpu::current_cpu();
+                let tick = cpu.tick_count();
+                cpu.request_resched();
+                let took = cpu.take_resched();
+                let took2 = cpu.take_resched();
+                early_console::write_str("[mb14.g] per_cpu tick=");
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "diagnostic write_usize takes usize; tick count fits trivially"
+                )]
+                early_console::write_usize(tick as usize);
+                early_console::write_str(" resched=");
+                early_console::write_str(if took && !took2 { "ok" } else { "FAIL" });
+                // SAFETY: single-CPU boot path. The static SCHEDULER is
+                // not concurrently aliased here — interrupts are still
+                // masked (no `sti` yet at this point of `kmain`).
+                //
+                // The smoke uses a sentinel id outside the
+                // `allocate_task_id` sequence so a stale legacy-mirror
+                // entry cannot collide with a real task id. We do not
+                // populate the TCB pool: `pick_next_for_cpu` only reads
+                // the per-CPU dispatch table (and the legacy mirror
+                // via retain-by-id), neither of which dereferences the
+                // backing TCB. The retain-by-id in `pick_next_for_cpu`
+                // sweeps the legacy mirror clean as a side effect.
+                #[allow(
+                    unsafe_code,
+                    reason = "single-CPU access to static mut SCHEDULER before sti"
+                )]
+                let routed_ok = unsafe {
+                    let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+                    let sentinel = scheduling::TaskId(0xFFFF_FFFF_FFFF_EE14);
+                    let pushed =
+                        sched.enqueue_for_cpu(0, sentinel, scheduling::PriorityClass::Background);
+                    let picked = sched.pick_next_for_cpu(0);
+                    pushed && picked == Some(sentinel)
+                };
+                early_console::write_str(" sched_route=");
+                early_console::write_str(if routed_ok { "ok" } else { "FAIL" });
+                early_console::write_str("\n");
+            }
+
+            // MB14.h.1 — AP-side observer dispatcher smoke.
+            //
+            // Enqueue a sentinel task id on the first registered AP
+            // (`cpu_id = 1`) and wait for any AP to observe it. The
+            // AP's LAPIC periodic timer (armed in `kernel_ap_lapic_init`)
+            // fires the `omni_lapic_timer_handler` stub, which calls
+            // `kernel_check_need_resched`; the MB14.h.1 wire (this
+            // milestone) routes the AP branch through
+            // `bare_metal::ap_dispatch::kernel_ap_dispatch_observe`,
+            // which pops a task id from `per_cpu_run_queue` (with
+            // work-stealing fallback) and increments that AP's per-CPU
+            // counter — observer-mode only, no context switch
+            // (MB14.h.2 ADR-0009).
+            //
+            // Because `pop_for_cpu_with_stealing` may **steal** the
+            // sentinel from `cpu_id=1`'s queue to a sibling AP that
+            // happened to fire its timer first, the smoke sums
+            // observations across every registered AP slot rather than
+            // polling slot `1` alone — the question being answered is
+            // "did *any* AP observe the queue?", which is the
+            // MB14.h.1 reachability invariant.
+            //
+            // The poll budget is **anchored on BSP tick count**, not on
+            // busy-loop iterations: on QEMU TCG (kvm=0) emulated CPU
+            // cycles do not match wall-time, so a fixed iteration count
+            // can race past the AP's first LAPIC tick before any AP
+            // has had the chance to fire. Using
+            // `bsp().tick_count()` as the clock source keeps the
+            // budget meaningful on both TCG and KVM: after K BSP ticks
+            // the APs have had K equivalent ticks too (the LAPIC
+            // periodic timer is per-CPU but armed with identical
+            // initial-count + divider on every CPU by
+            // `kernel_ap_lapic_init`). K = 32 ticks gives ≈ 5 s on
+            // QEMU TCG (≈ 160 ms per tick) and ≈ tens of ms on real
+            // silicon, an order of magnitude above the first AP tick.
+            //
+            // If no AP came online (single-CPU dev VM) the smoke logs
+            // `BSP-only` and short-circuits — the BSP must not consume
+            // the sentinel itself (its resched trampoline runs the
+            // legacy `yield_current` path, not the observer).
+            {
+                use scheduling::PriorityClass;
+                if bare_metal::per_cpu::registered_ap_count() > 0 {
+                    const AP_DISPATCH_TICK_BUDGET: u64 = 32;
+                    let target_cpu_id: u32 = 1;
+                    let _ = bare_metal::per_cpu_run_queue::enqueue_on_cpu(
+                        target_cpu_id,
+                        0xE_E_E_E_E_4_u64,
+                        PriorityClass::Background,
+                    );
+                    let bsp = bare_metal::per_cpu::bsp();
+                    let start_tick = bsp.tick_count();
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "MAX_AP_SLOTS = MAX_CPUS - 1 = 31 fits u32 trivially"
+                    )]
+                    let max_ap = bare_metal::per_cpu::MAX_AP_SLOTS as u32;
+                    let observed: u64 = loop {
+                        let mut total: u64 = 0;
+                        for cpu_id in 1u32..=max_ap {
+                            if let Some(slot) = bare_metal::per_cpu::ap_slot(cpu_id) {
+                                total = total.saturating_add(slot.dispatch_observations());
+                            }
+                        }
+                        if total > 0 {
+                            break total;
+                        }
+                        if bsp.tick_count().saturating_sub(start_tick) >= AP_DISPATCH_TICK_BUDGET {
+                            break total;
+                        }
+                        core::hint::spin_loop();
+                    };
+                    early_console::write_str("[mb14.h.1] ap_dispatch observed=");
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "diagnostic write_usize takes usize; observation count fits trivially"
+                    )]
+                    early_console::write_usize(observed as usize);
+                    if observed > 0 {
+                        early_console::write_str(" (ok)\n");
+                    } else {
+                        early_console::write_str(" (timeout — AP did not observe)\n");
+                    }
+                } else {
+                    early_console::write_str("[mb14.h.1] ap_dispatch BSP-only — no AP enrolled\n");
+                }
+            }
+
+            // MB14.h.2 — cross-CPU context switch primitives smoke.
+            //
+            // Exercise the three new APIs introduced by MB14.h.2 from
+            // the BSP so a regression in any of them surfaces as a
+            // boot-time `FAIL` rather than a silent triple-fault at
+            // the next AP timer tick:
+            //
+            // 1. `try_acquire_sched_lock` / `release_sched_lock` —
+            //    mutual exclusion on the global SCHED_LOCK.
+            // 2. `PerCpu::enter_scheduler` / `leave_scheduler` —
+            //    per-CPU recursion guard round-trip.
+            // 3. `tss::set_rsp0_for_cpu(0, _)` — BSP-side write that
+            //    must succeed unconditionally; an out-of-range AP
+            //    cpu_id must be rejected.
+            //
+            // None of the calls cross-CPU here; the bare-metal AP
+            // dispatcher (`kernel_ap_dispatch_observe`) is the path
+            // that combines all three in production.
+            {
+                let lock_ok =
+                    scheduling::try_acquire_sched_lock() && !scheduling::try_acquire_sched_lock();
+                scheduling::release_sched_lock();
+                let bsp = bare_metal::per_cpu::bsp();
+                let guard_ok = bsp.enter_scheduler() && !bsp.enter_scheduler();
+                bsp.leave_scheduler();
+                let tss_ok = bare_metal::tss::set_rsp0_for_cpu(0, 0xFFFF_C000_0000_0000)
+                    && !bare_metal::tss::set_rsp0_for_cpu(0xFFFF, 0xDEAD_BEEF);
+                early_console::write_str("[mb14.h.2] sched_lock=");
+                early_console::write_str(if lock_ok { "ok" } else { "FAIL" });
+                early_console::write_str(" per_cpu_in_sched=");
+                early_console::write_str(if guard_ok { "ok" } else { "FAIL" });
+                early_console::write_str(" set_rsp0_for_cpu=");
+                early_console::write_str(if tss_ok { "ok" } else { "FAIL" });
                 early_console::write_str("\n");
             }
         } else {

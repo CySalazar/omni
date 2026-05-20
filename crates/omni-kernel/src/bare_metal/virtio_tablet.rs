@@ -66,6 +66,8 @@
 
 use super::arch;
 use super::paging::PageMapper;
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+use super::paging::{PTE_PRESENT, PTE_WRITABLE};
 use crate::memory::{PhysAddr, VirtAddr};
 use core::ptr::{addr_of_mut, read_volatile, write_volatile};
 
@@ -338,6 +340,13 @@ impl VirtioTablet {
     ///   virtual address into a physical DMA address.
     /// - Caller is ring 0 with interrupts disabled (the single-core
     ///   invariant shared with the rest of the bare-metal kernel).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "VirtIO 1.0 init handshake is intentionally inlined as a single \
+                  sequential transaction — splitting it would obscure the strict \
+                  ordering required by the spec (reset → ACK → DRV → feat → \
+                  FEATRDY → queue setup → DRVRDY)"
+    )]
     pub unsafe fn try_init(phys_offset: u64) -> Option<Self> {
         // ── 1. PCI scan bus 0 for vendor:device ──
         let (bus, dev) = {
@@ -371,6 +380,31 @@ impl VirtioTablet {
 
         // ── 3. Locate COMMON_CFG and NOTIFY_CFG via the PCI cap list ──
         let (common, notify) = unsafe { find_caps(bus, dev, phys_offset) }?;
+
+        // ── 3.b. Ensure the BAR pages are mapped in the active CR3.
+        //
+        // The bootloader 0.11 `physical_memory` direct map only spans the
+        // physical RAM regions reported as `MemoryRegionKind::Usable` by
+        // UEFI — typically up to ~4 GiB on a Proxmox q35 VM. PCI BARs for
+        // VirtIO devices in q35 are 64-bit prefetchable and OVMF places
+        // them well above the RAM ceiling (≈ 60 GiB on the dev VM). The
+        // VA `phys_offset + bar_phys + cap_off` returned by `find_caps`
+        // therefore lands in a PML4 entry that the bootloader never
+        // touched, and the first MMIO write would #PF.
+        //
+        // Fix: explicitly walk the active page tables and install the 4
+        // KiB frame containing each cap region's `base`. Idempotent —
+        // `ensure_mmio_page_mapped` skips when the VA already translates.
+        // Failing to map is fatal for the tablet path (we fall back to
+        // PS/2 input), but never poisons the page tables — `map_4k`
+        // returns `false` on its own preconditions without partial
+        // writes.
+        if !unsafe { ensure_mmio_page_mapped(common.base as u64, phys_offset) } {
+            return None;
+        }
+        if !unsafe { ensure_mmio_page_mapped(notify.base as u64, phys_offset) } {
+            return None;
+        }
 
         // ── 4. Translate VIRTIO_MEM virtual → physical via page tables ──
         let mem_virt = addr_of_mut!(VIRTIO_MEM) as *mut u8;
@@ -574,4 +608,85 @@ unsafe fn pci_cfg_write_byte(bus: u8, dev: u8, off: u8, val: u8) {
         arch::outl(0xCF8, addr);
         arch::outb(0xCFC + u16::from(off & 3), val);
     }
+}
+
+// ─── Explicit MMIO mapping for BARs outside the bootloader direct map ───────
+
+/// Ensure the 4 KiB page containing `mmio_virt` is mapped in the active CR3.
+///
+/// `mmio_virt` is the virtual address that `find_caps` derived from
+/// `phys_offset + bar_phys + cap_off`. Bootloader 0.11's `physical_memory`
+/// direct map only spans `MemoryRegionKind::Usable` regions reported by
+/// UEFI (typically up to RAM ceiling, ≈ 4 GiB on Proxmox q35 with 4 GiB
+/// of RAM). 64-bit prefetchable PCI BARs sit well above the RAM ceiling
+/// (≈ 60 GiB on the dev VM), so the VA arithmetic lands in a PML4 entry
+/// that the bootloader never populated and the first MMIO write would
+/// page-fault.
+///
+/// This helper subtracts `phys_offset` back out to recover the BAR's
+/// physical frame and installs a single 4 KiB mapping in the BSP's CR3
+/// via [`PageMapper::map_4k`]. The mapping uses
+/// `PTE_PRESENT | PTE_WRITABLE`; MMIO caching attributes (PCD/PWT) are
+/// deferred — write-back caching is harmless on a small, polled,
+/// non-prefetchable VirtIO config region (and the BAR's BAR flags
+/// already advertise the prefetchability mode to the platform). A
+/// follow-up driver framework will add an MMIO-aware allocator that
+/// pins PCD/PWT for true device memory.
+///
+/// Returns `true` if the page is now mapped (either already was, or
+/// was successfully installed), `false` on allocator exhaustion for an
+/// intermediate page-table frame.
+///
+/// # Safety
+///
+/// - Ring 0, single-CPU bare-metal call site (matches the rest of the
+///   VirtIO driver's invariants).
+/// - The caller must have access to the global static
+///   `crate::FRAME_ALLOC` (the boot-time bitmap frame allocator), which
+///   this helper drives via `addr_of_mut!`. No other path concurrently
+///   mutates that allocator at the time `try_init` runs (it is invoked
+///   from `kmain` after `register_direct_mapped_regions` and before any
+///   user-space process is spawned).
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+unsafe fn ensure_mmio_page_mapped(mmio_virt: u64, phys_offset: u64) -> bool {
+    let virt_page = mmio_virt & !0xFFF;
+    let cr3_raw = arch::read_cr3();
+    let mut mapper = PageMapper::new(phys_offset, PhysAddr(cr3_raw & !0xFFF));
+
+    // Fast path: bootloader already mapped this page (e.g. low-memory
+    // 32-bit BAR inside the RAM ceiling). Nothing to do.
+    if mapper.translate(VirtAddr(virt_page)).is_some() {
+        return true;
+    }
+
+    // Recover the BAR's physical frame by reversing the
+    // `phys_offset + bar_phys + cap_off` arithmetic that `find_caps`
+    // applied: stripping `phys_offset` from the page-aligned VA yields
+    // the page-aligned physical frame.
+    let phys_page = virt_page.wrapping_sub(phys_offset) & !0xFFF;
+
+    // SAFETY: see helper-level Safety section. `crate::FRAME_ALLOC` is
+    // a single-CPU static-mut owned by `kmain`; the demo loop runs
+    // sequentially after init and `try_init` is the first MMIO
+    // consumer. Aliasing-free at this point.
+    let alloc = unsafe { &mut *addr_of_mut!(crate::FRAME_ALLOC) };
+    mapper.map_4k(
+        VirtAddr(virt_page),
+        PhysAddr(phys_page),
+        PTE_PRESENT | PTE_WRITABLE,
+        alloc,
+    )
+}
+
+/// Host-target stub: the bare-metal `FRAME_ALLOC` does not exist outside the
+/// kernel binary, and on host targets `try_init` never reaches a real MMIO
+/// device anyway (the `arch::pci_cfg_*` helpers are no-op stubs). Returning
+/// `true` keeps the call-site `if !ensure_mmio_page_mapped(...) { return None }`
+/// shape identical between targets while letting the host-side fault-path
+/// surface as `None` further upstream — `pci_cfg_read32` returns 0, the PCI
+/// scan misses the VirtIO vendor:device pair and `try_init` shorts out before
+/// any of the MMIO writes the mapping was meant to enable.
+#[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+unsafe fn ensure_mmio_page_mapped(_mmio_virt: u64, _phys_offset: u64) -> bool {
+    true
 }

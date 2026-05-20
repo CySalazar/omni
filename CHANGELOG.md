@@ -17,6 +17,255 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB14.h.2: cross-CPU context switch (2026-05-20).**
+  Promotes the MB14.h.1 observer-mode dispatcher to a real
+  `yield_current` on Application Processors, closing the MB14.h cycle
+  (and with it the MB14 milestone). Introduces a two-tier
+  synchronisation hierarchy that lets BSP and AP both consult the
+  global `SCHEDULER` without racing.
+
+  Six additive / promoted changes:
+
+  - **`crates/omni-kernel/src/bare_metal/per_cpu.rs`** — `PerCpu` grows
+    `in_scheduler: AtomicBool` plus three accessors: `enter_scheduler() -> bool`
+    (atomic CAS `false → true`, `AcqRel`/`Acquire`), `leave_scheduler()`
+    (Release store), `is_in_scheduler() -> bool` (Acquire peek). The
+    flag is the **per-CPU recursion guard** — replaces the BSP-only
+    global `scheduling::IN_SCHEDULER` for bare-metal MP builds. +3
+    host-side tests pin the default-clear, mutual-exclusion-per-descriptor,
+    and per-descriptor-isolation contracts.
+
+  - **`crates/omni-kernel/src/scheduling.rs`** — new
+    `SCHED_LOCK: AtomicBool` plus `try_acquire_sched_lock() -> bool` /
+    `release_sched_lock()` helpers. Coarse cross-CPU spinlock
+    serialising mutations of `static mut SCHEDULER` (the
+    `tasks` / `processes` / `run_queues` vectors). Callers pair this
+    with the per-CPU `in_scheduler` guard: the per-CPU flag stops
+    same-CPU re-entrance, the global lock stops cross-CPU concurrency.
+    The `yield_current` bare-metal branch now routes TSS.rsp0 writes
+    through the per-CPU helper introduced below.
+
+  - **`crates/omni-kernel/src/bare_metal/tss.rs`** — new
+    `set_rsp0_for_cpu(cpu_id, rsp0) -> bool`: routes `cpu_id == 0` to
+    the existing `set_rsp0` (BSP `TSS`), `cpu_id >= 1` to
+    `AP_TSS[cpu_id - 1]` (per-AP sibling array minted in MB14.c.2.d).
+    Out-of-range `cpu_id` returns `false` without writing — defensive
+    signal that a regression of the AP enrolment path slipped past
+    `register_ap`. +3 host-side tests pin the BSP delegate write, the
+    AP sibling-slot isolation, and the out-of-range reject.
+
+  - **`crates/omni-kernel/src/bare_metal/ap_dispatch.rs`** —
+    `kernel_ap_dispatch_observe` promoted from observer (`pop + drop`)
+    to live dispatcher (`pop + inc counter + SCHEDULER.yield_current`).
+    The body is bracketed by `cpu.enter_scheduler()` (acquire/release
+    on failure path returns) + `try_acquire_sched_lock` (acquire after
+    per-CPU guard; release before guard). The `dispatch_observations`
+    counter remains a long-lived diagnostic — bumped after both guards
+    are held but before the yield body, so a future regression where
+    the AP timer fires but never reaches `yield_current` surfaces as
+    `observed = 0` on the next boot.
+
+  - **`crates/omni-kernel/src/bare_metal/lapic.rs`** —
+    `kernel_check_need_resched` BSP branch now symmetric to the AP
+    path: takes `cpu.enter_scheduler()` then
+    `try_acquire_sched_lock()` with bail-on-fail (release per-CPU
+    guard and return — the next tick retries). The host-fallback
+    branch (target_os != "none") retains the legacy global
+    `IN_SCHEDULER` / `NEED_RESCHED` for parity with single-CPU unit
+    tests.
+
+  - **`crates/omni-kernel/src/scheduling.rs::yield_current`** —
+    bare-metal x86_64 branch reads `current_cpu().cpu_id()` and
+    dispatches through `set_rsp0_for_cpu(cpu_id, kernel_stack_top)`
+    instead of the BSP-only `set_rsp0`. The BSP path is byte-identical
+    via the delegate.
+
+  Boot-time smoke: `kmain` appends a single line after the MB14.h.1
+  block exercising the three new APIs host-side from the BSP:
+
+  ```text
+  [mb14.h.2] sched_lock=ok per_cpu_in_sched=ok set_rsp0_for_cpu=ok
+  ```
+
+  `FAIL` on any of the three slots surfaces a regression on the
+  corresponding API. The cross-CPU contract is exercised implicitly by
+  the MB14.h.1 reachability proof (`dispatch_observations > 0`), which
+  now also covers the `yield_current` body under contention.
+
+  Build Info panel: `Active=MB14.h.2 cross-CPU ctx swap`,
+  `Next=MB14 PR + v0.3.0-alpha.1`, `Track B=MB1-MB13 OK, MB14.a-h.2 wip`,
+  `Phase 1 ≈ 97%`, `Tests=650+ workspace pass`.
+
+  ADR: [`docs/adr/0010-mb14h2-cross-cpu-context-switch.md`](docs/adr/0010-mb14h2-cross-cpu-context-switch.md)
+  `accepted`. Captures (a) why coarse `SCHED_LOCK` instead of per-CPU
+  dispatch tables (Phase 2 optimisation), (b) why two guards instead
+  of one (per-CPU stops re-entrance, global stops concurrency), (c)
+  why bail-on-contention instead of spinning (IRQ tail latency),
+  (d) the open follow-ups (AP first-dispatch admission, TLB shootdown
+  latency under live APs, Phase 2 per-CPU SCHEDULER split).
+
+  Test delta: workspace pass 639+ → **645 pass / 0 fail**
+  (`cargo test --workspace --all-features -- --test-threads=1`;
+  pre-existing SIGSEGV mitigation per `progress-omni.md` §4.5 #16).
+  All clippy / fmt / blanket-allow-guard / RUSTDOCFLAGS doc strict
+  variants clean. Branch `feat/kernel-mb11-userspace`. **MB14 cycle
+  formally closed — PR onto `main` + `v0.3.0-alpha.1` tag now
+  unblocked.**
+
+- **Kernel — MB14.h.1: AP-side observer dispatcher (2026-05-20).**
+  Wires the LAPIC timer IRQ tail on every Application Processor through
+  a new observer-mode dispatcher that pops a task id from the per-CPU
+  run-queue (with work-stealing fallback) on every tick and increments
+  a per-CPU `dispatch_observations` counter — *no* context switch is
+  performed (that's MB14.h.2, captured as roadmap in ADR-0009). The
+  step proves the AP timer ISR reaches the per-CPU run-queue
+  deterministically without touching any shared mutable scheduler
+  state, collapsing the MB14.h.2 risk surface to the cross-CPU
+  context-switch primitives alone.
+
+  Five additive changes:
+
+  - **`crates/omni-kernel/src/bare_metal/per_cpu.rs`** — `PerCpu`
+    grows a `dispatch_observations: AtomicU64` field with
+    `inc_dispatch_observation()` (Release) + `dispatch_observations()`
+    (Acquire) accessors. The field sits after `need_resched` so the
+    GS-relative `gs:[0]` self-pointer invariant (MB14.b) is preserved
+    byte-for-byte. +3 host-side tests pin the default-zero, monotonic,
+    per-descriptor-isolation contract.
+
+  - **`crates/omni-kernel/src/bare_metal/ap_dispatch.rs`** (new) —
+    `kernel_ap_dispatch_observe()` `extern "C"`: reads
+    `current_cpu()`, short-circuits on BSP (defence-in-depth — the
+    BSP keeps the cooperative `yield_current` path), calls
+    `per_cpu_run_queue::pop_for_cpu_with_stealing(cpu_id)` and, on
+    `Some(_)`, increments the per-CPU observation counter and
+    discards the popped id. Host stub for non-bare-metal builds keeps
+    the symbol resolvable from `cargo test --workspace`. +1 host test
+    pins the stub.
+
+  - **`crates/omni-kernel/src/bare_metal/lapic.rs`** —
+    `kernel_check_need_resched` AP branch now calls
+    `ap_dispatch::kernel_ap_dispatch_observe()` after consuming the
+    per-CPU `need_resched` flag (previously the AP branch only
+    drained the flag and returned). BSP path is unchanged — still
+    falls through to the cooperative `yield_current` under
+    `IN_SCHEDULER`.
+
+  - **`crates/omni-kernel/src/lib.rs`** — `kmain` boot-time smoke
+    inserted immediately after the MB14.g per-CPU plumbing block.
+    Guarded on `per_cpu::registered_ap_count() > 0`: enqueues a
+    sentinel id on `cpu_id = 1` via
+    `per_cpu_run_queue::enqueue_on_cpu`, then busy-polls
+    `ap_slot(1).dispatch_observations()` for up to 200 M iterations
+    (≈ 1 s on modern silicon). Logs
+    `[mb14.h.1] ap_dispatch observed=N (ok | timeout — AP did not observe)`
+    or `[mb14.h.1] ap_dispatch BSP-only — no AP enrolled` on
+    single-CPU dev VMs. The 200 M budget is an order of magnitude
+    above the first AP tick post-`kernel_ap_lapic_init`.
+
+  - **`crates/omni-kernel/src/bare_metal/mod.rs`** — registers the
+    new `ap_dispatch` submodule between `address_space` and `arch`.
+
+  Build Info panel updated:
+  - `Active` = `MB14.h.1 AP observe loop`
+  - `Next`   = `MB14.h.2 cross-CPU ctx switch`
+  - `Track B` = `MB1-MB13 OK, MB14.a-h.1 wip`
+  - `Phase`  = `1 - Microkernel POC  (~96%)`
+  - `Tests`  = `639+ workspace pass`
+
+  Validation gates pass clean:
+  `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-features --all-targets -- -D warnings`,
+  `cargo clippy -p omni-kernel --target x86_64-unknown-none --no-default-features --features bare-metal -- -D warnings`,
+  `cargo clippy --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none -- -D warnings`,
+  `cargo clippy -p omni-kernel --target x86_64-unknown-none --no-default-features --features mb12-userprobe -- -D warnings`,
+  `RUSTDOCFLAGS=-D warnings cargo doc -p omni-kernel --features bare-metal --no-deps`,
+  `bash scripts/check-no-blanket-allow.sh`,
+  `cargo test --workspace --all-features` (639 pass).
+
+  Pre-existing SIGSEGV on `cargo test -p omni-kernel --lib` remains a
+  carryover (item §4.5 #16 in `progress-omni.md`; mitigated via
+  `--test-threads=1` which produces a clean 332-pass run).
+
+  ADR-0009 (`docs/adr/0009-mb14h-ap-dispatch-loop.md`) **accepted** —
+  captures the observer-mode design end-to-end plus the safety
+  invariants and sub-step sequencing for MB14.h.2 (`SCHEDULER`
+  serialisation, per-CPU `IN_SCHEDULER`, `set_rsp0_for_cpu`, IST
+  sharing). MB14.h.2 will open ADR-0010 on closure.
+
+- **Kernel — MB14.g: per-CPU plumbing (TICK_COUNT / NEED_RESCHED +
+  scheduler routing) (2026-05-20).** Moves the LAPIC tick counter and
+  the resched flag from a single global pair into each CPU's `PerCpu`
+  descriptor, and adds the dual-write `enqueue_for_cpu` /
+  `pick_next_for_cpu` API surface on `RoundRobinScheduler` so a future
+  MB14.h AP dispatch loop can pull tasks from the per-CPU run-queue
+  table without disturbing host-side scheduler tests.
+
+  Six additive changes:
+
+  - **`crates/omni-kernel/src/bare_metal/per_cpu.rs`** — `PerCpu`
+    grows two atomic fields: `tick_count: AtomicU64` (incremented by
+    `kernel_lapic_timer_tick` on this CPU) and
+    `need_resched: AtomicBool` (set by the timer ISR, consumed by the
+    IRQ-tail trampoline). Accessors: `inc_tick`, `tick_count`,
+    `request_resched`, `take_resched`, `resched_pending`. The fields
+    sit after `kernel_rsp` so the GS-relative `gs:[0]` self-pointer
+    invariant (MB14.b) is preserved byte-for-byte. +4 host tests pin
+    the per-descriptor isolation contract.
+
+  - **`crates/omni-kernel/src/bare_metal/lapic.rs`** —
+    `kernel_lapic_timer_tick` now writes only `current_cpu()` storage:
+    `cpu.inc_tick(); lapic_eoi(); cpu.request_resched();`. The
+    MB14.f.3 `is_bsp()` early-return is gone — every CPU records its
+    own ticks without race. `kernel_check_need_resched` consumes the
+    per-CPU flag (`cpu.take_resched()`), then short-circuits on APs
+    (the dispatch loop arrives in MB14.h) or runs the cooperative
+    `yield_current` path on the BSP exactly as before. Host / test
+    builds fall back to the legacy `scheduling::NEED_RESCHED` static
+    so existing trampoline-contract assertions still hold.
+
+  - **`crates/omni-kernel/src/lib.rs`** — the `pub static mut
+    TICK_COUNT: u64 = 0;` global is removed; a transition comment in
+    its place documents the move and points at
+    `PerCpu::tick_count` / `PerCpu::inc_tick` for replacement
+    callers. A new boot-time smoke `[mb14.g] per_cpu tick=N
+    resched=ok sched_route=ok` exercises the per-CPU accessors and
+    the new scheduler routing methods in `kmain` (post-`sti` so the
+    BSP timer has armed). Sentinel id `0xFFFF_FFFF_FFFF_EE14` lets
+    the smoke push/pop without disturbing the real task pool.
+
+  - **`crates/omni-kernel/src/scheduling.rs`** —
+    `RoundRobinScheduler::enqueue_for_cpu(cpu_id, task, prio) ->
+    bool` dual-writes the legacy `self.run_queues[prio]` mirror
+    AND, on bare-metal builds,
+    `bare_metal::per_cpu_run_queue::enqueue_on_cpu(cpu_id, ...)`.
+    `pick_next_for_cpu(cpu_id)` reads from
+    `per_cpu_run_queue::pop_for_cpu_with_stealing(cpu_id)` and
+    sweeps the same id from the legacy mirror so the two sources
+    stay coherent. Host / test builds fall back to `pick_next` for
+    parity with single-CPU unit tests. +3 host tests pin both the
+    dual-write contract and the priority-ordering invariant.
+
+  - **`crates/omni-kernel/src/bare_metal/demo.rs`** — Build Info
+    panel updated: Active=`MB14.g per-CPU plumbing`,
+    Next=`MB14.h AP dispatch loop`, Track B=`MB1-MB13 OK, MB14.a-g
+    wip`, Phase 1 ≈ 95%, Tests=`635+ workspace pass`.
+
+  - **CI / validation** — `cargo clippy --workspace --all-features
+    --all-targets -- -D warnings`, `cargo clippy -p omni-kernel
+    --target x86_64-unknown-none --no-default-features --features
+    bare-metal -- -D warnings`, `cargo clippy --manifest-path
+    kernel-runner/Cargo.toml --target x86_64-unknown-none -- -D
+    warnings`, `cargo clippy -p omni-kernel --target
+    x86_64-unknown-none --no-default-features --features
+    mb12-userprobe -- -D warnings`, `cargo fmt --all -- --check`,
+    `RUSTDOCFLAGS=-D warnings cargo doc -p omni-kernel --features
+    bare-metal --no-deps`, and `bash
+    scripts/check-no-blanket-allow.sh` all clean. Workspace test
+    count `cargo test --workspace --all-features` (kernel
+    `--test-threads=1` for the pre-existing SIGSEGV carryover):
+    **635** unit + integration tests passing (was 592+ on MB14.f).
+
 - **Kernel — MB14.f: AP LAPIC enable + x2APIC awareness + per-AP timer
   (2026-05-20).** Closes the MB14.e.4 follow-up (TLB shootdown ack
   timeout on AP) and lands the x2APIC infrastructure that future

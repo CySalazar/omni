@@ -38,6 +38,7 @@
 #![allow(unsafe_code)]
 
 pub mod address_space;
+pub mod ap_dispatch;
 pub mod arch;
 #[cfg(target_arch = "x86_64")]
 pub mod context_switch;

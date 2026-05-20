@@ -183,6 +183,9 @@ pub fn current_ist2() -> u64 {
 /// Must be called by the scheduler on every context switch into a
 /// user-process task, with `rsp0` set to the top of that process's
 /// kernel stack.
+///
+/// This writes the **BSP** TSS only. MP builds must route through
+/// [`set_rsp0_for_cpu`] instead so each CPU updates its own TSS sibling.
 #[cfg(target_arch = "x86_64")]
 pub fn set_rsp0(rsp0: u64) {
     // SAFETY: single-core; TSS is not aliased; raw pointer write.
@@ -195,6 +198,52 @@ pub fn set_rsp0(rsp0: u64) {
 /// Stub for non-x86_64 host builds.
 #[cfg(not(target_arch = "x86_64"))]
 pub fn set_rsp0(_rsp0: u64) {}
+
+/// MB14.h.2 — set `rsp0` on the TSS belonging to `cpu_id`.
+///
+/// Routes BSP (`cpu_id == 0`) to [`set_rsp0`] (the static `TSS`
+/// referenced by `ltr 0x28`); APs (`cpu_id >= 1`) to their sibling
+/// slot in `AP_TSS`. The AP `ltr` selector installed by `kmain_ap`
+/// references the per-AP descriptor minted in `gdt::gdt_set_ap_tss`,
+/// so writing into `AP_TSS[cpu_id - 1]` reaches the TSS the AP CPU
+/// actually consults on Ring 3 → Ring 0 transitions.
+///
+/// Out-of-range `cpu_id` returns `false` without writing; the BSP /
+/// any-CPU caller can use this as a recoverable signal that a future
+/// regression of the AP enrolment path slipped past `register_ap`.
+#[cfg(target_arch = "x86_64")]
+#[must_use]
+pub fn set_rsp0_for_cpu(cpu_id: u32, rsp0: u64) -> bool {
+    if cpu_id == 0 {
+        set_rsp0(rsp0);
+        return true;
+    }
+    let Some(idx) = (cpu_id as usize).checked_sub(1) else {
+        return false;
+    };
+    if idx >= MAX_AP_SLOTS {
+        return false;
+    }
+    // SAFETY: each AP slot is single-writer in normal operation —
+    // the AP itself updates its own slot from within its own
+    // cooperative `yield_current` path, and the BSP pre-fire phase
+    // wrote rsp0 once before the AP came online. The `SCHED_LOCK`
+    // taken by the cooperative path serialises any cross-CPU
+    // intervention; idx < MAX_AP_SLOTS is checked above.
+    unsafe {
+        let p = core::ptr::addr_of_mut!(AP_TSS);
+        let slot = (*p).as_mut_ptr().add(idx);
+        (*slot).rsp0 = rsp0;
+    }
+    true
+}
+
+/// Stub for non-x86_64 host builds.
+#[cfg(not(target_arch = "x86_64"))]
+#[must_use]
+pub fn set_rsp0_for_cpu(_cpu_id: u32, _rsp0: u64) -> bool {
+    true
+}
 
 /// TSS GDT selector — slot 5 with RPL=0 = `0x28`.
 pub const TSS_SELECTOR: u16 = 0x28;
@@ -471,5 +520,58 @@ mod tests {
     #[test]
     fn ap_tss_addr_zero_for_bsp() {
         assert_eq!(ap_tss_addr(0), 0);
+    }
+
+    // -----------------------------------------------------------------
+    // MB14.h.2 — set_rsp0_for_cpu cross-CPU TSS write helper.
+    // -----------------------------------------------------------------
+
+    /// `set_rsp0_for_cpu(0, _)` delegates to the BSP `set_rsp0` and
+    /// returns true. Read-back via [`current_rsp0`].
+    #[test]
+    fn set_rsp0_for_cpu_zero_writes_bsp_tss() {
+        let rsp = 0xFFFF_C000_0000_BEEF;
+        assert!(set_rsp0_for_cpu(0, rsp));
+        // Read-back: the BSP TSS lives in the static `TSS`.
+        // SAFETY: single-core test, raw read of u64.
+        let observed = unsafe {
+            let p = core::ptr::addr_of!(TSS);
+            (*p).rsp0
+        };
+        assert_eq!(observed, rsp);
+    }
+
+    /// `set_rsp0_for_cpu(k, _)` for valid k writes AP_TSS[k-1].rsp0
+    /// without disturbing the BSP TSS.
+    #[test]
+    fn set_rsp0_for_cpu_ap_writes_sibling_slot() {
+        // Snapshot BSP rsp0 first so a cross-test interleave does not
+        // false-flag a delta caused by another test's set_rsp0.
+        // SAFETY: single-core test, raw read of u64.
+        let bsp_before = unsafe {
+            let p = core::ptr::addr_of!(TSS);
+            (*p).rsp0
+        };
+        let rsp = 0xFFFF_C000_0001_F00D;
+        assert!(set_rsp0_for_cpu(3, rsp));
+        assert_eq!(ap_tss_rsp0(3), rsp);
+        // SAFETY: same as above.
+        let bsp_after = unsafe {
+            let p = core::ptr::addr_of!(TSS);
+            (*p).rsp0
+        };
+        // BSP slot is untouched by an AP-targeted call.
+        assert_eq!(bsp_before, bsp_after);
+    }
+
+    /// Out-of-range cpu_id (>= MAX_CPUS) returns false and writes nothing.
+    #[test]
+    fn set_rsp0_for_cpu_out_of_range_returns_false() {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "MAX_CPUS = 32 fits u32 trivially; reject path"
+        )]
+        let oor = (MAX_AP_SLOTS as u32) + 1; // cpu_id one past the last AP slot.
+        assert!(!set_rsp0_for_cpu(oor, 0xDEAD));
     }
 }
