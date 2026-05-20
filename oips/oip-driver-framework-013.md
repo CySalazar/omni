@@ -2,7 +2,7 @@
 oip: 13
 title: User-space driver framework — capabilities, MMIO, DMA/IOMMU, IRQ routing, manifest
 track: Standards Track
-status: Draft
+status: Last Call
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-20

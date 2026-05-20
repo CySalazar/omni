@@ -131,7 +131,10 @@ Full state machine and transition rules: `OIP-Process-001` §4 (*Lifecycle*).
 | 010 | Standards Track | `omni-market` — Stichting-Curated Marketplace + Continuous CVE Re-Scan | Draft | cySalazar | 2026-05-12 |
 | 011 | Standards Track | Omni\* Flagship Apps Program + OmniCode v1 (Phased Delivery) | Draft | cySalazar | 2026-05-12 |
 | 012 | Standards Track | Kernel panic handler and global allocator (gate K3 of OIP-Kernel-003) | Review | cySalazar | 2026-05-12 |
-| 013 | Standards Track | User-space driver framework — capabilities, MMIO, DMA/IOMMU, IRQ routing, manifest | Draft | cySalazar | 2026-05-20 |
+| 013 | Standards Track | User-space driver framework — capabilities, MMIO, DMA/IOMMU, IRQ routing, manifest | Last Call *(closes 2026-06-03)* | cySalazar | 2026-05-20 |
+| 014 | Standards Track | NVMe user-space driver — admin/IO queue ABI, PRP transfer model, BLK channel contract | Draft | cySalazar | 2026-05-20 |
+| 015 | Standards Track | Network user-space driver — virtio-net + e1000e + ConnectX phased delivery, NET channel | Draft | cySalazar | 2026-05-20 |
+| 016 | Standards Track | TEE user-space driver — Intel TDX + AMD SEV-SNP backends, attestation channel | Draft | cySalazar | 2026-05-20 |
 
 > **Note on duplicate trailing numbers (history):** `OIP-Bounty-002` / `OIP-Crypto-002`, `OIP-Serde-004` / `OIP-Kernel-004` (was), and `OIP-Kernel-005` / `OIP-Voting-005` shared trailing numbers as placeholder collisions at `Draft` stage. Per `OIP-Process-001` §8.3, placeholder collisions in `Draft` are explicitly permitted and reconciled by the editors at the `Draft → Review` transition: the first of a colliding pair to reach `Review` retains its placeholder integer; the other is renumbered to the next free integer in the same PR that opens its own `Review` window. Current state: `OIP-Bounty-002` and `OIP-Serde-004` are canonical (Last Call closes 2026-05-26). `OIP-Kernel-005` reached `Review` first within its collision pair, retaining `005`; `OIP-Voting-005` (still `Draft`) will be renumbered when it reaches `Review`. `OIP-Kernel-004` was renumbered to **`OIP-Kernel-012`** at its `Draft → Review` transition (2026-05-14) since `OIP-Serde-004` was already canonical. `OIP-Crypto-002` (still `Draft`) will be renumbered when it reaches `Review`.
 
