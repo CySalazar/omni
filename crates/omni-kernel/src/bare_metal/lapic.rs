@@ -24,8 +24,12 @@
 //!   `kernel_check_need_resched`, which invokes the existing cooperative
 //!   `yield_current` while the trap frame is still on the task's stack.
 //! - MB14.f.3: AP timer setup mirrors the BSP timer setup so every
-//!   per-CPU timer fires on vector 0x20. AP-side resched is gated on
-//!   `current_cpu().is_bsp()` until MB14.g wires per-CPU dispatch.
+//!   per-CPU timer fires on vector 0x20.
+//! - MB14.g: each CPU records its own tick counter + resched flag inside
+//!   its `PerCpu` descriptor; the timer ISR writes only `current_cpu()`
+//!   storage, and `kernel_check_need_resched` consumes that flag. The
+//!   AP path drains its flag and returns until MB14.h wires the AP-side
+//!   dispatch loop.
 //!
 //! ### Why the two-stage tick → resched split
 //!
@@ -626,41 +630,38 @@ unsafe extern "C" {
 /// before `iretq`.
 #[unsafe(no_mangle)]
 extern "C" fn kernel_lapic_timer_tick() {
-    // MB14.f.3 — AP timer arrivals must not race the BSP-owned global
-    // counter or the global `NEED_RESCHED` flag. Until per-CPU dispatch
-    // lands (MB14.g), the AP timer just EOIs so the LAPIC stays
-    // unmasked, then returns; the BSP path remains unchanged.
+    // MB14.g — every CPU writes only its own counter + resched flag via
+    // `current_cpu()`. `current_cpu()` reads `gs:[0]`, which the BSP set
+    // in `init_gs_base` and every AP set in `kmain_ap` after `wrmsr`'ing
+    // `IA32_GS_BASE`, so the lookup is constant-time and race-free.
     //
-    // `current_cpu()` reads `gs:[0]` which the AP wired in MB14.c.2.d
-    // (`wrmsr IA32_GS_BASE`), so the discrimination is constant-time
-    // on every CPU.
+    // Before MB14.g this ISR wrote a single global `TICK_COUNT` static
+    // and a single global `NEED_RESCHED` flag; MB14.f gated the AP path
+    // with an `is_bsp()` early-return so APs would not race the BSP
+    // writer. With MB14.g the per-CPU storage removes that hazard, and
+    // the early-return is no longer required — every CPU now records
+    // its own ticks for future per-CPU diagnostics + dispatch (the AP
+    // dispatch loop itself lands in MB14.h).
     #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
     {
-        if !super::per_cpu::current_cpu().is_bsp() {
-            lapic_eoi();
-            return;
-        }
+        let cpu = super::per_cpu::current_cpu();
+        cpu.inc_tick();
+        lapic_eoi();
+        cpu.request_resched();
     }
-    // `TICK_COUNT` is gated `target_os = "none"` (lives only in the real
-    // bare-metal kernel image); the timer ISR itself is only reachable in
-    // that build because the IDT vector that drives this stub is set up by
-    // `lapic_init()`, which is gated by the same triplet. On host clippy/
-    // test builds (`target_os = "linux"`), the body would not compile —
-    // skip it. SAFETY (when active): BSP-only writer; no other writer
-    // exists post-MB14.f.3 because AP timer ticks short-circuit above.
-    #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
-    unsafe {
-        crate::TICK_COUNT = crate::TICK_COUNT.wrapping_add(1);
+    // Host / test build: no GS-base wiring, no real LAPIC. Fall back to
+    // the legacy global flag so cargo-test can exercise the resched
+    // trampoline contract without a `gs:[0]` load.
+    #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+    {
+        lapic_eoi();
+        crate::scheduling::NEED_RESCHED.store(true, core::sync::atomic::Ordering::Release);
     }
-    lapic_eoi();
-    // Every tick requests a reschedule for now; quantum-based throttling
-    // is an MB9 concern.
-    crate::scheduling::NEED_RESCHED.store(true, core::sync::atomic::Ordering::Release);
 }
 
-/// Tail-of-interrupt trampoline: if the LAPIC tick set `NEED_RESCHED`, run
-/// the cooperative `yield_current` path so the next task is on-CPU before
-/// the `iretq` restores the trap frame.
+/// Tail-of-interrupt trampoline: if the LAPIC tick requested a resched
+/// on this CPU, run the cooperative `yield_current` path so the next
+/// task is on-CPU before the `iretq` restores the trap frame.
 ///
 /// Re-entrancy: if another scheduler call is already on this CPU's stack
 /// (e.g. a cooperative `TaskYield` syscall in flight when the timer fired),
@@ -677,31 +678,47 @@ extern "C" fn kernel_lapic_timer_tick() {
 extern "C" fn kernel_check_need_resched() {
     use core::sync::atomic::Ordering;
 
-    // MB14.f.3 — AP timer ticks short-circuit in `kernel_lapic_timer_tick`
-    // and never set `NEED_RESCHED`, so this path is BSP-only. Defensive
-    // gate keeps a future hypothetical caller from cross-CPU recursing.
+    // MB14.g — consume the per-CPU resched flag set by
+    // `kernel_lapic_timer_tick` running on this same CPU. Until MB14.h
+    // wires an AP-side dispatch loop, only the BSP runs the scheduler
+    // body — the AP path consumes its flag (so it does not re-fire on
+    // every successive tick) and returns. The flag consumption itself
+    // is BSP/AP-symmetric so the per-CPU contract observed by host-side
+    // tests (`take_resched` flips once then returns false) holds on
+    // every logical CPU.
     #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
     {
-        if !super::per_cpu::current_cpu().is_bsp() {
+        let cpu = super::per_cpu::current_cpu();
+        if !cpu.take_resched() {
+            return;
+        }
+        if !cpu.is_bsp() {
+            // AP dispatch loop arrives in MB14.h; for now just drain
+            // the flag so the next tick's request_resched can re-arm.
+            return;
+        }
+        if crate::scheduling::IN_SCHEDULER.load(Ordering::Acquire) {
             return;
         }
     }
 
-    // Two short-circuit guards: (1) nothing requested a reschedule on the
-    // last tick — leave; (2) another scheduler call is already on this
-    // CPU's stack (cooperative `TaskYield` in flight) — leave to avoid
-    // recursing into the scheduler. The flag will be cleared by the
-    // outer call and the next tick picks the resched up.
-    if !crate::scheduling::NEED_RESCHED.swap(false, Ordering::AcqRel)
-        || crate::scheduling::IN_SCHEDULER.load(Ordering::Acquire)
+    // Host / test build: stay on the legacy global static so existing
+    // unit tests continue to pin the trampoline contract. Bare-metal
+    // builds short-circuit above and never reach this branch.
+    #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
     {
-        return;
+        if !crate::scheduling::NEED_RESCHED.swap(false, Ordering::AcqRel)
+            || crate::scheduling::IN_SCHEDULER.load(Ordering::Acquire)
+        {
+            return;
+        }
     }
 
-    // SAFETY: single-CPU, no SMP. `SCHEDULER` is not concurrently aliased
-    // — the only other accessor is the cooperative path which is gated by
-    // IN_SCHEDULER above. We grab a mutable reference for the duration of
-    // a single `yield_current` and release IN_SCHEDULER before returning.
+    // SAFETY: single-CPU on the BSP at the moment of this call —
+    // `SCHEDULER` is not concurrently aliased (the cooperative path is
+    // gated by `IN_SCHEDULER`, the AP path short-circuits above). We
+    // grab a mutable reference for the duration of one `yield_current`
+    // and release `IN_SCHEDULER` before returning.
     #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
     unsafe {
         use crate::scheduling::Scheduler;

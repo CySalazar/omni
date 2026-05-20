@@ -89,6 +89,17 @@ const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
 ///   the AP entry stub to materialise `RSP` before any push/pop. Stays
 ///   `0` for the BSP (which has been running on the boot stack since
 ///   reset).
+/// - `tick_count`: MB14.g — LAPIC periodic-timer tick counter, owned by
+///   this CPU. Incremented by `kernel_lapic_timer_tick` running on
+///   whichever CPU received the interrupt; previously a single
+///   `static mut TICK_COUNT` global, which race-shifted to per-CPU once
+///   APs began servicing their own timers (MB14.f).
+/// - `need_resched`: MB14.g — per-CPU rearm flag for the cooperative
+///   resched trampoline. Replaces the global `scheduling::NEED_RESCHED`
+///   on bare-metal builds so the BSP and every AP can independently
+///   schedule their own next pick without cross-CPU thrash. The static
+///   flag in `scheduling` stays for host / test builds (where there is
+///   only one CPU and `current_cpu()` collapses to `&BSP`).
 #[derive(Debug)]
 #[repr(C)]
 pub struct PerCpu {
@@ -97,6 +108,8 @@ pub struct PerCpu {
     lapic_id: AtomicU32,
     is_bsp: AtomicBool,
     kernel_rsp: AtomicU64,
+    tick_count: AtomicU64,
+    need_resched: AtomicBool,
 }
 
 impl PerCpu {
@@ -110,6 +123,8 @@ impl PerCpu {
             lapic_id: AtomicU32::new(CPU_ID_UNINIT),
             is_bsp: AtomicBool::new(false),
             kernel_rsp: AtomicU64::new(0),
+            tick_count: AtomicU64::new(0),
+            need_resched: AtomicBool::new(false),
         }
     }
 
@@ -150,6 +165,43 @@ impl PerCpu {
     #[must_use]
     pub fn is_initialised(&self) -> bool {
         self.cpu_id() != CPU_ID_UNINIT
+    }
+
+    /// MB14.g — increment this CPU's monotonic timer-tick counter.
+    ///
+    /// Called from the LAPIC periodic-timer ISR (`kernel_lapic_timer_tick`)
+    /// running on whichever CPU received the interrupt. Each CPU writes
+    /// only its own counter; cross-CPU reads use `Acquire`.
+    pub fn inc_tick(&self) {
+        self.tick_count.fetch_add(1, Ordering::Release);
+    }
+
+    /// MB14.g — read this CPU's monotonic timer-tick counter.
+    #[must_use]
+    pub fn tick_count(&self) -> u64 {
+        self.tick_count.load(Ordering::Acquire)
+    }
+
+    /// MB14.g — signal that this CPU should run the cooperative resched
+    /// trampoline at the next interrupt-tail safe point. `Release` so the
+    /// matching `take_resched` reads paired data in coherent order.
+    pub fn request_resched(&self) {
+        self.need_resched.store(true, Ordering::Release);
+    }
+
+    /// MB14.g — consume the resched flag (atomic swap to `false`).
+    /// Returns `true` if a resched was pending. Called from the IRQ-tail
+    /// trampoline.
+    #[must_use]
+    pub fn take_resched(&self) -> bool {
+        self.need_resched.swap(false, Ordering::AcqRel)
+    }
+
+    /// MB14.g — peek the resched flag without consuming it (test
+    /// helper / diagnostic).
+    #[must_use]
+    pub fn resched_pending(&self) -> bool {
+        self.need_resched.load(Ordering::Acquire)
     }
 
     /// Address that `gs:[0]` resolves to after [`init_gs_base`].
@@ -563,6 +615,54 @@ mod tests {
         let b = ap_online_ack_addr();
         assert_ne!(a, 0);
         assert_eq!(a, b);
+    }
+
+    // -----------------------------------------------------------------
+    // MB14.g — per-CPU tick counter + need_resched flag.
+    // -----------------------------------------------------------------
+
+    /// Fresh descriptor reports `tick_count = 0` and `need_resched = false`.
+    #[test]
+    fn tick_and_resched_default_zero() {
+        let pc = PerCpu::new_uninit();
+        assert_eq!(pc.tick_count(), 0);
+        assert!(!pc.resched_pending());
+    }
+
+    /// `inc_tick` produces a monotonic counter scoped to this descriptor.
+    #[test]
+    fn inc_tick_is_monotonic_per_descriptor() {
+        let pc = PerCpu::new_uninit();
+        pc.inc_tick();
+        pc.inc_tick();
+        pc.inc_tick();
+        assert_eq!(pc.tick_count(), 3);
+    }
+
+    /// `request_resched` flips the flag; `take_resched` consumes it.
+    #[test]
+    fn need_resched_request_then_take_round_trip() {
+        let pc = PerCpu::new_uninit();
+        assert!(!pc.resched_pending());
+        pc.request_resched();
+        assert!(pc.resched_pending());
+        assert!(pc.take_resched());
+        assert!(!pc.resched_pending());
+        // Second take returns false (flag was consumed).
+        assert!(!pc.take_resched());
+    }
+
+    /// Two descriptors keep their own tick counters — pinning the
+    /// per-CPU isolation guarantee MB14.g relies on.
+    #[test]
+    fn tick_counters_are_per_descriptor() {
+        let a = PerCpu::new_uninit();
+        let b = PerCpu::new_uninit();
+        a.inc_tick();
+        a.inc_tick();
+        b.inc_tick();
+        assert_eq!(a.tick_count(), 2);
+        assert_eq!(b.tick_count(), 1);
     }
 
     /// MB14.f.1 follow-up — `register_ap` must stamp the slot's

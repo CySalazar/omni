@@ -170,12 +170,14 @@ static mut FRAME_ALLOC: memory::BitmapFrameAllocator<{ FRAME_BITMAP_WORDS }> =
 #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
 static mut SCHEDULER: scheduling::RoundRobinScheduler = scheduling::RoundRobinScheduler::new();
 
-/// LAPIC timer tick counter — incremented on every IDT vector 0x20 interrupt.
-///
-/// Written exclusively from [`bare_metal::lapic::kernel_lapic_timer_tick`]
-/// (single-CPU, non-preemptive — no synchronisation needed at this stage).
-#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
-pub static mut TICK_COUNT: u64 = 0;
+// MB14.g — the per-CPU tick counter previously lived here as a single
+// `pub static mut TICK_COUNT: u64 = 0;` global, written only by the LAPIC
+// timer ISR on the BSP. Once APs began servicing their own timers
+// (MB14.f) keeping the global meant either racing the AP writers or
+// gating them out via `current_cpu().is_bsp()`. MB14.g moves the counter
+// into `PerCpu::tick_count` (one atomic per logical CPU) — see
+// `bare_metal::per_cpu::PerCpu::inc_tick`. No external readers of the
+// old symbol existed at the time of removal (grep `crate::TICK_COUNT`).
 
 // Idle task — lowest-priority loop; runs when no other task is runnable.
 #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
@@ -983,6 +985,62 @@ pub fn kmain(
                 early_console::write_str(if local_ok { "ok" } else { "FAIL" });
                 early_console::write_str(" steal=");
                 early_console::write_str(if steal_ok { "ok" } else { "FAIL" });
+                early_console::write_str("\n");
+            }
+
+            // MB14.g — per-CPU tick + need_resched + scheduler routing smoke.
+            //
+            // Reads the BSP's `PerCpu.tick_count` immediately after the
+            // LAPIC timer has been armed; the value will be 0 until the
+            // first periodic tick fires post-`sti`, but the accessor
+            // must return without faulting (proves `gs:[0]` is live and
+            // the descriptor layout matches MB14.g additions). The
+            // `request_resched` / `take_resched` round-trip exercises
+            // the per-CPU flag without depending on a real ISR. The
+            // final block calls `SCHEDULER.enqueue_for_cpu` +
+            // `pick_next_for_cpu` so any future refactor that breaks
+            // the dual-write contract surfaces at boot — not only in
+            // the host-side tests.
+            {
+                let cpu = bare_metal::per_cpu::current_cpu();
+                let tick = cpu.tick_count();
+                cpu.request_resched();
+                let took = cpu.take_resched();
+                let took2 = cpu.take_resched();
+                early_console::write_str("[mb14.g] per_cpu tick=");
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "diagnostic write_usize takes usize; tick count fits trivially"
+                )]
+                early_console::write_usize(tick as usize);
+                early_console::write_str(" resched=");
+                early_console::write_str(if took && !took2 { "ok" } else { "FAIL" });
+                // SAFETY: single-CPU boot path. The static SCHEDULER is
+                // not concurrently aliased here — interrupts are still
+                // masked (no `sti` yet at this point of `kmain`).
+                //
+                // The smoke uses a sentinel id outside the
+                // `allocate_task_id` sequence so a stale legacy-mirror
+                // entry cannot collide with a real task id. We do not
+                // populate the TCB pool: `pick_next_for_cpu` only reads
+                // the per-CPU dispatch table (and the legacy mirror
+                // via retain-by-id), neither of which dereferences the
+                // backing TCB. The retain-by-id in `pick_next_for_cpu`
+                // sweeps the legacy mirror clean as a side effect.
+                #[allow(
+                    unsafe_code,
+                    reason = "single-CPU access to static mut SCHEDULER before sti"
+                )]
+                let routed_ok = unsafe {
+                    let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+                    let sentinel = scheduling::TaskId(0xFFFF_FFFF_FFFF_EE14);
+                    let pushed =
+                        sched.enqueue_for_cpu(0, sentinel, scheduling::PriorityClass::Background);
+                    let picked = sched.pick_next_for_cpu(0);
+                    pushed && picked == Some(sentinel)
+                };
+                early_console::write_str(" sched_route=");
+                early_console::write_str(if routed_ok { "ok" } else { "FAIL" });
                 early_console::write_str("\n");
             }
         } else {

@@ -17,6 +17,79 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Kernel — MB14.g: per-CPU plumbing (TICK_COUNT / NEED_RESCHED +
+  scheduler routing) (2026-05-20).** Moves the LAPIC tick counter and
+  the resched flag from a single global pair into each CPU's `PerCpu`
+  descriptor, and adds the dual-write `enqueue_for_cpu` /
+  `pick_next_for_cpu` API surface on `RoundRobinScheduler` so a future
+  MB14.h AP dispatch loop can pull tasks from the per-CPU run-queue
+  table without disturbing host-side scheduler tests.
+
+  Six additive changes:
+
+  - **`crates/omni-kernel/src/bare_metal/per_cpu.rs`** — `PerCpu`
+    grows two atomic fields: `tick_count: AtomicU64` (incremented by
+    `kernel_lapic_timer_tick` on this CPU) and
+    `need_resched: AtomicBool` (set by the timer ISR, consumed by the
+    IRQ-tail trampoline). Accessors: `inc_tick`, `tick_count`,
+    `request_resched`, `take_resched`, `resched_pending`. The fields
+    sit after `kernel_rsp` so the GS-relative `gs:[0]` self-pointer
+    invariant (MB14.b) is preserved byte-for-byte. +4 host tests pin
+    the per-descriptor isolation contract.
+
+  - **`crates/omni-kernel/src/bare_metal/lapic.rs`** —
+    `kernel_lapic_timer_tick` now writes only `current_cpu()` storage:
+    `cpu.inc_tick(); lapic_eoi(); cpu.request_resched();`. The
+    MB14.f.3 `is_bsp()` early-return is gone — every CPU records its
+    own ticks without race. `kernel_check_need_resched` consumes the
+    per-CPU flag (`cpu.take_resched()`), then short-circuits on APs
+    (the dispatch loop arrives in MB14.h) or runs the cooperative
+    `yield_current` path on the BSP exactly as before. Host / test
+    builds fall back to the legacy `scheduling::NEED_RESCHED` static
+    so existing trampoline-contract assertions still hold.
+
+  - **`crates/omni-kernel/src/lib.rs`** — the `pub static mut
+    TICK_COUNT: u64 = 0;` global is removed; a transition comment in
+    its place documents the move and points at
+    `PerCpu::tick_count` / `PerCpu::inc_tick` for replacement
+    callers. A new boot-time smoke `[mb14.g] per_cpu tick=N
+    resched=ok sched_route=ok` exercises the per-CPU accessors and
+    the new scheduler routing methods in `kmain` (post-`sti` so the
+    BSP timer has armed). Sentinel id `0xFFFF_FFFF_FFFF_EE14` lets
+    the smoke push/pop without disturbing the real task pool.
+
+  - **`crates/omni-kernel/src/scheduling.rs`** —
+    `RoundRobinScheduler::enqueue_for_cpu(cpu_id, task, prio) ->
+    bool` dual-writes the legacy `self.run_queues[prio]` mirror
+    AND, on bare-metal builds,
+    `bare_metal::per_cpu_run_queue::enqueue_on_cpu(cpu_id, ...)`.
+    `pick_next_for_cpu(cpu_id)` reads from
+    `per_cpu_run_queue::pop_for_cpu_with_stealing(cpu_id)` and
+    sweeps the same id from the legacy mirror so the two sources
+    stay coherent. Host / test builds fall back to `pick_next` for
+    parity with single-CPU unit tests. +3 host tests pin both the
+    dual-write contract and the priority-ordering invariant.
+
+  - **`crates/omni-kernel/src/bare_metal/demo.rs`** — Build Info
+    panel updated: Active=`MB14.g per-CPU plumbing`,
+    Next=`MB14.h AP dispatch loop`, Track B=`MB1-MB13 OK, MB14.a-g
+    wip`, Phase 1 ≈ 95%, Tests=`635+ workspace pass`.
+
+  - **CI / validation** — `cargo clippy --workspace --all-features
+    --all-targets -- -D warnings`, `cargo clippy -p omni-kernel
+    --target x86_64-unknown-none --no-default-features --features
+    bare-metal -- -D warnings`, `cargo clippy --manifest-path
+    kernel-runner/Cargo.toml --target x86_64-unknown-none -- -D
+    warnings`, `cargo clippy -p omni-kernel --target
+    x86_64-unknown-none --no-default-features --features
+    mb12-userprobe -- -D warnings`, `cargo fmt --all -- --check`,
+    `RUSTDOCFLAGS=-D warnings cargo doc -p omni-kernel --features
+    bare-metal --no-deps`, and `bash
+    scripts/check-no-blanket-allow.sh` all clean. Workspace test
+    count `cargo test --workspace --all-features` (kernel
+    `--test-threads=1` for the pre-existing SIGSEGV carryover):
+    **635** unit + integration tests passing (was 592+ on MB14.f).
+
 - **Kernel — MB14.f: AP LAPIC enable + x2APIC awareness + per-AP timer
   (2026-05-20).** Closes the MB14.e.4 follow-up (TLB shootdown ack
   timeout on AP) and lands the x2APIC infrastructure that future
