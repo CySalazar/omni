@@ -92,6 +92,39 @@ pub enum SyscallNumber {
     /// `(ptr: u64, len: u64) -> u64`. Returns `len` on success or
     /// `u64::MAX` on a validation failure.
     WriteConsole = 60,
+
+    // ----- Driver framework (OIP-013, P6.7.3 skeleton) -----
+    // Numeric decade `7x` reserved for the user-space driver framework.
+    // See `OIP-Driver-Framework-013` Appendix A for the reconciliation
+    // rationale (the original Draft proposed `22..=25` but those slots
+    // are MB12-IPC-locked). Handlers are scaffolded to
+    // `KernelError::NotYetImplemented` (ENOSYS-equivalent) until the
+    // P6.7.8 first-party driver implementations land.
+    //
+    /// Map a PCI BAR MMIO region into the caller's address space.
+    /// ABI: `(phys_base, len, flags, cap_ptr, cap_len) -> va_base`.
+    /// See `OIP-Driver-Framework-013` § S2.
+    MmioMap = 70,
+    /// Install an IOMMU DMA window.
+    /// ABI: `(iova_base, len, direction, cap_ptr, cap_len) -> 0`.
+    /// See `OIP-Driver-Framework-013` § S3.
+    DmaMap = 71,
+    /// Attach an IRQ line to a per-driver IPC channel.
+    /// ABI: `(irq_line, ipc_channel_id, cap_ptr, cap_len, 0) -> 0`.
+    /// See `OIP-Driver-Framework-013` § S4.
+    IrqAttach = 72,
+    /// Load a signed driver image.
+    /// ABI: `(manifest_ptr, manifest_len, image_ptr, image_len, 0) -> driver_pid`.
+    /// See `OIP-Driver-Framework-013` § S5.
+    DriverLoad = 73,
+    /// Issue a kernel-mediated TDCALL on Intel TDX (Ring 0 only).
+    /// ABI: `(leaf, r10, r11, r12, r13) -> rax_packed`.
+    /// See `OIP-Driver-TEE-016` § S5.3 (editorially reconciled to 74).
+    TeeTdcall = 74,
+    /// Issue a kernel-mediated SEV-SNP MSR write (Ring 0 only).
+    /// ABI: `(msr_index, value_lo, value_hi, payload_ptr, payload_len) -> 0`.
+    /// See `OIP-Driver-TEE-016` § S6.3 (editorially reconciled to 75).
+    TeeMsr = 75,
 }
 
 // -----------------------------------------------------------------------------
@@ -128,6 +161,15 @@ mod tests {
         assert_eq!(SyscallNumber::CapValidate as u32, 30);
         assert_eq!(SyscallNumber::TeeAttest as u32, 40);
         assert_eq!(SyscallNumber::TimeMonotonicNanos as u32, 50);
+        // OIP-013 + OIP-016 driver-framework decade (P6.7.3 skeleton).
+        // Pinning these here prevents an accidental renumber that would
+        // silently break a driver manifest signed against the old number.
+        assert_eq!(SyscallNumber::MmioMap as u32, 70);
+        assert_eq!(SyscallNumber::DmaMap as u32, 71);
+        assert_eq!(SyscallNumber::IrqAttach as u32, 72);
+        assert_eq!(SyscallNumber::DriverLoad as u32, 73);
+        assert_eq!(SyscallNumber::TeeTdcall as u32, 74);
+        assert_eq!(SyscallNumber::TeeMsr as u32, 75);
     }
 
     #[test]

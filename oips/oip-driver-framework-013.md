@@ -2,11 +2,12 @@
 oip: 13
 title: User-space driver framework — capabilities, MMIO, DMA/IOMMU, IRQ routing, manifest
 track: Standards Track
-status: Last Call
+status: Active
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-20
 updated: 2026-05-20
+activated: 2026-05-20
 requires:
   - 3
   - 5
@@ -34,7 +35,7 @@ kernel exposes. Five normative surfaces are locked here:
 1. **Capability scope extensions** — `Action::{MmioMap, DmaMap, IrqAttach,
    PciConfigRead, PciConfigWrite}` and `Resource::{PciDevice, MmioRegion,
    DmaWindow, IrqLine}`, with subset rules and Ed25519-signed token issuance.
-2. **MMIO mapping syscall (`SyscallNo::MmioMap = 22`)** — a kernel-mediated path
+2. **MMIO mapping syscall (`SyscallNo::MmioMap = 70`)** — a kernel-mediated path
    for a user driver to obtain a write-back-uncached page mapping for a PCI BAR
    range, with bounds-checking against the PCI ECAM and against the per-device
    capability scope.
@@ -230,14 +231,14 @@ a `subject` equal to the driver process's `NodeId`. Long-lived tokens
 ≤ the parent's `not_after`, and the child's `subject` MUST equal the
 parent's `subject`. This is the existing wire contract, not new.
 
-### S2. `MmioMap` syscall (`SyscallNo = 22`)
+### S2. `MmioMap` syscall (`SyscallNo = 70`)
 
 A new x86_64 syscall is added to `crates/omni-kernel/src/bare_metal/
 syscall_entry.rs`. ABI follows the existing convention (`rdi`=syscall number,
 `rsi..r9`=arguments, return in `rax`):
 
 ```
-SyscallNo::MmioMap = 22
+SyscallNo::MmioMap = 70
 
 Arguments:
   rsi = phys_base    : u64       — must be page-aligned (0x1000)
@@ -266,9 +267,10 @@ Any failure MUST return `EACCES` (error code 13) without mapping anything.
 **S2.2 (Mapping policy).** On authorization success, the kernel MUST:
 
 1. Allocate `len / 0x1000` contiguous user VA pages from the per-process
-   driver VA range `0x0000_0080_0000_0000..0x0000_0080_8000_0000` (2 GiB
-   reserved for driver MMIO, identical structure to MB11 user-stack VA range
-   but offset by 1 PML4 slot).
+   driver VA range `0x0000_0080_0000_0000..0x0000_0080_0000_0000 + 0x80_0000_0000`
+   (one PML4 slot = 512 GiB reserved for driver MMIO). The base of this
+   range within the reserved slot is randomized per driver process per
+   § S2.5.
 2. For each page, install the mapping in the caller's AddressSpace via
    `PageMapper::map_4k_into` with flags `PTE_PRESENT | PTE_WRITABLE |
    PTE_USER | PTE_NX` (no execute), and additionally `PTE_PCD | PTE_PWT`
@@ -299,6 +301,15 @@ short-lived per-mapping VA is wasteful but acceptable; long-lived drivers
 get one mapping per BAR for their lifetime. A future OIP MAY add an explicit
 unmap path if the VA-pressure model changes.
 
+**S2.5 (VA randomization).** The base VA of the first `MmioMap` for a given
+driver process MUST be randomized within the reserved range (§ S2.2) with
+4 KiB granularity, using `crates/omni-kernel/src/kaslr.rs::KaslrRng`.
+Subsequent mappings for the same process are allocated linearly from the
+randomized base (deterministic relative to the first mapping, randomized
+absolute). Rationale: defends against bug-class exploits that rely on
+knowing absolute BAR addresses; cost is one `rdrand` per driver process
+at spawn.
+
 ### S3. DMA / IOMMU model
 
 **S3.1 (Domain-per-driver).** OMNI OS uses **one IOMMU domain per driver
@@ -313,10 +324,10 @@ cannot directly write to it. Rationale:
   writes are filtered through its own IOMMU page table; the attacker cannot
   reach kernel memory or other driver memory through DMA.
 
-**S3.2 (`DmaMap` syscall, `SyscallNo = 23`).**
+**S3.2 (`DmaMap` syscall, `SyscallNo = 71`).**
 
 ```
-SyscallNo::DmaMap = 23
+SyscallNo::DmaMap = 71
 
 Arguments:
   rsi = user_va      : u64       — page-aligned user VA the driver wants to expose
@@ -364,10 +375,10 @@ running drivers without IOMMU protection is unsafe.
 
 ### S4. IRQ routing
 
-**S4.1 (`IrqAttach` syscall, `SyscallNo = 24`).**
+**S4.1 (`IrqAttach` syscall, `SyscallNo = 72`).**
 
 ```
-SyscallNo::IrqAttach = 24
+SyscallNo::IrqAttach = 72
 
 Arguments:
   rsi = irq_line     : u64       — IOAPIC line (0..255) or MSI vector (0x40..0xFE)
@@ -407,11 +418,11 @@ are inherently non-shared, so this restriction does not apply to them.
 
 **S4.4 (Coalescing).** If interrupts arrive faster than the driver drains
 its IPC channel, the kernel MUST coalesce: the IPC queue has a fixed depth
-(`IPC_DRIVER_IRQ_DEPTH = 64`); the 65th interrupt during a drain stall
-results in the kernel atomically incrementing a per-channel `missed_count`
-and dropping the message. The driver MUST poll `missed_count` (exposed via
-a sidecar syscall, deferred to `OIP-Driver-NVMe-XXX`) to detect drops and
-re-issue a device-level scan.
+(`IPC_DRIVER_IRQ_DEPTH = 64`); on overflow the kernel atomically increments
+a per-channel `missed_since_last_drain` counter. The next successful enqueue
+(after the consumer drains) is emitted as `IrqNotification::MissedSince(n)`
+instead of the usual `IrqNotification::Tick`, then `missed_since_last_drain`
+is reset to 0. The IRQ channel message shape is locked in § S4.6.
 
 **S4.5 (CPU affinity).** This OIP locks affinity to **BSP only** for v0.3.
 A future OIP MAY introduce per-driver CPU affinity once MB14.h.2-equivalent
@@ -420,11 +431,36 @@ land on BSP, all driver IPC drains happen on BSP. This is a deliberate
 simplification — multi-core IRQ routing is a known complexity sink in
 both Linux and seL4 and is not on the Phase 1 critical path.
 
+**S4.6 (IRQ channel message shape).** The IPC channel attached via
+`IrqAttach` (§ S4.1) carries messages of the following postcard-encoded
+shape:
+
+```rust
+#[non_exhaustive]
+#[repr(C)]
+pub enum IrqNotification {
+    Tick,                  // single delivered interrupt since last drain
+    MissedSince(u32),      // N additional interrupts were coalesced since the last enqueue
+}
+```
+
+Both variants encode via postcard to a single byte (discriminant) plus
+the optional `u32`. Drivers MUST handle both variants; a driver that only
+handles `Tick` MUST be rejected by `omni-driver-pack lint` (build-time
+check, not kernel-enforced). This makes IRQ loss visible **in-band on the
+channel itself**; no separate stats syscall is needed.
+
 ### S5. Driver manifest + signed image
 
-**S5.1 (Manifest schema).** A driver image MUST be accompanied by a TOML
-manifest with the following schema (locked here, ref schema file under
-`docs/protocol/driver-manifest-v1.toml`):
+**S5.1 (Manifest schema).** A driver image MUST be accompanied by an
+**omni-pack v1** binary container (§ S5.5). The container embeds a
+postcard-encoded canonical manifest. The TOML schema below is the
+**developer-authored source format**: it is consumed by the
+`omni-driver-pack` build tool (user-space, OMNI Forge) and compiled
+offline into the canonical postcard payload that the omni-pack carries.
+The kernel does NOT parse TOML; it only validates the omni-pack header
+and decodes the postcard manifest. Schema file location:
+`docs/protocol/driver-manifest-v1.toml`.
 
 ```toml
 # omni-driver-manifest v1
@@ -451,19 +487,17 @@ pci_vendor_device = [ { vendor = "0x8086", device = "0x0a54" } ]  # Intel NVMe
 acpi_hid          = [ ]
 ```
 
-**S5.2 (`DriverLoad` syscall, `SyscallNo = 25`).** A privileged user (one
+**S5.2 (`DriverLoad` syscall, `SyscallNo = 73`).** A privileged user (one
 holding `Action::DriverLoad` on `Resource::Any`) MAY load a driver via:
 
 ```
-SyscallNo::DriverLoad = 25
+SyscallNo::DriverLoad = 73
 
 Arguments:
-  rsi = manifest_ptr : *const u8 — manifest TOML bytes
-  rdx = manifest_len : u64       — must be ≤ 16 KiB
-  rcx = image_ptr    : *const u8 — driver ELF bytes
-  r8  = image_len    : u64       — must be ≤ 16 MiB
-  r9  = cap_ptr      : *const u8 — CapabilityToken with Action::DriverLoad
-  reserved arg 7      : u64       — cap_len (passed via stack per SysV)
+  rsi = pack_ptr     : *const u8 — omni-pack v1 binary blob (§ S5.5)
+  rdx = pack_len     : u64       — must be ≤ 32 MiB (header + manifest + sig + image)
+  rcx = cap_ptr      : *const u8 — CapabilityToken with Action::DriverLoad
+  r8  = cap_len      : u64
 
 Return:
   rax = pid          : u64       — PID of the spawned driver process, 0 on error
@@ -473,24 +507,31 @@ Return:
 **S5.3 (Load-time verification).** The kernel MUST atomically:
 
 1. Verify `Action::DriverLoad` token.
-2. Parse the manifest (single-pass, no recursion).
-3. Compute `BLAKE3(image)` and compare to `meta.omni_image_hash`; mismatch
-   → `EINVAL` (22).
-4. Verify the Ed25519 signature on the canonical-encoded
-   `(meta + capabilities + matchers)` block using `meta.omni_issuer_pubkey`;
-   mismatch → `EACCES` (13).
-5. Verify the issuer's public key is in the kernel-static `KNOWN_ISSUERS`
-   table (built into `omni-kernel` at compile time from
-   `docs/protocol/driver-issuers.toml`). Unknown issuer → `EACCES`.
-6. For each requested capability, mint an attenuated child token bound
+2. Validate `pack_ptr` lies fully within the calling process's address
+   space and `pack_len ≤ 32 MiB`; fault → `EFAULT` (14).
+3. Parse the omni-pack v1 header (fixed 64 bytes, § S5.5); reject
+   malformed magic / version / size fields with `EINVAL` (22). **No
+   allocations on the failure path.**
+4. Decode `manifest.pc` via
+   `omni_types::wire::decode_canonical::<DriverManifestV1>`; postcard
+   decode failure → `EINVAL`.
+5. Verify the Ed25519 signature `manifest.sig` over `manifest.pc` bytes
+   using the manifest's `omni_issuer_pubkey`; failure → `EACCES` (13).
+6. Verify `omni_issuer_pubkey` is present in the kernel-static
+   `KNOWN_ISSUERS` table (§ S5.4); unknown issuer → `EACCES`.
+7. Compute `BLAKE3(image.elf)` over the bytes pointed to by the header's
+   `image_offset / image_len` fields; compare to `meta.omni_image_hash`;
+   mismatch → `EINVAL`.
+8. For each requested capability, mint an attenuated child token bound
    to the new driver process's NodeId, scope from the manifest, lifetime
    = 90 days. These tokens are pre-installed in the driver's initial
    capability namespace so it does not need to perform discovery.
-7. Spawn the driver process via the existing `process::spawn_from_elf`
+9. Spawn the driver process via the existing `process::spawn_from_elf`
    path (MB11.4), enroll in the scheduler, return its PID.
 
-Any of steps 3–5 failing MUST cause the entire load to abort with no
-side effect (no IOMMU domain installed, no PT touched).
+The kernel MUST hold no locks across user-pointer reads. Any failure in
+steps 2–8 MUST cause the entire load to abort with no side effect on
+IOMMU domains, page tables, or scheduler state.
 
 **S5.4 (Known-issuer table).** The kernel MUST ship with a static list of
 known driver-issuer public keys, baked in at compile time. Initial issuers
@@ -504,6 +545,37 @@ A driver signed by an unknown key MUST be refused. Trust-on-first-use
 (TOFU) is NOT permitted for drivers. Rationale: drivers run with
 elevated capabilities (MMIO, DMA, IRQ), so the trust base must be small
 and explicit, not learned.
+
+**S5.5 (omni-pack v1 binary format).** The on-disk artifact loaded by
+`DriverLoad` (§ S5.2) is a single binary blob with the following layout
+(all multi-byte integers little-endian):
+
+```
+Offset  Size  Field
+─────── ───── ─────────────────────────────────────────────────────────
+0x00    8     magic              = b"OMNIPACK"
+0x08    4     version            = 1u32
+0x0C    4     flags              reserved, MUST be 0
+0x10    8     manifest_offset    (from start of pack)
+0x18    8     manifest_len       (postcard bytes, ≤ 16 KiB)
+0x20    8     signature_offset
+0x28    8     signature_len      = 64 (Ed25519)
+0x30    8     image_offset
+0x38    8     image_len          (ELF bytes, ≤ 32 MiB − header − manifest − sig)
+0x40    ...   manifest.pc        postcard canonical encoding of DriverManifestV1
+...     ...   signature          raw Ed25519 over manifest.pc, 64 bytes
+...     ...   image.elf          loaded by spawn_from_elf
+```
+
+All three `<section>_offset` values MUST point inside the blob; all three
+`[offset, offset + len)` ranges MUST be disjoint and contained in
+`[0x40, pack_len)`. Violations → `EINVAL` at S5.3 step 3.
+
+`DriverManifestV1` is the postcard-canonicalizable Rust struct
+corresponding 1:1 to the TOML schema in § S5.1 (all fields are simple
+scalars and vectors). The build tool `omni-driver-pack` (user-space, OMNI
+Forge) is the authoritative producer of omni-pack v1 blobs; the kernel
+is a pure consumer.
 
 ### S6. IPC ABI extension: driver-server channels
 
@@ -617,10 +689,15 @@ driver bring-up and by the kernel at load time. TOML wins on:
 - **Strict schema** (vs JSON, which has number-type ambiguity).
 - **Existing crate** (`toml`, well-audited, `no_std + alloc` capable).
 
-The signed payload is the canonical-encoded postcard blob of the
-parsed manifest, not the TOML bytes themselves, so format-level
-ambiguities in TOML cannot affect the signature. (Cf. JSON's
-classic canonicalization problem.)
+The on-disk artifact loaded by the kernel is the **omni-pack v1** binary
+container (§ S5.5), not raw TOML. The TOML schema in S5.1 is the
+developer-authored *source* format, compiled offline by `omni-driver-pack`
+(a user-space build tool) into the canonical postcard payload that the
+omni-pack carries. The kernel never parses TOML — this keeps the
+pre-authentication parser surface minimal (omni-pack header decoder +
+postcard decoder, both ~300 LoC each, vs. the `toml` crate's ~3000 LoC
+including its dependency stack). Same pattern as Device Tree (DTS source
+→ DTB binary) and seL4 (capDL source → capdl-loader binary).
 
 ### R5. Why a static `KNOWN_ISSUERS` table (not a CA chain)
 
@@ -649,6 +726,26 @@ now, simplicity wins.
   convention (S6) is sufficient.
 - **No graphics driver.** GPUs are Phase 2 (AI Runtime needs CUDA / ROCm
   abstractions); this OIP locks the contract for non-GPU device classes.
+
+### R7. Future Work — anticipated follow-up OIPs
+
+The framework specified here is sufficient for the three Phase 1 drivers
+(014/015/016) but anticipates the following follow-ups, named here so the
+audit (P6.8) can reference them:
+
+- **`OIP-Kernel-XXX` (ring-buffer IPC for high-throughput drivers).** The
+  single-message IPC model used by 014/015/016 is sufficient for Phase 1
+  functional closure but caps NVMe/Net throughput at ~200k ops/s due to
+  the IPC round-trip cost. A shared SPSC ring (submission + completion)
+  with a single doorbell IPC notification is the standard solution (cf.
+  SPDK, io_uring, Linux VFIO). Filed as future work because Phase 1 has
+  no IOPS target; v0.3 driver performance numbers will quantify the gap.
+- **`OIP-Driver-Framework-XXX` (PASID-tagged sharing for DMA fast-paths).**
+  Useful once NVMe→FS data paths exist and benchmarks demand shared
+  zero-copy buffers. Cf. § R2.
+- **`OIP-Driver-Framework-XXX` (per-driver CPU affinity).** Relaxes § S4.5
+  BSP-only restriction once MB14.h.2 cross-CPU dispatch is validated under
+  sustained load.
 
 ---
 
@@ -870,6 +967,102 @@ work where drivers may need to authenticate to remote services.
   storage capability (NVMe driver → file-system service → user
   data); retention policies are enforced at the file-system layer,
   out of scope here.
+
+---
+
+## Appendix A — Editorial Reconciliations
+
+### A1. Syscall number reconciliation (2026-05-20, founder fast-path)
+
+The first `Draft` of this OIP (2026-05-20, commit `bb4b9a1`) proposed
+`SyscallNo::{MmioMap = 22, DmaMap = 23, IrqAttach = 24, DriverLoad = 25}`.
+At the `Last Call → Active` promotion via founder fast-path on
+2026-05-20, an editorial review surfaced a collision: those slots are
+already locked in `crates/omni-kernel/src/syscall.rs` by the MB12 IPC
+block (`IpcSend = 22`, `IpcReceive = 23`) and the surrounding `Cap*`
+(30–32) / `Tee*` (40–43) / `Time*` (50) / `WriteConsole` (60) groups.
+The MB12 numbers are part of the v0.1 ABI surface and are explicitly
+declared immutable by `crates/omni-kernel/src/syscall.rs` doc-comment
+("**Stable numeric ABI.** Syscall numbers are immutable after v1.0;
+adding a syscall is an OIP").
+
+To avoid breaking the v0.1 IPC ABI while still allocating contiguous,
+auditable numbers for the driver framework, this OIP is editorially
+amended to use the next free decade `7x`:
+
+| Variant      | Original (Draft) | Corrected (Active) |
+|--------------|------------------|--------------------|
+| `MmioMap`    | `22`             | **`70`**           |
+| `DmaMap`     | `23`             | **`71`**           |
+| `IrqAttach`  | `24`             | **`72`**           |
+| `DriverLoad` | `25`             | **`73`**           |
+
+`OIP-Driver-TEE-016` § S5.3 / S6.3 carries the same editorial fix:
+`TeeTdcall = 26 → 74`, `TeeMsr = 27 → 75`.
+
+This reconciliation is editorial only (numbering of a not-yet-Active
+ABI surface, no behavioural change, no impact on `Test Cases` TC1–TC6
+which never pin numeric values). Per `OIP-Process-001` §5.3 ("Editorial
+changes during Last Call MAY be applied without reopening the window
+if they do not alter normative semantics"), it does not require a new
+Last Call window.
+
+The grouping convention is preserved and extended:
+- `00–09`: reserved
+- `10–19`: scheduling/process
+- `20–29`: IPC (v0.1, MB12-locked)
+- `30–39`: capabilities (v0.1)
+- `40–49`: TEE attestation (v0.1)
+- `50–59`: time (v0.1)
+- `60–69`: I/O (v0.1)
+- **`70–79`: driver framework (OIP-013 + OIP-016)**
+- `80+`: reserved for future OIPs
+
+---
+
+## Appendix B — Bootstrap fast-path amendments
+
+### B1. Driver loader hardening + ABI cleanup (2026-05-20)
+
+Four normative amendments applied in-place to this OIP at `Active` state,
+under the Bootstrap Period authority of OIP-Process-001 §6.3 (§5.5 Solo
+Founder Fast-Track lineage). Unlike the editorial syscall renumbering in
+Appendix A1, these amendments alter normative semantics: the `DriverLoad`
+ABI shape, the MMIO VA range, the IRQ coalescing/notification protocol,
+and a documentary forecast of follow-up OIPs.
+
+They were filed and applied the same calendar day as the original
+activation; no driver implementation was deployed at the time of
+amendment (zero deployment impact, zero in-flight migration risk).
+
+| # | Sections | Change | Effect |
+|---|---|---|---|
+| 1 | § S5.1, § S5.2, § S5.3, § S5.5 (new), § R4 | `DriverLoad` accepts an `omni-pack v1` binary container (§ S5.5); kernel no longer parses TOML at the pre-authentication boundary (TOML retained as developer-side source format, compiled offline by `omni-driver-pack`). | Pre-authentication parser surface reduced from ~3000 LoC (`toml` crate + transitive deps) to ~300 LoC (omni-pack header + postcard decoder). |
+| 2 | § S2.2 step 1, § S2.5 (new) | Driver VA range widened from 2 GiB to one PML4 slot (512 GiB); base randomized per driver process via `KaslrRng`. | Future-proofing for high-BAR devices (Mellanox, future GPU at Phase 2) + defense-in-depth against bug-class exploits with absolute-address oracles. |
+| 3 | § S4.4, § S4.6 (new) | `IrqNotification::{Tick, MissedSince(u32)}` shape locked. Missed-IRQ accounting moves from a deferred sidecar syscall (was rinviato a `OIP-Driver-NVMe-XXX`) to in-band channel messages. | IRQ-loss observability becomes a framework property, not per-driver; scope correction. |
+| 4 | § R7 (new) | Names three anticipated follow-up OIPs: ring-IPC for high-throughput drivers, PASID-tagged DMA sharing, per-driver CPU affinity. | Documentary; no normative effect on this OIP. Audit hygiene for P6.8. |
+
+These amendments inherit the Bootstrap Period's provisional status:
+they are subject to the **mandatory post-Bootstrap re-ratification**
+clause of OIP-Process-001 §5.5.e alongside the original 013 activation
+ballot.
+
+**No follow-up OIP (014/015/016) requires changes.** Cross-references:
+
+- `OIP-013 § S5.1` (cited by 014:155, 015:135, 016:116) — still valid;
+  TOML schema retained as developer-side source format.
+- `OIP-013 § S5.3` (cited by 014:194) — still valid; verification flow
+  extant with steps reordered to validate the container before the
+  manifest.
+- `OIP-013 § S4.x` (cited by 014:334, 014:352, 015:227, 015:278) —
+  section numbering preserved; new § S4.6 is additive.
+- `OIP-013 § S2.4` (cited by 014:406) — still valid; lifecycle policy
+  unchanged.
+
+Implementation tracking branch (when work starts, P6.7.1):
+`feat/kernel-p6-7-driver-framework`. The `omni-driver-pack` build tool
+becomes a Phase 1 closure prerequisite; its filing is anticipated in
+P6.7 task decomposition (separate from this errata).
 
 ---
 

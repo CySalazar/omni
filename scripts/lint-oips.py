@@ -73,6 +73,7 @@ OPTIONAL_FRONTMATTER_KEYS = (
     "supersedes",
     "superseded-by",
     "discussion",
+    "activated",
 )
 
 ALLOWED_TRACKS = {"Standards Track", "Process", "Informational", "Meta"}

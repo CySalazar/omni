@@ -825,6 +825,23 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                 }
             }
 
+            // OIP-013 driver framework (P6.7.3 skeleton). Handlers are
+            // explicitly enumerated rather than absorbed by the catch-all
+            // so an accidental drop of a variant becomes a compiler error
+            // (the dispatcher trait would no longer be exhaustive).
+            // Bodies return `NotYetImplemented` until the framework impl
+            // (driver_manifest verification + IOMMU domain alloc + MSI-X
+            // vector alloc) lands in the P6.7.8 sub-tasks.
+            SyscallNumber::MmioMap
+            | SyscallNumber::DmaMap
+            | SyscallNumber::IrqAttach
+            | SyscallNumber::DriverLoad
+            | SyscallNumber::TeeTdcall
+            | SyscallNumber::TeeMsr => {
+                let _ = args;
+                Err(KernelError::NotYetImplemented)
+            }
+
             // All other syscalls are scaffolded but not yet implemented.
             _ => Err(KernelError::NotYetImplemented),
         }
@@ -873,6 +890,13 @@ extern "C" fn kernel_syscall_dispatch(
         43 => SyscallNumber::TeeUnseal,
         50 => SyscallNumber::TimeMonotonicNanos,
         60 => SyscallNumber::WriteConsole,
+        // OIP-013 + OIP-016 driver framework (P6.7.3 skeleton).
+        70 => SyscallNumber::MmioMap,
+        71 => SyscallNumber::DmaMap,
+        72 => SyscallNumber::IrqAttach,
+        73 => SyscallNumber::DriverLoad,
+        74 => SyscallNumber::TeeTdcall,
+        75 => SyscallNumber::TeeMsr,
         _ => return SYSCALL_ERROR,
     };
 
@@ -959,6 +983,57 @@ mod tests {
     fn dispatcher_mem_map_not_yet_implemented() {
         let result = KernelSyscallDispatcher.dispatch(SyscallNumber::MemMap, [0; 6]);
         assert_eq!(result, Err(KernelError::NotYetImplemented));
+    }
+
+    // ---- OIP-013 / OIP-016 driver framework skeleton (P6.7.3) ------------
+    //
+    // The handlers return `NotYetImplemented` until the first-party driver
+    // implementations land (P6.7.8). These tests pin that contract so an
+    // accidental fall-through to a real handler — without the matching
+    // capability check — would surface as a failing test.
+
+    #[test]
+    fn dispatcher_driver_framework_syscalls_return_not_yet_implemented() {
+        for n in [
+            SyscallNumber::MmioMap,
+            SyscallNumber::DmaMap,
+            SyscallNumber::IrqAttach,
+            SyscallNumber::DriverLoad,
+            SyscallNumber::TeeTdcall,
+            SyscallNumber::TeeMsr,
+        ] {
+            let result = KernelSyscallDispatcher.dispatch(n, [0; 6]);
+            assert_eq!(
+                result,
+                Err(KernelError::NotYetImplemented),
+                "unexpected dispatch result for {n:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn kernel_syscall_dispatch_driver_framework_numbers_route_to_sentinel() {
+        // ABI numbers 70..=75 must reach the dispatcher (not the `_ =>`
+        // catch-all that returns `SYSCALL_ERROR` outside dispatch). The
+        // dispatcher then returns `NotYetImplemented`, which the C-ABI
+        // wrapper flattens to `SYSCALL_ERROR` until the real handlers
+        // land. Both layers therefore produce `SYSCALL_ERROR` today;
+        // the test will need to be updated when the handlers are wired.
+        for n in 70..=75 {
+            let ret = kernel_syscall_dispatch(n, 0, 0, 0, 0, 0, 0);
+            assert_eq!(ret, SYSCALL_ERROR, "number {n} did not flatten to sentinel");
+        }
+    }
+
+    #[test]
+    fn kernel_syscall_dispatch_unknown_driver_decade_number_returns_sentinel() {
+        // 76..=79 are reserved inside the `7x` driver decade but NOT yet
+        // assigned. They MUST hit the `_ => return SYSCALL_ERROR` arm so
+        // userspace cannot accidentally invoke a not-yet-defined slot.
+        for n in 76..=79 {
+            let ret = kernel_syscall_dispatch(n, 0, 0, 0, 0, 0, 0);
+            assert_eq!(ret, SYSCALL_ERROR, "reserved number {n} leaked");
+        }
     }
 
     #[test]

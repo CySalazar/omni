@@ -15,7 +15,101 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+
+- **Kernel / Capability — P6.7.3 driver-framework skeleton + OIP-013 fast-path
+  (2026-05-20).** Closes the framework half of the user-space driver
+  initiative (`OIP-Driver-Framework-013`, now `Active`) by landing the
+  capability extensions, syscall ABI surface, and signed-manifest
+  verification path the per-family driver OIPs build on.
+  - `OIP-Driver-Framework-013` promoted `Last Call → Active` via founder
+    fast-path (deroga to `OIP-Process-001` §5.3 14-day window;
+    `activated: 2026-05-20` in frontmatter). New **Appendix A —
+    Editorial Reconciliations** documents the ABI-decade move from the
+    Draft's `22..=25` (which collided with the v0.1 MB12 IPC slots
+    `IpcSend=22` / `IpcReceive=23`) to the reserved `7x` decade:
+    `MmioMap=70`, `DmaMap=71`, `IrqAttach=72`, `DriverLoad=73`.
+    `OIP-Driver-TEE-016` follows: `TeeTdcall=26→74`, `TeeMsr=27→75`.
+    Numbering-only correction; no normative change to TC1–TC6 or
+    behaviour. `scripts/lint-oips.py` `OPTIONAL_FRONTMATTER_KEYS`
+    extended with `activated`.
+  - `crates/omni-capability/src/scope.rs`: 8 new `Action` variants
+    (`MmioMap`, `DmaMap`, `IrqAttach`, `PciConfigRead`,
+    `PciConfigWrite`, `DriverLoad`, `DriverUnload`, `TeeProbe`) and
+    4 new `Resource` variants
+    (`PciDevice {segment, bus, device, function}`,
+    `MmioRegion {phys_base, len}`, `DmaWindow {iova_base, len}`,
+    `IrqLine(u16)`), all `#[non_exhaustive]` so the canonical postcard
+    encoding bound by `OIP-Serde-004` § S2 is preserved. Subset
+    semantics: `PciDevice` and `IrqLine` byte-exact equality;
+    `MmioRegion` and `DmaWindow` range-contained with `u128` widening
+    inside `range_is_subset` so a range touching `u64::MAX` does not
+    wrap.
+  - `crates/omni-kernel/src/syscall.rs`: `SyscallNumber` extended with
+    the six driver-framework slots. `syscall_numbers_are_stable` pins
+    each value so an accidental renumber surfaces as a test failure.
+  - `crates/omni-kernel/src/bare_metal/syscall_entry.rs`:
+    `KernelSyscallDispatcher` matches the new slots explicitly (rather
+    than via the catch-all `_ =>`) and returns
+    `Err(KernelError::NotYetImplemented)` from each — preserves the
+    exhaustiveness check that catches a future variant deletion at
+    compile time. `kernel_syscall_dispatch` C-ABI translator maps
+    raw numbers `70..=75` to the corresponding `SyscallNumber`.
+  - New module `crates/omni-kernel/src/driver_manifest.rs`. Schema:
+    `DriverManifest { meta, capabilities, matchers }`; `DriverMeta`
+    fields (`name`, `version`, `omni_image_hash: [u8; 32]`,
+    `omni_signature: [u8; 64]`, `omni_issuer: String`);
+    `DriverCapabilities` and `DriverMatchers` aggregate the
+    declared per-resource grants. `parse_manifest(toml_bytes)`
+    currently returns `Err(ParserNotWired)` — the TOML parser
+    selection is deferred to P6.7.8 to avoid co-mingling that
+    decision with the OIP-013 spec ratification.
+    `verify_manifest(manifest, image_bytes)` runs the full
+    BLAKE3-then-Ed25519 verification chain wired against
+    `omni_crypto::hash::Blake3` and
+    `omni_crypto::signing::OmniVerifyingKey`, resolving the issuer
+    through `known_issuers::lookup_issuer`. Signing payload is built
+    by a stable byte-deterministic encoder (resource-variant tag
+    bytes `0x10..=0x13` for `MmioRegion` / `DmaWindow` / `IrqLine` /
+    `PciDevice`); the encoder is transitional and will be replaced
+    by a `postcard` pass when the parser lands. Helpers
+    `is_driver_framework_action`, `caps_for_single_mmio`, and
+    constant `ISSUER_KEY_LEN` round out the public surface.
+  - New module `crates/omni-kernel/src/known_issuers.rs`. Static
+    allowlist `KNOWN_ISSUERS: &[KnownIssuer]` with the Phase 1
+    invariant of being empty (no first-party driver has been signed
+    yet); `lookup_issuer(id) -> Option<&'static KnownIssuer>` is the
+    sole resolution path. The `phase1_table_is_empty` test acts as a
+    forcing function so the first issuer provisioning in P6.7.8 has
+    to update the assertion deliberately.
+  - `crates/omni-kernel/Cargo.toml`: added direct `omni-crypto`
+    dependency (`default-features = false, features = ["bare-metal"]`)
+    so BLAKE3 + Ed25519 verify primitives are available on the
+    `x86_64-unknown-none` target without dragging in `rng` /
+    `getrandom`. Mirror of the existing `omni-capability` declaration
+    pattern.
+  - `crates/omni-kernel/src/lib.rs`: registers `driver_manifest` and
+    `known_issuers` as public modules alongside `capabilities`.
+  - Build Info panel updated: `Phase = 1 - Microkernel POC (~98%)`,
+    `Active = P6.7.3 framework skeleton`, `Next = P6.7.7 promote
+    014/015/016`, `Tests = 665 workspace pass`.
+  - Acceptance: workspace test count rises **645 → 665 (0 fail)** under
+    `cargo test --workspace --all-features -- --test-threads=1` (+23
+    new host-side tests: 11 scope, 3 syscall_entry, 7 driver_manifest,
+    2 known_issuers). Clippy `-D warnings` across the four standard
+    surfaces (workspace, bare-metal target, mb12-userprobe target,
+    kernel-runner), `cargo fmt --all -- --check`,
+    `scripts/check-no-blanket-allow.sh`,
+    `RUSTDOCFLAGS=-D warnings cargo doc -p omni-kernel
+    --features bare-metal --no-deps`, and
+    `python3 scripts/lint-oips.py` (19 files) all clean.
+  - Out of scope here (gated to P6.7.8): TOML parser selection +
+    integration; first signed driver image
+    (`omni-driver-virtio-net`) + initial `KNOWN_ISSUERS` entry;
+    real `MmioMap` / `DmaMap` / `IrqAttach` / `DriverLoad` /
+    `TeeTdcall` / `TeeMsr` handler bodies replacing the
+    `NotYetImplemented` stubs; IOMMU vendor backends
+    (`bare_metal/iommu/{vtd,amdvi}.rs`).
 
 ## [0.3.0-alpha.1] — 2026-05-20
 

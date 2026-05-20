@@ -396,6 +396,7 @@ dependencies = [
  "bootloader_api",
  "font8x8",
  "omni-capability",
+ "omni-crypto",
  "omni-types",
  "serde",
 ]

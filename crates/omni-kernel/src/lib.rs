@@ -84,7 +84,9 @@
 extern crate alloc;
 
 pub mod capabilities;
+pub mod driver_manifest;
 pub mod ipc;
+pub mod known_issuers;
 pub mod memory;
 pub mod mm;
 #[cfg(feature = "bare-metal")]

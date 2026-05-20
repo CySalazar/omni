@@ -66,6 +66,48 @@ pub enum Action {
     /// matching resource is [`Resource::IpcChannel`]; the kernel
     /// `IpcReceive` syscall consults a capability with this action.
     IpcRecv,
+    /// Map an MMIO region into the caller's address space
+    /// (`OIP-Driver-Framework-013` § S2). The matching resource is
+    /// [`Resource::MmioRegion`]; the kernel `MmioMap` syscall
+    /// (`SyscallNo = 70`) checks bounds against the token's region.
+    MmioMap,
+    /// Install a DMA window for device-initiated transfers
+    /// (`OIP-Driver-Framework-013` § S3). The matching resource is
+    /// [`Resource::DmaWindow`]; the kernel `DmaMap` syscall
+    /// (`SyscallNo = 71`) creates an IOMMU domain entry.
+    DmaMap,
+    /// Attach an interrupt line to a per-driver IPC channel
+    /// (`OIP-Driver-Framework-013` § S4). The matching resource is
+    /// [`Resource::IrqLine`]; the kernel `IrqAttach` syscall
+    /// (`SyscallNo = 72`) rejects shared IOAPIC lines (`EBUSY`).
+    IrqAttach,
+    /// Read a PCI configuration register
+    /// (`OIP-Driver-Framework-013` § S1). Reserved for diagnostics
+    /// and bring-up sequences; the matching resource is
+    /// [`Resource::PciDevice`].
+    PciConfigRead,
+    /// Write a PCI configuration register (e.g. command/status,
+    /// BAR program, MSI-X enable; `OIP-Driver-Framework-013` § S1).
+    /// The matching resource is [`Resource::PciDevice`].
+    PciConfigWrite,
+    /// Load a signed driver image (`OIP-Driver-Framework-013` § S5).
+    /// The matching resource is [`Resource::Any`] (driver loading is
+    /// a system-wide privilege held by a small set of issuers); the
+    /// kernel `DriverLoad` syscall (`SyscallNo = 73`) atomically
+    /// verifies BLAKE3(image) + Ed25519 signature against
+    /// `KNOWN_ISSUERS`.
+    DriverLoad,
+    /// Unload a previously loaded driver
+    /// (`OIP-Driver-Framework-013` § S5). The matching resource is
+    /// [`Resource::Any`]; tearing down IOMMU domains, MMIO mappings,
+    /// and IRQ attachments is fully kernel-mediated.
+    DriverUnload,
+    /// Issue a kernel-mediated TEE probe instruction (TDCALL on Intel
+    /// TDX, MSR write on AMD SEV-SNP; `OIP-Driver-TEE-016` § S5/S6).
+    /// The matching resource is [`Resource::Any`]; held only by the
+    /// TEE driver. Routed through `SyscallNo = 74` (TDCALL) and
+    /// `SyscallNo = 75` (MSR).
+    TeeProbe,
 }
 
 // =============================================================================
@@ -99,6 +141,44 @@ pub enum Resource {
     /// (MB13.c). Paired with [`Action::IpcSend`] / [`Action::IpcRecv`].
     /// Channel ids are opaque; equality is the only meaningful relation.
     IpcChannel(u64),
+    /// A PCI device identified by its segment/bus/device/function tuple
+    /// (`OIP-Driver-Framework-013` § S1). Subset semantics: byte-exact
+    /// equality. Paired with [`Action::PciConfigRead`] /
+    /// [`Action::PciConfigWrite`].
+    PciDevice {
+        /// `PCIe` segment (0 on systems without segments).
+        segment: u16,
+        /// PCI bus number `0..=255`.
+        bus: u8,
+        /// PCI device number `0..=31`.
+        device: u8,
+        /// PCI function number `0..=7`.
+        function: u8,
+    },
+    /// A physical MMIO region (`OIP-Driver-Framework-013` § S2). The
+    /// region is half-open `[phys_base, phys_base + len)`. Subset
+    /// semantics: range-contained (child range MUST lie entirely inside
+    /// parent range). Paired with [`Action::MmioMap`].
+    MmioRegion {
+        /// Page-aligned physical base address.
+        phys_base: u64,
+        /// Length in bytes; MUST be a multiple of 4 KiB.
+        len: u64,
+    },
+    /// An IOMMU-translated DMA window (`OIP-Driver-Framework-013` § S3).
+    /// Half-open `[iova_base, iova_base + len)`. Subset semantics:
+    /// range-contained. Paired with [`Action::DmaMap`].
+    DmaWindow {
+        /// Page-aligned IO virtual address base.
+        iova_base: u64,
+        /// Length in bytes; MUST be a multiple of 4 KiB.
+        len: u64,
+    },
+    /// An interrupt line (`OIP-Driver-Framework-013` § S4). For IOAPIC
+    /// pin-based interrupts this is the global system interrupt (GSI);
+    /// for MSI/MSI-X it is the allocated vector. Subset semantics:
+    /// byte-exact equality. Paired with [`Action::IrqAttach`].
+    IrqLine(u16),
 }
 
 impl Resource {
@@ -124,10 +204,51 @@ impl Resource {
             // There is no wildcard for channels in MB13.c; an upstream
             // grant for a different channel id never authorises another.
             (Self::IpcChannel(a), Self::IpcChannel(b)) => a == b,
+            // PCI BDF tuples: byte-exact equality (OIP-013 § S1).
+            (Self::PciDevice { .. }, Self::PciDevice { .. }) => self == other,
+            // MMIO regions and DMA windows: child range MUST lie
+            // entirely inside parent. Half-open semantics: end = base +
+            // len computed in u128 to avoid u64 wrap-around when the
+            // caller asks about the last page of the address space.
+            // Cross-discriminant pairs `(MmioRegion, DmaWindow)` do
+            // NOT match these arms — the `|` alternation between two
+            // same-discriminant tuples is type-narrowed by the compiler.
+            (
+                Self::MmioRegion {
+                    phys_base: a_base,
+                    len: a_len,
+                },
+                Self::MmioRegion {
+                    phys_base: b_base,
+                    len: b_len,
+                },
+            )
+            | (
+                Self::DmaWindow {
+                    iova_base: a_base,
+                    len: a_len,
+                },
+                Self::DmaWindow {
+                    iova_base: b_base,
+                    len: b_len,
+                },
+            ) => range_is_subset(*a_base, *a_len, *b_base, *b_len),
+            // IRQ lines: byte-exact equality. OIP-013 § S4 forbids
+            // shared-line fan-out — a token for line N never authorises N+1.
+            (Self::IrqLine(a), Self::IrqLine(b)) => a == b,
             // Cross-discriminant + (Any, concrete) → not a subset.
             _ => false,
         }
     }
+}
+
+// Half-open range containment with u128 widening so the upper bound
+// arithmetic never wraps. Empty `len == 0` ranges are treated as a
+// degenerate subset of any containing parent at the same base.
+fn range_is_subset(child_base: u64, child_len: u64, parent_base: u64, parent_len: u64) -> bool {
+    let child_end = u128::from(child_base) + u128::from(child_len);
+    let parent_end = u128::from(parent_base) + u128::from(parent_len);
+    child_base >= parent_base && child_end <= parent_end
 }
 
 // Filesystem path subset semantics:
@@ -539,6 +660,147 @@ mod tests {
         assert!(same.is_subset_of(&parent));
         assert!(!other_action.is_subset_of(&parent));
         assert!(!other_channel.is_subset_of(&parent));
+    }
+
+    // ---- OIP-013 driver framework: PCI / MMIO / DMA / IRQ ------------------
+
+    fn pci(seg: u16, bus: u8, dev: u8, func: u8) -> Resource {
+        Resource::PciDevice {
+            segment: seg,
+            bus,
+            device: dev,
+            function: func,
+        }
+    }
+
+    #[test]
+    fn resource_pci_device_byte_exact_subset() {
+        let a = pci(0, 0x01, 0x00, 0);
+        let b = pci(0, 0x01, 0x00, 0);
+        let c = pci(0, 0x01, 0x00, 1);
+        assert!(a.is_subset_of(&b));
+        assert!(!a.is_subset_of(&c));
+        assert!(!c.is_subset_of(&a));
+    }
+
+    #[test]
+    fn resource_pci_device_subset_of_any() {
+        let dev = pci(0, 0x00, 0x1F, 0x03);
+        assert!(dev.is_subset_of(&Resource::Any));
+        assert!(!Resource::Any.is_subset_of(&dev));
+    }
+
+    #[test]
+    fn resource_mmio_region_range_contained() {
+        let parent = Resource::MmioRegion {
+            phys_base: 0xFEBC_0000,
+            len: 0x0001_0000,
+        };
+        let child = Resource::MmioRegion {
+            phys_base: 0xFEBC_2000,
+            len: 0x0000_2000,
+        };
+        let outside = Resource::MmioRegion {
+            phys_base: 0xFEBC_F000,
+            len: 0x0000_2000,
+        };
+        assert!(child.is_subset_of(&parent));
+        assert!(!outside.is_subset_of(&parent));
+        assert!(!parent.is_subset_of(&child));
+    }
+
+    #[test]
+    fn resource_mmio_region_upper_bound_no_wrap() {
+        // A range that touches the last byte of the u64 address space
+        // MUST NOT wrap; we use u128 widening inside `range_is_subset`.
+        let parent = Resource::MmioRegion {
+            phys_base: u64::MAX - 0xFFF,
+            len: 0x1000,
+        };
+        // `parent` is `Copy`-eligible (only u64 + u64 fields), but the
+        // outer `Resource` enum is not `Copy`; we deliberately rebuild
+        // the child range so the test exercises distinct values rather
+        // than reference equality.
+        let child = Resource::MmioRegion {
+            phys_base: u64::MAX - 0xFFF,
+            len: 0x1000,
+        };
+        assert!(child.is_subset_of(&parent));
+    }
+
+    #[test]
+    fn resource_dma_window_range_contained() {
+        let parent = Resource::DmaWindow {
+            iova_base: 0x1_0000_0000,
+            len: 0x4000,
+        };
+        let child = Resource::DmaWindow {
+            iova_base: 0x1_0000_1000,
+            len: 0x1000,
+        };
+        assert!(child.is_subset_of(&parent));
+    }
+
+    #[test]
+    fn resource_irq_line_byte_exact_subset() {
+        assert!(Resource::IrqLine(33).is_subset_of(&Resource::IrqLine(33)));
+        assert!(!Resource::IrqLine(33).is_subset_of(&Resource::IrqLine(34)));
+        assert!(!Resource::IrqLine(34).is_subset_of(&Resource::IrqLine(33)));
+    }
+
+    #[test]
+    fn driver_framework_actions_are_distinct() {
+        // Sanity check: each Action discriminant from OIP-013/016 stands
+        // alone — protects against an accidental copy-paste duplicate.
+        let actions = [
+            Action::MmioMap,
+            Action::DmaMap,
+            Action::IrqAttach,
+            Action::PciConfigRead,
+            Action::PciConfigWrite,
+            Action::DriverLoad,
+            Action::DriverUnload,
+            Action::TeeProbe,
+        ];
+        for (i, a) in actions.iter().enumerate() {
+            for (j, b) in actions.iter().enumerate() {
+                if i == j {
+                    assert_eq!(a, b);
+                } else {
+                    assert_ne!(a, b);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scope_mmio_map_subset_matches_action_and_region() {
+        let parent = Scope {
+            action: Action::MmioMap,
+            resource: Resource::MmioRegion {
+                phys_base: 0xFEBC_0000,
+                len: 0x0001_0000,
+            },
+            window: TimeWindow::new(0, 1000).unwrap(),
+            caveats: vec![],
+        };
+        let child = Scope {
+            action: Action::MmioMap,
+            resource: Resource::MmioRegion {
+                phys_base: 0xFEBC_4000,
+                len: 0x0000_1000,
+            },
+            window: TimeWindow::new(0, 1000).unwrap(),
+            caveats: vec![],
+        };
+        let wrong_action = Scope {
+            action: Action::DmaMap,
+            resource: child.resource.clone(),
+            window: child.window,
+            caveats: vec![],
+        };
+        assert!(child.is_subset_of(&parent));
+        assert!(!wrong_action.is_subset_of(&parent));
     }
 
     #[test]

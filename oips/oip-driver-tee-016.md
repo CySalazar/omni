@@ -336,10 +336,12 @@ quote format.
 
 **S5.3 (Kernel-mediated TDCALL).** The TDCALL instruction must execute
 in Ring 0 of the trust domain. The user-space TEE driver cannot execute
-it directly. The kernel exposes a syscall `SyscallNo::TeeTdcall = 26`
-(reserved here) that takes the leaf number and registers, performs the
-TDCALL, and returns the output registers. The syscall is capability-gated
-on `Action::TeeProbe`.
+it directly. The kernel exposes a syscall `SyscallNo::TeeTdcall = 74`
+(reserved here, see `OIP-Driver-Framework-013` Appendix A for the
+editorial reconciliation of the `7x` driver-framework decade) that
+takes the leaf number and registers, performs the TDCALL, and returns
+the output registers. The syscall is capability-gated on
+`Action::TeeProbe`.
 
 **S5.4 (Backend caveats).** TDX module v1.5 vs v2.0 differ in TDREPORT
 layout (v2.0 adds servtd_hash and operation flags). The driver MUST
@@ -358,7 +360,8 @@ additional QGS step. The report is signed by the VCEK (Versioned Chip
 Endorsement Key) which chains back to AMD's PSP root.
 
 **S6.3 (Kernel-mediated MSR access).** Same pattern as S5.3: a single
-syscall `SyscallNo::TeeMsr = 27` (reserved) lets the driver request a
+syscall `SyscallNo::TeeMsr = 75` (reserved, decade `7x` per
+`OIP-Driver-Framework-013` Appendix A) lets the driver request a
 specific MSR-mediated SEV-SNP operation. Capability-gated.
 
 **S6.4 (Backend caveats).** Pre-Milan EPYC supports SEV (the predecessor)
@@ -550,8 +553,10 @@ new crates:
 - `crates/omni-driver-tee/` (new) — the user-space TEE driver with the
   three backends (`tdx`, `sev-snp`, `stub`).
 - `crates/omni-kernel/src/bare_metal/tee_call.rs` (new) — kernel-side
-  trampoline for `SyscallNo::TeeTdcall = 26` and
-  `SyscallNo::TeeMsr = 27` (per S5.3, S6.3).
+  trampoline for `SyscallNo::TeeTdcall = 74` and
+  `SyscallNo::TeeMsr = 75` (per S5.3, S6.3, editorially reconciled to
+  the `7x` driver-framework decade per `OIP-Driver-Framework-013`
+  Appendix A).
 - `docs/protocol/driver-manifest-v1.toml` — `[tee]` table documented.
 
 ---

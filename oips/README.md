@@ -131,7 +131,7 @@ Full state machine and transition rules: `OIP-Process-001` §4 (*Lifecycle*).
 | 010 | Standards Track | `omni-market` — Stichting-Curated Marketplace + Continuous CVE Re-Scan | Draft | cySalazar | 2026-05-12 |
 | 011 | Standards Track | Omni\* Flagship Apps Program + OmniCode v1 (Phased Delivery) | Draft | cySalazar | 2026-05-12 |
 | 012 | Standards Track | Kernel panic handler and global allocator (gate K3 of OIP-Kernel-003) | Review | cySalazar | 2026-05-12 |
-| 013 | Standards Track | User-space driver framework — capabilities, MMIO, DMA/IOMMU, IRQ routing, manifest | Last Call *(closes 2026-06-03)* | cySalazar | 2026-05-20 |
+| 013 | Standards Track | User-space driver framework — capabilities, MMIO, DMA/IOMMU, IRQ routing, manifest | Active *(founder fast-path 2026-05-20)* | cySalazar | 2026-05-20 |
 | 014 | Standards Track | NVMe user-space driver — admin/IO queue ABI, PRP transfer model, BLK channel contract | Draft | cySalazar | 2026-05-20 |
 | 015 | Standards Track | Network user-space driver — virtio-net + e1000e + ConnectX phased delivery, NET channel | Draft | cySalazar | 2026-05-20 |
 | 016 | Standards Track | TEE user-space driver — Intel TDX + AMD SEV-SNP backends, attestation channel | Draft | cySalazar | 2026-05-20 |

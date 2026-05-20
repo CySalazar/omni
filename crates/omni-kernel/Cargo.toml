@@ -62,6 +62,12 @@ omni-types      = { path = "../omni-types", version = "0.2.0", default-features 
 # behaviour change) but Cargo refuses to override workspace inheritance
 # from a downstream member, so the path + version form is used.
 omni-capability = { path = "../omni-capability", version = "0.2.0", default-features = false, features = ["bare-metal"] }
+# `omni-crypto` (P6.7.3 — OIP-013 driver framework). The kernel verifies
+# driver-manifest signatures (Ed25519) and image hashes (BLAKE3) at
+# `DriverLoad`. The `bare-metal` feature alias matches the existing
+# `omni-capability` pattern: it disables the `rng` default and keeps the
+# verify-only primitive surface, which compiles on `x86_64-unknown-none`.
+omni-crypto     = { path = "../omni-crypto",     version = "0.2.0", default-features = false, features = ["bare-metal"] }
 # `serde` is required by `bare_metal::panic::PanicRecord` (derive
 # Serialize). The workspace pins `default-features = false` + `derive`
 # + `alloc`, so the kernel pulls `serde` without `std`. OIP-Kernel-012
