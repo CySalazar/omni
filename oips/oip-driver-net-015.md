@@ -2,11 +2,12 @@
 oip: 15
 title: Network user-space driver — virtio-net + e1000e + ConnectX phased delivery, NET channel
 track: Standards Track
-status: Draft
+status: Active
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-20
 updated: 2026-05-20
+activated: 2026-05-20
 requires:
   - 13
 supersedes: ~
@@ -547,6 +548,52 @@ amendment.)
 
 The driver does not persist data. Logging is counter-only. All GDPR
 considerations apply at higher layers.
+
+---
+
+## Appendix A — Bootstrap Activation Note
+
+### A1. Founder fast-path activation (2026-05-20)
+
+This OIP was filed as `Draft` on 2026-05-20 (same calendar day as
+`OIP-Driver-Framework-013` itself) and promoted directly to `Active` on
+the same day under the **Solo Founder Fast-Track** of
+`OIP-Process-001 §5.5`, exercised under the Bootstrap Period authority of
+`OIP-Process-001 §6.3`. The standard 14-day public objection window of
+`OIP-Process-001 §5.3` was waived by explicit founder approval; the
+state-machine transitions `Draft → Review → Last Call → Active` collapse
+into a single editorial pass with `activated: 2026-05-20` recorded in
+the frontmatter.
+
+**Rationale for fast-path:**
+
+1. **Dependency unblock.** `OIP-013` (the driver framework) is the
+   prerequisite (`requires: [13]`) and was itself fast-pathed to
+   `Active` on 2026-05-20. Keeping `015` in `Draft` would have stalled
+   `P6.7.8` virtio-net (M1) — the first driver implementation deliverable
+   for Phase 1 closure — by 14 days for no substantive review benefit.
+2. **No deployment risk.** Zero network driver code exists at activation
+   time; the reference implementation is `N/A at filing` per `## Reference
+   Implementation`. The phased delivery plan (M1=virtio-net, M2=e1000e,
+   M3=ConnectX) is purely documentary at this stage.
+3. **Scope is bounded.** All normative content is constrained by
+   `OIP-013` (the framework `Active` document) — the manifest schema,
+   capability shape, IPC channel grammar, and IRQ routing are inherited.
+   This OIP only adds the network-specific overlay (NET service channel,
+   per-family bring-up sequences, L2 Ethernet framing contract).
+4. **No conflict with `OIP-013` Appendix B.** The amendments to OIP-013
+   filed under its Appendix B explicitly state "No follow-up OIP
+   (014/015/016) requires changes" — confirmed by cross-reference audit
+   (see OIP-013 Appendix B trailing list of preserved citations covering
+   015:135, 015:227, 015:278).
+
+**Re-ratification obligation:** per `OIP-Process-001 §5.5.e`, this
+activation inherits the **mandatory post-Bootstrap re-ratification**
+obligation. When the Bootstrap Period ends (second editor seat filled or
+Stichting OMNI constituted, whichever comes first), this OIP MUST be
+re-ratified by the standard quadratic-vote majority + activation
+threshold of `OIP-Process-001 §7`. Failure to re-ratify reverts the
+status to `Withdrawn` and forces a fresh filing.
 
 ---
 

@@ -2,11 +2,12 @@
 oip: 14
 title: NVMe user-space driver — admin/IO queue ABI, PRP transfer model, BLK channel contract
 track: Standards Track
-status: Draft
+status: Active
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-20
 updated: 2026-05-20
+activated: 2026-05-20
 requires:
   - 13
 supersedes: ~
@@ -679,6 +680,53 @@ zeros explicitly before Discard.
 The driver does not persist personal data on its own. All GDPR
 considerations (retention, right-to-erasure, data minimization) apply at
 the file-system and application layers.
+
+---
+
+## Appendix A — Bootstrap Activation Note
+
+### A1. Founder fast-path activation (2026-05-20)
+
+This OIP was filed as `Draft` on 2026-05-20 (same calendar day as
+`OIP-Driver-Framework-013` itself) and promoted directly to `Active` on
+the same day under the **Solo Founder Fast-Track** of
+`OIP-Process-001 §5.5`, exercised under the Bootstrap Period authority of
+`OIP-Process-001 §6.3`. The standard 14-day public objection window of
+`OIP-Process-001 §5.3` was waived by explicit founder approval; the
+state-machine transitions `Draft → Review → Last Call → Active` collapse
+into a single editorial pass with `activated: 2026-05-20` recorded in
+the frontmatter.
+
+**Rationale for fast-path:**
+
+1. **Dependency unblock.** `OIP-013` (the driver framework) is the
+   prerequisite (`requires: [13]`) and was itself fast-pathed to
+   `Active` on 2026-05-20. Keeping `014` in `Draft` would have stalled
+   `P6.7.8` (first-party driver implementation) by 14 days for no
+   substantive review benefit — there is no second editor seat occupied
+   during the Bootstrap Period.
+2. **No deployment risk.** Zero NVMe driver code exists at activation
+   time; the reference implementation is `N/A at filing` per `## Reference
+   Implementation`. There is no in-flight migration to coordinate.
+3. **Scope is bounded.** All normative content is constrained by
+   `OIP-013` (the framework `Active` document) — the manifest schema,
+   capability shape, IPC channel grammar, and IRQ routing are inherited.
+   This OIP only adds the NVMe-specific overlay (admin/IO queue ABI, PRP
+   model, BLK channel contract).
+4. **No conflict with `OIP-013` Appendix B.** The amendments to OIP-013
+   filed under its Appendix B (omni-pack v1 container, 512 GiB MMIO VA
+   range, `IrqNotification` shape, follow-up OIP forecast in § R7)
+   explicitly state "No follow-up OIP (014/015/016) requires changes" —
+   confirmed by cross-reference audit (see OIP-013 Appendix B trailing
+   list of preserved citations).
+
+**Re-ratification obligation:** per `OIP-Process-001 §5.5.e`, this
+activation inherits the **mandatory post-Bootstrap re-ratification**
+obligation. When the Bootstrap Period ends (second editor seat filled or
+Stichting OMNI constituted, whichever comes first), this OIP MUST be
+re-ratified by the standard quadratic-vote majority + activation
+threshold of `OIP-Process-001 §7`. Failure to re-ratify reverts the
+status to `Withdrawn` and forces a fresh filing.
 
 ---
 

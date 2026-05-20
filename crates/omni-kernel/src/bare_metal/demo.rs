@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "P6.7.3 framework skeleton",
+        "P6.7.7 OIP 014/015/016 Active",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1048,7 +1048,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "P6.7.7 promote 014/015/016",
+        "P6.7.8 virtio-net (M1) driver",
         graphics::WHITE,
     );
     row(

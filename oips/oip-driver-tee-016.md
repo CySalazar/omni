@@ -2,11 +2,12 @@
 oip: 16
 title: TEE user-space driver — Intel TDX + AMD SEV-SNP backends, attestation channel
 track: Standards Track
-status: Draft
+status: Active
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-20
 updated: 2026-05-20
+activated: 2026-05-20
 requires:
   - 13
 supersedes: ~
@@ -656,6 +657,59 @@ The driver does not persist personal data. All GDPR considerations
 apply at higher layers (the attested key-export protocol, the
 remote-attestation service, the encrypted-by-default data types of
 Phase 2).
+
+---
+
+## Appendix A — Bootstrap Activation Note
+
+### A1. Founder fast-path activation (2026-05-20)
+
+This OIP was filed as `Draft` on 2026-05-20 (same calendar day as
+`OIP-Driver-Framework-013` itself) and promoted directly to `Active` on
+the same day under the **Solo Founder Fast-Track** of
+`OIP-Process-001 §5.5`, exercised under the Bootstrap Period authority of
+`OIP-Process-001 §6.3`. The standard 14-day public objection window of
+`OIP-Process-001 §5.3` was waived by explicit founder approval; the
+state-machine transitions `Draft → Review → Last Call → Active` collapse
+into a single editorial pass with `activated: 2026-05-20` recorded in
+the frontmatter.
+
+**Rationale for fast-path:**
+
+1. **Dependency unblock.** `OIP-013` (the driver framework) is the
+   prerequisite (`requires: [13]`) and was itself fast-pathed to
+   `Active` on 2026-05-20. Keeping `016` in `Draft` would have stalled
+   the TEE attestation upgrade path (`Ed25519CapabilityProvider`
+   verify-path delegation, MB13.c) by 14 days for no substantive review
+   benefit during the Bootstrap Period.
+2. **No deployment risk.** Zero TEE driver code exists at activation
+   time; the reference implementation is `N/A at filing` per `## Reference
+   Implementation`. The fallback to `StubAttestation` documented in § R2
+   remains the production path until TDX/SEV-SNP hardware lands
+   (P5.2/P5.3 funding-dep).
+3. **Scope is bounded.** All normative content is constrained by
+   `OIP-013` (the framework `Active` document) — the new
+   `Action::TeeProbe` extension is `#[non_exhaustive]`-safe per
+   `OIP-Serde-004 §S2`, and the kernel-mediated TDCALL/MSR syscalls
+   (`TeeTdcall = 74`, `TeeMsr = 75`) follow the syscall renumbering
+   convention established by `OIP-013` Appendix A1.
+4. **No conflict with `OIP-013` Appendix B.** The amendments to OIP-013
+   filed under its Appendix B explicitly state "No follow-up OIP
+   (014/015/016) requires changes" — confirmed by cross-reference audit
+   (see OIP-013 Appendix B trailing list of preserved citations covering
+   016:116).
+
+**Re-ratification obligation:** per `OIP-Process-001 §5.5.e`, this
+activation inherits the **mandatory post-Bootstrap re-ratification**
+obligation. When the Bootstrap Period ends (second editor seat filled or
+Stichting OMNI constituted, whichever comes first), this OIP MUST be
+re-ratified by the standard quadratic-vote majority + activation
+threshold of `OIP-Process-001 §7`. Failure to re-ratify reverts the
+status to `Withdrawn` and forces a fresh filing.
+
+A separate cleanup OIP — anticipated post-hardware validation per § R2
+"Fallback transitorio a `StubAttestation`" — will rescind the StubAttestation
+fallback once both TDX and SEV-SNP hardware paths are verified end-to-end.
 
 ---
 
