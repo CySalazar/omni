@@ -567,28 +567,28 @@ pub fn idt_init() {
     // Dedicated diagnostics handlers. MB13.h routes #DF to IST1 and
     // #PF to IST2 so a stack-related fault has a known-good kernel
     // stack to land on, eliminating the silent triple-fault cascade.
-    idt[0] = IdtEntry::interrupt_gate(isr_de as usize as u64, KERNEL_CS);
-    idt[8] = IdtEntry::interrupt_gate_with_ist(isr_df as usize as u64, KERNEL_CS, 1);
-    idt[13] = IdtEntry::interrupt_gate(isr_gp as usize as u64, KERNEL_CS);
-    idt[14] = IdtEntry::interrupt_gate_with_ist(isr_pf as usize as u64, KERNEL_CS, 2);
+    idt[0] = IdtEntry::interrupt_gate(isr_de as *const () as usize as u64, KERNEL_CS);
+    idt[8] = IdtEntry::interrupt_gate_with_ist(isr_df as *const () as usize as u64, KERNEL_CS, 1);
+    idt[13] = IdtEntry::interrupt_gate(isr_gp as *const () as usize as u64, KERNEL_CS);
+    idt[14] = IdtEntry::interrupt_gate_with_ist(isr_pf as *const () as usize as u64, KERNEL_CS, 2);
 
     // MB13.g catch-all coverage for the remaining synchronous vectors.
-    idt[1] = IdtEntry::interrupt_gate(isr_db as usize as u64, KERNEL_CS);
-    idt[2] = IdtEntry::interrupt_gate(isr_nmi as usize as u64, KERNEL_CS);
-    idt[3] = IdtEntry::interrupt_gate(isr_bp as usize as u64, KERNEL_CS);
-    idt[4] = IdtEntry::interrupt_gate(isr_of as usize as u64, KERNEL_CS);
-    idt[5] = IdtEntry::interrupt_gate(isr_br as usize as u64, KERNEL_CS);
-    idt[6] = IdtEntry::interrupt_gate(isr_ud as usize as u64, KERNEL_CS);
-    idt[7] = IdtEntry::interrupt_gate(isr_nm as usize as u64, KERNEL_CS);
-    idt[10] = IdtEntry::interrupt_gate(isr_ts as usize as u64, KERNEL_CS);
-    idt[11] = IdtEntry::interrupt_gate(isr_np as usize as u64, KERNEL_CS);
-    idt[12] = IdtEntry::interrupt_gate(isr_ss as usize as u64, KERNEL_CS);
-    idt[16] = IdtEntry::interrupt_gate(isr_mf as usize as u64, KERNEL_CS);
-    idt[17] = IdtEntry::interrupt_gate(isr_ac as usize as u64, KERNEL_CS);
-    idt[18] = IdtEntry::interrupt_gate(isr_mc as usize as u64, KERNEL_CS);
-    idt[19] = IdtEntry::interrupt_gate(isr_xf as usize as u64, KERNEL_CS);
-    idt[20] = IdtEntry::interrupt_gate(isr_ve as usize as u64, KERNEL_CS);
-    idt[21] = IdtEntry::interrupt_gate(isr_cp as usize as u64, KERNEL_CS);
+    idt[1] = IdtEntry::interrupt_gate(isr_db as *const () as usize as u64, KERNEL_CS);
+    idt[2] = IdtEntry::interrupt_gate(isr_nmi as *const () as usize as u64, KERNEL_CS);
+    idt[3] = IdtEntry::interrupt_gate(isr_bp as *const () as usize as u64, KERNEL_CS);
+    idt[4] = IdtEntry::interrupt_gate(isr_of as *const () as usize as u64, KERNEL_CS);
+    idt[5] = IdtEntry::interrupt_gate(isr_br as *const () as usize as u64, KERNEL_CS);
+    idt[6] = IdtEntry::interrupt_gate(isr_ud as *const () as usize as u64, KERNEL_CS);
+    idt[7] = IdtEntry::interrupt_gate(isr_nm as *const () as usize as u64, KERNEL_CS);
+    idt[10] = IdtEntry::interrupt_gate(isr_ts as *const () as usize as u64, KERNEL_CS);
+    idt[11] = IdtEntry::interrupt_gate(isr_np as *const () as usize as u64, KERNEL_CS);
+    idt[12] = IdtEntry::interrupt_gate(isr_ss as *const () as usize as u64, KERNEL_CS);
+    idt[16] = IdtEntry::interrupt_gate(isr_mf as *const () as usize as u64, KERNEL_CS);
+    idt[17] = IdtEntry::interrupt_gate(isr_ac as *const () as usize as u64, KERNEL_CS);
+    idt[18] = IdtEntry::interrupt_gate(isr_mc as *const () as usize as u64, KERNEL_CS);
+    idt[19] = IdtEntry::interrupt_gate(isr_xf as *const () as usize as u64, KERNEL_CS);
+    idt[20] = IdtEntry::interrupt_gate(isr_ve as *const () as usize as u64, KERNEL_CS);
+    idt[21] = IdtEntry::interrupt_gate(isr_cp as *const () as usize as u64, KERNEL_CS);
 
     // MB14.d — TLB shootdown IPI handler (vector 0xFD). The asm stub
     // saves caller-saved registers, calls
@@ -596,7 +596,7 @@ pub fn idt_init() {
     // pre-AP-fire so every AP that hits its `lidt` step in
     // `kmain_ap` sees the handler at the same offset.
     idt[usize::from(super::tlb_shootdown::TLB_SHOOTDOWN_VECTOR)] = IdtEntry::interrupt_gate(
-        super::tlb_shootdown::omni_tlb_shootdown_handler as usize as u64,
+        super::tlb_shootdown::omni_tlb_shootdown_handler as *const () as usize as u64,
         KERNEL_CS,
     );
 

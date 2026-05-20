@@ -1717,7 +1717,8 @@ mod irq_attach_handlers {
             // Rust callback (see `kernel_irq_attach_handler`).
             bare_metal::idt::idt_set_vector(
                 vector as usize,
-                bare_metal::syscall_entry::omni_irq_dispatch_trampoline as usize as u64,
+                bare_metal::syscall_entry::omni_irq_dispatch_trampoline as *const () as usize
+                    as u64,
             );
 
             let Some(pcb) = sched.process_mut(current) else {
@@ -2057,7 +2058,7 @@ pub fn syscall_init() {
         wrmsr(MSR_STAR, star_val);
 
         // Point LSTAR at our SYSCALL entry stub.
-        wrmsr(MSR_LSTAR, omni_syscall_entry as usize as u64);
+        wrmsr(MSR_LSTAR, omni_syscall_entry as *const () as usize as u64);
 
         // Mask IF (bit 9) on syscall entry so we do not take hardware
         // interrupts inside the non-reentrant syscall path.
@@ -2065,7 +2066,7 @@ pub fn syscall_init() {
     }
 
     // Register INT 0x80 in the IDT.
-    super::idt::idt_set_vector(0x80, omni_int80_entry as usize as u64);
+    super::idt::idt_set_vector(0x80, omni_int80_entry as *const () as usize as u64);
 
     super::early_console::write_str("[syscall] LSTAR set  INT80=0x80\n");
 }

@@ -169,7 +169,7 @@ unsafe extern "C" {
 /// 4 KiB frame so this is always satisfied.
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn setup_task_frame(stack_top: u64, entry: u64) -> u64 {
-    let trampoline_addr = omni_task_entry_trampoline as usize as u64;
+    let trampoline_addr = omni_task_entry_trampoline as *const () as usize as u64;
     let mut sp = stack_top;
     unsafe {
         sp -= 8;

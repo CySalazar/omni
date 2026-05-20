@@ -803,7 +803,8 @@ pub fn kmain(
                                 early_console::write_str("\n");
                             }
 
-                            let kmain_ap_va = bare_metal::mp_ap_entry::kmain_ap as usize as u64;
+                            let kmain_ap_va =
+                                bare_metal::mp_ap_entry::kmain_ap as *const () as usize as u64;
                             match bare_metal::mp_emplacement::place_trampoline_live(
                                 fa,
                                 &mut pager,

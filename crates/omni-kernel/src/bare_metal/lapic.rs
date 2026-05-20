@@ -301,7 +301,7 @@ pub fn lapic_init(phys_offset: u64) -> bool {
         // Step 7: register the timer interrupt handler in IDT slot 0x20.
         super::idt::idt_set_vector(
             TIMER_VECTOR as usize,
-            omni_lapic_timer_handler as usize as u64,
+            omni_lapic_timer_handler as *const () as usize as u64,
         );
     }
 
