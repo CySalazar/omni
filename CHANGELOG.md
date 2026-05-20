@@ -75,6 +75,74 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Driver — P6.7.8.5 NVMe bootable image sibling (2026-05-20).**
+  New `crates/omni-driver-nvme-image/` workspace-excluded sibling crate
+  hosts the bootable Ring 3 ELF that the kernel `DriverLoad (73)` syscall
+  ingests per `OIP-Driver-NVMe-014` § S6 + `OIP-Driver-Framework-013`
+  § S5.3 step 9. Mirrors the `omni-driver-net-virtio-image` precedent
+  from P6.7.8.3 and the `omni-kernel` ↔ `kernel-runner` split.
+  - `Cargo.toml`: `no_std + no_main` binary, target
+    `x86_64-unknown-none`, profile `release` `lto=true`
+    `codegen-units=1` `opt-level=z` `panic=abort` `strip=debuginfo`;
+    single dependency on `omni-driver-nvme` via path. `.cargo/config.toml`
+    minimal (inherits workspace rustflags including the force-soft SIMD
+    cfgs).
+  - `src/main.rs`: `_start` entry `#[unsafe(no_mangle)] pub extern "C" fn`
+    consumes the per-driver capability tokens deposited by the kernel
+    driver-loader trampoline at well-known user-VA slots (§ S5.3 step 10,
+    to be wired in a follow-up) and drives the 13-step bring-up FSM in
+    `omni_driver_nvme::bringup` from `Phase::PciEnumeration` to
+    `Phase::Ready`. Exits via `TaskExit(0)` on success, `TaskExit(1)` on
+    terminal failure, `TaskExit(2)` from the panic handler.
+  - `syscall5` helper inline-asm wrapper pre-cabled for `MmioMap (70)` /
+    `DmaMap (71)` / `IrqAttach (72)` with the two-register `(rax, rdx)`
+    return convention from OIP-013 § S2. Gated `#[allow(dead_code)]`
+    until P6.7.8.x wires the actual capability-token deposit.
+  - `PanicOnAlloc` `#[global_allocator]` defensive stub: panics on any
+    heap call (the `BringUp` FSM is `Copy` and the syscall wrappers use
+    `[u64; 6]` on the stack, so no allocation is expected at runtime).
+    Any future allocation surfaces loudly as `TaskExit(2)`.
+  - Syscall numbers `SYS_TASK_EXIT=11` / `SYS_WRITE_CONSOLE=60` /
+    `SYS_MMIO_MAP=70` / `SYS_DMA_MAP=71` / `SYS_IRQ_ATTACH=72` pinned
+    locally to avoid creating a circular workspace dependency on
+    `omni-kernel`.
+  - Root `Cargo.toml` `[workspace.exclude]` extended with the new
+    crate; `.gitignore` extended with `/crates/omni-driver-nvme-image/target/`.
+  - Build Info panel (`crates/omni-kernel/src/bare_metal/demo.rs::render_buildinfo`):
+    Active=`P6.7.8.5 NVMe image sibling` (cyan),
+    Next=`P6.7.8.6 e1000e (M2) driver`,
+    Phase=`1 - Microkernel POC (~99.5%)`,
+    Tests=`803 workspace pass`.
+  - Acceptance gates: `cargo test --workspace --all-features --
+    --test-threads=1` → **803 pass / 0 fail** (invariato vs P6.7.8.4 —
+    sub-step is bare-metal-only and inherits the FSM tests from the
+    library); clippy workspace + bare-metal + mb12-userprobe +
+    kernel-runner + nvme-image (target `x86_64-unknown-none --release`);
+    `cargo fmt --all -- --check`;
+    `bash scripts/check-no-blanket-allow.sh` (14 crate-root files);
+    `RUSTDOCFLAGS="-D warnings" cargo doc -p omni-kernel
+    --features bare-metal --target x86_64-unknown-none --no-deps`;
+    `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+    --all-features`; `python3 scripts/lint-oips.py` (0 error / 0
+    warning across 19 files).
+  - Build artifact: `cargo build --manifest-path
+    crates/omni-driver-nvme-image/Cargo.toml --target x86_64-unknown-none
+    --release` produces a clean ELF at
+    `target/x86_64-unknown-none/release/omni-driver-nvme-image` (Ring 3
+    binary ready for future ingestion via `DriverLoad`).
+  - Smoke validation on Proxmox VMID 103 (`100.101.77.9`, 8 vCPU q35
+    OVMF + swtpm TPM 2.0 + 4 GiB RAM): boot UEFI image generated via
+    `cargo +nightly run --manifest-path disk-image/Cargo.toml --
+    kernel-runner/target/x86_64-unknown-none/release/kernel-runner`
+    (2.06 MiB `boot-uefi.img`), written to zvol
+    `/dev/zvol/rpool/data/vm-103-disk-6` via
+    `dd bs=1M conv=fsync`, VM started. Serial log shows the full
+    sequence `[mb14.a]` → `[mb14.h.2]` + `[elf] probe OK` +
+    `[virtio] tablet ready` with zero errors / panics / #PF /
+    warnings. VNC screenshot (`qm monitor screendump`) confirms the
+    Build Info panel renders on the 1280×800 GOP framebuffer with
+    commit hash `4b875fd` and updated Active/Next/Phase/Tests fields.
+
 - **Kernel / Capability — P6.7.3 driver-framework skeleton + OIP-013 fast-path
   (2026-05-20).** Closes the framework half of the user-space driver
   initiative (`OIP-Driver-Framework-013`, now `Active`) by landing the

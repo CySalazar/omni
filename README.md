@@ -2,7 +2,7 @@
 
 > An AI-native operating system. Local-first, privacy-by-construction, decentralized by design.
 
-**Status:** Phase 0 → Phase 1 — `v0.1-draft` — May 2026 — **P0 (repo hygiene) closed 2026-05-09**, **P1 (foundational crates) closed 2026-05-10**, **P6.2 (bare-metal kernel + graphical desktop demo) active on `feat/kernel-vga-wait` — Track A M1–M5 and Track B MB1–MB5 complete (2026-05-16)**.
+**Status:** Phase 1 (Microkernel POC) — `v0.3.0-alpha.1` released 2026-05-20 — **P0/P1/P2 closed**, **Track A desktop M1–M5 complete**, **Track B kernel MB1–MB14 cycle closed (MP up to cross-CPU context switch)**, **P6.7 user-space driver framework active** — OIP-013/014/015/016 all `Active`; sub-tasks P6.7.0–7 + P6.7.8.0–5 closed; next is P6.7.8.6 (e1000e M2 Ethernet driver bare-metal).
 
 OMNI OS reimagines the operating system around AI as a first-class citizen. Inference, model orchestration, and intelligent agents are built into the kernel and runtime — not bolted on as cloud services. Privacy is enforced cryptographically, not by policy. The system can leverage other OMNI OS instances as a peer-to-peer compute mesh, scaling computational power collectively without depending on commercial AI providers.
 
@@ -85,13 +85,14 @@ signed commits — not in marketing copy that can be quietly walked back.
 
 ![OMNI OS K4 boot demo — VGA banner on VirtualBox](./docs/assets/k4-boot-demo.png)
 
-OMNI OS is currently in **Phase 0 → Phase 1 (Foundation → Microkernel PoC)**. The v0.1 design is complete, the foundational layer is implemented, and the kernel bare-metal track is in active development:
+OMNI OS is currently in **Phase 1 (Microkernel PoC)**. The v0.1 design is complete, the foundational layer is implemented, the kernel bare-metal track has closed its MB1–MB14 cycle (including multi-CPU bring-up and cross-CPU context switching), and the user-space driver framework is in active implementation:
 
 | Layer | Crates | State |
 |---|---|---|
-| Foundational | `omni-types`, `omni-crypto`, `omni-capability` | **Implemented** (P1 closed 2026-05-10) — `no_std + alloc`, 131 tests green, RFC test vectors for every cryptographic primitive, `cargo clippy -D warnings` and `cargo doc -D warnings` clean. |
+| Foundational | `omni-types`, `omni-crypto`, `omni-capability` | **Implemented** (P1 closed 2026-05-10) — `no_std + alloc`, RFC test vectors for every cryptographic primitive, `cargo clippy -D warnings` and `cargo doc -D warnings` clean. Postcard canonical wire format per `OIP-Serde-004`. |
 | TEE root of trust | `omni-tee` | Trait surface + `MockTeeBackend` implemented (P5 scaffolding); concrete TDX / SEV-SNP backends land in P5. |
-| **Kernel** | `omni-kernel` | **In progress (P6.2 active, 2026-05-16).** Boots bare-metal on x86_64 via UEFI (`bootloader` 0.11). **Track A complete:** GOP framebuffer, bitmap font, software cursor, PS/2 keyboard + mouse, widget toolkit, desktop WM, RTC clock, ACPI S5 power-off. **Track B MB1–MB5 complete:** `BitmapFrameAllocator<N>`, GDT, x86_64 page-table walker, IDT (4 exception vectors), SYSCALL/SYSRET + INT 0x80 dispatcher, ELF64 loader (parser + segment mapper). **Next:** MB6 scheduler skeleton. `OIP-Kernel-003` Active. |
+| **Kernel** | `omni-kernel` | **MB1–MB14 cycle closed (v0.3.0-alpha.1, 2026-05-20).** Boots bare-metal on x86_64 via UEFI (`bootloader` 0.11). **Track A complete:** GOP framebuffer, bitmap font, software cursor, PS/2 + VirtIO tablet, widget toolkit, desktop WM, RTC clock, ACPI S5 power-off, Build Info panel. **Track B complete:** frame allocator, page-table walker, IDT, SYSCALL/SYSRET, ELF64 loader, scheduler, LAPIC timer, Ring 3 + per-process CR3, IPC + multi-task, kernel-stack isolation, MP boot (AP INIT-SIPI live), TLB shootdown, per-CPU run queues, x2APIC, AP dispatch + cross-CPU context switch (MB14.h.2 + SCHED_LOCK). **P6.7 user-space driver framework active:** `MmioMap`/`DmaMap`/`IrqAttach` syscalls wired, virtio-net + NVMe driver scaffolds + bootable image siblings landed. |
+| **Drivers (user-space)** | `omni-driver-net-virtio`, `omni-driver-nvme` (+ bootable `*-image` siblings) | **Scaffold + bring-up FSM** (P6.7.8.0–5). Library crates host the auditable bring-up state machines; workspace-excluded `*-image` sibling crates produce the bootable Ring 3 ELFs that `DriverLoad (73)` ingests. Real `MmioMap`/`DmaMap`/`IrqAttach` syscall wiring inside the image binaries is gated on the `DriverLoad` capability-deposit trampoline (P6.7.8.x). |
 | HAL, services, user-facing | `omni-hal`, `omni-runtime`, `omni-mesh`, `omni-tokenization`, `omni-sdk`, `omni-agent`, `omni-shell` | Stubs. |
 
 ### Kernel milestone tracker (Phase 1, Track B)
@@ -103,7 +104,13 @@ OMNI OS is currently in **Phase 0 → Phase 1 (Foundation → Microkernel PoC)**
 | MB3 | IDT + `#DE` `#DF` `#GP` `#PF` handlers | ✅ 2026-05-16 |
 | MB4 | Syscall dispatcher (`SYSCALL`/`SYSRET` + INT 0x80) | ✅ 2026-05-16 |
 | MB5 | ELF64 loader (parser + segment mapper) | ✅ 2026-05-16 |
-| MB6 | Scheduler skeleton | ⏳ |
+| MB6–MB9 | Scheduler, LAPIC preemption, VirtIO tablet, GOP demo | ✅ 2026-05-18 (v0.2.0) |
+| MB10 | Kernel stack isolation | ✅ 2026-05-18 |
+| MB11 | First Ring 3 process + per-process CR3 | ✅ 2026-05-18 |
+| MB12 | IPC concrete + multi-task user-space | ✅ 2026-05-18 |
+| MB13 | omni-capability integration | ✅ 2026-05-19 |
+| MB14.a–h.2 | MP boot (AP INIT-SIPI live), TLB shootdown, per-CPU run queues, x2APIC, cross-CPU context switch | ✅ 2026-05-20 (v0.3.0-alpha.1) |
+| P6.7.x | User-space driver framework + virtio-net + NVMe scaffolds & bootable image siblings | 🔄 P6.7.8.5 closed 2026-05-20; next P6.7.8.6 (e1000e M2) |
 
 > **`omni-crypto` carries an `AWAITING_CRYPTO_REVIEW` marker.** The implementation follows established `RustCrypto`-family APIs with RFC test vectors for every primitive, but no external cryptographer has signed off yet (P3.2 in `/todo.md`, blocked on funding). Do not use the output of this crate in adversarial settings until that review lands.
 
