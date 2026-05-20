@@ -15,6 +15,64 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ## [Unreleased]
 
+### Changed
+
+- **Kernel — P6.7.3.bis realign driver_manifest skeleton to OIP-013 Appendix B
+  amendments (2026-05-20).** Founder filed four normative amendments to
+  OIP-013 (Appendix B § B1) after the original P6.7.3 commit. The
+  framework skeleton is realigned in-place; no driver was deployed at
+  the time, so the change is non-breaking. Specifically:
+  - `crates/omni-kernel/src/driver_manifest.rs`:
+    - New entry point `decode_omni_pack(pack_bytes) -> Result<OmniPackSections, _>`
+      parses the 64-byte omni-pack v1 header per OIP-013 § S5.5
+      (magic `b"OMNIPACK"`, version `1u32`, flags reserved, three
+      `(offset, len)` section descriptors). Validates magic, version,
+      flag zero, signature length, section bounds, and section non-
+      overlap. Allocation-free on success and failure paths (OIP-013
+      § S5.3 step 3). Returns borrowed slices into the input buffer
+      via the new `OmniPackSections<'a>` view.
+    - New stub `postcard_decode_manifest(manifest_bytes)` returning
+      `DriverManifestError::ParserNotWired` — held back until the
+      `postcard` crate is added to the kernel dep surface in P6.7.8.
+    - New constants `OMNI_PACK_MAGIC`, `OMNI_PACK_VERSION`,
+      `OMNI_PACK_HEADER_LEN`, `OMNI_PACK_MAX_BYTES`,
+      `OMNI_PACK_MAX_MANIFEST_BYTES` exported for use by the syscall
+      handler and the `omni-driver-pack` build tool.
+    - New error variants `MalformedPack`, `PackTooLarge` (POSIX-aligned
+      with `EINVAL`).
+    - `DriverMeta.omni_issuer: String` → `omni_issuer_pubkey: [u8; 32]`
+      per OIP-013 § S5.1: the manifest now carries the Ed25519
+      verifying key bytes directly, matching the TOML schema locked in
+      § S5.1. `verify_manifest` cross-checks that key against
+      `KNOWN_ISSUERS` (§ S5.4 explicitly forbids TOFU).
+    - Module docs rewritten: the kernel consumes omni-pack v1, never
+      TOML; TOML is the developer-authored source format compiled
+      offline by the `omni-driver-pack` build tool. The 64-byte
+      header layout is reproduced inline so a reader knows the wire
+      format without leaving the file.
+    - Removed prior `parse_manifest(toml_bytes)` entry point — it was
+      misnamed under the new contract.
+  - `crates/omni-kernel/src/known_issuers.rs`:
+    - `lookup_issuer(id: &str)` → `lookup_issuer(pubkey: &[u8; 32])`.
+      The pubkey is the primary key per § S5.4 — the `id` field is
+      retained on `KnownIssuer` purely as boot-log auditability
+      metadata (never consulted for an authority decision).
+    - Module docs updated to reflect the pubkey-primary lookup model.
+  - The MMIO VA-range widening (2 GiB → 512 GiB PML4 slot) + KASLR
+    base (§ B1 #2 / § S2.5), the `IrqNotification::{Tick, MissedSince(u32)}`
+    in-band channel shape (§ B1 #3 / § S4.6), and the § R7 follow-up
+    OIPs (§ B1 #4) are implementation details of syscall handlers
+    still returning `NotYetImplemented` — no code change today.
+  - Build Info panel: `Tests = 674 workspace pass`.
+  - Acceptance: workspace test count rises **665 → 674 (0 fail)**
+    under `cargo test --workspace --all-features -- --test-threads=1`
+    (+9 new tests covering well-formed pack decode, short header,
+    bad magic, wrong version, non-zero flags, wrong signature length,
+    out-of-bounds section, overlapping sections, oversized manifest).
+    All four clippy `-D warnings` surfaces clean, `cargo fmt`,
+    `scripts/check-no-blanket-allow.sh`, cargo doc, and
+    `python3 scripts/lint-oips.py` (19 files) all clean.
+
 ### Added
 
 - **Kernel / Capability — P6.7.3 driver-framework skeleton + OIP-013 fast-path
