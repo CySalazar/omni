@@ -12,6 +12,7 @@
 # here — the wildcard `**/target/` would also catch unrelated paths.
 /kernel-runner/target/
 /disk-image/target/
+/crates/omni-driver-net-virtio-image/target/
 **/*.rs.bk
 *.pdb
 

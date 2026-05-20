@@ -606,6 +606,27 @@ pub unsafe fn ipc_registry_mut() -> &'static mut KernelIpcRegistry {
     }
 }
 
+/// Borrow the global IPC registry immutably.
+///
+/// # Safety
+///
+/// Caller must be in a context where no `&mut` to `IPC_REGISTRY` is
+/// concurrently live. The SYSCALL path provides this in single-CPU
+/// Phase 1; the MP transition will replace this accessor with a
+/// shared lock guard per ADR-0005.
+#[cfg(all(feature = "bare-metal", target_arch = "x86_64"))]
+#[allow(
+    static_mut_refs,
+    reason = "single-CPU kernel singleton; SAFETY documented at the call site"
+)]
+pub unsafe fn ipc_registry() -> &'static KernelIpcRegistry {
+    // SAFETY: caller invariant — see fn doc.
+    unsafe {
+        let p = core::ptr::addr_of!(IPC_REGISTRY);
+        &*p
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------

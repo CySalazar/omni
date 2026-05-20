@@ -66,6 +66,15 @@ exclude = [
     #              --target x86_64-unknown-none --release`
     # See `kernel-runner/README.md` for the full build + QEMU run flow.
     "kernel-runner",
+    # `omni-driver-net-virtio-image` is the bootable sibling of
+    # `omni-driver-net-virtio` (OIP-Driver-Net-015 + OIP-Driver-Framework-013
+    # § S5.3 step 9 — `DriverLoad` ingests this ELF and `spawn_from_elf`
+    # turns it into a Ring 3 driver process). `no_std + no_main` for
+    # `x86_64-unknown-none`; excluded so `cargo build --workspace` stays
+    # green on developer machines without the cross-toolchain. Built via
+    # `cargo build --manifest-path crates/omni-driver-net-virtio-image/Cargo.toml \
+    #              --target x86_64-unknown-none --release` (P6.7.8.3).
+    "crates/omni-driver-net-virtio-image",
     # `disk-image` is the host-side UEFI/BIOS disk image builder.
     # It depends on the heavy `bootloader 0.11` crate (which embeds
     # pre-compiled bootloader binary blobs) and only needs to run on CI

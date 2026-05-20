@@ -1,0 +1,63 @@
+# =============================================================================
+# omni-driver-net-virtio-image — bootable Ring 3 driver image (P6.7.8.3)
+# =============================================================================
+# Specified by `OIP-Driver-Net-015` § S4 and consumed by the kernel
+# `DriverLoad (73)` syscall per `OIP-Driver-Framework-013` § S5.3 step 9.
+# The crate compiles the user-space virtio-net driver into a `no_std +
+# no_main` ELF64 (target `x86_64-unknown-none`) that the kernel ingests
+# via `spawn_from_elf`. The ELF entry point is `_start`; it consumes the
+# capability tokens passed by the kernel through the `DriverLoad`
+# protocol and drives the bring-up FSM in
+# `omni_driver_net_virtio::bringup`.
+#
+# Excluded from the default workspace `cargo build` matrix (see the
+# root `Cargo.toml` `[workspace.exclude]` list) — the host-side
+# `--target` requires a cross-toolchain that not every developer machine
+# has. CI builds the image explicitly via:
+#
+#   cargo build --manifest-path crates/omni-driver-net-virtio-image/Cargo.toml \
+#               --target x86_64-unknown-none --release
+#
+# The resulting ELF is fed to `omni-driver-pack` (OMNI Forge, user-space)
+# together with the developer-authored `manifest.toml` to produce the
+# `omni-pack v1` binary container the kernel ultimately validates.
+# =============================================================================
+
+[package]
+name             = "omni-driver-net-virtio-image"
+description      = "OMNI OS virtio-net driver — bootable Ring 3 ELF image (consumed by DriverLoad)"
+version          = "0.2.0"
+edition          = "2024"
+rust-version     = "1.85"
+authors          = ["cySalazar <cySalazar@cySalazar.com>"]
+license          = "AGPL-3.0-only"
+repository       = "https://github.com/CySalazar/omni"
+homepage         = "https://omni-os.org"
+keywords         = ["operating-system", "driver", "virtio", "network"]
+categories       = ["os", "embedded"]
+publish          = false
+
+[[bin]]
+name = "omni-driver-net-virtio-image"
+path = "src/main.rs"
+
+[dependencies]
+# Pull the auditable lib in as `path` — no version pin since both
+# crates ship in the same repo and bump together.
+omni-driver-net-virtio = { path = "../omni-driver-net-virtio" }
+
+# The image deliberately avoids depending on `omni-types`, `omni-capability`,
+# `omni-crypto` at this stage: P6.7.8.3 wires only the syscall ABI side
+# (raw `syscall` instructions with the OIP-013 numeric codes). When the
+# bring-up loop starts decoding capability tokens server-side
+# (P6.7.8.x post-DriverLoad-wired), the deps will be reintroduced.
+
+[profile.release]
+lto             = true
+codegen-units   = 1
+panic           = "abort"
+strip           = "debuginfo"
+opt-level       = "z"
+
+[profile.dev]
+panic = "abort"

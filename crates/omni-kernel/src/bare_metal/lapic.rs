@@ -577,6 +577,68 @@ pub fn read_lapic_id() -> Option<u32> {
     Some(raw >> 24)
 }
 
+/// Read the in-service vector currently being handled by this CPU.
+///
+/// Scans the LAPIC In-Service Register banks `ISR.B0..ISR.B7`
+/// (xAPIC MMIO offsets `0x100..0x180` step 16; x2APIC MSRs
+/// `0x810..0x817`) from the **highest** bank down so the
+/// highest-priority active vector wins (Intel SDM Vol 3A § 10.8.4).
+///
+/// Returns `None` when no vector is in service (spurious interrupt)
+/// or when the LAPIC base has not been mapped yet.
+///
+/// Wired by `super::syscall_entry::kernel_irq_dispatch_handler` (the
+/// C-ABI Rust callback the IRQ trampoline calls) for P6.7.8.3 — the
+/// shared IRQ-attach trampoline needs to recover the vector that fired
+/// without threading it through the asm stub.
+#[must_use]
+pub fn read_in_service_vector() -> Option<u8> {
+    if X2APIC_MODE.load(core::sync::atomic::Ordering::Acquire) {
+        // x2APIC ISR registers occupy MSRs `0x810..=0x817`.
+        for bank in (0..8u32).rev() {
+            let msr = 0x810 + bank;
+            // SAFETY: x2APIC mode asserted; ISR MSRs are read-only and
+            // architecturally defined on any CPU in x2APIC mode.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "the ISR MSR returns 32 valid bits in the low dword"
+            )]
+            let raw = unsafe { rdmsr(msr) } as u32;
+            if raw != 0 {
+                let bit = 31 - raw.leading_zeros();
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "bank ≤ 7 and bit < 32 ⇒ bank * 32 + bit < 256, fits u8"
+                )]
+                let vector = (bank * 32 + bit) as u8;
+                return Some(vector);
+            }
+        }
+        return None;
+    }
+    // SAFETY: LAPIC_BASE is set once at boot before any handler runs.
+    let base = unsafe { LAPIC_BASE };
+    if base == 0 {
+        return None;
+    }
+    for bank in (0..8u32).rev() {
+        let reg = 0x0100 + bank * 0x10;
+        // SAFETY: lapic_read performs a volatile 32-bit read against
+        // the LAPIC MMIO window mapped by the bootloader's direct-map.
+        let raw = unsafe { lapic_read(base, reg) };
+        if raw != 0 {
+            let bit = 31 - raw.leading_zeros();
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "bank ≤ 7 and bit < 32 ⇒ bank * 32 + bit < 256, fits u8"
+            )]
+            let vector = (bank * 32 + bit) as u8;
+            return Some(vector);
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Timer interrupt handler — IDT vector 0x20
 // ---------------------------------------------------------------------------

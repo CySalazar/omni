@@ -93,6 +93,53 @@ pub struct MmioMapping {
     pub len_pages: u32,
 }
 
+/// One DMA window installed via the `DmaMap` syscall
+/// (`OIP-Driver-Framework-013` § S3, P6.7.8.3).
+///
+/// In Phase 1 the kernel runs **without an IOMMU**: the issuer grants the
+/// driver an `iova_base` that coincides with the physical-address range
+/// the kernel will map into the driver's AS at the same user VA. With
+/// `iova == phys == user_va` the device DMA descriptors written by the
+/// driver dereference the same phys frames the user-space buffer is
+/// backed by. The IOMMU vendor backends (`vtd` / `amdvi`) land later
+/// per OIP-013 § S3.2 and will tighten this to "iova == phys translated
+/// through the IOMMU domain page table".
+#[cfg(feature = "bare-metal")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmaMapping {
+    /// Page-aligned IOVA (== user VA in the no-IOMMU passthrough mode).
+    pub iova_base: u64,
+    /// Number of 4 KiB pages covered.
+    pub len_pages: u32,
+    /// Direction tag (0=ToDevice, 1=FromDevice, 2=Bidirectional). The
+    /// kernel does not enforce it in Phase 1; it is retained for
+    /// audit-trail purposes and will gate the IOMMU permission bits in
+    /// the vendor backends.
+    pub direction: u8,
+}
+
+/// One IRQ attachment installed via the `IrqAttach` syscall
+/// (`OIP-Driver-Framework-013` § S4, P6.7.8.3).
+///
+/// Records the (irq_line, vector, channel_id) triple so the kernel can:
+///   - reject duplicate attachments (`EBUSY` per § S4.1 "shared IOAPIC
+///     line rejection"),
+///   - drain pending notifications at process exit,
+///   - free the LAPIC vector + IDT slot during teardown.
+#[cfg(feature = "bare-metal")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IrqAttachment {
+    /// IRQ line / GSI as advertised by the device's MSI-X table or
+    /// IOAPIC redirection entry.
+    pub irq_line: u16,
+    /// LAPIC vector (`0x40..0xFE`) the kernel allocated for this line.
+    pub vector: u8,
+    /// IPC channel id that receives the `IrqNotification::{Tick,
+    /// MissedSince(u32)}` envelope on each fire (OIP-013 § S4.2,
+    /// Appendix B amendment 3).
+    pub channel_id: u64,
+}
+
 /// A userspace process (`Ring 3`).
 #[cfg(feature = "bare-metal")]
 #[derive(Debug)]
@@ -129,6 +176,12 @@ pub struct ProcessControlBlock {
     /// mappings within the same process are allocated linearly from
     /// `mmio_va_cursor`.
     pub mmio_va_cursor: u64,
+    /// `DmaMap` windows owned by this process (OIP-013 § S3.4).
+    /// Empty for non-driver processes.
+    pub dma_mappings: Vec<DmaMapping>,
+    /// `IrqAttach` attachments owned by this process (OIP-013 § S4.4).
+    /// Empty for non-driver processes.
+    pub irq_attachments: Vec<IrqAttachment>,
 }
 
 #[cfg(feature = "bare-metal")]
@@ -267,6 +320,8 @@ impl ProcessControlBlock {
                 pending_receive: None,
                 mmio_mappings: Vec::new(),
                 mmio_va_cursor: 0,
+                dma_mappings: Vec::new(),
+                irq_attachments: Vec::new(),
             },
         );
 
@@ -302,6 +357,8 @@ mod tests {
             pending_receive: None,
             mmio_mappings: Vec::new(),
             mmio_va_cursor: 0,
+            dma_mappings: Vec::new(),
+            irq_attachments: Vec::new(),
         }
     }
 
@@ -356,5 +413,45 @@ mod tests {
         assert_eq!(first.va_base, 0x0000_0085_1234_0000);
         assert_eq!(first.len_pages, 2);
         assert_eq!(pcb.mmio_va_cursor, 0x0000_0085_1234_2000);
+    }
+
+    #[test]
+    fn fresh_pcb_has_empty_dma_and_irq_tables() {
+        let pcb = make_pcb();
+        assert!(pcb.dma_mappings.is_empty());
+        assert!(pcb.irq_attachments.is_empty());
+    }
+
+    #[test]
+    fn dma_mappings_round_trip() {
+        let mut pcb = make_pcb();
+        pcb.dma_mappings.push(DmaMapping {
+            iova_base: 0x1_0000_0000,
+            len_pages: 4,
+            direction: 2,
+        });
+        assert_eq!(pcb.dma_mappings.len(), 1);
+        let first = pcb.dma_mappings.first().expect("one DMA mapping pushed");
+        assert_eq!(first.iova_base, 0x1_0000_0000);
+        assert_eq!(first.len_pages, 4);
+        assert_eq!(first.direction, 2);
+    }
+
+    #[test]
+    fn irq_attachments_round_trip() {
+        let mut pcb = make_pcb();
+        pcb.irq_attachments.push(IrqAttachment {
+            irq_line: 33,
+            vector: 0x40,
+            channel_id: 7,
+        });
+        assert_eq!(pcb.irq_attachments.len(), 1);
+        let first = pcb
+            .irq_attachments
+            .first()
+            .expect("one IRQ attachment pushed");
+        assert_eq!(first.irq_line, 33);
+        assert_eq!(first.vector, 0x40);
+        assert_eq!(first.channel_id, 7);
     }
 }

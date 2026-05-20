@@ -51,6 +51,19 @@
 #![doc(html_root_url = "https://docs.omni-os.org/omni-driver-net-virtio")]
 #![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
+// Test-only allow list — mirrors `omni-kernel`'s ADR-0003 carve-out. The
+// driver bring-up FSM tests use `.unwrap()` / `.expect()` for terseness;
+// production code keeps the workspace `deny(unwrap_used, expect_used,
+// panic)` invariants at "deny".
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::doc_markdown
+    )
+)]
 
 extern crate alloc;
 

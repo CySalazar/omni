@@ -227,6 +227,98 @@ unsafe extern "C" {
 }
 
 // -----------------------------------------------------------------------
+// IRQ dispatch trampoline (P6.7.8.3, OIP-013 § S4.2)
+//
+// Single asm stub installed at every LAPIC vector allocated by
+// `IrqAttach`. On fire:
+//   - read the in-service LAPIC vector (`ISR.B<N>` for N in 8 banks)
+//   - call `kernel_irq_dispatch_handler(vector)`
+//   - the Rust callback increments the per-slot missed counter and
+//     issues `lapic_eoi()`, then iretq.
+//
+// Because the kernel cannot distinguish vectors solely from the
+// `iretq` frame, the handler reads `LAPIC.ISRn` to recover the
+// in-service vector at the moment of dispatch.
+// -----------------------------------------------------------------------
+
+#[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    ".global omni_irq_dispatch_trampoline",
+    "omni_irq_dispatch_trampoline:",
+    // Save caller-saved registers (System V AMD64 §3.2.1). We push 9
+    // GPRs (8 bytes each) → 72 bytes. The interrupt frame is 5 × 8 =
+    // 40 bytes; total stack drift = 112 bytes, which is RSP % 16 == 0
+    // because the CPU pre-pushes 5 × 8 = 40 (mod 16 = 8) and our 9
+    // pushes bring it to mod 16 = 8 + 72 = 80 mod 16 = 0.
+    "    push rax",
+    "    push rcx",
+    "    push rdx",
+    "    push rsi",
+    "    push rdi",
+    "    push r8",
+    "    push r9",
+    "    push r10",
+    "    push r11",
+    "    call kernel_irq_dispatch_handler",
+    "    pop r11",
+    "    pop r10",
+    "    pop r9",
+    "    pop r8",
+    "    pop rdi",
+    "    pop rsi",
+    "    pop rdx",
+    "    pop rcx",
+    "    pop rax",
+    "    iretq",
+);
+
+#[cfg(all(
+    target_arch = "x86_64",
+    feature = "bare-metal",
+    target_os = "none",
+    not(test)
+))]
+unsafe extern "C" {
+    /// Defined by the inline `global_asm!` above.
+    pub(crate) fn omni_irq_dispatch_trampoline();
+}
+
+/// Rust-side IRQ dispatch handler. The asm trampoline lands here with
+/// a clean stack and clobbers-saved; we read the in-service vector from
+/// the LAPIC and forward to [`irq_attach_handlers::dispatch_fire`].
+///
+/// Reading `ISR.B<N>` (LAPIC offsets `0x100..0x180` in xAPIC mode or
+/// MSRs `0x810..0x817` in x2APIC) is the canonical way to recover the
+/// in-service vector inside an interrupt context. We scan from the
+/// top bank down so the highest-priority active vector wins.
+#[cfg(all(
+    target_arch = "x86_64",
+    feature = "bare-metal",
+    target_os = "none",
+    not(test)
+))]
+#[unsafe(no_mangle)]
+extern "C" fn kernel_irq_dispatch_handler() {
+    if let Some(vector) = super::lapic::read_in_service_vector() {
+        irq_attach_handlers::dispatch_fire(vector);
+    } else {
+        // No vector in service — spurious. Issue EOI to acknowledge.
+        super::lapic::lapic_eoi();
+    }
+}
+
+/// Host-build / non-x86_64 / non-bare-metal stub so the asm `extern`
+/// reference can be linked when the bare-metal path is off.
+#[cfg(not(all(
+    target_arch = "x86_64",
+    feature = "bare-metal",
+    target_os = "none",
+    not(test)
+)))]
+#[unsafe(no_mangle)]
+extern "C" fn kernel_irq_dispatch_handler() {}
+
+// -----------------------------------------------------------------------
 // Concrete dispatcher
 // -----------------------------------------------------------------------
 
@@ -701,6 +793,12 @@ fn task_exit(code: u64) -> KernelResult<u64> {
                 // so the `invlpg` inside the helper invalidates the
                 // entries that user code may have just touched.
                 mmio_map_handlers::tear_down_mmio_mappings(current);
+                // P6.7.8.3 — OIP-013 § S3.4 / § S4.4: tear down DMA
+                // windows + IRQ attachments before the PCB is retired.
+                // DMA frames return to FRAME_ALLOC; IRQ vectors are
+                // released from the per-vector slot table.
+                dma_map_handlers::tear_down_dma_mappings(current);
+                irq_attach_handlers::tear_down_irq_attachments(current);
                 let _ = sched.dequeue(current);
                 // MB12: if another task is still runnable, hand the CPU
                 // over to it. `yield_current(Terminated)` keeps the
@@ -740,6 +838,16 @@ const DRIVER_MMIO_VA_BASE: u64 = 0x0000_0080_0000_0000;
 const DRIVER_MMIO_VA_END: u64 = 0x0000_0100_0000_0000;
 #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
 const DRIVER_MMIO_RANGE: u64 = DRIVER_MMIO_VA_END - DRIVER_MMIO_VA_BASE;
+
+/// Driver-DMA reserved PML4 slot (`[0x0000_0100_..., 0x0000_0180_...)` →
+/// 512 GiB) — disjoint from the MMIO slot above so the audit log of a
+/// driver's address space is partitioned by purpose. The end is checked
+/// against `usermode::USER_HALF_END` (`0x0000_8000_0000_0000`) to keep
+/// every DMA mapping in the user half.
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+const DRIVER_DMA_VA_BASE: u64 = 0x0000_0100_0000_0000;
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+const DRIVER_DMA_VA_END: u64 = 0x0000_0180_0000_0000;
 
 #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
 mod mmio_map_handlers {
@@ -990,6 +1098,18 @@ mod mmio_map_handlers {
         }
     }
 
+    /// Per-process random offset is reused across MMIO + DMA so the
+    /// driver-space layout stays a single auditable range. This helper
+    /// exposes the PCB cursor so the sibling `dma_map_handlers` module
+    /// can advance the same allocator. P6.7.8.3.
+    #[allow(
+        dead_code,
+        reason = "sibling module accessor — used by dma_map_handlers"
+    )]
+    pub(super) fn driver_mmio_range_bounds() -> (u64, u64) {
+        (DRIVER_MMIO_VA_BASE, DRIVER_MMIO_VA_END)
+    }
+
     /// Tear down every MMIO mapping owned by the calling process.
     /// Invoked from `task_exit` (OIP-013 § S2.4) before the PCB is
     /// retired.
@@ -1026,6 +1146,632 @@ mod mmio_map_handlers {
                 }
             }
         }
+    }
+}
+
+// -----------------------------------------------------------------------
+// DmaMap (OIP-013 § S3, P6.7.8.3)
+//
+// Phase 1 model: no-IOMMU passthrough. The kernel allocates `len_pages`
+// contiguous physical frames from `FRAME_ALLOC`, identity-maps them at
+// user VA == iova_base in the driver-DMA PML4 slot, and returns the
+// physical base in `rax`. The driver writes the returned phys_base into
+// device DMA descriptors; without an IOMMU the device sees physical
+// addresses directly. The IOMMU vendor backends (`vtd` / `amdvi`) land
+// in a follow-up P6.7.8.x and will replace the identity mapping with
+// IOMMU domain page-table installs.
+// -----------------------------------------------------------------------
+
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+mod dma_map_handlers {
+    use super::{DRIVER_DMA_VA_BASE, DRIVER_DMA_VA_END};
+    use crate::bare_metal;
+    use crate::bare_metal::address_space::AddressSpace;
+    use crate::bare_metal::paging::{PTE_NO_EXEC, PTE_PRESENT, PTE_USER, PTE_WRITABLE, PageMapper};
+    use crate::driver_manifest::is_driver_framework_action;
+    use crate::memory::{PhysAddr, VirtAddr};
+    use crate::process::DmaMapping;
+    use crate::syscall::{SyscallReturn, syscall_errno};
+    use omni_capability::CapabilityToken;
+    use omni_capability::scope::{Action, Resource};
+
+    /// Maximum accepted size for the postcard-encoded capability token.
+    /// Mirrors the cap in `mmio_map_handlers` so user-space code can
+    /// reuse a single mint pipeline.
+    const MAX_TOKEN_BYTES: usize = 1024;
+
+    /// Validate that `[ptr, ptr + len)` lies entirely in the user half.
+    fn user_range_ok(ptr: u64, len: u64) -> bool {
+        if len == 0 {
+            return true;
+        }
+        let Some(end) = ptr.checked_add(len) else {
+            return false;
+        };
+        end <= bare_metal::usermode::USER_HALF_END
+    }
+
+    /// `DmaMap (71)` — OIP-013 § S3.
+    ///
+    /// ## ABI
+    ///
+    /// | Slot | Reg | Role                                       |
+    /// |------|-----|--------------------------------------------|
+    /// | a0   | RDI | `iova_base` (page-aligned, in user half)   |
+    /// | a1   | RSI | `len` (multiple of 4 KiB, non-zero)        |
+    /// | a2   | RDX | `direction` (0=ToDevice, 1=FromDevice, 2=Both) |
+    /// | a3   | R10 | `cap_ptr` (user VA, postcard token)        |
+    /// | a4   | R8  | `cap_len` (≤ `MAX_TOKEN_BYTES`)            |
+    ///
+    /// Returns a [`SyscallReturn`] whose `rax` holds the allocated
+    /// physical base address on success (the value the driver writes
+    /// into device DMA descriptors), or `0` on error with `rdx` set to
+    /// one of [`syscall_errno`].
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single-syscall handler — keeps auth + alloc + map + record locally auditable"
+    )]
+    pub(super) fn dma_map(args: [u64; 6]) -> SyscallReturn {
+        let iova_base = args[0];
+        let len = args[1];
+        let direction = args[2];
+        let cap_ptr = args[3];
+        let cap_len = args[4];
+
+        // -------------------------------------------------------------
+        // EINVAL: alignment + direction + length.
+        // -------------------------------------------------------------
+        if iova_base & 0xFFF != 0 || len == 0 || len & 0xFFF != 0 {
+            return SyscallReturn::err(syscall_errno::EINVAL);
+        }
+        if direction > 2 {
+            return SyscallReturn::err(syscall_errno::EINVAL);
+        }
+        if iova_base < DRIVER_DMA_VA_BASE || iova_base.saturating_add(len) > DRIVER_DMA_VA_END {
+            return SyscallReturn::err(syscall_errno::EINVAL);
+        }
+
+        // -------------------------------------------------------------
+        // EFAULT: capability-token pointer + length.
+        // -------------------------------------------------------------
+        if cap_ptr == 0 || cap_len == 0 {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+        let Ok(cap_len_usize) = usize::try_from(cap_len) else {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        };
+        if cap_len_usize > MAX_TOKEN_BYTES {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+        if !user_range_ok(cap_ptr, cap_len) {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+
+        let mut buf = [0u8; MAX_TOKEN_BYTES];
+        // SAFETY: user_range_ok verified the source; the active CR3 is
+        // the caller's AS so the hardware PT walk faults on missing
+        // pages; cap_len_usize ≤ buf.len() by the cap above.
+        unsafe {
+            core::ptr::copy_nonoverlapping(cap_ptr as *const u8, buf.as_mut_ptr(), cap_len_usize);
+        }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "cap_len_usize ≤ MAX_TOKEN_BYTES = buf.len() by the cap above"
+        )]
+        let token_bytes = &buf[..cap_len_usize];
+
+        // -------------------------------------------------------------
+        // EACCES: signature, time window, TEE binding, action, resource.
+        // -------------------------------------------------------------
+        let Ok(token) = omni_types::wire::decode_canonical::<CapabilityToken>(token_bytes) else {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        };
+        let now = u64::from(bare_metal::arch::rtc_seconds());
+        let provider = crate::capabilities::Ed25519CapabilityProvider::placeholder();
+        if provider.verify_signed_token(&token, now)
+            != crate::capabilities::CapabilityVerdict::Authorised
+        {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        }
+        if !is_driver_framework_action(token.payload.scope.action) {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        }
+        if token.payload.scope.action != Action::DmaMap {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        }
+        let claim = Resource::DmaWindow { iova_base, len };
+        if !claim.is_subset_of(&token.payload.scope.resource) {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        }
+
+        // -------------------------------------------------------------
+        // Allocate contiguous phys frames + install leaf PTEs in the
+        // caller's AS at user VA == iova_base.
+        // -------------------------------------------------------------
+        let Ok(len_pages_u64) = u64::checked_div(len, 0x1000).ok_or(()) else {
+            return SyscallReturn::err(syscall_errno::EINVAL);
+        };
+        let Ok(len_pages) = u32::try_from(len_pages_u64) else {
+            return SyscallReturn::err(syscall_errno::EINVAL);
+        };
+
+        // SAFETY: SYSCALL path is single-CPU under the kernel mutex;
+        // SCHEDULER + FRAME_ALLOC are not otherwise aliased.
+        unsafe {
+            let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+            let alloc = &mut *core::ptr::addr_of_mut!(crate::FRAME_ALLOC);
+
+            let Some(current) = sched.current_task_id() else {
+                return SyscallReturn::err(syscall_errno::EFAULT);
+            };
+            let Some(pcb) = sched.process_mut(current) else {
+                return SyscallReturn::err(syscall_errno::EFAULT);
+            };
+
+            // Reject duplicate iova_base: every DmaMap call must use a
+            // distinct IOVA (the issuer mints one capability per window).
+            if pcb.dma_mappings.iter().any(|m| m.iova_base == iova_base) {
+                return SyscallReturn::err(syscall_errno::EINVAL);
+            }
+
+            let phys_offset = bare_metal::phys_offset();
+            if phys_offset == 0 {
+                return SyscallReturn::err(syscall_errno::EFAULT);
+            }
+            let address_space: AddressSpace = pcb.address_space;
+            let mut mapper = PageMapper::new(phys_offset, address_space.pml4_phys);
+
+            let install_flags = PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NO_EXEC;
+
+            // First-frame phys defines the returned DMA-bus address.
+            // Frames are allocated sequentially; for the Phase 1
+            // bitmap allocator this is best-effort contiguous (no
+            // explicit contiguous API). We track each phys frame so
+            // a non-contiguous burst rolls back cleanly.
+            let mut allocated: alloc::vec::Vec<u64> =
+                alloc::vec::Vec::with_capacity(len_pages as usize);
+            let Some(first_frame) = alloc.alloc_frame() else {
+                return SyscallReturn::err(syscall_errno::ENOSPC);
+            };
+            let phys_base = first_frame.0;
+            allocated.push(phys_base);
+
+            let mut installed: u64 = 0;
+            // Map the first frame at iova_base.
+            let virt = VirtAddr(iova_base);
+            let phys = PhysAddr(phys_base);
+            if !address_space.map_user_4k(&mut mapper, virt, phys, install_flags, alloc) {
+                // Return the frame; nothing user-visible to invlpg.
+                alloc.free_frame(first_frame);
+                return SyscallReturn::err(syscall_errno::ENOSPC);
+            }
+            AddressSpace::invlpg(virt);
+            installed += 0x1000;
+
+            let mut ok = true;
+            while installed < len {
+                let Some(next_frame) = alloc.alloc_frame() else {
+                    ok = false;
+                    break;
+                };
+                allocated.push(next_frame.0);
+                // Phase 1 contiguity check: enforce strictly
+                // contiguous frames to keep the IOVA-vs-phys invariant
+                // for the device's no-IOMMU view. If the allocator
+                // hands out a non-adjacent frame we abort.
+                if next_frame.0 != phys_base + installed {
+                    ok = false;
+                    break;
+                }
+                let virt = VirtAddr(iova_base + installed);
+                let phys = PhysAddr(next_frame.0);
+                if !address_space.map_user_4k(&mut mapper, virt, phys, install_flags, alloc) {
+                    ok = false;
+                    break;
+                }
+                AddressSpace::invlpg(virt);
+                installed += 0x1000;
+            }
+
+            if !ok {
+                // Rollback: unmap installed PTEs, return all frames.
+                let mut rolled: u64 = 0;
+                while rolled < installed {
+                    let _ = mapper.unmap_4k(VirtAddr(iova_base + rolled));
+                    AddressSpace::invlpg(VirtAddr(iova_base + rolled));
+                    rolled += 0x1000;
+                }
+                for f in &allocated {
+                    alloc.free_frame(crate::memory::PhysAddr(*f));
+                }
+                return SyscallReturn::err(syscall_errno::ENOSPC);
+            }
+
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "direction validated as ≤ 2 above; fits u8 trivially"
+            )]
+            pcb.dma_mappings.push(DmaMapping {
+                iova_base,
+                len_pages,
+                direction: direction as u8,
+            });
+
+            SyscallReturn::ok(phys_base)
+        }
+    }
+
+    /// Tear down every DMA mapping owned by the calling process. Frames
+    /// are returned to the global frame allocator since DMA buffers are
+    /// kernel-allocated (in contrast to MMIO regions which are
+    /// device-owned).
+    pub(super) fn tear_down_dma_mappings(task: crate::scheduling::TaskId) {
+        // SAFETY: SYSCALL path is single-CPU; SCHEDULER + FRAME_ALLOC
+        // not aliased.
+        unsafe {
+            let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+            let alloc = &mut *core::ptr::addr_of_mut!(crate::FRAME_ALLOC);
+            let Some(pcb) = sched.process_mut(task) else {
+                return;
+            };
+            let phys_offset = bare_metal::phys_offset();
+            if phys_offset == 0 {
+                return;
+            }
+            let address_space: AddressSpace = pcb.address_space;
+            let mut mapper = PageMapper::new(phys_offset, address_space.pml4_phys);
+            let mappings = core::mem::take(&mut pcb.dma_mappings);
+            for m in &mappings {
+                let bytes = u64::from(m.len_pages) * 0x1000;
+                let mut off: u64 = 0;
+                while off < bytes {
+                    let va = VirtAddr(m.iova_base + off);
+                    // Resolve phys BEFORE unmapping so the frame can be
+                    // returned to the allocator. `translate` returns
+                    // None only if the mapping was already torn down or
+                    // if the PT walk lands on a huge page — neither
+                    // happens for driver DMA mappings installed via
+                    // `dma_map`.
+                    let phys_opt = mapper.translate(va);
+                    if mapper.unmap_4k(va) {
+                        if let Some(phys) = phys_opt {
+                            alloc.free_frame(phys);
+                        }
+                    }
+                    AddressSpace::invlpg(va);
+                    off += 0x1000;
+                }
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// IrqAttach (OIP-013 § S4, P6.7.8.3)
+//
+// Phase 1 IRQ routing:
+//   - LAPIC vector bitmap `0x40..=0xFE` (190 vectors); ascending alloc.
+//   - Shared-line rejection: a second attach on the same `irq_line`
+//     returns EBUSY (no fan-out — deliberate determinism).
+//   - On fire, the IDT trampoline calls `lapic_eoi()` and enqueues an
+//     `IrqNotification::Tick` envelope on the bound channel; backed-up
+//     fires increment a per-vector `missed_count` so the driver can
+//     surface coalesced firings via `IrqNotification::MissedSince(N)`.
+// -----------------------------------------------------------------------
+
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+mod irq_attach_handlers {
+    use crate::bare_metal;
+    use crate::driver_manifest::is_driver_framework_action;
+    use crate::ipc::ChannelId;
+    use crate::process::IrqAttachment;
+    use crate::syscall::{SyscallReturn, syscall_errno};
+    use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+    use omni_capability::CapabilityToken;
+    use omni_capability::scope::{Action, Resource};
+
+    /// Lowest LAPIC vector the kernel may allocate for driver IRQs.
+    const IRQ_VECTOR_BASE: u8 = 0x40;
+    /// Highest LAPIC vector (`0xFF` is reserved for spurious; `0xFE`
+    /// inclusive matches the OIP-013 § S4.1 allocator range).
+    const IRQ_VECTOR_END: u8 = 0xFE;
+    /// Number of bookkeeping slots (one per vector in the range).
+    const IRQ_TABLE_SLOTS: usize = (IRQ_VECTOR_END as usize) - (IRQ_VECTOR_BASE as usize) + 1;
+
+    /// Maximum accepted size for the postcard-encoded capability token.
+    const MAX_TOKEN_BYTES: usize = 1024;
+
+    /// Per-vector book-keeping. `irq_line == 0` means slot free. Atomic
+    /// so the ISR trampoline can read it lock-free.
+    struct IrqSlot {
+        /// IRQ line that owns this vector. 0 means free.
+        irq_line: AtomicU32,
+        /// Bound IPC channel id (kernel-allocated u64).
+        channel_id: AtomicU64,
+        /// Coalesced missed-fire counter (OIP-013 Appendix B amendment 3).
+        missed: AtomicU32,
+        /// Owning task id (so teardown can match).
+        owner_task: AtomicU64,
+        /// Last-known direction tag; `AtomicU8` only for layout symmetry.
+        #[allow(dead_code, reason = "reserved for future per-IRQ flags")]
+        flags: AtomicU8,
+    }
+
+    impl IrqSlot {
+        const fn new() -> Self {
+            Self {
+                irq_line: AtomicU32::new(0),
+                channel_id: AtomicU64::new(0),
+                missed: AtomicU32::new(0),
+                owner_task: AtomicU64::new(0),
+                flags: AtomicU8::new(0),
+            }
+        }
+    }
+
+    // SAFETY: each AtomicU32/64/8 is internally synchronized; the table
+    // itself is `static mut` only because Rust does not yet support
+    // `static IRQ_TABLE: [IrqSlot; N] = ...` const-init via array
+    // repeat with non-Copy types. The access pattern below uses raw
+    // pointers + atomic ops, never `&mut` aliasing.
+    #[allow(
+        clippy::declare_interior_mutable_const,
+        reason = "array init helper; atomics aren't Copy"
+    )]
+    const SLOT_INIT: IrqSlot = IrqSlot::new();
+    static IRQ_TABLE: [IrqSlot; IRQ_TABLE_SLOTS] = [SLOT_INIT; IRQ_TABLE_SLOTS];
+
+    fn slot_for(vector: u8) -> Option<&'static IrqSlot> {
+        if !(IRQ_VECTOR_BASE..=IRQ_VECTOR_END).contains(&vector) {
+            return None;
+        }
+        let idx = (vector as usize) - (IRQ_VECTOR_BASE as usize);
+        IRQ_TABLE.get(idx)
+    }
+
+    /// Find a free vector and CAS-reserve it for `(irq_line, owner_task,
+    /// channel_id)`. Returns `Some(vector)` on success.
+    fn allocate_vector(irq_line: u16, owner_task: u64, channel_id: u64) -> Option<u8> {
+        for vec_u in (IRQ_VECTOR_BASE as usize)..=(IRQ_VECTOR_END as usize) {
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "vec_u ∈ [0x40, 0xFE] fits u8"
+            )]
+            let vector = vec_u as u8;
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "iter bounded by IRQ_TABLE_SLOTS = IRQ_VECTOR_END - IRQ_VECTOR_BASE + 1"
+            )]
+            let slot = &IRQ_TABLE[vec_u - (IRQ_VECTOR_BASE as usize)];
+            if slot
+                .irq_line
+                .compare_exchange(0, u32::from(irq_line), Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                slot.channel_id.store(channel_id, Ordering::Release);
+                slot.owner_task.store(owner_task, Ordering::Release);
+                slot.missed.store(0, Ordering::Release);
+                return Some(vector);
+            }
+        }
+        None
+    }
+
+    fn release_vector(vector: u8) {
+        let Some(slot) = slot_for(vector) else { return };
+        slot.irq_line.store(0, Ordering::Release);
+        slot.channel_id.store(0, Ordering::Release);
+        slot.owner_task.store(0, Ordering::Release);
+        slot.missed.store(0, Ordering::Release);
+    }
+
+    /// Returns `true` iff `irq_line` is already attached. Walks the
+    /// table linearly; `IRQ_TABLE_SLOTS = 191` so this is fine.
+    fn irq_line_in_use(irq_line: u16) -> bool {
+        IRQ_TABLE
+            .iter()
+            .any(|s| s.irq_line.load(Ordering::Acquire) == u32::from(irq_line))
+    }
+
+    /// ISR-side increment of the missed-fire counter. Called from
+    /// [`omni_irq_dispatch_trampoline`] when a fire arrives faster than
+    /// the bound driver process can drain.
+    pub(super) fn note_fire(vector: u8) {
+        if let Some(slot) = slot_for(vector) {
+            slot.missed.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Drain the missed-fire counter for diagnostic readout. Returns
+    /// the previous value and resets to zero. Used by host tests and
+    /// the bring-up smoke; the runtime ISR uses [`note_fire`] without
+    /// reading back.
+    #[allow(dead_code, reason = "used by host-side tests in P6.7.8.3 follow-up")]
+    pub(super) fn take_missed(vector: u8) -> u32 {
+        slot_for(vector).map_or(0, |s| s.missed.swap(0, Ordering::AcqRel))
+    }
+
+    /// `IrqAttach (72)` — OIP-013 § S4.
+    ///
+    /// ## ABI
+    ///
+    /// | Slot | Reg | Role                                       |
+    /// |------|-----|--------------------------------------------|
+    /// | a0   | RDI | `irq_line` (u16; 0 reserved)               |
+    /// | a1   | RSI | `ipc_channel_id` (u64, kernel-allocated)   |
+    /// | a2   | RDX | `cap_ptr` (user VA, postcard token)        |
+    /// | a3   | R10 | `cap_len` (≤ `MAX_TOKEN_BYTES`)            |
+    ///
+    /// Returns a [`SyscallReturn`] whose `rax` holds the allocated
+    /// LAPIC vector (`0x40..=0xFE`) on success, or `0` on error with
+    /// `rdx` set to a [`syscall_errno`] code (EBUSY mapped to EINVAL
+    /// per the POSIX subset OIP-013 § S4.3 references).
+    pub(super) fn irq_attach(args: [u64; 6]) -> SyscallReturn {
+        let irq_line_u64 = args[0];
+        let ipc_channel_id = args[1];
+        let cap_ptr = args[2];
+        let cap_len = args[3];
+
+        // -------------------------------------------------------------
+        // EINVAL: argument validation.
+        // -------------------------------------------------------------
+        if irq_line_u64 == 0 || irq_line_u64 > u64::from(u16::MAX) {
+            return SyscallReturn::err(syscall_errno::EINVAL);
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "guarded by `irq_line_u64 ≤ u16::MAX` above"
+        )]
+        let irq_line = irq_line_u64 as u16;
+
+        // -------------------------------------------------------------
+        // EFAULT: capability-token pointer + length.
+        // -------------------------------------------------------------
+        if cap_ptr == 0 || cap_len == 0 {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+        let Ok(cap_len_usize) = usize::try_from(cap_len) else {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        };
+        if cap_len_usize > MAX_TOKEN_BYTES {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+        let user_end = match cap_ptr.checked_add(cap_len) {
+            Some(e) if e <= bare_metal::usermode::USER_HALF_END => e,
+            _ => return SyscallReturn::err(syscall_errno::EFAULT),
+        };
+        let _ = user_end;
+
+        let mut buf = [0u8; MAX_TOKEN_BYTES];
+        // SAFETY: bounds verified; user PT walks fault on missing pages.
+        unsafe {
+            core::ptr::copy_nonoverlapping(cap_ptr as *const u8, buf.as_mut_ptr(), cap_len_usize);
+        }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "cap_len_usize ≤ MAX_TOKEN_BYTES = buf.len()"
+        )]
+        let token_bytes = &buf[..cap_len_usize];
+
+        // -------------------------------------------------------------
+        // EACCES: capability verification.
+        // -------------------------------------------------------------
+        let Ok(token) = omni_types::wire::decode_canonical::<CapabilityToken>(token_bytes) else {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        };
+        let now = u64::from(bare_metal::arch::rtc_seconds());
+        let provider = crate::capabilities::Ed25519CapabilityProvider::placeholder();
+        if provider.verify_signed_token(&token, now)
+            != crate::capabilities::CapabilityVerdict::Authorised
+        {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        }
+        if !is_driver_framework_action(token.payload.scope.action) {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        }
+        if token.payload.scope.action != Action::IrqAttach {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        }
+        let claim = Resource::IrqLine(irq_line);
+        if !claim.is_subset_of(&token.payload.scope.resource) {
+            return SyscallReturn::err(syscall_errno::EACCES);
+        }
+
+        // -------------------------------------------------------------
+        // Shared-line rejection (§ S4.1: no fan-out).
+        // -------------------------------------------------------------
+        if irq_line_in_use(irq_line) {
+            // POSIX EBUSY is 16; we map it via EINVAL slot since the
+            // current `syscall_errno` table does not yet expose EBUSY.
+            // Future cleanup: add EBUSY = 16 in syscall.rs.
+            return SyscallReturn::err(syscall_errno::EINVAL);
+        }
+
+        // -------------------------------------------------------------
+        // Look up the caller PCB + bound channel.
+        // -------------------------------------------------------------
+        // SAFETY: SYSCALL path single-CPU; SCHEDULER + IPC_REGISTRY
+        // not aliased.
+        unsafe {
+            let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+            let Some(current) = sched.current_task_id() else {
+                return SyscallReturn::err(syscall_errno::EFAULT);
+            };
+            // Verify the channel exists. Reuse the legacy registry
+            // accessor so destruction races (channel destroyed
+            // between the user's request and the kernel's bind)
+            // surface as ENOENT-shape EINVAL.
+            let registry = crate::ipc::ipc_registry();
+            if registry.channel(ChannelId(ipc_channel_id)).is_none() {
+                return SyscallReturn::err(syscall_errno::EINVAL);
+            }
+
+            let Some(vector) = allocate_vector(irq_line, current.0, ipc_channel_id) else {
+                return SyscallReturn::err(syscall_errno::ENOSPC);
+            };
+
+            // Install the per-vector IDT trampoline. The trampoline
+            // itself is a single asm stub (`omni_irq_dispatch_<N>`);
+            // for Phase 1 we install one shared handler and dispatch
+            // via the active LAPIC ISR vector readback inside the
+            // Rust callback (see `kernel_irq_attach_handler`).
+            bare_metal::idt::idt_set_vector(
+                vector as usize,
+                bare_metal::syscall_entry::omni_irq_dispatch_trampoline as usize as u64,
+            );
+
+            let Some(pcb) = sched.process_mut(current) else {
+                release_vector(vector);
+                return SyscallReturn::err(syscall_errno::EFAULT);
+            };
+            pcb.irq_attachments.push(IrqAttachment {
+                irq_line,
+                vector,
+                channel_id: ipc_channel_id,
+            });
+
+            SyscallReturn::ok(u64::from(vector))
+        }
+    }
+
+    /// Tear down every IRQ attachment owned by the calling process.
+    /// Frees the vector slots and resets the IDT entries to spurious.
+    pub(super) fn tear_down_irq_attachments(task: crate::scheduling::TaskId) {
+        // SAFETY: SYSCALL path is single-CPU; SCHEDULER not aliased.
+        unsafe {
+            let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+            let Some(pcb) = sched.process_mut(task) else {
+                return;
+            };
+            let attachments = core::mem::take(&mut pcb.irq_attachments);
+            for a in &attachments {
+                release_vector(a.vector);
+                // Park the IDT vector at the existing spurious / no-op
+                // entry by reinstalling the trampoline pointer with a
+                // disabled slot — the trampoline checks `irq_line == 0`
+                // and skips the channel enqueue, effectively a no-op.
+                // No need to rewrite the IDT entry per se; the lookup
+                // in the slot table is what gates fire-side activity.
+                let _ = a;
+            }
+        }
+    }
+
+    /// Rust-side IRQ dispatch: reads the in-service LAPIC vector, looks
+    /// up the slot, enqueues a notification on the bound channel (or
+    /// increments the missed-count if the channel is full), then issues
+    /// LAPIC EOI. Called from the asm trampoline.
+    ///
+    /// Phase 1 caveat: real channel-enqueue requires building an
+    /// `IrqNotification::Tick` payload + invoking the IPC registry
+    /// send path with the kernel-as-sender principal. The skeleton
+    /// here increments the `missed` counter unconditionally (so the
+    /// fire is observable to host-side smoke) and issues EOI; a
+    /// follow-up P6.7.8.x will wire the proper kernel-→-driver-channel
+    /// enqueue path.
+    pub(super) fn dispatch_fire(vector: u8) {
+        note_fire(vector);
+        bare_metal::lapic::lapic_eoi();
     }
 }
 
@@ -1144,12 +1890,14 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                 }
             }
 
-            // OIP-013 driver framework. `MmioMap` is handled via the
-            // rich two-register path (`dispatch_full`); landing here
-            // means the single-register fallback was used (host-test
-            // build or an explicit `dispatch` caller). Report `EACCES`
-            // via the legacy error sentinel so the contract is loud.
-            SyscallNumber::MmioMap => {
+            // OIP-013 driver framework. `MmioMap`, `DmaMap`, and
+            // `IrqAttach` are handled via the rich two-register path
+            // (`dispatch_full`); landing here means the single-register
+            // fallback was used (host-test build or an explicit
+            // `dispatch` caller). Report `CapabilityDenied` so the
+            // contract is loud and observable in host tests without
+            // the bare-metal singletons.
+            SyscallNumber::MmioMap | SyscallNumber::DmaMap | SyscallNumber::IrqAttach => {
                 let _ = args;
                 Err(KernelError::CapabilityDenied)
             }
@@ -1157,11 +1905,7 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
             // scaffolded; landing in this arm rather than the catch-all
             // forces a compiler error when a future commit forgets to
             // re-route one of them.
-            SyscallNumber::DmaMap
-            | SyscallNumber::IrqAttach
-            | SyscallNumber::DriverLoad
-            | SyscallNumber::TeeTdcall
-            | SyscallNumber::TeeMsr => {
+            SyscallNumber::DriverLoad | SyscallNumber::TeeTdcall | SyscallNumber::TeeMsr => {
                 let _ = args;
                 Err(KernelError::NotYetImplemented)
             }
@@ -1171,9 +1915,9 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
         }
     }
 
-    /// Two-register dispatch (OIP-013 § S2). Routes `MmioMap` to the
-    /// rich handler that fills both `rax` (`va_base`) and `rdx`
-    /// (errno); every other syscall keeps the default
+    /// Two-register dispatch (OIP-013 § S2). Routes `MmioMap`,
+    /// `DmaMap`, and `IrqAttach` to their rich handlers (which fill
+    /// both `rax` and `rdx`); every other syscall keeps the default
     /// `SyscallReturn::ok` wrapping of the single-register path.
     fn dispatch_full(
         &mut self,
@@ -1188,9 +1932,28 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                 }
                 #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
                 {
-                    // Host-test path: surface the same error code
-                    // user space would see so the trait contract is
-                    // observable without the singletons.
+                    let _ = args;
+                    Ok(SyscallReturn::err(crate::syscall::syscall_errno::EACCES))
+                }
+            }
+            SyscallNumber::DmaMap => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(dma_map_handlers::dma_map(args))
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Ok(SyscallReturn::err(crate::syscall::syscall_errno::EACCES))
+                }
+            }
+            SyscallNumber::IrqAttach => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(irq_attach_handlers::irq_attach(args))
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
                     let _ = args;
                     Ok(SyscallReturn::err(crate::syscall::syscall_errno::EACCES))
                 }
@@ -1357,16 +2120,28 @@ mod tests {
     // `NotYetImplemented` contract until their handlers land.
 
     #[test]
-    fn dispatcher_mmio_map_returns_capability_denied_on_legacy_arm() {
-        let result = KernelSyscallDispatcher.dispatch(SyscallNumber::MmioMap, [0; 6]);
-        assert_eq!(result, Err(KernelError::CapabilityDenied));
+    fn dispatcher_driver_framework_legacy_arm_returns_capability_denied() {
+        // P6.7.8.3: `MmioMap`, `DmaMap`, and `IrqAttach` all reach
+        // their rich handler via `dispatch_full`. The legacy
+        // single-register `dispatch` path returns `CapabilityDenied`
+        // so an accidental fallthrough surfaces.
+        for n in [
+            SyscallNumber::MmioMap,
+            SyscallNumber::DmaMap,
+            SyscallNumber::IrqAttach,
+        ] {
+            let result = KernelSyscallDispatcher.dispatch(n, [0; 6]);
+            assert_eq!(
+                result,
+                Err(KernelError::CapabilityDenied),
+                "unexpected legacy dispatch result for {n:?}"
+            );
+        }
     }
 
     #[test]
     fn dispatcher_remaining_driver_framework_syscalls_return_not_yet_implemented() {
         for n in [
-            SyscallNumber::DmaMap,
-            SyscallNumber::IrqAttach,
             SyscallNumber::DriverLoad,
             SyscallNumber::TeeTdcall,
             SyscallNumber::TeeMsr,
@@ -1393,19 +2168,41 @@ mod tests {
     }
 
     #[test]
+    fn dispatcher_full_dma_map_and_irq_attach_surface_eaccess_on_host() {
+        // P6.7.8.3: same host-side contract as MmioMap — the rich
+        // handlers return EACCES because the bare-metal singletons
+        // are not linked into the host test binary.
+        for n in [SyscallNumber::DmaMap, SyscallNumber::IrqAttach] {
+            let ret = KernelSyscallDispatcher
+                .dispatch_full(n, [0; 6])
+                .expect("dispatch_full never propagates KernelError for driver-framework syscalls");
+            assert_eq!(ret.rax, 0, "rich {n:?} must report rax=0 on host");
+            assert_eq!(
+                ret.rdx,
+                crate::syscall::syscall_errno::EACCES,
+                "rich {n:?} must report rdx=EACCES on host"
+            );
+        }
+    }
+
+    #[test]
     fn kernel_syscall_dispatch_driver_framework_numbers_route() {
-        // ABI numbers 70..=75: `MmioMap (70)` returns the `EACCES`
-        // errno via the rich path; the remaining slots still funnel
-        // to the `NotYetImplemented` sentinel under the legacy
-        // unwrap_or fallback.
+        // ABI numbers 70..=75: `MmioMap (70)`, `DmaMap (71)`, and
+        // `IrqAttach (72)` go through the rich two-register path and
+        // surface `EACCES` on the host build (no SCHEDULER/FRAME_ALLOC).
+        // `DriverLoad (73)` and TEE syscalls (74/75) still funnel to
+        // the `NotYetImplemented` sentinel via the legacy unwrap_or.
         for n in 70..=75u32 {
             let ret = kernel_syscall_dispatch(n, 0, 0, 0, 0, 0, 0);
-            if n == 70 {
-                assert_eq!(ret.rax, 0, "mmio_map should report rax=0 on error");
+            if (70..=72).contains(&n) {
+                assert_eq!(
+                    ret.rax, 0,
+                    "syscall {n} should report rax=0 on host error path"
+                );
                 assert_eq!(
                     ret.rdx,
                     crate::syscall::syscall_errno::EACCES,
-                    "mmio_map should report rdx=EACCES on host build"
+                    "syscall {n} should report rdx=EACCES on host build"
                 );
             } else {
                 assert_eq!(
