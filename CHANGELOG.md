@@ -15,6 +15,10 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ## [Unreleased]
 
+_No changes yet._
+
+## [0.3.0-alpha.1] — 2026-05-20
+
 ### Added
 
 - **Kernel — MB14.h.2: cross-CPU context switch (2026-05-20).**
