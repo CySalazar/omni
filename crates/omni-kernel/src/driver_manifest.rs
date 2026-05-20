@@ -60,24 +60,34 @@
 //!   handler being wired beyond `NotYetImplemented`).
 //! - It does not enforce the `not_after ≤ 90 days` token-lifetime cap
 //!   from § S1.2; that lives in the `omni-capability::token` mint path.
-//! - It does not yet `postcard::from_bytes` the manifest payload —
-//!   [`postcard_decode_manifest`] is a stub returning
-//!   [`DriverManifestError::ParserNotWired`] because the `postcard`
-//!   crate is not yet pulled into the kernel surface. A handcrafted
-//!   byte-deterministic encoder is used internally by
-//!   [`verify_manifest`] for the signing payload; it is transitional
-//!   and is replaced by the same `postcard` pass that wires the
-//!   decoder in P6.7.8.
 //! - It does not maintain per-driver state; the manifest is consumed
 //!   at load time and the kernel-side driver record is owned by the
 //!   `process` module.
+//!
+//! ## Signing payload (P6.7.8.0)
+//!
+//! As of P6.7.8.0 the canonical signing payload is the
+//! [`omni_types::wire`] (postcard) encoding of [`DriverManifestBody`]
+//! — `(meta_no_signature, capabilities, matchers)` — exactly as
+//! mandated by OIP-013 § S5.3 step 5. The handcrafted byte-deterministic
+//! encoder used by the P6.7.3 / P6.7.3.bis skeleton has been retired;
+//! the public Rust API ([`verify_manifest`], [`postcard_decode_manifest`])
+//! is unchanged, but the wire bytes are now postcard-formatted, so the
+//! `omni-driver-pack` build helper (out-of-tree, P6.7.8.x) MUST sign
+//! the same `encode_canonical(&body)` bytes.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use omni_capability::scope::{Action, Resource};
+// `Vec` is imported above for the public schema fields
+// (`DriverCapabilities::*`, `DriverMatchers::pci_vendor_device`,
+// `DriverMatchers::acpi_hid`). The handcrafted byte encoder that used
+// `Vec` directly was retired in P6.7.8.0.
 use omni_crypto::hash::{Blake3, HASH_LEN, OmniHash};
 use omni_crypto::signing::{OmniSignature, OmniVerifyingKey, SIGNATURE_LEN, VERIFYING_KEY_LEN};
+use omni_types::wire::{decode_canonical, encode_canonical};
+use serde::{Deserialize, Serialize};
 
 use crate::known_issuers::lookup_issuer;
 
@@ -90,7 +100,11 @@ use crate::known_issuers::lookup_issuer;
 /// The structure mirrors the three TOML tables (`[meta]`,
 /// `[capabilities]`, `[matchers]`). The signature in `meta.signature`
 /// covers the postcard canonical encoding of
-/// `(meta_no_signature, capabilities, matchers)`.
+/// `(meta_no_signature, capabilities, matchers)`, exported as
+/// [`DriverManifestBody`]. `DriverManifest` itself is NOT
+/// `Serialize`/`Deserialize`: the 64-byte signature lives in the
+/// separate `signature` section of the omni-pack envelope, never in
+/// the postcard payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverManifest {
     /// Driver identity and signature material.
@@ -104,7 +118,9 @@ pub struct DriverManifest {
     pub matchers: DriverMatchers,
 }
 
-/// Driver identity and signature material.
+/// Driver identity and signature material. Not `Serialize`/`Deserialize`
+/// because the 64-byte signature has no built-in serde impl; the wire
+/// type is [`DriverMetaBody`], which omits the signature field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverMeta {
     /// Short ASCII name — used in boot logs and as the IPC channel
@@ -133,7 +149,7 @@ pub struct DriverMeta {
 /// Each entry maps to a token the user-space loader MUST present
 /// alongside the image; the manifest is the kernel's machine-readable
 /// enumeration of what the loader will be asked to authorise.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct DriverCapabilities {
     /// `(Action::MmioMap, Resource::MmioRegion { .. })` claims.
     pub mmio_regions: Vec<Resource>,
@@ -148,7 +164,7 @@ pub struct DriverCapabilities {
 
 /// PCI / ACPI match-table the kernel uses to decide which devices to
 /// hand off to this driver.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct DriverMatchers {
     /// Vendor + device PCI id pairs.
     pub pci_vendor_device: Vec<PciMatcher>,
@@ -157,7 +173,7 @@ pub struct DriverMatchers {
 }
 
 /// `(vendor, device)` PCI matcher pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PciMatcher {
     /// 16-bit PCI vendor id.
     pub vendor: u16,
@@ -183,6 +199,87 @@ pub const OMNI_PACK_MAX_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Upper bound on the postcard manifest section (OIP-013 § S5.5).
 pub const OMNI_PACK_MAX_MANIFEST_BYTES: u64 = 16 * 1024;
+
+/// Manifest payload covered by the Ed25519 signature
+/// (`OIP-Driver-Framework-013` § S5.3 step 5).
+///
+/// `DriverManifestBody` is the postcard wire-format type the
+/// `omni-driver-pack` build helper signs and the kernel verifies.
+/// It is `DriverManifest` minus the `omni_signature` byte field —
+/// signing a payload that contains its own signature would be
+/// circular, so the signature lives in the separate `signature`
+/// section of the omni-pack envelope (see [`OmniPackSections`]).
+///
+/// The field order here is normative: postcard's canonical encoding
+/// emits fields in textual declaration order, and reordering would
+/// break every signature minted against the prior bytes. Adding new
+/// fields is a wire-format major bump under OIP-Serde-004.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriverManifestBody {
+    /// `meta` minus the signature field.
+    pub meta: DriverMetaBody,
+    /// Capability declarations.
+    pub capabilities: DriverCapabilities,
+    /// Device-match table.
+    pub matchers: DriverMatchers,
+}
+
+/// Identity portion of [`DriverManifestBody`] — every [`DriverMeta`]
+/// field except the signature.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriverMetaBody {
+    /// See [`DriverMeta::name`].
+    pub name: String,
+    /// See [`DriverMeta::version`].
+    pub version: String,
+    /// See [`DriverMeta::omni_image_hash`].
+    pub omni_image_hash: [u8; HASH_LEN],
+    /// See [`DriverMeta::omni_issuer_pubkey`].
+    pub omni_issuer_pubkey: [u8; VERIFYING_KEY_LEN],
+}
+
+impl DriverManifest {
+    /// Project this manifest onto its signed body, dropping the
+    /// `omni_signature` field. The result is the exact payload an
+    /// Ed25519 signature MUST cover (OIP-013 § S5.3 step 5).
+    #[must_use]
+    pub fn body(&self) -> DriverManifestBody {
+        DriverManifestBody {
+            meta: DriverMetaBody {
+                name: self.meta.name.clone(),
+                version: self.meta.version.clone(),
+                omni_image_hash: self.meta.omni_image_hash,
+                omni_issuer_pubkey: self.meta.omni_issuer_pubkey,
+            },
+            capabilities: self.capabilities.clone(),
+            matchers: self.matchers.clone(),
+        }
+    }
+}
+
+/// Hydrate a [`DriverManifest`] from its decoded body and signature.
+///
+/// Combines a postcard-decoded [`DriverManifestBody`] with the raw
+/// Ed25519 signature from the omni-pack envelope. This is the inverse
+/// of [`DriverManifest::body`] and the canonical way to build a
+/// `DriverManifest` at `DriverLoad`.
+#[must_use]
+pub fn hydrate_manifest(
+    body: DriverManifestBody,
+    signature: [u8; SIGNATURE_LEN],
+) -> DriverManifest {
+    DriverManifest {
+        meta: DriverMeta {
+            name: body.meta.name,
+            version: body.meta.version,
+            omni_image_hash: body.meta.omni_image_hash,
+            omni_issuer_pubkey: body.meta.omni_issuer_pubkey,
+            omni_signature: signature,
+        },
+        capabilities: body.capabilities,
+        matchers: body.matchers,
+    }
+}
 
 /// Borrowed view over the three sections of an omni-pack v1 blob:
 /// `manifest.pc`, `signature`, `image.elf`. Returned by
@@ -228,12 +325,6 @@ pub enum DriverManifestError {
     /// section exceeds [`OMNI_PACK_MAX_MANIFEST_BYTES`]. Surfaced as
     /// `EINVAL`.
     PackTooLarge,
-    /// `postcard::from_bytes::<DriverManifestV1>(manifest_section)`
-    /// is not yet wired in this skeleton — see module docs and
-    /// [`postcard_decode_manifest`]. Distinct from
-    /// [`Self::MalformedPack`]: the *outer* container is valid, but
-    /// the inner manifest payload cannot yet be decoded.
-    ParserNotWired,
     /// The manifest's `omni_issuer_pubkey` does not appear in
     /// [`crate::known_issuers::KNOWN_ISSUERS`]. Surfaced as `EACCES`.
     UnknownIssuer,
@@ -341,19 +432,25 @@ pub fn decode_omni_pack(pack_bytes: &[u8]) -> Result<OmniPackSections<'_>, Drive
 }
 
 /// Decode a `manifest.pc` byte slice (the postcard canonical encoding
-/// of `DriverManifestV1`) into a [`DriverManifest`].
+/// of [`DriverManifestBody`]) into the in-memory body.
+///
+/// Wired in P6.7.8.0 via [`omni_types::wire::decode_canonical`], which
+/// enforces the no-trailing-bytes invariant from `OIP-Serde-004` (any
+/// extra data past the canonical encoding is rejected — the property
+/// that prevents an attacker from smuggling data past a signature
+/// pre-image).
 ///
 /// # Errors
 ///
-/// Returns [`DriverManifestError::ParserNotWired`] until P6.7.8
-/// wires `postcard` into the kernel surface. The entry-point exists
-/// so call-sites (the `DriverLoad` syscall handler, test fixtures)
-/// can be authored today against the final ABI.
+/// - [`DriverManifestError::MalformedPack`] — `manifest_bytes` does
+///   not parse as the canonical encoding of a [`DriverManifestBody`]
+///   (truncated input, invalid varint, unexpected type tag, or
+///   trailing bytes past the canonical encoding).
 pub fn postcard_decode_manifest(
     manifest_bytes: &[u8],
-) -> Result<DriverManifest, DriverManifestError> {
-    let _ = manifest_bytes;
-    Err(DriverManifestError::ParserNotWired)
+) -> Result<DriverManifestBody, DriverManifestError> {
+    decode_canonical::<DriverManifestBody>(manifest_bytes)
+        .map_err(|_| DriverManifestError::MalformedPack)
 }
 
 // Little-endian helpers. Bounds check inline so a maliciously-crafted
@@ -446,126 +543,16 @@ pub fn verify_manifest(
     let verifying_key = OmniVerifyingKey::from_bytes(&manifest.meta.omni_issuer_pubkey)
         .map_err(|_| DriverManifestError::SignatureInvalid)?;
 
-    // 3. Build the signing payload (manifest with signature zeroed)
-    //    and verify.
-    let payload = build_signing_payload(manifest);
+    // 3. Encode the canonical signing payload (the manifest body —
+    //    the manifest minus the signature field) and verify. The
+    //    payload bytes are the same `omni_types::wire` encoding that
+    //    `omni-driver-pack` signs offline.
+    let payload =
+        encode_canonical(&manifest.body()).map_err(|_| DriverManifestError::SignatureInvalid)?;
     let signature = OmniSignature::from_bytes(manifest.meta.omni_signature);
     verifying_key
         .verify(&payload, &signature)
         .map_err(|_| DriverManifestError::SignatureInvalid)
-}
-
-/// Build the canonical signing payload for a [`DriverManifest`].
-///
-/// The payload is the byte concatenation
-/// `name_len:u32_le || name || version_len:u32_le || version || omni_image_hash || omni_issuer_pubkey || capabilities_canonical || matchers_canonical`
-/// where each `*_canonical` block is in turn a length-prefixed
-/// concatenation of the variant-tagged resource / matcher records.
-///
-/// Postcard is the natural encoding here (and the OIP-013 § S5.3 step 5
-/// spec text mandates it: the kernel verifies the Ed25519 signature
-/// over the `manifest.pc` bytes, which is the postcard canonical
-/// encoding of `DriverManifestV1`). The handcrafted encoder shipped
-/// in this skeleton is byte-deterministic and covers the schema
-/// fields locked here, but it MUST be replaced with the postcard
-/// pass when [`postcard_decode_manifest`] is wired in P6.7.8.
-/// Until then, signing-side tools (the `omni-driver-pack` build
-/// helper) MUST mirror this exact encoding.
-fn build_signing_payload(manifest: &DriverManifest) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::new();
-
-    push_lenprefixed_str(&mut out, &manifest.meta.name);
-    push_lenprefixed_str(&mut out, &manifest.meta.version);
-    out.extend_from_slice(&manifest.meta.omni_image_hash);
-    // Issuer pubkey is a fixed-length field — no length prefix needed.
-    out.extend_from_slice(&manifest.meta.omni_issuer_pubkey);
-
-    push_resource_vec(&mut out, &manifest.capabilities.mmio_regions);
-    push_resource_vec(&mut out, &manifest.capabilities.dma_windows);
-    push_resource_vec(&mut out, &manifest.capabilities.irq_lines);
-    push_resource_vec(&mut out, &manifest.capabilities.pci_devices);
-
-    push_pci_matchers(&mut out, &manifest.matchers.pci_vendor_device);
-    push_string_vec(&mut out, &manifest.matchers.acpi_hid);
-
-    out
-}
-
-fn push_lenprefixed_str(out: &mut Vec<u8>, s: &str) {
-    let len = u32::try_from(s.len()).unwrap_or(u32::MAX);
-    out.extend_from_slice(&len.to_le_bytes());
-    out.extend_from_slice(s.as_bytes());
-}
-
-fn push_string_vec(out: &mut Vec<u8>, v: &[String]) {
-    let len = u32::try_from(v.len()).unwrap_or(u32::MAX);
-    out.extend_from_slice(&len.to_le_bytes());
-    for s in v {
-        push_lenprefixed_str(out, s);
-    }
-}
-
-fn push_resource_vec(out: &mut Vec<u8>, v: &[Resource]) {
-    let len = u32::try_from(v.len()).unwrap_or(u32::MAX);
-    out.extend_from_slice(&len.to_le_bytes());
-    for r in v {
-        encode_resource(out, r);
-    }
-}
-
-// Tag bytes are stable; appending new variants MUST use new tags.
-// Only the variants relevant to driver manifests are encoded here; an
-// `Action::*` variant outside this list is rejected by the syscall
-// layer before the encoder ever sees it.
-const TAG_MMIO: u8 = 0x10;
-const TAG_DMA: u8 = 0x11;
-const TAG_IRQ: u8 = 0x12;
-const TAG_PCI: u8 = 0x13;
-
-fn encode_resource(out: &mut Vec<u8>, r: &Resource) {
-    match *r {
-        Resource::MmioRegion { phys_base, len } => {
-            out.push(TAG_MMIO);
-            out.extend_from_slice(&phys_base.to_le_bytes());
-            out.extend_from_slice(&len.to_le_bytes());
-        }
-        Resource::DmaWindow { iova_base, len } => {
-            out.push(TAG_DMA);
-            out.extend_from_slice(&iova_base.to_le_bytes());
-            out.extend_from_slice(&len.to_le_bytes());
-        }
-        Resource::IrqLine(line) => {
-            out.push(TAG_IRQ);
-            out.extend_from_slice(&line.to_le_bytes());
-        }
-        Resource::PciDevice {
-            segment,
-            bus,
-            device,
-            function,
-        } => {
-            out.push(TAG_PCI);
-            out.extend_from_slice(&segment.to_le_bytes());
-            out.push(bus);
-            out.push(device);
-            out.push(function);
-        }
-        // Other Resource variants are not part of the driver-manifest
-        // capability set; encode them as a 0-byte tag so the encoder
-        // never panics — `verify_manifest` would have rejected the
-        // manifest at the matcher walk before reaching here in a real
-        // call path.
-        _ => out.push(0),
-    }
-}
-
-fn push_pci_matchers(out: &mut Vec<u8>, v: &[PciMatcher]) {
-    let len = u32::try_from(v.len()).unwrap_or(u32::MAX);
-    out.extend_from_slice(&len.to_le_bytes());
-    for m in v {
-        out.extend_from_slice(&m.vendor.to_le_bytes());
-        out.extend_from_slice(&m.device.to_le_bytes());
-    }
 }
 
 // =============================================================================
@@ -641,11 +628,59 @@ mod tests {
     }
 
     #[test]
-    fn postcard_decode_manifest_returns_parser_not_wired() {
+    fn postcard_round_trip_manifest_body_preserves_fields() {
+        let m = empty_manifest([1; VERIFYING_KEY_LEN], [2; SIGNATURE_LEN], [3; HASH_LEN]);
+        let body = m.body();
+        let bytes = encode_canonical(&body).unwrap();
+        let decoded = postcard_decode_manifest(&bytes).unwrap();
+        assert_eq!(decoded, body);
+        // Round-tripping through hydrate_manifest with the original
+        // signature recovers the full DriverManifest.
+        let rebuilt = hydrate_manifest(decoded, m.meta.omni_signature);
+        assert_eq!(rebuilt, m);
+    }
+
+    #[test]
+    fn postcard_decode_manifest_rejects_trailing_bytes() {
+        let body = empty_manifest([0; VERIFYING_KEY_LEN], [0; SIGNATURE_LEN], [0; HASH_LEN]).body();
+        let mut bytes = encode_canonical(&body).unwrap();
+        bytes.push(0xFF);
         assert_eq!(
-            postcard_decode_manifest(&[0; 0]),
-            Err(DriverManifestError::ParserNotWired)
+            postcard_decode_manifest(&bytes),
+            Err(DriverManifestError::MalformedPack)
         );
+    }
+
+    #[test]
+    fn postcard_decode_manifest_rejects_truncated_input() {
+        let body = empty_manifest([0; VERIFYING_KEY_LEN], [0; SIGNATURE_LEN], [0; HASH_LEN]).body();
+        let bytes = encode_canonical(&body).unwrap();
+        let truncated = &bytes[..bytes.len() - 1];
+        assert_eq!(
+            postcard_decode_manifest(truncated),
+            Err(DriverManifestError::MalformedPack)
+        );
+    }
+
+    #[test]
+    fn postcard_decode_manifest_rejects_empty_input() {
+        assert_eq!(
+            postcard_decode_manifest(&[]),
+            Err(DriverManifestError::MalformedPack)
+        );
+    }
+
+    #[test]
+    fn body_round_trip_through_omni_pack_envelope() {
+        // End-to-end: serialize body → place into omni-pack → decode_omni_pack
+        // → postcard_decode_manifest → hydrate_manifest = original.
+        let m = empty_manifest([5; VERIFYING_KEY_LEN], [6; SIGNATURE_LEN], [7; HASH_LEN]);
+        let body_bytes = encode_canonical(&m.body()).unwrap();
+        let pack = build_pack(&body_bytes, &m.meta.omni_signature, &[0xCC; 32]);
+        let sections = decode_omni_pack(&pack).unwrap();
+        let decoded_body = postcard_decode_manifest(sections.manifest).unwrap();
+        let rebuilt = hydrate_manifest(decoded_body, *sections.signature);
+        assert_eq!(rebuilt, m);
     }
 
     #[test]
@@ -672,25 +707,36 @@ mod tests {
     }
 
     #[test]
-    fn build_signing_payload_is_deterministic() {
+    fn signing_payload_is_deterministic() {
         let mut m = empty_manifest([9; VERIFYING_KEY_LEN], [7; SIGNATURE_LEN], [3; HASH_LEN]);
-        let a = build_signing_payload(&m);
-        let b = build_signing_payload(&m);
+        let a = encode_canonical(&m.body()).unwrap();
+        let b = encode_canonical(&m.body()).unwrap();
         assert_eq!(a, b);
         // Different field content produces a different payload.
         m.meta.name = "different".to_string();
-        let c = build_signing_payload(&m);
+        let c = encode_canonical(&m.body()).unwrap();
         assert_ne!(a, c);
     }
 
     #[test]
-    fn signing_payload_encodes_capability_subset() {
-        // A manifest with one MMIO + one IRQ MUST produce a strictly
-        // longer payload than the same manifest with capabilities
-        // empty, and the suffix MUST encode the cap fields in a
-        // stable order (mmio, dma, irq, pci).
+    fn signing_payload_omits_signature_field() {
+        // Two manifests that differ ONLY in their `omni_signature` MUST
+        // produce identical signing payloads — the signature cannot
+        // sign itself (OIP-013 § S5.3 step 5).
+        let m1 = empty_manifest([0; VERIFYING_KEY_LEN], [0xAA; SIGNATURE_LEN], [0; HASH_LEN]);
+        let m2 = empty_manifest([0; VERIFYING_KEY_LEN], [0xBB; SIGNATURE_LEN], [0; HASH_LEN]);
+        assert_eq!(
+            encode_canonical(&m1.body()).unwrap(),
+            encode_canonical(&m2.body()).unwrap(),
+        );
+    }
+
+    #[test]
+    fn signing_payload_grows_with_capabilities() {
+        // Adding capabilities MUST produce a strictly longer payload
+        // than the empty-capabilities baseline.
         let mut m = empty_manifest([0; VERIFYING_KEY_LEN], [0; SIGNATURE_LEN], [0; HASH_LEN]);
-        let baseline = build_signing_payload(&m);
+        let baseline = encode_canonical(&m.body()).unwrap();
 
         m.capabilities = DriverCapabilities {
             mmio_regions: vec![Resource::MmioRegion {
@@ -701,14 +747,8 @@ mod tests {
             irq_lines: vec![Resource::IrqLine(33)],
             pci_devices: vec![],
         };
-        let with_caps = build_signing_payload(&m);
-
+        let with_caps = encode_canonical(&m.body()).unwrap();
         assert!(with_caps.len() > baseline.len());
-        // The MMIO tag MUST appear before the IRQ tag in the encoded
-        // bytes — the order is part of the canonical contract.
-        let mmio_pos = with_caps.iter().position(|b| *b == TAG_MMIO).unwrap();
-        let irq_pos = with_caps.iter().position(|b| *b == TAG_IRQ).unwrap();
-        assert!(mmio_pos < irq_pos);
     }
 
     #[test]
