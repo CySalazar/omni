@@ -65,6 +65,7 @@
 
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
+pub mod amdvi;
 pub mod dmar;
 pub mod domain;
 pub mod ivrs;
