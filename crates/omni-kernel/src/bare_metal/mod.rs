@@ -164,6 +164,7 @@ pub mod graphics;
 pub mod heap;
 pub mod idt;
 pub mod input;
+pub mod iommu;
 pub mod ipi;
 #[cfg(target_arch = "x86_64")]
 pub mod lapic;
