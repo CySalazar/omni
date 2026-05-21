@@ -17,6 +17,52 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Driver SDK — P6.7.8.10 `omni-driver-shared` crate + live wiring (2026-05-21).**
+  Closes the `OIP-013` § S5.3 step 8 deposit-trampoline arc by adding a
+  dep-free `no_std` workspace member that every first-party driver image
+  links to read the kernel-deposited `CapabilityToken` blobs at the
+  well-known user-VA `0x0010_0000`. The crate exposes
+  `caps::find_token(action_tag, predicate) -> Option<&'static [u8]>` for
+  production driver `_start` and `caps::find_token_in_buf(buf, ..)` for
+  host tests, plus the constants (`DRIVER_CAP_DEPOSIT_VA`,
+  `DRIVER_CAP_DEPOSIT_LEN`, `MAX_ENTRIES`, `ACTION_TAG_*`), a
+  `#[repr(C)]` header layout type (`OmniCapsHeader`), and a typed error
+  enum (`OmniCapsError::{InvalidMagic, UnsupportedVersion,
+  EntryCountExceeded, OutOfBoundsOffset}`).
+
+  **Live wiring of the 3 driver-image siblings**
+  (`crates/omni-driver-{net-virtio,nvme,e1000e}-image/src/main.rs`):
+  each `_start` ELF entry now reads its 3 deposited tokens via
+  `find_token`, issues real `MmioMap (70)` / `DmaMap (71)` /
+  `IrqAttach (72)` syscalls against manifest-pinned BAR addresses
+  (virtio-net `0xFEBC_0000/0x1000`, NVMe `0xFEBF_0000/0x4000`, e1000e
+  `0xFEB0_0000/0x20000`) and only then advances the bring-up FSM through
+  its remaining pure-state phases. The `#[allow(dead_code)]` gates on
+  `syscall5`, `SYS_MMIO_MAP`, `SYS_DMA_MAP`, `SYS_IRQ_ATTACH` are removed
+  — all four symbols are live. Sentinel exit codes
+  (`EXIT_NO_MMIO/DMA/IRQ_TOKEN = 10/20/30`,
+  `EXIT_MMIO/DMA/IRQ_BASE + errno = 40+/60+/80+`) distinguish standalone
+  execution (no deposit) from loader-rejected tokens.
+
+  Tests: 36 unit + 8 E2E (`tests/e2e_deposit_round_trip.rs`,
+  `#[cfg(not(target_os = "none"))]` gated, each round-trips
+  `CapabilityToken → encode_canonical → OMNICAPS page → find_token_in_buf
+  → decode_canonical → equality`) + 12 doc tests + 2 `proptest`
+  harnesses (idempotency on 0..512-byte buffers, no-panic invariant on
+  0..=32 KiB buffers). Workspace `Cargo.toml` extended (16 members);
+  `scripts/check-no-blanket-allow.sh` extended (15 → 16 crate roots).
+
+  All acceptance gates green: workspace clippy + bare-metal +
+  mb12-userprobe + kernel-runner + 3 driver-image siblings + fmt +
+  check-no-blanket-allow + rustdoc bare-metal + rustdoc workspace +
+  lint-oips (0/0 across 19 files). Build Info panel updated:
+  `Active = P6.7.8.10 driver-shared SDK`,
+  `Next = P6.7.9 virtio-net live bring-up`,
+  `Tests = 935 workspace pass`.
+
+  Closes the entire P6.7.8 arc (0..10 inclusive); P6.7.9 (live driver
+  bring-up + Proxmox VMID 103 smoke) now unblocked.
+
 - docs: protocol handshake updated to OMNI-PROTO-v0.2 per
   OIP-Serde-004. The capability-token encoding specification
   in `docs/03-mesh-protocol.md:197` still references `bincode

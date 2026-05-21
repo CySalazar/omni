@@ -51,11 +51,19 @@ path = "src/main.rs"
 # crates ship in the same repo and bump together.
 omni-driver-nvme = { path = "../omni-driver-nvme" }
 
+# Driver SDK helper (P6.7.8.10, OIP-013 § S5.3 step 8). Provides the
+# capability deposit window parser (`caps::find_token`) and the well-known
+# constants (`DRIVER_CAP_DEPOSIT_VA`, `ACTION_TAG_*`) the image consumes
+# in `_start` before invoking `MmioMap (70)` / `DmaMap (71)` /
+# `IrqAttach (72)`. Dep-free, `no_std`, no transitive supply-chain.
+omni-driver-shared = { path = "../omni-driver-shared" }
+
 # The image deliberately avoids depending on `omni-types`, `omni-capability`,
-# `omni-crypto` at this stage: P6.7.8.5 wires only the syscall ABI side
-# (raw `syscall` instructions with the OIP-013 numeric codes). When the
-# bring-up loop starts decoding capability tokens server-side
-# (P6.7.8.x post-DriverLoad-wired), the deps will be reintroduced.
+# `omni-crypto` at this stage: P6.7.8.10 reads the token bytes as opaque
+# blobs and forwards them to the kernel through the syscall ABI; the
+# kernel does the postcard decode + Ed25519 verify side. Reintroducing
+# `omni-types` would pull a host of transitive deps that defeat the
+# "thin Ring 3 trampoline" model.
 
 [profile.release]
 lto             = true
