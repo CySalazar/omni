@@ -712,8 +712,12 @@ pub struct AmdViBackend {
 
 impl AmdViBackend {
     /// Construct an empty backend.
+    ///
+    /// `const` so the kernel-wide [`super::IOMMU_BACKEND`] static can
+    /// be initialised at static-init time without paying for lazy
+    /// `OnceLock` overhead (P6.7.9-pre.4).
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             domains: Vec::new(),
             mappings: Vec::new(),

@@ -1167,6 +1167,7 @@ mod dma_map_handlers {
     use super::{DRIVER_DMA_VA_BASE, DRIVER_DMA_VA_END};
     use crate::bare_metal;
     use crate::bare_metal::address_space::AddressSpace;
+    use crate::bare_metal::iommu::{IommuBackend, IommuFlags, domain_for_task, with_iommu_backend};
     use crate::bare_metal::paging::{PTE_NO_EXEC, PTE_PRESENT, PTE_USER, PTE_WRITABLE, PageMapper};
     use crate::driver_manifest::is_driver_framework_action;
     use crate::memory::{PhysAddr, VirtAddr};
@@ -1314,6 +1315,24 @@ mod dma_map_handlers {
                 return SyscallReturn::err(syscall_errno::EINVAL);
             }
 
+            // -------------------------------------------------------------
+            // P6.7.9-pre.4 — vendor-routed IOMMU domain install.
+            //
+            // One domain per driver process (`domain_for_task` projects
+            // `TaskId` into the 16-bit DID space). `install_domain` is
+            // idempotent so repeated `DmaMap` calls from the same
+            // process amortise the registration to a single entry on
+            // the backend's domain list. The actual MMIO register
+            // programming is deferred to P6.7.9-pre.5+; the scaffold
+            // backends (`vtd::VtdBackend`, `amdvi::AmdViBackend`) and
+            // the [`PassthroughBackend`] all accept this call as a
+            // bookkeeping operation today.
+            // -------------------------------------------------------------
+            let domain_id = domain_for_task(current.0);
+            if with_iommu_backend(|b| b.install_domain(domain_id)).is_err() {
+                return SyscallReturn::err(syscall_errno::ENOSPC);
+            }
+
             let phys_offset = bare_metal::phys_offset();
             if phys_offset == 0 {
                 return SyscallReturn::err(syscall_errno::EFAULT);
@@ -1387,6 +1406,54 @@ mod dma_map_handlers {
                 return SyscallReturn::err(syscall_errno::ENOSPC);
             }
 
+            // -------------------------------------------------------------
+            // P6.7.9-pre.4 — vendor-routed IOMMU `map` + `flush`.
+            //
+            // Now that all contiguous frames are installed in the
+            // caller's AS, record the (iova, phys, len) tuple with the
+            // selected backend and trigger its IOTLB invalidation
+            // hook. Per OIP-013 § S3.2, the IOMMU R/W flags must
+            // mirror the `direction` argument so the device cannot
+            // perform DMA in a direction the issuer did not authorise.
+            // The scaffold backends accept any aligned input today and
+            // simply track the mapping; the live VT-d / AMD-Vi register
+            // programming lands in P6.7.9-pre.5+.
+            //
+            // Failure here is intentionally fatal to the syscall: it
+            // means the backend's internal bookkeeping rejected the
+            // mapping (out-of-DID, duplicate iova within the same
+            // domain, etc.), so we must roll back the page-table
+            // installs we just performed and return frames to the
+            // allocator. The rollback path mirrors the contiguity-
+            // failure branch above.
+            // -------------------------------------------------------------
+            let map_flags = match direction {
+                0 => IommuFlags::READ,
+                1 => IommuFlags::WRITE,
+                _ => IommuFlags::READ.union(IommuFlags::WRITE),
+            };
+            let map_res = with_iommu_backend(|b| {
+                let res = b.map(domain_id, iova_base, phys_base, len, map_flags);
+                if res.is_ok() {
+                    // Best-effort flush — backends accept this call
+                    // unconditionally once the domain is installed.
+                    let _ = b.flush(domain_id);
+                }
+                res
+            });
+            if map_res.is_err() {
+                let mut rolled: u64 = 0;
+                while rolled < installed {
+                    let _ = mapper.unmap_4k(VirtAddr(iova_base + rolled));
+                    AddressSpace::invlpg(VirtAddr(iova_base + rolled));
+                    rolled += 0x1000;
+                }
+                for f in &allocated {
+                    alloc.free_frame(crate::memory::PhysAddr(*f));
+                }
+                return SyscallReturn::err(syscall_errno::ENOSPC);
+            }
+
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "direction validated as ≤ 2 above; fits u8 trivially"
@@ -1421,8 +1488,21 @@ mod dma_map_handlers {
             let address_space: AddressSpace = pcb.address_space;
             let mut mapper = PageMapper::new(phys_offset, address_space.pml4_phys);
             let mappings = core::mem::take(&mut pcb.dma_mappings);
+            // P6.7.9-pre.4 — per-process IOMMU domain (matches the
+            // projection used by `dma_map`).
+            let domain_id = domain_for_task(task.0);
             for m in &mappings {
                 let bytes = u64::from(m.len_pages) * 0x1000;
+                // P6.7.9-pre.4 — release the backend's record of the
+                // mapping before tearing down the PTEs. Errors here are
+                // best-effort: the backend may have already dropped
+                // its record if `dma_map` rolled back, in which case
+                // `UnmapFailed` is benign for teardown semantics.
+                let _ = with_iommu_backend(|b| {
+                    let r = b.unmap(domain_id, m.iova_base, bytes);
+                    let _ = b.flush(domain_id);
+                    r
+                });
                 let mut off: u64 = 0;
                 while off < bytes {
                     let va = VirtAddr(m.iova_base + off);

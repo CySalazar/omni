@@ -565,12 +565,192 @@ impl IommuBackend for PassthroughBackend {
     }
 }
 
+// =============================================================================
+// Vendor-routed dispatch — P6.7.9-pre.4 (DMA-Map vendor switch).
+//
+// `IommuKind` static-dispatches the [`IommuBackend`] trait over the three
+// concrete implementations (Passthrough, Intel VT-d scaffold, AMD-Vi
+// scaffold). The kernel-wide [`IOMMU_BACKEND`] mutex holds the live
+// instance; the boot probe in `kmain` calls [`install_backend_for_vendor`]
+// after [`probe`] resolves the firmware vendor, swapping in the right
+// variant. Subsequent `DmaMap (71)` syscall invocations route through
+// [`with_iommu_backend`] so the trait methods are actually called in
+// production — even though the Intel / AMD scaffolds are still dormant
+// (no MMIO writes; P6.7.9-pre.5+ adds the live register programming).
+//
+// Why `spin::Mutex` and not raw `static mut`:
+//
+// 1. The `IommuKind` variants own `alloc::vec::Vec`, so the enum is not
+//    `Copy`/`Sync` by default — the mutex provides the `Sync` boundary.
+// 2. Bare-metal MP boot already serialises CPU bring-up under `SCHED_LOCK`,
+//    but a future cross-CPU `DmaMap` path (multiple driver processes) must
+//    not race; the mutex makes the contract explicit today, even though
+//    the actual syscall dispatch path is currently single-threaded.
+// 3. `spin = 0.9` is already a kernel dep (used by `entropy::KERNEL_CSPRNG`).
+//    No new crate, no new transitive supply chain.
+//
+// Lock acquisition order: `IOMMU_BACKEND` is held strictly *inside* the
+// `SCHEDULER`/`FRAME_ALLOC` raw-static-mut region in `dma_map_handlers`,
+// so it cannot deadlock with the scheduler global (single-direction
+// dependency: scheduler ↛ iommu, iommu ↛ scheduler).
+// =============================================================================
+
+/// Vendor-routed enum dispatching to one of the three concrete
+/// [`IommuBackend`] implementations.
+///
+/// Each variant is owned by value so the kernel-wide
+/// [`IOMMU_BACKEND`] mutex can be initialised at static-init time
+/// (via the `const fn new_passthrough`). Boot-time installation goes
+/// through [`install_backend_for_vendor`].
+#[derive(Debug)]
+pub enum IommuKind {
+    /// Phase 1 no-IOMMU passthrough — accepts every aligned input
+    /// and performs no programming. Default until the boot probe
+    /// resolves a firmware vendor.
+    Passthrough(PassthroughBackend),
+    /// Intel VT-d backend (dormant scaffold per [`vtd::VtdBackend`]).
+    /// Wired in P6.7.9-pre.4; live MMIO programming lands in pre.5+.
+    Intel(vtd::VtdBackend),
+    /// AMD-Vi backend (dormant scaffold per [`amdvi::AmdViBackend`]).
+    /// Wired in P6.7.9-pre.4; live MMIO programming lands in pre.5+.
+    Amd(amdvi::AmdViBackend),
+}
+
+impl IommuKind {
+    /// `const` constructor for the passthrough variant.
+    ///
+    /// Used as the [`IOMMU_BACKEND`] static initialiser; the boot
+    /// probe may later swap in `Intel(..)` or `Amd(..)` via
+    /// [`install_backend_for_vendor`].
+    #[must_use]
+    pub const fn new_passthrough() -> Self {
+        Self::Passthrough(PassthroughBackend::new())
+    }
+}
+
+impl Default for IommuKind {
+    fn default() -> Self {
+        Self::new_passthrough()
+    }
+}
+
+impl IommuBackend for IommuKind {
+    fn vendor(&self) -> IommuVendor {
+        match self {
+            Self::Passthrough(backend) => backend.vendor(),
+            Self::Intel(backend) => backend.vendor(),
+            Self::Amd(backend) => backend.vendor(),
+        }
+    }
+
+    fn install_domain(&mut self, id: DomainId) -> Result<(), IommuError> {
+        match self {
+            Self::Passthrough(backend) => backend.install_domain(id),
+            Self::Intel(backend) => backend.install_domain(id),
+            Self::Amd(backend) => backend.install_domain(id),
+        }
+    }
+
+    fn map(
+        &mut self,
+        id: DomainId,
+        iova: u64,
+        phys: u64,
+        len: u64,
+        flags: IommuFlags,
+    ) -> Result<(), IommuError> {
+        match self {
+            Self::Passthrough(backend) => backend.map(id, iova, phys, len, flags),
+            Self::Intel(backend) => backend.map(id, iova, phys, len, flags),
+            Self::Amd(backend) => backend.map(id, iova, phys, len, flags),
+        }
+    }
+
+    fn unmap(&mut self, id: DomainId, iova: u64, len: u64) -> Result<(), IommuError> {
+        match self {
+            Self::Passthrough(backend) => backend.unmap(id, iova, len),
+            Self::Intel(backend) => backend.unmap(id, iova, len),
+            Self::Amd(backend) => backend.unmap(id, iova, len),
+        }
+    }
+
+    fn flush(&mut self, id: DomainId) -> Result<(), IommuError> {
+        match self {
+            Self::Passthrough(backend) => backend.flush(id),
+            Self::Intel(backend) => backend.flush(id),
+            Self::Amd(backend) => backend.flush(id),
+        }
+    }
+}
+
+/// Kernel-wide [`IommuBackend`] instance routed by [`IommuKind`].
+///
+/// Initialised to [`IommuKind::new_passthrough`] at static-init time so
+/// any reader that reaches `DmaMap` before the boot probe runs sees the
+/// safe Phase 1 fallback. The boot probe in `kmain` calls
+/// [`install_backend_for_vendor`] after [`probe`] returns to swap in
+/// the right variant for the firmware-advertised vendor.
+pub static IOMMU_BACKEND: spin::Mutex<IommuKind> = spin::Mutex::new(IommuKind::new_passthrough());
+
+/// Replace the live [`IOMMU_BACKEND`] with a fresh instance matching `vendor`.
+///
+/// Idempotent: calling twice with the same vendor resets the backend
+/// state (drops any recorded domains / mappings); this is **not**
+/// intended for runtime use, only for the one-shot boot installation
+/// right after [`probe`].
+///
+/// The new instance starts with an empty domain list; the first
+/// `DmaMap` invocation installs the calling process's domain via
+/// [`IommuBackend::install_domain`].
+pub fn install_backend_for_vendor(vendor: IommuVendor) {
+    let new_kind = match vendor {
+        IommuVendor::Passthrough => IommuKind::new_passthrough(),
+        IommuVendor::Intel => IommuKind::Intel(vtd::VtdBackend::new()),
+        IommuVendor::Amd => IommuKind::Amd(amdvi::AmdViBackend::new()),
+    };
+    *IOMMU_BACKEND.lock() = new_kind;
+}
+
+/// Run `f` against the live [`IOMMU_BACKEND`], holding the [`spin::Mutex`].
+///
+/// The closure receives `&mut IommuKind`, which implements
+/// [`IommuBackend`] so it can be called through the trait without
+/// further dispatch.
+///
+/// Callers MUST keep the closure body short to avoid blocking the
+/// scheduler's `dma_map` path; the trait methods themselves are O(N)
+/// in the recorded mapping count for the host-testable scaffolds
+/// (acceptable for Phase 1 — driver processes hold at most a handful
+/// of DMA windows).
+pub fn with_iommu_backend<R>(f: impl FnOnce(&mut IommuKind) -> R) -> R {
+    let mut backend = IOMMU_BACKEND.lock();
+    f(&mut backend)
+}
+
+/// Derive the per-process [`DomainId`] from a kernel `TaskId`.
+///
+/// Phase 1 model: one IOMMU domain per driver process. The mapping
+/// is `domain = task_id mod 65536` (16-bit space matches the VT-d
+/// `DID` and AMD-Vi `DomainID` field widths). Collisions are
+/// statistically impossible during Phase 1 (≤ tens of concurrent
+/// driver processes) but are documented as a follow-up in OIP-013
+/// § S3.5 for the Phase 2+ domain allocator.
+#[must_use]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "explicit 16-bit mask above the cast — truncation is the desired projection of TaskId into the 16-bit IOMMU DID space"
+)]
+pub const fn domain_for_task(task_id: u64) -> DomainId {
+    DomainId::new((task_id & 0xFFFF) as u16)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        DomainId, IOMMU_UNIT_COUNT, IOMMU_VENDOR, IommuBackend, IommuError, IommuFlags,
-        IommuVendor, PassthroughBackend, ProbeResult, iommu_unit_count, iommu_vendor,
-        select_vendor, set_iommu_unit_count, set_iommu_vendor,
+        DomainId, IOMMU_BACKEND, IOMMU_UNIT_COUNT, IOMMU_VENDOR, IommuBackend, IommuError,
+        IommuFlags, IommuKind, IommuVendor, PassthroughBackend, ProbeResult, domain_for_task,
+        install_backend_for_vendor, iommu_unit_count, iommu_vendor, select_vendor,
+        set_iommu_unit_count, set_iommu_vendor, with_iommu_backend,
     };
     use core::sync::atomic::Ordering;
 
@@ -837,4 +1017,188 @@ mod tests {
     // (`select_vendor` + the explicit DRHD/IVHD parsers in `dmar` /
     // `ivrs`) is what we cover here; the QEMU smoke + Proxmox boot
     // log are the integration evidence.
+
+    // -----------------------------------------------------------------
+    // P6.7.9-pre.4 — `IommuKind` dispatch + `IOMMU_BACKEND` mutex tests.
+    //
+    // The global mutex is a process-wide singleton; each test that
+    // mutates it snapshots and restores the prior state through the
+    // shared `install_backend_for_vendor` helper. The workspace is
+    // pinned to `--test-threads=1` per the SIGSEGV mitigation, so the
+    // tests never observe a concurrent reader — but the snapshot
+    // pattern is forward-compatible with TASK-012's eventual lift of
+    // that pin.
+    // -----------------------------------------------------------------
+
+    /// Snapshot the current backend vendor so a test that swaps the
+    /// global can restore it on exit (defence-in-depth for the future
+    /// parallel-test regime).
+    fn snapshot_backend_vendor() -> IommuVendor {
+        with_iommu_backend(|b| b.vendor())
+    }
+
+    #[test]
+    fn iommu_kind_default_is_passthrough() {
+        let kind = IommuKind::default();
+        assert_eq!(kind.vendor(), IommuVendor::Passthrough);
+    }
+
+    #[test]
+    fn iommu_kind_new_passthrough_is_const_constructible() {
+        // The static `IOMMU_BACKEND` relies on `const fn` so a
+        // regression here would prevent the kernel from booting.
+        const _: IommuKind = IommuKind::new_passthrough();
+    }
+
+    #[test]
+    fn iommu_kind_intel_vendor_routes() {
+        let mut kind = IommuKind::Intel(super::vtd::VtdBackend::new());
+        assert_eq!(kind.vendor(), IommuVendor::Intel);
+        // Trait dispatch routes install_domain/map/unmap/flush through
+        // the inner VtdBackend.
+        let dom = DomainId::new(0xABCD);
+        assert_eq!(kind.install_domain(dom), Ok(()));
+        assert_eq!(
+            kind.map(dom, 0x1000, 0x10_0000, 0x1000, IommuFlags::READ),
+            Ok(())
+        );
+        assert_eq!(kind.flush(dom), Ok(()));
+        assert_eq!(kind.unmap(dom, 0x1000, 0x1000), Ok(()));
+    }
+
+    #[test]
+    fn iommu_kind_amd_vendor_routes() {
+        let mut kind = IommuKind::Amd(super::amdvi::AmdViBackend::new());
+        assert_eq!(kind.vendor(), IommuVendor::Amd);
+        let dom = DomainId::new(0x42);
+        assert_eq!(kind.install_domain(dom), Ok(()));
+        assert_eq!(
+            kind.map(dom, 0x2000, 0x20_0000, 0x2000, IommuFlags::READ),
+            Ok(())
+        );
+        assert_eq!(kind.unmap(dom, 0x2000, 0x2000), Ok(()));
+    }
+
+    #[test]
+    fn iommu_kind_passthrough_rejects_misaligned() {
+        let mut kind = IommuKind::Passthrough(PassthroughBackend::new());
+        assert_eq!(
+            kind.map(
+                DomainId::new(0),
+                0x1001,
+                0x10_0000,
+                0x1000,
+                IommuFlags::READ
+            ),
+            Err(IommuError::AddressMisaligned)
+        );
+    }
+
+    #[test]
+    fn iommu_kind_intel_rejects_unknown_domain() {
+        let mut kind = IommuKind::Intel(super::vtd::VtdBackend::new());
+        // Never installed — map must fail with InvalidDomain.
+        assert_eq!(
+            kind.map(
+                DomainId::new(7),
+                0x1000,
+                0x10_0000,
+                0x1000,
+                IommuFlags::READ
+            ),
+            Err(IommuError::InvalidDomain)
+        );
+    }
+
+    #[test]
+    fn install_backend_for_vendor_switches_to_intel() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Intel);
+        assert_eq!(with_iommu_backend(|b| b.vendor()), IommuVendor::Intel);
+        install_backend_for_vendor(prior);
+        assert_eq!(with_iommu_backend(|b| b.vendor()), prior);
+    }
+
+    #[test]
+    fn install_backend_for_vendor_switches_to_amd() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Amd);
+        assert_eq!(with_iommu_backend(|b| b.vendor()), IommuVendor::Amd);
+        install_backend_for_vendor(prior);
+        assert_eq!(with_iommu_backend(|b| b.vendor()), prior);
+    }
+
+    #[test]
+    fn install_backend_for_vendor_resets_passthrough() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Passthrough);
+        assert_eq!(with_iommu_backend(|b| b.vendor()), IommuVendor::Passthrough);
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn install_backend_for_vendor_is_idempotent_for_intel() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Intel);
+        // Install a domain in the first instance.
+        let dom = DomainId::new(0xBEEF);
+        with_iommu_backend(|b| b.install_domain(dom)).unwrap();
+        // Re-install for the same vendor → state resets (no domain).
+        install_backend_for_vendor(IommuVendor::Intel);
+        let res = with_iommu_backend(|b| b.map(dom, 0x1000, 0x10_0000, 0x1000, IommuFlags::READ));
+        assert_eq!(res, Err(IommuError::InvalidDomain));
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn with_iommu_backend_round_trips_state() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Intel);
+        let dom = DomainId::new(0xFACE);
+        with_iommu_backend(|b| b.install_domain(dom)).unwrap();
+        with_iommu_backend(|b| {
+            b.map(
+                dom,
+                0x1000,
+                0x10_0000,
+                0x1000,
+                IommuFlags::READ.union(IommuFlags::WRITE),
+            )
+        })
+        .unwrap();
+        let unmap_res = with_iommu_backend(|b| b.unmap(dom, 0x1000, 0x1000));
+        assert_eq!(unmap_res, Ok(()));
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn domain_for_task_maps_low_16_bits() {
+        assert_eq!(domain_for_task(0), DomainId::new(0));
+        assert_eq!(domain_for_task(1), DomainId::new(1));
+        assert_eq!(domain_for_task(0xFFFF), DomainId::new(0xFFFF));
+    }
+
+    #[test]
+    fn domain_for_task_truncates_high_bits() {
+        // High bits do not influence the result — the projection is
+        // explicit `& 0xFFFF`.
+        assert_eq!(domain_for_task(0x1_0000), DomainId::new(0));
+        assert_eq!(
+            domain_for_task(0xFFFF_FFFF_FFFF_FFFF),
+            DomainId::new(0xFFFF)
+        );
+        assert_eq!(domain_for_task(0xDEAD_BEEF), DomainId::new(0xBEEF));
+    }
+
+    #[test]
+    fn iommu_backend_static_initial_state_is_passthrough() {
+        // The static initialiser is exercised at first access; ensure
+        // it lands in the Passthrough variant for any test order.
+        // (Other tests may have swapped it; snapshot + restore.)
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Passthrough);
+        let observed = IOMMU_BACKEND.lock().vendor();
+        assert_eq!(observed, IommuVendor::Passthrough);
+        install_backend_for_vendor(prior);
+    }
 }

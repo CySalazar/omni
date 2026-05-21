@@ -395,6 +395,15 @@ pub fn kmain(
         };
         iommu::set_iommu_unit_count(unit_count);
 
+        // P6.7.9-pre.4 — swap the kernel-wide IOMMU backend in line
+        // with the vendor the firmware advertised. From this point
+        // onward `dma_map_handlers::dma_map` routes domain installs +
+        // mappings + flushes through the vendor-specific scaffold
+        // (VtdBackend / AmdViBackend) instead of the passthrough
+        // default. Live MMIO register programming is deferred to
+        // P6.7.9-pre.5+ — the scaffolds keep accounting in `Vec`s.
+        iommu::install_backend_for_vendor(probe.vendor);
+
         early_console::write_str("[iommu] vendor=");
         early_console::write_str(probe.vendor.label());
         early_console::write_str(" units=");

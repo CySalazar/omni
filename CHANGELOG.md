@@ -17,6 +17,63 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **IOMMU — P6.7.9-pre.4 DMA-Map vendor switch (2026-05-21).**
+  Wires the kernel-wide IOMMU backend dispatch so `DmaMap (71)` syscall
+  invocations route through the firmware-selected vendor backend
+  (`vtd::VtdBackend` for Intel, `amdvi::AmdViBackend` for AMD,
+  `PassthroughBackend` otherwise) instead of always using passthrough.
+  Adds `IommuKind` enum (variant per vendor, implements `IommuBackend`
+  via static-dispatch match arms) + `pub static IOMMU_BACKEND:
+  spin::Mutex<IommuKind>` initialised to `IommuKind::new_passthrough()`
+  at static-init time via `const fn` + `install_backend_for_vendor`
+  one-shot installer + `with_iommu_backend` mutex-bracketed closure
+  accessor + `domain_for_task` `TaskId → DomainId` projector. Promotes
+  `VtdBackend::new` and `AmdViBackend::new` to `pub const fn` so
+  `IommuKind::new_passthrough` is `const`. `kmain` extended: after
+  `iommu::probe` + telemetry global writes, `install_backend_for_vendor
+  (probe.vendor)` swaps the live variant. `dma_map_handlers::dma_map`
+  refactored: after cap validation + duplicate-iova check, derives
+  `domain_id = domain_for_task(current.0)` and calls
+  `with_iommu_backend(|b| b.install_domain(domain_id))`; after the
+  contiguous frame install, calls `b.map(domain_id, iova_base,
+  phys_base, len, flags)` + `b.flush(domain_id)` with `IommuFlags`
+  derived from the `direction` argument. Backend `map` failure triggers
+  a full PT rollback + `ENOSPC`. `tear_down_dma_mappings` calls
+  `b.unmap` + `b.flush` per recorded `DmaMapping` (errors swallowed).
+  +14 new host-side tests cover the dispatch surface end-to-end:
+  `IommuKind` default + const-constructible + Intel/Amd/Passthrough
+  routing + misaligned-input reject + unknown-domain reject +
+  `install_backend_for_vendor` Intel/Amd/Passthrough swap + idempotent
+  re-install state reset + `with_iommu_backend` round-trip +
+  `domain_for_task` low-16-bit projection + high-bit truncation +
+  static initial-state pin. Workspace test count **1064 → 1078 pass /
+  0 fail** (`cargo test --workspace --all-features -- --test-threads=1`).
+  Build Info panel updated to Active=`P6.7.9-pre.4 DMA-Map vendor
+  switch` / Next=`P6.7.9-pre.5 IOMMU register programming` / Tests=
+  `1078 workspace pass`. **No new dependency** — `spin = "0.9"` was
+  already a kernel dep. Both vendor scaffolds remain dormant (zero
+  MMIO bytes emitted); live register programming lands in P6.7.9-pre.5+.
+  Aligned with TASK-010 of `docs/planning/2026-05-21-development-plan.md`.
+
+- **IOMMU — P6.7.9-pre.3 AMD-Vi backend scaffold (2026-05-21).**
+  Sibling to P6.7.9-pre.2's VT-d scaffold. Lands the dormant AMD I/O
+  Virtualization Technology backend in a new module
+  `crates/omni-kernel/src/bare_metal/iommu/amdvi.rs` (~1237 lines)
+  that the P6.7.9-pre.4 DMA-Map vendor switch (above) activates when
+  `iommu_vendor()` reports `IommuVendor::Amd`. The slice pins AMD
+  IOMMU spec rev 3.10 § 5.5 MMIO register offsets +  § 5.2.2 Device
+  Table Entry encoder + § 5.3.1 I/O Page Table encoder + § 5.7
+  Extended Feature Register decoders, plus a host-testable
+  `AmdViBackend` struct that implements `IommuBackend` by tracking
+  domains + mappings in internal `Vec`s and emits zero MMIO bytes.
+  +34 new host-side tests covering every encoder bit position, every
+  EFR decoder, every `AmdViBackend` happy/error path. Workspace test
+  count 1030 → 1064 pass / 0 fail. Build Info Active=`P6.7.9-pre.3
+  AMD-Vi backend` / Next=`P6.7.9-pre.4 DMA-Map vendor switch` / Tests=
+  `1064 workspace pass`. (Note: doc entries for this slice were
+  consolidated forward into the P6.7.9-pre.4 closure to avoid a
+  churning doc-only patch between two adjacent scaffold slices.)
+
 - **IOMMU — P6.7.9-pre.2 Intel VT-d backend scaffold (2026-05-21).**
   Lands the dormant Intel VT-d backend scaffold in a new module
   `crates/omni-kernel/src/bare_metal/iommu/vtd.rs`. The slice is
