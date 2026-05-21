@@ -17,6 +17,63 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **IOMMU — P6.7.9-pre.6 AMD-Vi live MMIO register programming (2026-05-21).**
+  Closes the live-programming half of TASK-010 for the AMD-Vi backend,
+  symmetric to P6.7.9-pre.5's Intel VT-d slice. `AmdViBackend` gains the
+  activation surface (`unit_base`, `device_table_phys`,
+  `command_buffer_phys`, `event_log_phys`, `command_buffer_tail`,
+  `hardware_activated` fields + `const fn` accessors +
+  `prepare_activation` pure-state setter); a new `AmdViActivateError`
+  taxonomy (`NotPrepared` / `CmdBufStartTimeout` /
+  `EventLogStartTimeout` / `InvalidationTimeout`) with
+  `impl From<AmdViActivateError> for IommuError →
+  IommuError::ActivationFailed`; `#[cfg(target_os = "none")] pub unsafe
+  fn activate_hardware(&mut self, phys_offset: u64)` that drives the
+  spec-faithful AMD IOMMU rev 3.10 § 5.3 + § 5.5 sequence — write
+  `DEV_TAB_BAR ← encode_device_table_base(table_phys, 0)`, write
+  `CMD_BUF_BASE ← encode_command_buffer_base(buf_phys, 8)`, write
+  `EVENT_LOG_BASE ← encode_event_log_base(log_phys, 8)`, zero
+  CMD/EVENT Head/Tail registers, raise
+  `CTRL.CmdBufEn | CTRL.EventLogEn` + poll `STATUS.CmdBufRun` then
+  `STATUS.EventLogRun`, submit one `INVALIDATE_DEVTAB_ENTRY` command at
+  buffer slot 0 (`encode_invalidate_devtab_entry(0)`), bump
+  `CMD_BUFFER_TAIL` to 16, and wait for `CMD_BUFFER_HEAD` to drain.
+  `CTRL.IommuEn` is deliberately **NOT** raised here (per-device
+  translation gating lands when the driver framework attaches its first
+  PCI device — future P6.7.9-pre.7+). All MMIO accesses use
+  `core::ptr::{read_volatile, write_volatile}` and a bounded
+  `AMDVI_ACTIVATION_POLL_LIMIT = 1_000_000` retry budget for
+  status-mirror polls. Module-level additions: 5 STATUS bit constants
+  (`STATUS_BIT_EVENT_OVERFLOW/_LOG_INT/_COM_WAIT_INT/_LOG_RUN/_CMD_BUF_RUN`),
+  4 command-buffer + 3 event-log layout constants
+  (`CMD_BUFFER_{ENTRY_BYTES,ENTRY_COUNT,BYTES,LENGTH_ENCODING}`,
+  `EVENT_LOG_{ENTRY_BYTES,ENTRY_COUNT,BYTES,LENGTH_ENCODING}`), one
+  device-table size constant (`DEVICE_TABLE_SIZE_ENCODING`), 5 command
+  opcode constants (`CMD_OPCODE_COMPLETION_WAIT/_INVALIDATE_DEVTAB/_IOMMU_PAGES/_IOTLB_PAGES/_ALL`),
+  and 4 pure-function encoders (`encode_device_table_base`,
+  `encode_command_buffer_base`, `encode_event_log_base`,
+  `encode_invalidate_devtab_entry`).
+  `bare_metal::iommu::mod.rs` exposes a new public surface
+  `prepare_amd_vi_unit(unit_base, device_table_phys, command_buffer_phys,
+  event_log_phys)` + `#[cfg(target_os = "none")] pub unsafe fn
+  activate_amd_vi(phys_offset)`; `iommu_hardware_activated()` is
+  extended to dispatch through the AMD variant too (was Intel-only).
+  `kmain` extended after the existing VT-d activation block:
+  allocates device-table + command-buffer + event-log frames,
+  zero-fills them via the direct-map, prepares + activates the AMD-Vi
+  unit only when `iommu_unit_base() != 0 && iommu_vendor() == Amd`, and
+  emits a single-line boot log (`[iommu] amd-vi activated unit=<base>` /
+  `activate skip` / `activate err` / `prepare err` / `alloc err`). +27
+  new host-side tests (24 in `amdvi::tests`, 3 in `iommu::tests`);
+  workspace test count 1101 → 1128 pass / 0 fail
+  (`cargo test --workspace --all-features -- --test-threads=1`). Build
+  Info panel updated to Active=`P6.7.9-pre.6 AMD-Vi live MMIO` /
+  Next=`P6.7.9-pre.7 IOMMU domain wire` / Tests=`1128 workspace pass`.
+  **No new dependency** — MMIO programming uses
+  `core::ptr::{read_volatile, write_volatile}` exclusively, polling
+  uses plain `u32` arithmetic. Aligned with TASK-010 of
+  `docs/planning/2026-05-21-development-plan.md`.
+
 - **IOMMU — P6.7.9-pre.5 Intel VT-d live MMIO register programming (2026-05-21).**
   Closes the live-programming half of TASK-010 for the Intel backend.
   `VtdBackend` gains the activation surface (`unit_base`,

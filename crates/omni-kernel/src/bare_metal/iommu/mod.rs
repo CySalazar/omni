@@ -898,18 +898,116 @@ pub unsafe fn activate_intel_vt_d(phys_offset: u64) -> Result<bool, IommuError> 
     })
 }
 
-/// Report whether the live IOMMU backend (Intel variant) has completed
-/// its MMIO activation.
+/// Report whether the live IOMMU backend (Intel or AMD variant) has
+/// completed its MMIO activation.
 ///
-/// Returns `false` for the passthrough fallback, for the AMD-Vi
-/// scaffold (live programming lands in P6.7.9-pre.6), and for Intel
-/// before `activate_intel_vt_d` has run (the bare-metal-only
-/// activation entry point gated on `cfg(target_os = "none")`).
+/// Returns `false` for the passthrough fallback, and for either
+/// vendor before its `activate_*` entry point has run (both are
+/// `cfg(target_os = "none")` gated and exercised only by the kernel
+/// boot path).
 #[must_use]
 pub fn iommu_hardware_activated() -> bool {
     with_iommu_backend(|kind| match kind {
         IommuKind::Intel(backend) => backend.is_hardware_activated(),
-        IommuKind::Passthrough(_) | IommuKind::Amd(_) => false,
+        IommuKind::Amd(backend) => backend.is_hardware_activated(),
+        IommuKind::Passthrough(_) => false,
+    })
+}
+
+// =============================================================================
+// AMD-Vi activation surface — P6.7.9-pre.6 (AMD-Vi live MMIO).
+//
+// Symmetric to the VT-d surface above; `prepare_amd_vi_unit` is the
+// pure-state half and `activate_amd_vi` is the live MMIO half. Both
+// are no-ops when the live backend is not the AMD variant.
+//
+//   1. `prepare_amd_vi_unit(unit_base, device_table_phys,
+//      command_buffer_phys, event_log_phys)` stores the activation
+//      parameters in the live [`amdvi::AmdViBackend`] without touching
+//      MMIO. This is the pure-state half — host tests exercise it from
+//      `tests::*` to assert the field round-trip.
+//
+//   2. `activate_amd_vi(phys_offset)` (`#[cfg(target_os = "none")]`)
+//      drives the live MMIO programming: writes DEV_TAB_BAR +
+//      CMD_BUF_BASE + EVENT_LOG_BASE, zeroes the Head/Tail registers,
+//      enables CTRL.CmdBufEn + CTRL.EventLogEn, polls Status for
+//      CmdBufRun + EventLogRun, then submits an
+//      `INVALIDATE_DEVTAB_ENTRY` command and waits for HEAD to catch
+//      up to TAIL. The kmain wiring calls it once after FRAME_ALLOC is
+//      initialised so the three frames can be allocated + zero-filled
+//      via the direct map before the IOMMU is poked.
+// =============================================================================
+
+/// Stash the activation parameters in the live AMD-Vi backend.
+///
+/// Pure state update — no MMIO touched.
+///
+/// # Errors
+///
+/// Returns [`IommuError::Unsupported`] when the live backend is not
+/// the AMD variant (the caller should fall back to the passthrough
+/// dispatch path).
+pub fn prepare_amd_vi_unit(
+    unit_base: u64,
+    device_table_phys: u64,
+    command_buffer_phys: u64,
+    event_log_phys: u64,
+) -> Result<(), IommuError> {
+    with_iommu_backend(|kind| match kind {
+        IommuKind::Amd(backend) => {
+            backend.prepare_activation(
+                unit_base,
+                device_table_phys,
+                command_buffer_phys,
+                event_log_phys,
+            );
+            Ok(())
+        }
+        IommuKind::Passthrough(_) | IommuKind::Intel(_) => Err(IommuError::Unsupported),
+    })
+}
+
+/// Bare-metal IOMMU activation: drives the AMD-Vi MMIO programming
+/// sequence (device-table install + command-buffer + event-log enable
+/// + `INVALIDATE_DEVTAB_ENTRY` pump).
+///
+/// Returns:
+///
+/// - `Ok(true)` if the live MMIO sequence completed cleanly,
+/// - `Ok(false)` when the live backend is not AMD or no IVHD base was
+///   recorded (passthrough — nothing to do).
+///
+/// # Errors
+///
+/// Returns [`IommuError::ActivationFailed`] when any hardware-status
+/// poll exceeds its bounded retry budget or the backend rejects the
+/// activation (e.g. the prepare step never published a non-zero
+/// `unit_base`). Other [`IommuError`] variants forwarded from the
+/// dispatch surface are propagated unchanged.
+///
+/// # Safety
+///
+/// Caller must guarantee that `phys_offset` is the live bootloader
+/// direct-map offset (same value passed to
+/// [`crate::bare_metal::set_phys_offset`]) and that the device-table,
+/// command-buffer, and event-log frames previously published via
+/// [`prepare_amd_vi_unit`] are 4-KiB-aligned, owned by the kernel, and
+/// reachable through that direct map.
+#[cfg(target_os = "none")]
+pub unsafe fn activate_amd_vi(phys_offset: u64) -> Result<bool, IommuError> {
+    if iommu_unit_base() == 0 {
+        return Ok(false);
+    }
+    with_iommu_backend(|kind| match kind {
+        IommuKind::Amd(backend) => {
+            // SAFETY: invariants forwarded from the caller. The backend
+            // performs `unsafe { volatile_write64 }` against the
+            // direct-mapped MMIO window of the AMD-Vi unit.
+            unsafe { backend.activate_hardware(phys_offset) }
+                .map(|()| true)
+                .map_err(IommuError::from)
+        }
+        IommuKind::Passthrough(_) | IommuKind::Intel(_) => Ok(false),
     })
 }
 
@@ -936,8 +1034,8 @@ mod tests {
         DomainId, IOMMU_BACKEND, IOMMU_UNIT_BASE, IOMMU_UNIT_COUNT, IOMMU_VENDOR, IommuBackend,
         IommuError, IommuFlags, IommuKind, IommuVendor, PassthroughBackend, ProbeResult,
         domain_for_task, install_backend_for_vendor, iommu_hardware_activated, iommu_unit_base,
-        iommu_unit_count, iommu_vendor, prepare_vt_d_unit, select_vendor, set_iommu_unit_base,
-        set_iommu_unit_count, set_iommu_vendor, with_iommu_backend,
+        iommu_unit_count, iommu_vendor, prepare_amd_vi_unit, prepare_vt_d_unit, select_vendor,
+        set_iommu_unit_base, set_iommu_unit_count, set_iommu_vendor, with_iommu_backend,
     };
     use core::sync::atomic::Ordering;
 
@@ -1465,6 +1563,48 @@ mod tests {
         let prior = snapshot_backend_vendor();
         install_backend_for_vendor(IommuVendor::Amd);
         assert!(!iommu_hardware_activated());
+        install_backend_for_vendor(prior);
+    }
+
+    // -----------------------------------------------------------------
+    // P6.7.9-pre.6 — AMD-Vi activation surface tests.
+    //
+    // Symmetric to the VT-d surface above. The host-side coverage
+    // exercises the **pure-state half** of the activation contract
+    // (`prepare_amd_vi_unit` → `is_hardware_activated`); the live
+    // MMIO programming is `#[cfg(target_os = "none")]` and exercised
+    // by the Proxmox boot smoke. The mutex is restored to its prior
+    // vendor on exit.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn prepare_amd_vi_unit_routes_through_amd_backend() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Amd);
+        let res = prepare_amd_vi_unit(0xFEB8_0000, 0x10_0000, 0x10_1000, 0x10_2000);
+        assert_eq!(res, Ok(()));
+        // The host build cannot drive `activate_hardware`, so the
+        // flag stays false. The assertion proves the routing landed
+        // on the AMD variant rather than throwing `Unsupported`.
+        assert!(!iommu_hardware_activated());
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn prepare_amd_vi_unit_rejects_passthrough_backend() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Passthrough);
+        let res = prepare_amd_vi_unit(0xFEB8_0000, 0x10_0000, 0x10_1000, 0x10_2000);
+        assert_eq!(res, Err(IommuError::Unsupported));
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn prepare_amd_vi_unit_rejects_intel_backend() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Intel);
+        let res = prepare_amd_vi_unit(0xFEB8_0000, 0x10_0000, 0x10_1000, 0x10_2000);
+        assert_eq!(res, Err(IommuError::Unsupported));
         install_backend_for_vendor(prior);
     }
 }

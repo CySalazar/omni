@@ -565,6 +565,85 @@ pub fn kmain(
     }
 
     // -------------------------------------------------------------------------
+    // P6.7.9-pre.6 — AMD-Vi live MMIO programming.
+    //
+    // Symmetric to the VT-d block above: allocate the device-table,
+    // command-buffer, and event-log frames from FRAME_ALLOC, zero them
+    // via the direct map, publish their physical addresses + the
+    // firmware-reported IVHD base to the live `IommuKind::Amd` backend,
+    // then drive the activation sequence (DEV_TAB_BAR + CMD_BUF_BASE +
+    // EVENT_LOG_BASE + CTRL.CmdBufEn|EventLogEn + INVALIDATE_DEVTAB
+    // pump). The block is a no-op on Intel / passthrough platforms.
+    //
+    // `CTRL.IommuEn` is **NOT** raised here; per-device translation
+    // gating lands once the driver framework attaches its first PCI
+    // device. Until then the IOMMU stays in pre-translation
+    // pass-through at the hardware level — same observable behaviour
+    // as before the slice.
+    //
+    // SAFETY: single-core BSP context; FRAME_ALLOC and IOMMU_BACKEND
+    // are not concurrently accessed. `phys_offset_mb2` is the live
+    // direct-map offset (set above via `set_phys_offset`). Activation
+    // writes go through `core::ptr::write_volatile` against the
+    // per-IOMMU MMIO window, which is part of the firmware-mapped
+    // direct-map region for q35/Proxmox configurations.
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    #[allow(
+        unsafe_code,
+        reason = "single-core static-mut deref + MMIO volatile writes inside the AMD-Vi activation path; aliasing invariant in SAFETY comment"
+    )]
+    if bare_metal::iommu::iommu_unit_base() != 0
+        && bare_metal::iommu::iommu_vendor() == bare_metal::iommu::IommuVendor::Amd
+    {
+        unsafe {
+            let fa = &mut *core::ptr::addr_of_mut!(FRAME_ALLOC);
+            let device_table_phys = fa.alloc_frame().map_or(0, |p| p.0);
+            let command_buffer_phys = fa.alloc_frame().map_or(0, |p| p.0);
+            let event_log_phys = fa.alloc_frame().map_or(0, |p| p.0);
+            if device_table_phys != 0 && command_buffer_phys != 0 && event_log_phys != 0 {
+                let dt_va = phys_offset_mb2.wrapping_add(device_table_phys) as *mut u8;
+                let cb_va = phys_offset_mb2.wrapping_add(command_buffer_phys) as *mut u8;
+                let el_va = phys_offset_mb2.wrapping_add(event_log_phys) as *mut u8;
+                core::ptr::write_bytes(dt_va, 0u8, 4096);
+                core::ptr::write_bytes(cb_va, 0u8, 4096);
+                core::ptr::write_bytes(el_va, 0u8, 4096);
+
+                let unit_base = bare_metal::iommu::iommu_unit_base();
+                if bare_metal::iommu::prepare_amd_vi_unit(
+                    unit_base,
+                    device_table_phys,
+                    command_buffer_phys,
+                    event_log_phys,
+                )
+                .is_ok()
+                {
+                    match bare_metal::iommu::activate_amd_vi(phys_offset_mb2) {
+                        Ok(true) => {
+                            early_console::write_str("[iommu] amd-vi activated  unit=");
+                            #[allow(
+                                clippy::cast_possible_truncation,
+                                reason = "MMIO base fits 32 bits on x86_64; truncation only affects the log readback, not the live address"
+                            )]
+                            early_console::write_usize(unit_base as usize);
+                            early_console::write_str("\n");
+                        }
+                        Ok(false) => {
+                            early_console::write_str("[iommu] amd-vi activate skip\n");
+                        }
+                        Err(_) => {
+                            early_console::write_str("[iommu] amd-vi activate err\n");
+                        }
+                    }
+                } else {
+                    early_console::write_str("[iommu] amd-vi prepare err\n");
+                }
+            } else {
+                early_console::write_str("[iommu] amd-vi alloc err\n");
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Scheduler (MB6): initialise cooperative round-robin scheduler and
     // spawn the idle task using a single 4 KiB kernel stack frame.
     //
