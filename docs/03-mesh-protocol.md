@@ -41,7 +41,7 @@ QUIC is chosen for:
 - Connection migration support (mobile devices changing networks)
 - Better behavior on lossy networks than TCP
 
-Noise pattern: `Noise_XX_25519_ChaChaPoly_BLAKE2s` for mutual authentication. Mutual: both endpoints authenticate each other's TEE attestation.
+Noise pattern: `Noise_XX_25519_ChaChaPoly_BLAKE2s` for mutual authentication. Mutual: both endpoints authenticate each other's TEE attestation. The OMNI-specific handshake layer (Noise_IK + TEE attestation) negotiates `OMNI-PROTO-v0.2`; see [`docs/protocol/handshake.md`](./protocol/handshake.md) for the full wire specification.
 
 ### Attestation (mandatory before any payload exchange)
 

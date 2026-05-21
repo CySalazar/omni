@@ -17,6 +17,14 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- docs: protocol handshake updated to OMNI-PROTO-v0.2 per
+  OIP-Serde-004. The capability-token encoding specification
+  in `docs/03-mesh-protocol.md:197` still references `bincode
+  2.0` (documentation gap pending TASK-022); forward-looking
+  source marker added to the `transport` module stub in
+  `crates/omni-mesh/` to guide Phase-4 implementers toward
+  postcard 1.0 from day one.
+
 - **Kernel — P6.7.8.9 capability deposit trampoline (2026-05-20).** Closes
   `OIP-013` § S5.3 step 8, previously deferred at P6.7.8.8. After a
   `DriverLoad (73)` syscall verifies the omni-pack signature chain and

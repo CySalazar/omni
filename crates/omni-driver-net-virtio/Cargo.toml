@@ -53,5 +53,10 @@ workspace = true
 # (`MacAddress`, `IrqVector`, etc. — likely from a new
 # `omni-driver-net-common` crate per OIP-015 § R8).
 [dependencies]
+# `omni-driver-shared` provides the well-known deposit VA constant
+# (DRIVER_CAP_DEPOSIT_VA), the action-tag constants, and the
+# `caps::find_token` helper for locating capability tokens at bring-up
+# (OIP-013 § S5.3 step 8, P6.7.8.10).  Dep-free, no_std-compatible.
+omni-driver-shared = { workspace = true }
 
 [dev-dependencies]

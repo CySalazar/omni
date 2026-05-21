@@ -48,5 +48,10 @@ workspace = true
 # the bring-up step when the FSM starts touching real types (`BlkRequest`
 # from a new `omni-types::blk` module per OIP-014 Reference Implementation).
 [dependencies]
+# `omni-driver-shared` provides the well-known deposit VA constant
+# (DRIVER_CAP_DEPOSIT_VA), the action-tag constants, and the
+# `caps::find_token` helper for locating capability tokens at bring-up
+# (OIP-013 § S5.3 step 8, P6.7.8.10).  Dep-free, no_std-compatible.
+omni-driver-shared = { workspace = true }
 
 [dev-dependencies]

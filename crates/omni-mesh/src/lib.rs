@@ -48,6 +48,9 @@ pub mod discovery {
 /// QUIC + Noise transport layer.
 pub mod transport {
     // TODO(phase-4): QUIC streams with Noise_XX handshake.
+    // TODO(TASK-022): align wire format to postcard 1.0
+    //   per OIP-Serde-004; current bincode 2.0 usage is a
+    //   documented gap, see docs/03-mesh-protocol.md:197.
 }
 
 /// Peer attestation handshake.

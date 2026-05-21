@@ -51,5 +51,10 @@ workspace = true
 # they are not needed at the scaffold stage because the FSM operates only
 # on FSM-internal state.
 [dependencies]
+# `omni-driver-shared` provides the well-known deposit VA constant
+# (DRIVER_CAP_DEPOSIT_VA), the action-tag constants, and the
+# `caps::find_token` helper for locating capability tokens at bring-up
+# (OIP-013 § S5.3 step 8, P6.7.8.10).  Dep-free, no_std-compatible.
+omni-driver-shared = { workspace = true }
 
 [dev-dependencies]

@@ -56,6 +56,9 @@ SCOPED_CRATES=(
     "crates/omni-driver-net-virtio"
     "crates/omni-driver-nvme"
     "crates/omni-driver-e1000e"
+    # `omni-driver-shared` is the dep-free SDK helper crate (P6.7.8.10).
+    # Enrolled here so ADR-0003 enforcement covers its crate-root file.
+    "crates/omni-driver-shared"
 )
 
 files=""

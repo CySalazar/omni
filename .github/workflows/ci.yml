@@ -224,3 +224,73 @@ jobs:
             echo "$ADDED_TBD"
             echo "::warning::Acceptable during P0 setup; not after Stichting incorporation."
           fi
+
+  # ---------------------------------------------------------------------------
+  # omni-driver-pack-build — build, test, lint, and smoke-test the
+  # workspace-excluded `tools/omni-driver-pack` CLI tool (OIP-013 § S5.5).
+  #
+  # This job is intentionally separate from the main workspace matrix so the
+  # bare-metal cross-build matrix is not polluted by std-only tooling deps.
+  # ---------------------------------------------------------------------------
+  omni-driver-pack-build:
+    name: omni-driver-pack (build + test + smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry / build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/omni-driver-pack -> target
+
+      # ── build ──────────────────────────────────────────────────────────────
+      - name: cargo build --release
+        run: cargo build --release --manifest-path tools/omni-driver-pack/Cargo.toml
+
+      # ── unit + integration tests ───────────────────────────────────────────
+      - name: cargo test
+        run: cargo test --manifest-path tools/omni-driver-pack/Cargo.toml
+
+      # ── lint ───────────────────────────────────────────────────────────────
+      - name: cargo clippy -D warnings
+        run: |
+          cargo clippy \
+            --manifest-path tools/omni-driver-pack/Cargo.toml \
+            --all-targets -- -D warnings
+
+      # ── smoke test: produce a .opack from fixture inputs ───────────────────
+      # Uses the RFC 8032 § 7.1 test-vector 1 seed (32 bytes, 64 hex chars).
+      # The fixture manifest ships at tests/fixtures/test-manifest.json and
+      # uses the corresponding verifying key as omni_issuer_pubkey.
+      # A 64-byte ELF stub is created on-the-fly (the tool only hashes it).
+      - name: Smoke test — produce a .opack blob and assert exit 0
+        run: |
+          set -eu
+
+          # 64-byte fake ELF stub (4-byte ELF magic + 60 NUL bytes).
+          printf '\x7fELF' > /tmp/test-driver.elf
+          dd if=/dev/zero bs=60 count=1 >> /tmp/test-driver.elf 2>/dev/null
+
+          # Write the RFC 8032 test seed to a temp file.
+          printf '9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60\n' \
+            > /tmp/test.seed
+          chmod 0400 /tmp/test.seed
+
+          # Run the tool; exit 0 is the acceptance criterion.
+          ./target/release/omni-driver-pack \
+            --manifest     tools/omni-driver-pack/tests/fixtures/test-manifest.json \
+            --image        /tmp/test-driver.elf \
+            --signing-key  /tmp/test.seed \
+            --output       /tmp/test-driver.opack \
+            --allow-loose-permissions
+
+          # Assert the blob starts with the OMNIPACK magic.
+          MAGIC=$(head -c 8 /tmp/test-driver.opack | od -A n -t x1 | tr -d ' \n')
+          if [ "$MAGIC" != "4f4d4e495041434b" ]; then
+            echo "ERROR: blob magic mismatch (got $MAGIC, expected 4f4d4e495041434b)"
+            exit 1
+          fi
+          echo "Smoke test passed: blob starts with OMNIPACK magic."

@@ -3,7 +3,7 @@
 **Status:** Draft v0.1 — pending external cryptographer review (P3.2)
 **OIP:** to be ratified as `OIP-Protocol-003` (Standards Track)
 **Authors:** cySalazar
-**Last updated:** 2026-05-10
+**Last updated:** 2026-05-21
 
 This document is the **authoritative wire-level specification** of the mesh handshake.
 Any implementation in `crates/omni-mesh` MUST conform to this document; any conflict is
@@ -28,13 +28,14 @@ a bug in the implementation. The handshake is implemented in two layers:
 | `Quote_X` | Remote attestation report (Intel TDX quote v4 or AMD SEV-SNP attestation report v2). Contains: TEE measurement, freshness nonce, signed by the platform attestation key. |
 | `nonce_X` | 32-byte random nonce contributed by party `X`. |
 | `m1`, `m2`, `m3` | Wire messages in the handshake. |
-| `H(...)` | BLAKE3 with domain separator `"OMNI-PROTO-v0.1/handshake"`. |
-| `KDF(ikm, info)` | HKDF-SHA-256 with `info = "OMNI-PROTO-v0.1/handshake/" || info_suffix`. |
+| `H(...)` | BLAKE3 with domain separator `"OMNI-PROTO-v0.2/handshake"`. |
+| `KDF(ikm, info)` | HKDF-SHA-256 with `info = "OMNI-PROTO-v0.2/handshake/" || info_suffix`. |
 | `Sig_X(m)` | ED25519 signature by `sk_X` over `m`. `verify_strict` is used on the receiver. |
 | `DH(esk, epk)` | X25519 Diffie–Hellman. Result is rejected if it equals the all-zero element (low-order point detection). |
 | `AEAD(k, nonce, aad, m)` | ChaCha20-Poly1305 (RFC 8439). |
 | `||` | Byte concatenation. |
-| `proto_version` | The 16-byte protocol version string, e.g. `"OMNI-PROTO-v0.1"` padded with `\x00`. |
+| `proto_version` | The 16-byte protocol version string. Current: `"OMNI-PROTO-v0.2"` padded to 16 bytes with `\x00`. `"OMNI-PROTO-v0.1"` is removed; see §4.1. |
+| `serde_format` | Wire-encoding discriminant `"postcard-1.0"` per `OIP-Serde-004` § S2 (Last Call until 2026-05-26 → expected Active 2026-05-26). `OMNI-PROTO-v0.2` implies `postcard-1.0`; `OMNI-PROTO-v0.1` implied `bincode-2`. |
 
 ---
 
@@ -135,11 +136,12 @@ event is logged.
 
 ### 4.1. Protocol-version pin
 
-Reject if `proto_version` does not match the highest version the receiver
-supports. No silent downgrade is permitted; downgrade requires an explicit
-"version-renegotiation" frame *before* `m1`, which itself is bound into a new
-`proto_version` field. The implementation MUST refuse versions older than
-`OMNI-PROTO-v0.1` outright (no legacy support window).
+The implementation negotiates `OMNI-PROTO-v0.2` only. No silent downgrade is
+permitted; downgrade requires an explicit "version-renegotiation" frame *before*
+`m1`, which itself is bound into a new `proto_version` field. `OMNI-PROTO-v0.1`
+is removed from the negotiation menu as of `OIP-Serde-004` reaching `Active`
+(2026-05-26); peers announcing only v0.1 MUST be rejected (no silent downgrade).
+No legacy support window exists.
 
 ### 4.2. Ephemeral-key sanity
 
@@ -252,3 +254,5 @@ The cryptographer's deliverable should explicitly opine on:
 - `/oips/oip-crypto-002.md` — STARK vs SNARK for compliance proofs
 - RFC 7748 (X25519), RFC 8032 (Ed25519), RFC 8439 (ChaCha20-Poly1305), RFC 5869 (HKDF)
 - Intel TDX Module Specification 1.5; AMD SEV-SNP ABI 1.55
+- `omni_types::version::PROTOCOL_VERSION_V0_2` — canonical Rust constant; see `crates/omni-types/src/version.rs`.
+- `/oips/oip-serde-004.md` — `bincode → postcard` migration; bumps protocol version to v0.2 (Last Call until 2026-05-26 → expected Active 2026-05-26).

@@ -1,0 +1,198 @@
+//! omni-pack v1 binary blob builder.
+//!
+//! [`build_opack`] is the single entry point: given all manifest data,
+//! the ELF image bytes, and the Ed25519 signing seed, it produces the
+//! complete `.opack` byte vector ready to write to disk.
+//!
+//! ## Binary layout produced
+//!
+//! ```text
+//! Offset  Size  Field
+//! ─────── ───── ──────────────────────────────────────────────────
+//! 0x00    8     magic            = b"OMNIPACK"
+//! 0x08    4     version          = 1u32 (little-endian)
+//! 0x0C    4     flags            = 0u32 (reserved, always 0)
+//! 0x10    8     manifest_offset  = 0x40 (immediately follows header)
+//! 0x18    8     manifest_len     (postcard bytes, ≤ 16 KiB)
+//! 0x20    8     signature_offset = 0x40 + manifest_len
+//! 0x28    8     signature_len    = 64 (Ed25519 always 64 bytes)
+//! 0x30    8     image_offset     = 0x40 + manifest_len + 64
+//! 0x38    8     image_len
+//! 0x40    *     manifest.pc      postcard-encoded DriverManifestBody
+//! *       64    signature        Ed25519 over manifest.pc
+//! *       *     image.elf        Ring 3 ELF
+//! ─────── ───── ──────────────────────────────────────────────────
+//! ```
+//!
+//! The format is defined in `OIP-Driver-Framework-013` § S5.5 and
+//! implemented in `crates/omni-kernel/src/driver_manifest.rs`.
+
+use omni_crypto::hash::{Blake3, OmniHash};
+use omni_crypto::signing::{OmniSigningKey, SIGNATURE_LEN, SIGNING_KEY_LEN, VERIFYING_KEY_LEN};
+use omni_kernel::driver_manifest::{
+    DriverCapabilities, DriverManifestBody, DriverMatchers, DriverMetaBody, OMNI_PACK_HEADER_LEN,
+    OMNI_PACK_MAGIC, OMNI_PACK_MAX_BYTES, OMNI_PACK_MAX_MANIFEST_BYTES, OMNI_PACK_VERSION,
+};
+use omni_types::wire::encode_canonical;
+
+use crate::error::PackError;
+
+/// All inputs required to build an omni-pack v1 blob.
+///
+/// Owned strings and `Vec`s are consumed by [`build_opack`] to avoid
+/// unnecessary copies; the ELF image is borrowed because it is typically
+/// large and the caller may still need it.
+pub struct PackInput<'img> {
+    /// Driver short name (`DriverMetaBody::name`).
+    pub name: String,
+    /// Semantic version string (`DriverMetaBody::version`).
+    pub version: String,
+    /// Ed25519 issuer verifying key bytes (decoded from the manifest's
+    /// `omni_issuer_pubkey` hex field). Must match the verifying key
+    /// corresponding to `signing_seed`; the caller is responsible for
+    /// validating this before constructing [`PackInput`].
+    pub issuer_pubkey: [u8; VERIFYING_KEY_LEN],
+    /// Capability declarations for `DriverManifestBody::capabilities`.
+    pub capabilities: DriverCapabilities,
+    /// Device-match table for `DriverManifestBody::matchers`.
+    pub matchers: DriverMatchers,
+    /// Raw Ring 3 ELF image bytes. BLAKE3 is computed here.
+    pub image_bytes: &'img [u8],
+    /// 32-byte Ed25519 signing seed. Used to produce the 64-byte
+    /// signature over `manifest.pc`. The key material is passed by value
+    /// so the caller can zeroize it after this call returns.
+    pub signing_seed: [u8; SIGNING_KEY_LEN],
+}
+
+/// Build an omni-pack v1 binary blob from the provided inputs.
+///
+/// Steps follow OIP-013 § S5.3 in order:
+///
+/// 1. Compute `BLAKE3(image_bytes)` → `omni_image_hash` ([`omni_crypto::hash::Blake3`]).
+/// 2. Construct [`DriverManifestBody`] from the inputs.
+/// 3. Encode the body via [`encode_canonical`] (postcard 1.x).
+/// 4. Assert manifest size ≤ 16 KiB ([`PackError::ManifestTooLarge`]).
+/// 5. Sign the postcard bytes with `signing_seed` → 64-byte Ed25519
+///    signature ([`omni_crypto::signing::OmniSigningKey`]).
+/// 6. Compute section offsets using [`u64::checked_add`] throughout.
+/// 7. Assert total size ≤ 32 MiB ([`PackError::PackTooLarge`]).
+/// 8. Write 64-byte header ‖ `manifest.pc` ‖ `signature` ‖ `image.elf`.
+///
+/// # Errors
+///
+/// - [`PackError::PostcardEncode`] — [`encode_canonical`] fails.
+/// - [`PackError::ManifestTooLarge`] — postcard bytes exceed 16 KiB.
+/// - [`PackError::PackTooLarge`] — total blob exceeds 32 MiB.
+/// - [`PackError::OffsetOverflow`] — section offset arithmetic overflows.
+///
+/// # Example
+///
+/// ```no_run
+/// use omni_driver_pack::pack::{PackInput, build_opack};
+/// use omni_kernel::driver_manifest::{DriverCapabilities, DriverMatchers};
+///
+/// let seed = [0u8; 32]; // use a real seed in production
+/// let blob = build_opack(PackInput {
+///     name: "my-driver".to_string(),
+///     version: "0.1.0".to_string(),
+///     issuer_pubkey: [0u8; 32], // must be the verifying key for `seed`
+///     capabilities: DriverCapabilities::default(),
+///     matchers: DriverMatchers::default(),
+///     image_bytes: b"ELF",
+///     signing_seed: seed,
+/// }).unwrap();
+/// assert!(blob.starts_with(b"OMNIPACK"));
+/// ```
+pub fn build_opack(input: PackInput<'_>) -> Result<Vec<u8>, PackError> {
+    // Step 1 — BLAKE3 image hash (OIP-013 § S5.3 step 2).
+    let omni_image_hash: [u8; omni_crypto::hash::HASH_LEN] = Blake3::hash(input.image_bytes);
+
+    // Step 2 — Construct the manifest body (the postcard signing payload,
+    // OIP-013 § S5.3 step 5).
+    let body = DriverManifestBody {
+        meta: DriverMetaBody {
+            name: input.name,
+            version: input.version,
+            omni_image_hash,
+            omni_issuer_pubkey: input.issuer_pubkey,
+        },
+        capabilities: input.capabilities,
+        matchers: input.matchers,
+    };
+
+    // Step 3 — Postcard-encode the manifest body via the OMNI canonical
+    // wire encoding (OIP-Serde-004; postcard 1.x).
+    let manifest_pc: Vec<u8> =
+        encode_canonical(&body).map_err(|e| PackError::PostcardEncode { msg: e.to_string() })?;
+
+    // Step 4 — Size guard: manifest MUST fit in 16 KiB (OIP-013 § S5.5).
+    if manifest_pc.len() as u64 > OMNI_PACK_MAX_MANIFEST_BYTES {
+        return Err(PackError::ManifestTooLarge {
+            actual: manifest_pc.len(),
+            limit: OMNI_PACK_MAX_MANIFEST_BYTES,
+        });
+    }
+
+    // Step 5 — Sign the manifest bytes with the issuer's Ed25519 key
+    // (OIP-013 § S5.3 step 5). Ed25519 signing is deterministic
+    // (RFC 8032); no external RNG is required.
+    let signing_key = OmniSigningKey::from_bytes(input.signing_seed);
+    let sig_bytes: [u8; SIGNATURE_LEN] = signing_key.sign(&manifest_pc).to_bytes();
+
+    // Step 6 — Compute section offsets. The manifest section begins
+    // immediately after the 64-byte fixed header (offset 0x40). All
+    // arithmetic uses checked_add to surface impossible-input paths.
+    let manifest_offset: u64 = OMNI_PACK_HEADER_LEN as u64; // always 0x40
+    let manifest_len: u64 = manifest_pc.len() as u64;
+    let signature_offset: u64 =
+        manifest_offset
+            .checked_add(manifest_len)
+            .ok_or(PackError::OffsetOverflow {
+                section: "signature",
+            })?;
+    let signature_len: u64 = SIGNATURE_LEN as u64; // always 64
+    let image_offset: u64 = signature_offset
+        .checked_add(signature_len)
+        .ok_or(PackError::OffsetOverflow { section: "image" })?;
+    let image_len: u64 = input.image_bytes.len() as u64;
+
+    // Step 7 — Size guard: total blob MUST be ≤ 32 MiB (OIP-013 § S5.2).
+    let total_len: u64 = image_offset
+        .checked_add(image_len)
+        .ok_or(PackError::OffsetOverflow { section: "total" })?;
+    if total_len > OMNI_PACK_MAX_BYTES {
+        return Err(PackError::PackTooLarge {
+            actual: total_len,
+            limit: OMNI_PACK_MAX_BYTES,
+        });
+    }
+
+    // Step 8 — Assemble the blob. The capacity is exact (no reallocation).
+    let capacity = usize::try_from(total_len).map_err(|_| PackError::OffsetOverflow {
+        section: "capacity",
+    })?;
+    let mut out: Vec<u8> = Vec::with_capacity(capacity);
+
+    // 64-byte fixed header (OIP-013 § S5.5 layout, little-endian):
+    out.extend_from_slice(&OMNI_PACK_MAGIC); // 0x00  8  magic
+    out.extend_from_slice(&OMNI_PACK_VERSION.to_le_bytes()); // 0x08  4  version = 1
+    out.extend_from_slice(&0u32.to_le_bytes()); // 0x0C  4  flags = 0
+    out.extend_from_slice(&manifest_offset.to_le_bytes()); // 0x10  8
+    out.extend_from_slice(&manifest_len.to_le_bytes()); // 0x18  8
+    out.extend_from_slice(&signature_offset.to_le_bytes()); // 0x20  8
+    out.extend_from_slice(&signature_len.to_le_bytes()); // 0x28  8
+    out.extend_from_slice(&image_offset.to_le_bytes()); // 0x30  8
+    out.extend_from_slice(&image_len.to_le_bytes()); // 0x38  8
+
+    // Payload:
+    out.extend_from_slice(&manifest_pc); // 0x40 ..  manifest.pc
+    out.extend_from_slice(&sig_bytes); // ..   64  Ed25519 signature
+    out.extend_from_slice(input.image_bytes); // ..   ..  image.elf
+
+    debug_assert_eq!(
+        out.len(),
+        capacity,
+        "pre-computed capacity must match final length"
+    );
+    Ok(out)
+}

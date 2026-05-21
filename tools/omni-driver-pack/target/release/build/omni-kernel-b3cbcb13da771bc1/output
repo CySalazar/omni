@@ -1,0 +1,5 @@
+cargo:rerun-if-changed=../../.git/HEAD
+cargo:rerun-if-changed=../../.git/index
+cargo:rustc-env=OMNI_GIT_HASH=b75303f+dirty
+cargo:rustc-env=OMNI_GIT_BRANCH=main
+cargo:rustc-env=OMNI_BUILD_DATE=2026-05-21 13:17 UTC

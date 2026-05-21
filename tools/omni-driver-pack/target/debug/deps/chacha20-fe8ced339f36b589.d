@@ -1,0 +1,11 @@
+/home/cysalazar/OMNI/OMNI OS/tools/omni-driver-pack/target/debug/deps/libchacha20-fe8ced339f36b589.rmeta: /home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/lib.rs /home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/backends.rs /home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/legacy.rs /home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/xchacha.rs /home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/backends/soft.rs /home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/backends/avx2.rs /home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/backends/sse2.rs
+
+/home/cysalazar/OMNI/OMNI OS/tools/omni-driver-pack/target/debug/deps/chacha20-fe8ced339f36b589.d: /home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/lib.rs /home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/backends.rs /home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/legacy.rs /home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/xchacha.rs /home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/backends/soft.rs /home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/backends/avx2.rs /home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/backends/sse2.rs
+
+/home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/lib.rs:
+/home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/backends.rs:
+/home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/legacy.rs:
+/home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/xchacha.rs:
+/home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/backends/soft.rs:
+/home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/backends/avx2.rs:
+/home/cysalazar/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/chacha20-0.9.1/src/backends/sse2.rs:

@@ -39,6 +39,13 @@ members = [
     # it is std-enabled (it runs as a host userspace service with KVM
     # ioctls, OCI image cache, subprocess management for virtio backends).
     "crates/omni-container",
+    # `omni-driver-shared` is the common SDK helper crate for all first-party
+    # user-space drivers (P6.7.8.10, OIP-013 § S5.3 step 8).  It is dep-free
+    # (`no_std`, zero production dependencies) and provides the capability
+    # deposit window parser plus the well-known constants every driver needs.
+    # Must be a workspace member so `cargo build --workspace`, `cargo clippy`,
+    # `cargo test`, and `cargo doc` all cover it in the default matrix.
+    "crates/omni-driver-shared",
     # First-party user-space drivers (OIP-Driver-Framework-013 § R3, phased
     # delivery in OIP-Driver-Net-015 / OIP-Driver-NVMe-014 / OIP-Driver-TEE-016).
     # Each driver crate is `no_std + alloc` so its logic compiles cleanly in
@@ -135,16 +142,18 @@ categories = ["os", "embedded", "cryptography"]
 # /docs/09-tech-specifications.md.
 [workspace.dependencies]
 # --- Internal crates (path-based, version-tracked) ---
-omni-types        = { path = "crates/omni-types",        version = "0.2.0" }
-omni-crypto       = { path = "crates/omni-crypto",       version = "0.2.0" }
-omni-capability   = { path = "crates/omni-capability",   version = "0.2.0" }
-omni-tee          = { path = "crates/omni-tee",          version = "0.2.0" }
-omni-hal          = { path = "crates/omni-hal",          version = "0.2.0" }
-omni-runtime      = { path = "crates/omni-runtime",      version = "0.2.0" }
-omni-mesh         = { path = "crates/omni-mesh",         version = "0.2.0" }
-omni-tokenization = { path = "crates/omni-tokenization", version = "0.2.0" }
-omni-sdk          = { path = "crates/omni-sdk",          version = "0.2.0" }
-omni-agent        = { path = "crates/omni-agent",        version = "0.2.0" }
+omni-types          = { path = "crates/omni-types",          version = "0.2.0" }
+omni-crypto         = { path = "crates/omni-crypto",         version = "0.2.0" }
+omni-capability     = { path = "crates/omni-capability",     version = "0.2.0" }
+omni-tee            = { path = "crates/omni-tee",            version = "0.2.0" }
+omni-hal            = { path = "crates/omni-hal",            version = "0.2.0" }
+omni-runtime        = { path = "crates/omni-runtime",        version = "0.2.0" }
+omni-mesh           = { path = "crates/omni-mesh",           version = "0.2.0" }
+omni-tokenization   = { path = "crates/omni-tokenization",   version = "0.2.0" }
+omni-sdk            = { path = "crates/omni-sdk",            version = "0.2.0" }
+omni-agent          = { path = "crates/omni-agent",          version = "0.2.0" }
+# Driver SDK helper (P6.7.8.10, OIP-013 § S5.3 step 8): dep-free, no_std.
+omni-driver-shared  = { path = "crates/omni-driver-shared",  version = "0.2.0" }
 
 # --- Async runtime ---
 tokio        = { version = "1.52", features = ["full"] }
