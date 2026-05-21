@@ -68,6 +68,7 @@ use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 pub mod dmar;
 pub mod domain;
 pub mod ivrs;
+pub mod vtd;
 
 /// Opaque IOMMU domain identifier (16-bit by VT-d spec).
 ///

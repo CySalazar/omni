@@ -17,6 +17,47 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **IOMMU — P6.7.9-pre.2 Intel VT-d backend scaffold (2026-05-21).**
+  Lands the dormant Intel VT-d backend scaffold in a new module
+  `crates/omni-kernel/src/bare_metal/iommu/vtd.rs`. The slice is
+  deliberately **pure-data**: it pins the Intel VT-d spec rev 4.1 § 10.4
+  register offsets (`VER`/`CAP`/`ECAP`/`GCMD`/`GSTS`/`RTADDR`/`CCMD`/
+  `FSTS`/`FECTL`/`FEDATA`/`FEADDR`/`FEUADDR`/`PMEN`/`IQH`/`IQT`/`IQA`)
+  and the `GCMD` bit-position constants (`TE`/`SRTP`/`SFL`/`EAFL`/
+  `WBF`/`QIE`/`IRE`/`SIRTP`/`CFI`) as `pub const u32` symbols; provides
+  pure-function encoders for the legacy translation data structures
+  (`RootEntry` with `encode_root_entry`/`encode_root_entry_absent`,
+  `ContextEntry` with `encode_context_entry`/`encode_context_entry_absent`,
+  `Slpte` with `encode_slpte`) plus the `TranslationType` (4 variants)
+  and `AddressWidth` (4 variants) enums; decodes the `CAP` register
+  fields via pure functions (`cap_domain_count`,
+  `cap_supported_agaw`, `cap_caching_mode`,
+  `pick_highest_supported_agaw`); and exposes a host-testable
+  `VtdBackend` struct that implements the `IommuBackend` trait by
+  tracking installed domains + mappings in internal `Vec`s and
+  **emits zero MMIO bytes** (the live register programming + queued
+  invalidation lands in P6.7.9-pre.4). `VtdError` → `IommuError`
+  conversion preserves the vendor-neutral error taxonomy. +32 new
+  host-side tests covering every encoder bit position, every CAP
+  field decode, every `VtdBackend` happy path, and every error path
+  (misaligned addresses, unknown domain, double-unmap). Workspace test
+  count **998 → 1030 pass / 0 fail** (`cargo test --workspace
+  --all-features -- --test-threads=1`). Build Info panel
+  (`crates/omni-kernel/src/bare_metal/demo.rs::render_buildinfo`):
+  Active=`P6.7.9-pre.2 VT-d backend` (cyan), Next=`P6.7.9-pre.3 AMD-Vi
+  backend`, Phase=`1 - Microkernel POC  (~99.9%)`, Tests=`1030
+  workspace pass`. No kmain wiring — the probe still selects vendor
+  for telemetry and `dma_map_handlers::dma_map` continues to use
+  `PassthroughBackend`. Acceptance gates clean: workspace clippy +
+  bare-metal + mb12-userprobe + kernel-runner + 3 driver-image siblings
+  (`x86_64-unknown-none --release`); `cargo fmt --all -- --check`;
+  `bash scripts/check-no-blanket-allow.sh` → `ok (scanned 16
+  crate-root files)`; `RUSTDOCFLAGS=-D warnings cargo doc -p omni-kernel
+  --features bare-metal --target x86_64-unknown-none --no-deps`;
+  `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps
+  --all-features`; `python3 scripts/lint-oips.py` → `0 error(s), 0
+  warning(s) across 19 file(s)`. Aligned with TASK-010 of
+  `docs/planning/2026-05-21-development-plan.md`.
 - **Driver SDK — P6.7.8.10 `omni-driver-shared` crate + live wiring (2026-05-21).**
   Closes the `OIP-013` § S5.3 step 8 deposit-trampoline arc by adding a
   dep-free `no_std` workspace member that every first-party driver image
