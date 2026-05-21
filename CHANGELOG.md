@@ -17,6 +17,58 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **IOMMU — P6.7.9-pre.7 per-device attach surface + live device-entry install (2026-05-21).**
+  Closes the third TASK-010 milestone: per-device translation gating.
+  Vendor-neutral `PciBdf(u16)` newtype on `bare_metal::iommu` packs the
+  PCI requester ID (bus/device/function) in the canonical 16-bit form
+  consumed by both VT-d source-id and AMD-Vi DeviceID, with
+  `from_parts(bus, device, function)` + `from_raw(raw)` constructors
+  and `bus()` / `devfn()` / `device()` / `function()` accessors. The
+  `IommuBackend` trait gains `attach_device(bdf, domain) -> Result<(),
+  IommuError>` + `detach_device(bdf) -> Result<(), IommuError>`,
+  routed through `IommuKind` dispatch — `PassthroughBackend` returns
+  `Ok(())` silently; `VtdBackend` + `AmdViBackend` record + remove the
+  binding in internal `Vec<{Vtd,AmdVi}Attachment>` with duplicate-
+  attach → `IommuError::Unsupported` and detach-on-unknown →
+  `IommuError::Unsupported`. Module-level `iommu_attach_device(bdf,
+  domain)` / `iommu_detach_device(bdf)` close the public surface.
+  **VT-d live install** (`#[cfg(target_os = "none")]
+  VtdBackend::install_device_entry`): writes the spec-faithful 128-bit
+  context entry into the per-bus context table at
+  `context_entry_offset(bdf) = devfn * 16`, the root entry into the
+  global root-table page at `root_entry_offset(bus) = bus * 16`,
+  submits per-domain context-cache invalidate (new
+  `encode_context_cache_domain_invalidate(domain)` — Type `0x1` + G
+  `10` + DID bits 16..31) and per-domain IOTLB invalidate (new
+  `encode_iotlb_domain_invalidate(domain)` — Type `0x2` + G `10` + DID)
+  on the invalidation queue via a new `submit_iq_descriptor` helper
+  (wraps on `INV_QUEUE_BYTES`; advances `IQT`; polls `IQH` to drain).
+  **AMD-Vi live install** (`#[cfg(target_os = "none")]
+  AmdViBackend::install_device_entry`): writes the 256-bit DTE into the
+  device table at `dte_offset(bdf) = bdf.raw() * 32` (bounds-checked
+  against new `DEVICE_TABLE_BYTES = 4096` for the Phase-1 1-frame
+  table), submits `INVALIDATE_DEVTAB_ENTRY(device_id = bdf.raw())` +
+  `INVALIDATE_IOMMU_PAGES(domain)` (new
+  `encode_invalidate_iommu_pages_domain(domain)` — opcode `0x3` + DID
+  bits 32..47 + S=1 spans-all in high qword per spec § 5.4.4) on the
+  command buffer via a new `submit_cmd_descriptor` helper (wraps on
+  `CMD_BUFFER_BYTES`). Error taxonomies: `VtdAttachError` (5 variants:
+  `NotActivated/DomainNotInstalled/AlreadyAttached/AddressMisaligned/
+  InvalidationTimeout`) + `AmdViAttachError` (7 variants — adds
+  `DeviceTableTooSmall/UnsupportedMode`), both mapped to `IommuError`
+  via `From` impls. Module-level live wrappers
+  `install_vt_d_device_entry` / `install_amd_vi_device_entry` mirror
+  the existing `activate_intel_vt_d` / `activate_amd_vi` pair. New
+  MMIO write helpers `write_context_entry_at` / `write_root_entry_at`
+  (VT-d) + `write_dte_at` (AMD-Vi). +33 host-side tests covering the
+  dispatch surface end-to-end. Workspace test count 1128 → **1161**
+  pass / 0 fail. Build Info Active=`P6.7.9-pre.7 IOMMU device wire`,
+  Next=`P6.7.9-pre.8 driver PCI bind`, Tests=`1161 workspace pass`.
+  All acceptance gates clean. **No new dependency**. `kmain`
+  deliberately **NOT** wired — live install requires the driver
+  framework's cap-token resource match, lands in pre.8. `GCMD.TE` /
+  `CTRL.IommuEn` stay deasserted preserving Phase-1 pass-through.
+
 - **IOMMU — P6.7.9-pre.6 AMD-Vi live MMIO register programming (2026-05-21).**
   Closes the live-programming half of TASK-010 for the AMD-Vi backend,
   symmetric to P6.7.9-pre.5's Intel VT-d slice. `AmdViBackend` gains the

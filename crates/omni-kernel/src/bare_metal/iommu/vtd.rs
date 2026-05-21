@@ -50,7 +50,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use super::{DomainId, IommuBackend, IommuError, IommuFlags, IommuVendor};
+use super::{DomainId, IommuBackend, IommuError, IommuFlags, IommuVendor, PciBdf};
 
 // =============================================================================
 // Section 1 — VT-d MMIO register offsets (Intel VT-d spec rev 4.1 § 10.4).
@@ -223,9 +223,22 @@ pub const INV_DESC_TYPE_INVALIDATE_WAIT: u64 = 0x5;
 /// Context-cache granularity `G=01` (Global). Encoded into bits 4..5
 /// of the context-cache descriptor low qword.
 pub const INV_DESC_CTX_GRAN_GLOBAL: u64 = 0b01 << 4;
+/// Context-cache granularity `G=10` (Domain).
+///
+/// Selects the per-domain context-cache invalidate variant — the
+/// descriptor targets only the entries whose `DID` matches the field
+/// encoded into bits 16..31 of the low qword (see
+/// [`encode_context_cache_domain_invalidate`]).
+pub const INV_DESC_CTX_GRAN_DOMAIN: u64 = 0b10 << 4;
 /// IOTLB granularity `G=01` (Global). Encoded into bits 4..5 of the
 /// IOTLB descriptor low qword.
 pub const INV_DESC_IOTLB_GRAN_GLOBAL: u64 = 0b01 << 4;
+/// IOTLB granularity `G=10` (Domain).
+///
+/// Selects the per-domain IOTLB invalidate variant — descriptor targets
+/// only entries whose `DID` matches the field encoded into bits 16..31
+/// of the low qword (see [`encode_iotlb_domain_invalidate`]).
+pub const INV_DESC_IOTLB_GRAN_DOMAIN: u64 = 0b10 << 4;
 /// Invalidate-wait `SW=1`: write a 4-byte status value to the status
 /// address once the wait descriptor reaches the IOMMU. Bit 5.
 pub const INV_DESC_WAIT_STATUS_WRITE: u64 = 1 << 5;
@@ -740,6 +753,112 @@ pub const fn encode_context_cache_global_invalidate() -> (u64, u64) {
     (low, 0)
 }
 
+/// Encode the low + high qwords of a 128-bit **per-domain**
+/// context-cache invalidate descriptor.
+///
+/// Layout (Intel VT-d spec § 6.5.2.3):
+///
+/// - low qword bits  0..3 : Type = [`INV_DESC_TYPE_CONTEXT_CACHE`] (`0x1`).
+/// - low qword bits  4..5 : G   = `10` (Domain-granular).
+/// - low qword bits 16..31: DID = `domain.raw()`.
+/// - high qword: source-id / function-mask — unused for domain
+///   granularity (the IOMMU evicts every cache entry whose `DID`
+///   matches, regardless of source-id).
+///
+/// This is what the per-device install path queues after binding a new
+/// PCI device to `domain` so the IOMMU drops any stale entries from a
+/// prior generation of the same DID.
+#[must_use]
+pub const fn encode_context_cache_domain_invalidate(domain: DomainId) -> (u64, u64) {
+    let did = (domain.raw() as u64) << 16;
+    let low = INV_DESC_TYPE_CONTEXT_CACHE | INV_DESC_CTX_GRAN_DOMAIN | did;
+    (low, 0)
+}
+
+/// Encode the low + high qwords of a 128-bit **per-domain** IOTLB
+/// invalidate descriptor.
+///
+/// Layout (Intel VT-d spec § 6.5.2.4):
+///
+/// - low qword bits  0..3 : Type = [`INV_DESC_TYPE_IOTLB`] (`0x2`).
+/// - low qword bits  4..5 : G   = `10` (Domain-granular).
+/// - low qword bits 16..31: DID = `domain.raw()`.
+/// - high qword: AM/AIH/Address — unused for domain granularity.
+#[must_use]
+pub const fn encode_iotlb_domain_invalidate(domain: DomainId) -> (u64, u64) {
+    let did = (domain.raw() as u64) << 16;
+    let low = INV_DESC_TYPE_IOTLB | INV_DESC_IOTLB_GRAN_DOMAIN | did;
+    (low, 0)
+}
+
+/// Byte offset of the context-entry slot for `bdf` within a per-bus
+/// 4-KiB context table (§ 9.3 — slot index = devfn, slot size =
+/// [`CONTEXT_ENTRY_BYTES`]).
+///
+/// Pure function — moves the index arithmetic out of the unsafe MMIO
+/// path so host tests can pin the offsets.
+#[must_use]
+pub const fn context_entry_offset(bdf: super::PciBdf) -> u64 {
+    (bdf.devfn() as u64) * (CONTEXT_ENTRY_BYTES as u64)
+}
+
+/// Byte offset of the root-entry slot for `bus` within the 4-KiB
+/// root table (§ 9.1 — slot index = bus number, slot size =
+/// [`ROOT_ENTRY_BYTES`]).
+#[must_use]
+pub const fn root_entry_offset(bus: u8) -> u64 {
+    (bus as u64) * (ROOT_ENTRY_BYTES as u64)
+}
+
+/// Recorded per-device attachment in the host-testable scaffold.
+///
+/// Live MMIO state (`VtdBackend::install_device_entry`) also pushes a
+/// [`VtdAttachment`] so the bookkeeping is consistent between the host
+/// and bare-metal halves: every `(bdf → domain)` binding visible to
+/// the trait dispatch surface has exactly one entry here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VtdAttachment {
+    /// PCI requester ID owning the binding.
+    pub bdf: PciBdf,
+    /// Domain the device is bound to.
+    pub domain: DomainId,
+}
+
+/// Error surfaced by `VtdBackend::install_device_entry`.
+///
+/// Mapped to [`IommuError`] when surfaced through the public surface so
+/// the syscall layer keeps a vendor-neutral taxonomy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VtdAttachError {
+    /// The backend was never `activate_hardware`'d so the IQ is not
+    /// guaranteed to be drained — refusing to write the entry avoids
+    /// publishing a context entry the IOMMU cannot invalidate later.
+    NotActivated,
+    /// `domain` was never installed via
+    /// [`super::IommuBackend::install_domain`].
+    DomainNotInstalled,
+    /// `bdf` is already attached (callers must `detach_device` first).
+    AlreadyAttached,
+    /// `slpt_phys` or `context_table_phys` not 4-KiB aligned.
+    AddressMisaligned,
+    /// Per-domain context-cache or IOTLB invalidate failed to drain in
+    /// [`VTD_ACTIVATION_POLL_LIMIT`] iterations.
+    InvalidationTimeout,
+}
+
+impl From<VtdAttachError> for IommuError {
+    fn from(err: VtdAttachError) -> Self {
+        match err {
+            VtdAttachError::NotActivated | VtdAttachError::InvalidationTimeout => {
+                Self::ActivationFailed
+            }
+            VtdAttachError::DomainNotInstalled => Self::InvalidDomain,
+            VtdAttachError::AlreadyAttached => Self::Unsupported,
+            VtdAttachError::AddressMisaligned => Self::AddressMisaligned,
+        }
+    }
+}
+
 /// One mapping record tracked by the scaffold backend.
 ///
 /// Pure data — exists so the host test suite can assert on the
@@ -796,6 +915,11 @@ pub struct VtdBackend {
     /// and observed every status mirror bit set (the activation
     /// method is gated on `cfg(target_os = "none")`).
     hardware_activated: bool,
+    /// Per-device attachments recorded by `attach_device` and (for
+    /// bare-metal builds) `install_device_entry`. Both halves of the
+    /// API share this vector so the host-testable scaffold and the
+    /// live MMIO path agree on `(bdf → domain)` state.
+    attachments: Vec<VtdAttachment>,
 }
 
 impl VtdBackend {
@@ -814,7 +938,23 @@ impl VtdBackend {
             invalidation_queue_phys: 0,
             invalidation_queue_tail: 0,
             hardware_activated: false,
+            attachments: Vec::new(),
         }
+    }
+
+    /// Snapshot of the recorded per-device attachments (insertion
+    /// order). Exposed primarily so the host test suite can assert on
+    /// the `(bdf → domain)` state without going through the trait
+    /// surface.
+    #[must_use]
+    pub fn attachments(&self) -> &[VtdAttachment] {
+        &self.attachments
+    }
+
+    /// `true` iff `bdf` is currently attached to some domain.
+    #[must_use]
+    pub fn has_attachment(&self, bdf: PciBdf) -> bool {
+        self.attachments.iter().any(|a| a.bdf == bdf)
     }
 
     /// Snapshot of the recorded mapping list (newest last).
@@ -982,6 +1122,188 @@ impl VtdBackend {
         self.hardware_activated = true;
         Ok(())
     }
+
+    /// Drive the live VT-d per-device entry install.
+    ///
+    /// Spec-faithful order (Intel VT-d rev 4.1 § 9 + § 6.5):
+    ///
+    /// 1. Validate inputs (`hardware_activated`, alignments, domain
+    ///    installed, bdf not already attached).
+    /// 2. Encode the context entry for `(slpt_phys, domain,
+    ///    translation, width)` and write it into the per-bus context
+    ///    table at offset [`context_entry_offset(bdf)`].
+    /// 3. Encode the root entry pointing at `context_table_phys` and
+    ///    write it into the root table at offset
+    ///    [`root_entry_offset(bdf.bus())`].
+    /// 4. Submit a per-domain context-cache invalidate descriptor on
+    ///    the invalidation queue and wait for it to drain.
+    /// 5. Submit a per-domain IOTLB invalidate descriptor and wait
+    ///    for it to drain.
+    /// 6. Record the `(bdf, domain)` binding in
+    ///    [`Self::attachments`].
+    ///
+    /// `GCMD.TE` is **NOT** raised by this slice; the IOMMU stays in
+    /// pre-translation pass-through mode at the hardware level until
+    /// the kernel is ready to gate every DMA-capable device (raise
+    /// `TE` lands once at least one device is attached and the
+    /// per-domain page tables are populated — orthogonal to this
+    /// slice).
+    ///
+    /// # Errors
+    ///
+    /// See [`VtdAttachError`].
+    ///
+    /// # Safety
+    ///
+    /// `phys_offset` must be the live bootloader direct-map offset.
+    /// `slpt_phys` must reference a 4-KiB-aligned second-level page
+    /// table owned by the kernel and reachable through that direct
+    /// map. `context_table_phys` must reference a 4-KiB-aligned
+    /// context-table page owned by the kernel; the caller is
+    /// responsible for keeping the same `context_table_phys` for the
+    /// same bus across successive `install_device_entry` calls
+    /// (otherwise the per-bus root entry will be overwritten with a
+    /// dangling pointer).
+    #[cfg(target_os = "none")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the per-device install needs all of (phys_offset, bdf, domain, slpt_phys, context_table_phys, width, translation) — the driver framework is the sole caller and the explicit positional surface keeps the unsafe MMIO entry-point auditable"
+    )]
+    pub unsafe fn install_device_entry(
+        &mut self,
+        phys_offset: u64,
+        bdf: PciBdf,
+        domain: DomainId,
+        slpt_phys: u64,
+        context_table_phys: u64,
+        width: AddressWidth,
+        translation: TranslationType,
+    ) -> Result<(), VtdAttachError> {
+        if !self.hardware_activated {
+            return Err(VtdAttachError::NotActivated);
+        }
+        if slpt_phys & 0xFFF != 0 || context_table_phys & 0xFFF != 0 {
+            return Err(VtdAttachError::AddressMisaligned);
+        }
+        if !self.has_domain(domain) {
+            return Err(VtdAttachError::DomainNotInstalled);
+        }
+        if self.has_attachment(bdf) {
+            return Err(VtdAttachError::AlreadyAttached);
+        }
+
+        // (2) Encode + write the context entry into the per-bus
+        //     context table at offset (devfn * 16).
+        let context_entry = encode_context_entry(slpt_phys, domain, translation, width)
+            .map_err(|_| VtdAttachError::AddressMisaligned)?;
+        let context_va = phys_offset.wrapping_add(context_table_phys);
+        let ctx_offset = context_entry_offset(bdf);
+        // SAFETY: caller guarantees `context_table_phys` is a
+        // kernel-owned, 4-KiB-aligned page reachable through the
+        // direct map; `ctx_offset` is bounded to (255 * 16) + 15 =
+        // 4095 by the devfn 8-bit constraint, so the write stays
+        // inside the page.
+        unsafe {
+            write_context_entry_at(
+                context_va,
+                ctx_offset,
+                context_entry.low,
+                context_entry.high,
+            );
+        }
+
+        // (3) Encode + write the root entry into the global root
+        //     table at offset (bus * 16). Idempotent on the
+        //     `context_table_phys` value — overwriting with the same
+        //     pointer is a no-op for the IOMMU.
+        let root_entry =
+            encode_root_entry(context_table_phys).map_err(|_| VtdAttachError::AddressMisaligned)?;
+        let root_va = phys_offset.wrapping_add(self.root_table_phys);
+        let root_offset = root_entry_offset(bdf.bus());
+        // SAFETY: caller guarantees `self.root_table_phys` (recorded
+        // via `prepare_activation`) is a kernel-owned, 4-KiB-aligned
+        // page reachable through the direct map; `root_offset` is
+        // bounded to 4080 by the 8-bit bus constraint.
+        unsafe { write_root_entry_at(root_va, root_offset, root_entry.low, root_entry.high) };
+
+        // (4) + (5) Per-domain context-cache invalidate + per-domain
+        //     IOTLB invalidate, sequenced through the invalidation
+        //     queue. We wrap on `INV_QUEUE_BYTES` so the tail
+        //     pointer never escapes the queue page.
+        let queue_va = phys_offset.wrapping_add(self.invalidation_queue_phys);
+        let unit_va = phys_offset.wrapping_add(self.unit_base);
+
+        let (cc_lo, cc_hi) = encode_context_cache_domain_invalidate(domain);
+        // SAFETY: queue is a kernel-owned 4-KiB page; submit_iq_*
+        // updates `self.invalidation_queue_tail` after each push.
+        unsafe { self.submit_iq_descriptor(queue_va, unit_va, cc_lo, cc_hi) }
+            .map_err(|()| VtdAttachError::InvalidationTimeout)?;
+
+        let (io_lo, io_hi) = encode_iotlb_domain_invalidate(domain);
+        // SAFETY: same as above.
+        unsafe { self.submit_iq_descriptor(queue_va, unit_va, io_lo, io_hi) }
+            .map_err(|()| VtdAttachError::InvalidationTimeout)?;
+
+        // (6) Record the attachment.
+        self.attachments.push(VtdAttachment { bdf, domain });
+        Ok(())
+    }
+
+    /// Push a single 128-bit descriptor into the invalidation queue,
+    /// advance `IQT`, and wait for `IQH` to catch up. Wraps the tail
+    /// pointer on [`INV_QUEUE_BYTES`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(())` if `IQH` does not catch up within
+    /// [`VTD_ACTIVATION_POLL_LIMIT`] iterations.
+    ///
+    /// # Safety
+    ///
+    /// `queue_va` must point at the start of the kernel-owned 4-KiB
+    /// invalidation-queue page reachable through the direct map.
+    /// `unit_va` must point at the per-IOMMU MMIO register window so
+    /// `unit_va + REG_OFFSET_IQT` / `+ REG_OFFSET_IQH` are valid
+    /// 64-bit accesses.
+    #[cfg(target_os = "none")]
+    unsafe fn submit_iq_descriptor(
+        &mut self,
+        queue_va: u64,
+        unit_va: u64,
+        lo: u64,
+        hi: u64,
+    ) -> Result<(), ()> {
+        // Compute the slot index from the current tail (byte offset →
+        // slot index = tail / INV_QUEUE_ENTRY_BYTES). Wrapping is
+        // implicit because `invalidation_queue_tail` is reset to 0
+        // when it would overflow `INV_QUEUE_BYTES`. The tail is
+        // strictly bounded by `INV_QUEUE_BYTES = 4096` so the `usize`
+        // cast and the bounded division are precision-safe on every
+        // pointer width.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::integer_division,
+            reason = "queue tail is bounded by INV_QUEUE_BYTES (4096); division by INV_QUEUE_ENTRY_BYTES (16) is the canonical slot-index conversion"
+        )]
+        let slot = (self.invalidation_queue_tail as usize) / INV_QUEUE_ENTRY_BYTES;
+        // SAFETY: queue is a kernel-owned 4-KiB page; `slot` is
+        // bounded to `INV_QUEUE_ENTRY_COUNT - 1` by the wrap below.
+        unsafe { write_queue_entry(queue_va, slot, lo, hi) };
+        let mut next_tail = self
+            .invalidation_queue_tail
+            .wrapping_add(INV_QUEUE_ENTRY_BYTES as u64);
+        if next_tail >= INV_QUEUE_BYTES as u64 {
+            next_tail = 0;
+        }
+        // SAFETY: per the function's safety contract.
+        unsafe { mmio_write64(unit_va, REG_OFFSET_IQT, next_tail) };
+        self.invalidation_queue_tail = next_tail;
+        // SAFETY: IQH is a 8-byte read-only MMIO register.
+        if !unsafe { poll_iqh_reaches(unit_va, next_tail) } {
+            return Err(());
+        }
+        Ok(())
+    }
 }
 
 // =============================================================================
@@ -1120,6 +1442,49 @@ unsafe fn write_queue_entry(queue_va: u64, slot: usize, lo: u64, hi: u64) {
     }
 }
 
+/// Write a 128-bit context entry (low + high qwords) into a per-bus
+/// context-table page at `byte_offset`.
+///
+/// # Safety
+///
+/// `context_va` must point at the start of a kernel-owned, 4-KiB-aligned
+/// context-table page reachable through the direct map.
+/// `byte_offset + 16` must be `<= 4096`.
+#[cfg(target_os = "none")]
+#[inline]
+unsafe fn write_context_entry_at(context_va: u64, byte_offset: u64, low: u64, high: u64) {
+    let base = context_va.wrapping_add(byte_offset);
+    let lo_ptr = base as *mut u64;
+    let hi_ptr = base.wrapping_add(8) as *mut u64;
+    // SAFETY: per the function's safety contract.
+    unsafe {
+        core::ptr::write_volatile(lo_ptr, low);
+        core::ptr::write_volatile(hi_ptr, high);
+    }
+}
+
+/// Write a 128-bit root entry (low + high qwords) into the global
+/// root-table page at `byte_offset`.
+///
+/// # Safety
+///
+/// `root_va` must point at the start of the kernel-owned, 4-KiB-aligned
+/// root-table page reachable through the direct map (the same page
+/// recorded via [`VtdBackend::prepare_activation`]).
+/// `byte_offset + 16` must be `<= 4096`.
+#[cfg(target_os = "none")]
+#[inline]
+unsafe fn write_root_entry_at(root_va: u64, byte_offset: u64, low: u64, high: u64) {
+    let base = root_va.wrapping_add(byte_offset);
+    let lo_ptr = base as *mut u64;
+    let hi_ptr = base.wrapping_add(8) as *mut u64;
+    // SAFETY: per the function's safety contract.
+    unsafe {
+        core::ptr::write_volatile(lo_ptr, low);
+        core::ptr::write_volatile(hi_ptr, high);
+    }
+}
+
 impl IommuBackend for VtdBackend {
     fn vendor(&self) -> IommuVendor {
         IommuVendor::Intel
@@ -1181,20 +1546,43 @@ impl IommuBackend for VtdBackend {
         // `IOTLB_INVALIDATE` descriptor here.
         Ok(())
     }
+
+    fn attach_device(&mut self, bdf: PciBdf, domain: DomainId) -> Result<(), IommuError> {
+        if !self.has_domain(domain) {
+            return Err(IommuError::InvalidDomain);
+        }
+        if self.has_attachment(bdf) {
+            return Err(IommuError::Unsupported);
+        }
+        self.attachments.push(VtdAttachment { bdf, domain });
+        Ok(())
+    }
+
+    fn detach_device(&mut self, bdf: PciBdf) -> Result<(), IommuError> {
+        let initial = self.attachments.len();
+        self.attachments.retain(|a| a.bdf != bdf);
+        if self.attachments.len() == initial {
+            return Err(IommuError::Unsupported);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        AddressWidth, ContextEntry, GCMD_BIT_QIE, GCMD_BIT_SRTP, GCMD_BIT_TE, IommuBackend,
-        IommuError, IommuFlags, IommuVendor, REG_OFFSET_CAP, REG_OFFSET_ECAP, REG_OFFSET_GCMD,
-        REG_OFFSET_GSTS, REG_OFFSET_IQA, REG_OFFSET_IQH, REG_OFFSET_IQT, REG_OFFSET_RTADDR,
-        REG_OFFSET_VER, RootEntry, ScaffoldMapping, Slpte, TranslationType, VtdBackend, VtdError,
-        cap_caching_mode, cap_domain_count, cap_supported_agaw, encode_context_entry,
-        encode_context_entry_absent, encode_root_entry, encode_root_entry_absent, encode_slpte,
-        pick_highest_supported_agaw,
+        AddressWidth, CONTEXT_ENTRY_BYTES, ContextEntry, GCMD_BIT_QIE, GCMD_BIT_SRTP, GCMD_BIT_TE,
+        INV_DESC_CTX_GRAN_DOMAIN, INV_DESC_IOTLB_GRAN_DOMAIN, INV_DESC_TYPE_CONTEXT_CACHE,
+        INV_DESC_TYPE_IOTLB, IommuBackend, IommuError, IommuFlags, IommuVendor, REG_OFFSET_CAP,
+        REG_OFFSET_ECAP, REG_OFFSET_GCMD, REG_OFFSET_GSTS, REG_OFFSET_IQA, REG_OFFSET_IQH,
+        REG_OFFSET_IQT, REG_OFFSET_RTADDR, REG_OFFSET_VER, ROOT_ENTRY_BYTES, RootEntry,
+        ScaffoldMapping, Slpte, TranslationType, VtdAttachError, VtdAttachment, VtdBackend,
+        VtdError, cap_caching_mode, cap_domain_count, cap_supported_agaw, context_entry_offset,
+        encode_context_cache_domain_invalidate, encode_context_entry, encode_context_entry_absent,
+        encode_iotlb_domain_invalidate, encode_root_entry, encode_root_entry_absent, encode_slpte,
+        pick_highest_supported_agaw, root_entry_offset,
     };
-    use crate::bare_metal::iommu::DomainId;
+    use crate::bare_metal::iommu::{DomainId, PciBdf};
 
     // ---- Register offset invariants ------------------------------------
 
@@ -1566,10 +1954,10 @@ mod tests {
 
     use super::{
         GSTS_BIT_QIES, GSTS_BIT_RTPS, GSTS_BIT_TES, INV_DESC_CTX_GRAN_GLOBAL,
-        INV_DESC_IOTLB_GRAN_GLOBAL, INV_DESC_TYPE_CONTEXT_CACHE, INV_DESC_TYPE_INVALIDATE_WAIT,
-        INV_DESC_TYPE_IOTLB, INV_DESC_WAIT_STATUS_WRITE, INV_QUEUE_BYTES, INV_QUEUE_ENTRY_BYTES,
-        INV_QUEUE_ENTRY_COUNT, INV_QUEUE_SIZE_ORDER, VTD_ACTIVATION_POLL_LIMIT, VtdActivateError,
-        encode_context_cache_global_invalidate, encode_iotlb_global_invalidate, encode_iqa,
+        INV_DESC_IOTLB_GRAN_GLOBAL, INV_DESC_TYPE_INVALIDATE_WAIT, INV_DESC_WAIT_STATUS_WRITE,
+        INV_QUEUE_BYTES, INV_QUEUE_ENTRY_BYTES, INV_QUEUE_ENTRY_COUNT, INV_QUEUE_SIZE_ORDER,
+        VTD_ACTIVATION_POLL_LIMIT, VtdActivateError, encode_context_cache_global_invalidate,
+        encode_iotlb_global_invalidate, encode_iqa,
     };
 
     #[test]
@@ -1721,5 +2109,169 @@ mod tests {
         assert_eq!(backend.root_table_phys(), 0x20_0000);
         assert_eq!(backend.invalidation_queue_phys(), 0x20_1000);
         assert!(!backend.is_hardware_activated());
+    }
+
+    // ---- P6.7.9-pre.7 — per-domain invalidate encoders ------------------
+
+    #[test]
+    fn encode_context_cache_domain_invalidate_packs_did_and_type() {
+        let (low, high) = encode_context_cache_domain_invalidate(DomainId::new(0x1234));
+        // Type=0x1 in bits 0..3, G=10 in bits 4..5, DID in bits 16..31.
+        assert_eq!(low & 0xF, INV_DESC_TYPE_CONTEXT_CACHE);
+        assert_eq!(low & (0b11 << 4), INV_DESC_CTX_GRAN_DOMAIN);
+        assert_eq!((low >> 16) & 0xFFFF, 0x1234);
+        assert_eq!(high, 0);
+    }
+
+    #[test]
+    fn encode_iotlb_domain_invalidate_packs_did_and_type() {
+        let (low, high) = encode_iotlb_domain_invalidate(DomainId::new(0xABCD));
+        // Type=0x2 in bits 0..3, G=10 in bits 4..5, DID in bits 16..31.
+        assert_eq!(low & 0xF, INV_DESC_TYPE_IOTLB);
+        assert_eq!(low & (0b11 << 4), INV_DESC_IOTLB_GRAN_DOMAIN);
+        assert_eq!((low >> 16) & 0xFFFF, 0xABCD);
+        assert_eq!(high, 0);
+    }
+
+    #[test]
+    fn encode_per_domain_invalidates_for_did_zero_set_only_type_and_g() {
+        // The boundary DID=0 must still raise the type + G bits even
+        // though the DID field encodes to zero — defends against an
+        // accidental mask that swallows both fields.
+        let (cc_low, cc_high) = encode_context_cache_domain_invalidate(DomainId::new(0));
+        assert_eq!(
+            cc_low,
+            INV_DESC_TYPE_CONTEXT_CACHE | INV_DESC_CTX_GRAN_DOMAIN
+        );
+        assert_eq!(cc_high, 0);
+
+        let (io_low, io_high) = encode_iotlb_domain_invalidate(DomainId::new(0));
+        assert_eq!(io_low, INV_DESC_TYPE_IOTLB | INV_DESC_IOTLB_GRAN_DOMAIN);
+        assert_eq!(io_high, 0);
+    }
+
+    // ---- P6.7.9-pre.7 — root/context entry offset helpers ---------------
+
+    #[test]
+    fn context_entry_offset_matches_devfn_times_16() {
+        // bdf 00:01.2 → devfn = (1 << 3) | 2 = 0xA → offset = 0xA * 16 = 0xA0.
+        let bdf = PciBdf::from_parts(0, 1, 2);
+        assert_eq!(context_entry_offset(bdf), 0xA0);
+        // bdf 00:1F.7 → devfn = 0xFF → offset = 0xFF0 (last slot of
+        // the 4-KiB context table).
+        let last = PciBdf::from_parts(0, 0x1F, 0x7);
+        assert_eq!(context_entry_offset(last), 0xFF0);
+    }
+
+    #[test]
+    fn context_entry_offset_keeps_table_in_4_kib_page() {
+        // Last possible slot = (devfn=0xFF, offset=0xFF0) — the entry
+        // body still fits inside the 4-KiB context-table page because
+        // offset + CONTEXT_ENTRY_BYTES = 0x1000.
+        let last = PciBdf::from_parts(7, 0x1F, 0x7);
+        let off = context_entry_offset(last);
+        assert!(off + (CONTEXT_ENTRY_BYTES as u64) <= 4096);
+    }
+
+    #[test]
+    fn root_entry_offset_matches_bus_times_16() {
+        assert_eq!(root_entry_offset(0), 0);
+        assert_eq!(root_entry_offset(1), 0x10);
+        assert_eq!(root_entry_offset(0xFF), 0xFF0);
+    }
+
+    #[test]
+    fn root_entry_offset_keeps_table_in_4_kib_page() {
+        // Last possible slot = bus 255 → offset 0xFF0 → fits inside
+        // the 4-KiB root-table page.
+        let off = root_entry_offset(0xFF);
+        assert!(off + (ROOT_ENTRY_BYTES as u64) <= 4096);
+    }
+
+    // ---- P6.7.9-pre.7 — VtdAttachment scaffold ---------------------------
+
+    #[test]
+    fn attach_device_records_binding_and_rejects_unknown_domain() {
+        let mut backend = VtdBackend::new();
+        let bdf = PciBdf::from_parts(0, 1, 0);
+        // Domain never installed → InvalidDomain.
+        assert_eq!(
+            backend.attach_device(bdf, DomainId::new(0x10)),
+            Err(IommuError::InvalidDomain)
+        );
+        // Install + attach succeeds.
+        backend.install_domain(DomainId::new(0x10)).unwrap();
+        assert_eq!(backend.attach_device(bdf, DomainId::new(0x10)), Ok(()));
+        assert!(backend.has_attachment(bdf));
+        assert_eq!(backend.attachments().len(), 1);
+        assert_eq!(
+            backend.attachments().first().copied(),
+            Some(VtdAttachment {
+                bdf,
+                domain: DomainId::new(0x10),
+            })
+        );
+    }
+
+    #[test]
+    fn attach_device_double_attach_rejected() {
+        let mut backend = VtdBackend::new();
+        let bdf = PciBdf::from_parts(0, 2, 0);
+        backend.install_domain(DomainId::new(1)).unwrap();
+        backend.attach_device(bdf, DomainId::new(1)).unwrap();
+        assert_eq!(
+            backend.attach_device(bdf, DomainId::new(1)),
+            Err(IommuError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn detach_device_removes_and_allows_reattach() {
+        let mut backend = VtdBackend::new();
+        let bdf = PciBdf::from_parts(0, 3, 1);
+        backend.install_domain(DomainId::new(2)).unwrap();
+        backend.attach_device(bdf, DomainId::new(2)).unwrap();
+        assert_eq!(backend.detach_device(bdf), Ok(()));
+        assert!(!backend.has_attachment(bdf));
+        // Re-attach after detach succeeds (idempotent surface).
+        assert_eq!(backend.attach_device(bdf, DomainId::new(2)), Ok(()));
+    }
+
+    #[test]
+    fn detach_unknown_device_returns_unsupported() {
+        let mut backend = VtdBackend::new();
+        let bdf = PciBdf::from_parts(0, 4, 0);
+        assert_eq!(backend.detach_device(bdf), Err(IommuError::Unsupported));
+    }
+
+    #[test]
+    fn vtd_attach_error_maps_to_iommu_error_variants() {
+        assert_eq!(
+            IommuError::from(VtdAttachError::NotActivated),
+            IommuError::ActivationFailed
+        );
+        assert_eq!(
+            IommuError::from(VtdAttachError::DomainNotInstalled),
+            IommuError::InvalidDomain
+        );
+        assert_eq!(
+            IommuError::from(VtdAttachError::AlreadyAttached),
+            IommuError::Unsupported
+        );
+        assert_eq!(
+            IommuError::from(VtdAttachError::AddressMisaligned),
+            IommuError::AddressMisaligned
+        );
+        assert_eq!(
+            IommuError::from(VtdAttachError::InvalidationTimeout),
+            IommuError::ActivationFailed
+        );
+    }
+
+    #[test]
+    fn fresh_backend_has_no_attachments() {
+        let backend = VtdBackend::new();
+        assert!(backend.attachments().is_empty());
+        assert!(!backend.has_attachment(PciBdf::from_parts(0, 0, 0)));
     }
 }

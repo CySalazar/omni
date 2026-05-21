@@ -55,7 +55,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use super::{DomainId, IommuBackend, IommuError, IommuFlags, IommuVendor};
+use super::{DomainId, IommuBackend, IommuError, IommuFlags, IommuVendor, PciBdf};
 
 // =============================================================================
 // Section 1 — AMD-Vi MMIO register offsets (AMD IOMMU spec rev 3.10 § 5.5).
@@ -257,6 +257,12 @@ pub const EVENT_LOG_LENGTH_ENCODING: u64 = 8;
 /// single 4-KiB frame holds 128 × 32-byte entries — enough to cover
 /// the local PCI bus on the Phase 1 q35/Proxmox targets.
 pub const DEVICE_TABLE_SIZE_ENCODING: u64 = 0;
+
+/// Physical footprint in bytes of the Phase 1 device table —
+/// `(DEVICE_TABLE_SIZE_ENCODING + 1) × 4 KiB`. Used by
+/// `AmdViBackend::install_device_entry` to bounds-check the DTE
+/// slot before writing.
+pub const DEVICE_TABLE_BYTES: usize = 4096;
 
 // -- Command opcode constants (AMD IOMMU spec rev 3.10 § 5.4) ---------
 //
@@ -722,6 +728,42 @@ pub const fn encode_invalidate_devtab_entry(device_id: u16) -> (u64, u64) {
     (low, 0)
 }
 
+/// Encode a 128-bit `INVALIDATE_IOMMU_PAGES` command targeting **all
+/// entries** for a single domain (§ 5.4.4).
+///
+/// Layout per spec § 5.4.4 (little-endian on the wire):
+/// ```text
+/// data[0] (low qword):
+///   bits  0..15 : Pasid (0 for non-PASID variants)
+///   bits 32..47 : DomainID
+///   bits 60..63 : Opcode (= INVALIDATE_IOMMU_PAGES)
+/// data[1] (high qword):
+///   bit  0      : Size (S) = 1 for "invalidate all"
+///   bits 12..63 : Address (zero — ignored when S=1 spans all)
+/// ```
+///
+/// Returns `(low, high)`. The caller writes them into successive
+/// 64-bit slots of the command-buffer ring.
+#[must_use]
+pub const fn encode_invalidate_iommu_pages_domain(domain: DomainId) -> (u64, u64) {
+    let low = (CMD_OPCODE_INVALIDATE_IOMMU_PAGES << 60) | ((domain.raw() as u64) << 32);
+    // S=1 in bit 0 of the high qword + Address=0 (everything in the
+    // domain's I/O page table is invalidated).
+    let high = 0x1_u64;
+    (low, high)
+}
+
+/// Byte offset of the DTE slot for `bdf` within the AMD-Vi device
+/// table (§ 5.2.2.1 — slot index = full 16-bit requester ID, slot
+/// size = [`DEVICE_TABLE_ENTRY_BYTES`]).
+///
+/// Pure function — moves the index arithmetic out of the unsafe MMIO
+/// path so host tests can pin the offsets.
+#[must_use]
+pub const fn dte_offset(bdf: PciBdf) -> u64 {
+    (bdf.raw() as u64) * (DEVICE_TABLE_ENTRY_BYTES as u64)
+}
+
 // =============================================================================
 // Section 3 — Extended Feature Register (EFR) field decoders
 // (AMD IOMMU spec rev 3.10 § 5.7).
@@ -898,6 +940,70 @@ impl From<AmdViActivateError> for IommuError {
     }
 }
 
+/// Recorded per-device attachment in the host-testable scaffold.
+///
+/// Symmetric to [`super::vtd::VtdAttachment`]. Live MMIO state
+/// (`AmdViBackend::install_device_entry`) also pushes a
+/// [`AmdViAttachment`] so the bookkeeping is consistent between the
+/// host and bare-metal halves: every `(bdf → domain)` binding visible
+/// to the trait dispatch surface has exactly one entry here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AmdViAttachment {
+    /// PCI requester ID owning the binding (= AMD-Vi `DeviceID`).
+    pub bdf: PciBdf,
+    /// Domain the device is bound to.
+    pub domain: DomainId,
+}
+
+/// Error surfaced by `AmdViBackend::install_device_entry`.
+///
+/// Maps to [`IommuError`] when surfaced through the public surface so
+/// the syscall layer keeps a vendor-neutral taxonomy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AmdViAttachError {
+    /// The backend was never `activate_hardware`'d so the command
+    /// buffer is not guaranteed to be drained — refusing to write
+    /// the DTE avoids publishing a translation entry the IOMMU
+    /// cannot invalidate later.
+    NotActivated,
+    /// `domain` was never installed via
+    /// [`super::IommuBackend::install_domain`].
+    DomainNotInstalled,
+    /// `bdf` is already attached (callers must `detach_device` first).
+    AlreadyAttached,
+    /// `iopt_phys` is not 4-KiB aligned.
+    AddressMisaligned,
+    /// `bdf`'s requester-ID exceeds the configured device-table size
+    /// (Phase 1 ships with [`DEVICE_TABLE_SIZE_ENCODING`] = `0` =
+    /// 4 KiB = 128 DTE slots — sufficient for bus 0 device 0..15
+    /// only). Raising the device-table size is tracked as a Phase 2
+    /// follow-up.
+    DeviceTableTooSmall,
+    /// `mode` is [`PageMode::NoTranslation`] — install with no
+    /// translation is a contradiction (callers wanting pass-through
+    /// must not invoke `install_device_entry` at all).
+    UnsupportedMode,
+    /// Command-buffer Head never caught up to Tail after submitting
+    /// the per-domain invalidations.
+    InvalidationTimeout,
+}
+
+impl From<AmdViAttachError> for IommuError {
+    fn from(err: AmdViAttachError) -> Self {
+        match err {
+            AmdViAttachError::NotActivated | AmdViAttachError::InvalidationTimeout => {
+                Self::ActivationFailed
+            }
+            AmdViAttachError::DomainNotInstalled => Self::InvalidDomain,
+            AmdViAttachError::AlreadyAttached | AmdViAttachError::UnsupportedMode => {
+                Self::Unsupported
+            }
+            AmdViAttachError::AddressMisaligned => Self::AddressMisaligned,
+            AmdViAttachError::DeviceTableTooSmall => Self::DomainTableFull,
+        }
+    }
+}
+
 /// One mapping record tracked by the scaffold backend.
 ///
 /// Pure data — exists so the host test suite can assert on the
@@ -963,6 +1069,11 @@ pub struct AmdViBackend {
     /// sequence and observed every status mirror bit set (the
     /// activation method is gated on `cfg(target_os = "none")`).
     hardware_activated: bool,
+    /// Per-device attachments recorded by `attach_device` and (for
+    /// bare-metal builds) `install_device_entry`. Both halves of the
+    /// API share this vector so the host-testable scaffold and the
+    /// live MMIO path agree on `(bdf → domain)` state.
+    attachments: Vec<AmdViAttachment>,
 }
 
 impl AmdViBackend {
@@ -982,7 +1093,23 @@ impl AmdViBackend {
             event_log_phys: 0,
             command_buffer_tail: 0,
             hardware_activated: false,
+            attachments: Vec::new(),
         }
+    }
+
+    /// Snapshot of the recorded per-device attachments (insertion
+    /// order). Exposed primarily so the host test suite can assert on
+    /// the `(bdf → domain)` state without going through the trait
+    /// surface.
+    #[must_use]
+    pub fn attachments(&self) -> &[AmdViAttachment] {
+        &self.attachments
+    }
+
+    /// `true` iff `bdf` is currently attached to some domain.
+    #[must_use]
+    pub fn has_attachment(&self, bdf: PciBdf) -> bool {
+        self.attachments.iter().any(|a| a.bdf == bdf)
     }
 
     /// Snapshot of the recorded mapping list (newest last).
@@ -1100,10 +1227,7 @@ impl AmdViBackend {
     /// `volatile_write64` against `phys_offset + unit_base + offset`
     /// for the constants documented in §1 above.
     #[cfg(target_os = "none")]
-    pub unsafe fn activate_hardware(
-        &mut self,
-        phys_offset: u64,
-    ) -> Result<(), AmdViActivateError> {
+    pub unsafe fn activate_hardware(&mut self, phys_offset: u64) -> Result<(), AmdViActivateError> {
         if self.unit_base == 0
             || self.device_table_phys == 0
             || self.command_buffer_phys == 0
@@ -1115,8 +1239,7 @@ impl AmdViBackend {
         let unit_va = phys_offset.wrapping_add(self.unit_base);
 
         // (1) Device-table base + size.
-        let dev_tab =
-            encode_device_table_base(self.device_table_phys, DEVICE_TABLE_SIZE_ENCODING);
+        let dev_tab = encode_device_table_base(self.device_table_phys, DEVICE_TABLE_SIZE_ENCODING);
         // SAFETY: per the function's safety contract, `unit_va` is a
         // valid MMIO VA into a kernel-owned AMD-Vi register window.
         unsafe { mmio_write64(unit_va, REG_OFFSET_DEVICE_TABLE_BASE, dev_tab) };
@@ -1178,6 +1301,157 @@ impl AmdViBackend {
         }
 
         self.hardware_activated = true;
+        Ok(())
+    }
+
+    /// Drive the live AMD-Vi per-device DTE install.
+    ///
+    /// Spec-faithful order (AMD IOMMU rev 3.10 § 5.2 + § 5.4):
+    ///
+    /// 1. Validate inputs (`hardware_activated`, alignments, domain
+    ///    installed, bdf not already attached, requester-ID fits in
+    ///    the device table).
+    /// 2. Encode the DTE for `(iopt_phys, domain, mode, flags)` and
+    ///    write it into the device table at offset [`dte_offset(bdf)`].
+    /// 3. Submit an `INVALIDATE_DEVTAB_ENTRY(device_id = bdf.raw())`
+    ///    command and wait for the command-buffer Head to catch up.
+    /// 4. Submit an `INVALIDATE_IOMMU_PAGES(domain)` command and
+    ///    wait for completion (drops any stale I/O TLB entry tagged
+    ///    with the same domain ID).
+    /// 5. Record the `(bdf, domain)` binding in
+    ///    [`Self::attachments`].
+    ///
+    /// `CTRL.IommuEn` is **NOT** raised by this slice; the IOMMU
+    /// stays in pre-translation pass-through mode at the hardware
+    /// level until the kernel raises it once at least one device has
+    /// been installed — orthogonal to this slice.
+    ///
+    /// # Errors
+    ///
+    /// See [`AmdViAttachError`].
+    ///
+    /// # Safety
+    ///
+    /// `phys_offset` must be the live bootloader direct-map offset.
+    /// `iopt_phys` must reference a 4-KiB-aligned I/O page-table
+    /// root owned by the kernel reachable through that direct map.
+    /// The function performs `volatile_write64` against the device-
+    /// table + command-buffer pages recorded via
+    /// [`Self::prepare_activation`].
+    #[cfg(target_os = "none")]
+    pub unsafe fn install_device_entry(
+        &mut self,
+        phys_offset: u64,
+        bdf: PciBdf,
+        domain: DomainId,
+        iopt_phys: u64,
+        flags: IommuFlags,
+        mode: PageMode,
+    ) -> Result<(), AmdViAttachError> {
+        if !self.hardware_activated {
+            return Err(AmdViAttachError::NotActivated);
+        }
+        if iopt_phys & 0xFFF != 0 {
+            return Err(AmdViAttachError::AddressMisaligned);
+        }
+        if !self.has_domain(domain) {
+            return Err(AmdViAttachError::DomainNotInstalled);
+        }
+        if self.has_attachment(bdf) {
+            return Err(AmdViAttachError::AlreadyAttached);
+        }
+        if matches!(mode, PageMode::NoTranslation) {
+            return Err(AmdViAttachError::UnsupportedMode);
+        }
+        let dte_byte_offset = dte_offset(bdf);
+        if dte_byte_offset + (DEVICE_TABLE_ENTRY_BYTES as u64) > (DEVICE_TABLE_BYTES as u64) {
+            return Err(AmdViAttachError::DeviceTableTooSmall);
+        }
+
+        // (2) Encode + write the DTE into the device table.
+        let dte = encode_device_table_entry(iopt_phys, domain, mode, flags)
+            .map_err(|_| AmdViAttachError::AddressMisaligned)?;
+        let dev_table_va = phys_offset.wrapping_add(self.device_table_phys);
+        // SAFETY: caller guarantees `self.device_table_phys` (recorded
+        // via `prepare_activation`) is a kernel-owned, 4-KiB-aligned
+        // page reachable through the direct map; bounds-check above
+        // proves the entire 32-byte entry fits inside the page.
+        unsafe { write_dte_at(dev_table_va, dte_byte_offset, dte.qwords) };
+
+        // (3) + (4) Per-device DTE invalidation + per-domain IOMMU
+        //     pages invalidation, sequenced through the command
+        //     buffer.
+        let buf_va = phys_offset.wrapping_add(self.command_buffer_phys);
+        let unit_va = phys_offset.wrapping_add(self.unit_base);
+
+        let (dt_lo, dt_hi) = encode_invalidate_devtab_entry(bdf.raw());
+        // SAFETY: command buffer is a kernel-owned 4-KiB page;
+        // submit_cmd_* updates `self.command_buffer_tail` after each
+        // push.
+        unsafe { self.submit_cmd_descriptor(buf_va, unit_va, dt_lo, dt_hi) }
+            .map_err(|()| AmdViAttachError::InvalidationTimeout)?;
+
+        let (pg_lo, pg_hi) = encode_invalidate_iommu_pages_domain(domain);
+        // SAFETY: same as above.
+        unsafe { self.submit_cmd_descriptor(buf_va, unit_va, pg_lo, pg_hi) }
+            .map_err(|()| AmdViAttachError::InvalidationTimeout)?;
+
+        // (5) Record the attachment.
+        self.attachments.push(AmdViAttachment { bdf, domain });
+        Ok(())
+    }
+
+    /// Push a single 128-bit command into the command buffer, advance
+    /// `CMD_BUFFER_TAIL`, and wait for `CMD_BUFFER_HEAD` to catch up.
+    /// Wraps the tail pointer on [`CMD_BUFFER_BYTES`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(())` if `CMD_BUFFER_HEAD` does not catch up
+    /// within [`AMDVI_ACTIVATION_POLL_LIMIT`] iterations.
+    ///
+    /// # Safety
+    ///
+    /// `buf_va` must point at the start of the kernel-owned 4-KiB
+    /// command-buffer page reachable through the direct map.
+    /// `unit_va` must point at the per-IOMMU MMIO register window so
+    /// `unit_va + REG_OFFSET_COMMAND_BUFFER_TAIL` / `+ HEAD` are valid
+    /// 64-bit accesses.
+    #[cfg(target_os = "none")]
+    unsafe fn submit_cmd_descriptor(
+        &mut self,
+        buf_va: u64,
+        unit_va: u64,
+        lo: u64,
+        hi: u64,
+    ) -> Result<(), ()> {
+        // Slot index = tail / CMD_BUFFER_ENTRY_BYTES. The tail is
+        // strictly bounded by `CMD_BUFFER_BYTES = 4096` so the cast
+        // and the bounded division are precision-safe on every
+        // pointer width.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::integer_division,
+            reason = "command tail is bounded by CMD_BUFFER_BYTES (4096); division by CMD_BUFFER_ENTRY_BYTES (16) is the canonical slot-index conversion"
+        )]
+        let slot = (self.command_buffer_tail as usize) / CMD_BUFFER_ENTRY_BYTES;
+        // SAFETY: command buffer is a kernel-owned 4-KiB page; `slot`
+        // is bounded to `CMD_BUFFER_ENTRY_COUNT - 1` by the wrap
+        // below.
+        unsafe { write_cmd_entry(buf_va, slot, lo, hi) };
+        let mut next_tail = self
+            .command_buffer_tail
+            .wrapping_add(CMD_BUFFER_ENTRY_BYTES as u64);
+        if next_tail >= CMD_BUFFER_BYTES as u64 {
+            next_tail = 0;
+        }
+        // SAFETY: per the function's safety contract.
+        unsafe { mmio_write64(unit_va, REG_OFFSET_COMMAND_BUFFER_TAIL, next_tail) };
+        self.command_buffer_tail = next_tail;
+        // SAFETY: CMD_BUFFER_HEAD is a 8-byte read-only MMIO register.
+        if !unsafe { poll_cmd_head_reaches(unit_va, next_tail) } {
+            return Err(());
+        }
         Ok(())
     }
 }
@@ -1294,6 +1568,31 @@ unsafe fn write_cmd_entry(buf_va: u64, slot: usize, lo: u64, hi: u64) {
     }
 }
 
+/// Write a 256-bit Device Table Entry (4 qwords) into the device table
+/// page at `byte_offset`.
+///
+/// # Safety
+///
+/// `dev_table_va` must point at the start of the kernel-owned,
+/// 4-KiB-aligned device-table page reachable through the direct map.
+/// `byte_offset + 32` must be `<= DEVICE_TABLE_BYTES`.
+#[cfg(target_os = "none")]
+#[inline]
+unsafe fn write_dte_at(dev_table_va: u64, byte_offset: u64, qwords: [u64; 4]) {
+    let base = dev_table_va.wrapping_add(byte_offset);
+    // SAFETY: per the function's safety contract.
+    unsafe {
+        let q0 = base as *mut u64;
+        let q1 = base.wrapping_add(8) as *mut u64;
+        let q2 = base.wrapping_add(16) as *mut u64;
+        let q3 = base.wrapping_add(24) as *mut u64;
+        core::ptr::write_volatile(q0, qwords[0]);
+        core::ptr::write_volatile(q1, qwords[1]);
+        core::ptr::write_volatile(q2, qwords[2]);
+        core::ptr::write_volatile(q3, qwords[3]);
+    }
+}
+
 impl IommuBackend for AmdViBackend {
     fn vendor(&self) -> IommuVendor {
         IommuVendor::Amd
@@ -1355,33 +1654,54 @@ impl IommuBackend for AmdViBackend {
         // an `INVALIDATE_IOMMU_PAGES` command descriptor here.
         Ok(())
     }
+
+    fn attach_device(&mut self, bdf: PciBdf, domain: DomainId) -> Result<(), IommuError> {
+        if !self.has_domain(domain) {
+            return Err(IommuError::InvalidDomain);
+        }
+        if self.has_attachment(bdf) {
+            return Err(IommuError::Unsupported);
+        }
+        self.attachments.push(AmdViAttachment { bdf, domain });
+        Ok(())
+    }
+
+    fn detach_device(&mut self, bdf: PciBdf) -> Result<(), IommuError> {
+        let initial = self.attachments.len();
+        self.attachments.retain(|a| a.bdf != bdf);
+        if self.attachments.len() == initial {
+            return Err(IommuError::Unsupported);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        AMDVI_ACTIVATION_POLL_LIMIT, AmdViActivateError, AmdViBackend, AmdViError,
-        CMD_BUFFER_BYTES, CMD_BUFFER_ENTRY_BYTES, CMD_BUFFER_ENTRY_COUNT,
+        AMDVI_ACTIVATION_POLL_LIMIT, AmdViActivateError, AmdViAttachError, AmdViAttachment,
+        AmdViBackend, AmdViError, CMD_BUFFER_BYTES, CMD_BUFFER_ENTRY_BYTES, CMD_BUFFER_ENTRY_COUNT,
         CMD_BUFFER_LENGTH_ENCODING, CMD_OPCODE_COMPLETION_WAIT, CMD_OPCODE_INVALIDATE_ALL,
         CMD_OPCODE_INVALIDATE_DEVTAB, CMD_OPCODE_INVALIDATE_IOMMU_PAGES,
         CMD_OPCODE_INVALIDATE_IOTLB_PAGES, CTRL_BIT_CMD_BUF_EN, CTRL_BIT_COHERENT,
-        CTRL_BIT_EVENT_LOG_EN, CTRL_BIT_GT_EN, CTRL_BIT_IOMMU_EN, DEVICE_TABLE_SIZE_ENCODING,
-        DeviceTableEntry, EVENT_LOG_BYTES, EVENT_LOG_ENTRY_BYTES, EVENT_LOG_ENTRY_COUNT,
-        EVENT_LOG_LENGTH_ENCODING, IoPageTableEntry, IommuBackend, IommuError, IommuFlags,
-        IommuVendor, PageMode, REG_OFFSET_COMMAND_BUFFER_BASE, REG_OFFSET_COMMAND_BUFFER_HEAD,
+        CTRL_BIT_EVENT_LOG_EN, CTRL_BIT_GT_EN, CTRL_BIT_IOMMU_EN, DEVICE_TABLE_BYTES,
+        DEVICE_TABLE_ENTRY_BYTES, DEVICE_TABLE_SIZE_ENCODING, DeviceTableEntry, EVENT_LOG_BYTES,
+        EVENT_LOG_ENTRY_BYTES, EVENT_LOG_ENTRY_COUNT, EVENT_LOG_LENGTH_ENCODING, IoPageTableEntry,
+        IommuBackend, IommuError, IommuFlags, IommuVendor, PageMode,
+        REG_OFFSET_COMMAND_BUFFER_BASE, REG_OFFSET_COMMAND_BUFFER_HEAD,
         REG_OFFSET_COMMAND_BUFFER_TAIL, REG_OFFSET_CONTROL, REG_OFFSET_DEVICE_TABLE_BASE,
         REG_OFFSET_EVENT_LOG_BASE, REG_OFFSET_EVENT_LOG_HEAD, REG_OFFSET_EVENT_LOG_TAIL,
-        REG_OFFSET_EXT_FEATURE, REG_OFFSET_STATUS, STATUS_BIT_CMD_BUF_RUN,
-        STATUS_BIT_COM_WAIT_INT, STATUS_BIT_EVENT_LOG_INT, STATUS_BIT_EVENT_LOG_RUN,
-        STATUS_BIT_EVENT_OVERFLOW, ScaffoldMapping, efr_hats, efr_highest_supported_mode,
-        efr_pas_max, efr_supports_ga, efr_supports_gt, efr_supports_hardware_error,
-        efr_supports_invalidate_all, efr_supports_nx, efr_supports_ppr, efr_supports_prefetch,
-        efr_supports_xt, encode_command_buffer_base, encode_device_table_base,
-        encode_device_table_entry, encode_device_table_entry_absent,
-        encode_device_table_entry_blocked, encode_event_log_base, encode_invalidate_devtab_entry,
-        encode_iopte, encode_pde,
+        REG_OFFSET_EXT_FEATURE, REG_OFFSET_STATUS, STATUS_BIT_CMD_BUF_RUN, STATUS_BIT_COM_WAIT_INT,
+        STATUS_BIT_EVENT_LOG_INT, STATUS_BIT_EVENT_LOG_RUN, STATUS_BIT_EVENT_OVERFLOW,
+        ScaffoldMapping, dte_offset, efr_hats, efr_highest_supported_mode, efr_pas_max,
+        efr_supports_ga, efr_supports_gt, efr_supports_hardware_error, efr_supports_invalidate_all,
+        efr_supports_nx, efr_supports_ppr, efr_supports_prefetch, efr_supports_xt,
+        encode_command_buffer_base, encode_device_table_base, encode_device_table_entry,
+        encode_device_table_entry_absent, encode_device_table_entry_blocked, encode_event_log_base,
+        encode_invalidate_devtab_entry, encode_invalidate_iommu_pages_domain, encode_iopte,
+        encode_pde,
     };
-    use crate::bare_metal::iommu::DomainId;
+    use crate::bare_metal::iommu::{DomainId, PciBdf};
 
     // ---- Register offset invariants ------------------------------------
 
@@ -1820,7 +2140,10 @@ mod tests {
         assert_eq!(CMD_BUFFER_ENTRY_BYTES, 16);
         assert_eq!(CMD_BUFFER_ENTRY_COUNT, 256);
         assert_eq!(CMD_BUFFER_BYTES, 4096);
-        assert_eq!(CMD_BUFFER_ENTRY_COUNT * CMD_BUFFER_ENTRY_BYTES, CMD_BUFFER_BYTES);
+        assert_eq!(
+            CMD_BUFFER_ENTRY_COUNT * CMD_BUFFER_ENTRY_BYTES,
+            CMD_BUFFER_BYTES
+        );
         // ComLen = 8 ↔ 2^8 = 256 entries ↔ 4 KiB.
         assert_eq!(CMD_BUFFER_LENGTH_ENCODING, 8);
         assert_eq!(1usize << CMD_BUFFER_LENGTH_ENCODING, CMD_BUFFER_ENTRY_COUNT);
@@ -1831,7 +2154,10 @@ mod tests {
         assert_eq!(EVENT_LOG_ENTRY_BYTES, 16);
         assert_eq!(EVENT_LOG_ENTRY_COUNT, 256);
         assert_eq!(EVENT_LOG_BYTES, 4096);
-        assert_eq!(EVENT_LOG_ENTRY_COUNT * EVENT_LOG_ENTRY_BYTES, EVENT_LOG_BYTES);
+        assert_eq!(
+            EVENT_LOG_ENTRY_COUNT * EVENT_LOG_ENTRY_BYTES,
+            EVENT_LOG_BYTES
+        );
         assert_eq!(EVENT_LOG_LENGTH_ENCODING, 8);
     }
 
@@ -2041,5 +2367,158 @@ mod tests {
         assert_eq!(backend.command_buffer_phys(), 0x20_1000);
         assert_eq!(backend.event_log_phys(), 0x20_2000);
         assert!(!backend.is_hardware_activated());
+    }
+
+    // ---- P6.7.9-pre.7 — INVALIDATE_IOMMU_PAGES encoder ------------------
+
+    #[test]
+    fn encode_invalidate_iommu_pages_domain_packs_opcode_and_did() {
+        let (low, high) = encode_invalidate_iommu_pages_domain(DomainId::new(0x55AA));
+        // Opcode in bits 60..63.
+        assert_eq!(low >> 60, CMD_OPCODE_INVALIDATE_IOMMU_PAGES);
+        // DomainID in bits 32..47.
+        assert_eq!((low >> 32) & 0xFFFF, 0x55AA);
+        // S=1 bit in the high qword.
+        assert_eq!(high & 0x1, 0x1);
+    }
+
+    #[test]
+    fn encode_invalidate_iommu_pages_domain_handles_did_zero() {
+        // Boundary: DID=0 must still raise the opcode + S bit.
+        let (low, high) = encode_invalidate_iommu_pages_domain(DomainId::new(0));
+        assert_eq!(low >> 60, CMD_OPCODE_INVALIDATE_IOMMU_PAGES);
+        assert_eq!((low >> 32) & 0xFFFF, 0);
+        assert_eq!(high, 0x1);
+    }
+
+    // ---- P6.7.9-pre.7 — DTE offset helper -------------------------------
+
+    #[test]
+    fn dte_offset_matches_bdf_raw_times_32() {
+        // bdf 00:00.0 → raw=0 → offset=0.
+        assert_eq!(dte_offset(PciBdf::from_parts(0, 0, 0)), 0);
+        // bdf 00:00.1 → raw=1 → offset=32.
+        assert_eq!(
+            dte_offset(PciBdf::from_parts(0, 0, 1)),
+            DEVICE_TABLE_ENTRY_BYTES as u64
+        );
+        // bdf 00:01.0 → raw=8 → offset=256.
+        assert_eq!(
+            dte_offset(PciBdf::from_parts(0, 1, 0)),
+            8 * DEVICE_TABLE_ENTRY_BYTES as u64
+        );
+    }
+
+    #[test]
+    fn dte_offset_first_127_entries_fit_in_phase1_device_table() {
+        // The Phase 1 device table is 4 KiB = 128 entries. bdf raw
+        // 127 maps to offset 127 * 32 = 4064, and the entry body
+        // (32 bytes) lands at 4096 — exactly the page boundary.
+        let bdf = PciBdf::from_raw(127);
+        let off = dte_offset(bdf);
+        assert_eq!(off, 4064);
+        assert!(off + (DEVICE_TABLE_ENTRY_BYTES as u64) <= DEVICE_TABLE_BYTES as u64);
+    }
+
+    #[test]
+    fn dte_offset_above_127_overflows_phase1_device_table() {
+        // bdf raw 128 → offset 4096, which already overflows the
+        // Phase 1 page. Validates the bounds-check that
+        // `install_device_entry` enforces.
+        let bdf = PciBdf::from_raw(128);
+        let off = dte_offset(bdf);
+        assert!(off >= DEVICE_TABLE_BYTES as u64);
+    }
+
+    // ---- P6.7.9-pre.7 — AmdViAttachment scaffold -------------------------
+
+    #[test]
+    fn attach_device_records_binding_and_rejects_unknown_domain() {
+        let mut backend = AmdViBackend::new();
+        let bdf = PciBdf::from_parts(0, 1, 0);
+        assert_eq!(
+            backend.attach_device(bdf, DomainId::new(0x20)),
+            Err(IommuError::InvalidDomain)
+        );
+        backend.install_domain(DomainId::new(0x20)).unwrap();
+        assert_eq!(backend.attach_device(bdf, DomainId::new(0x20)), Ok(()));
+        assert!(backend.has_attachment(bdf));
+        assert_eq!(backend.attachments().len(), 1);
+        assert_eq!(
+            backend.attachments().first().copied(),
+            Some(AmdViAttachment {
+                bdf,
+                domain: DomainId::new(0x20),
+            })
+        );
+    }
+
+    #[test]
+    fn attach_device_double_attach_rejected() {
+        let mut backend = AmdViBackend::new();
+        let bdf = PciBdf::from_parts(0, 2, 0);
+        backend.install_domain(DomainId::new(3)).unwrap();
+        backend.attach_device(bdf, DomainId::new(3)).unwrap();
+        assert_eq!(
+            backend.attach_device(bdf, DomainId::new(3)),
+            Err(IommuError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn detach_device_removes_and_allows_reattach() {
+        let mut backend = AmdViBackend::new();
+        let bdf = PciBdf::from_parts(0, 3, 0);
+        backend.install_domain(DomainId::new(4)).unwrap();
+        backend.attach_device(bdf, DomainId::new(4)).unwrap();
+        assert_eq!(backend.detach_device(bdf), Ok(()));
+        assert!(!backend.has_attachment(bdf));
+        assert_eq!(backend.attach_device(bdf, DomainId::new(4)), Ok(()));
+    }
+
+    #[test]
+    fn detach_unknown_device_returns_unsupported() {
+        let mut backend = AmdViBackend::new();
+        let bdf = PciBdf::from_parts(0, 5, 0);
+        assert_eq!(backend.detach_device(bdf), Err(IommuError::Unsupported));
+    }
+
+    #[test]
+    fn amdvi_attach_error_maps_to_iommu_error_variants() {
+        assert_eq!(
+            IommuError::from(AmdViAttachError::NotActivated),
+            IommuError::ActivationFailed
+        );
+        assert_eq!(
+            IommuError::from(AmdViAttachError::DomainNotInstalled),
+            IommuError::InvalidDomain
+        );
+        assert_eq!(
+            IommuError::from(AmdViAttachError::AlreadyAttached),
+            IommuError::Unsupported
+        );
+        assert_eq!(
+            IommuError::from(AmdViAttachError::AddressMisaligned),
+            IommuError::AddressMisaligned
+        );
+        assert_eq!(
+            IommuError::from(AmdViAttachError::DeviceTableTooSmall),
+            IommuError::DomainTableFull
+        );
+        assert_eq!(
+            IommuError::from(AmdViAttachError::UnsupportedMode),
+            IommuError::Unsupported
+        );
+        assert_eq!(
+            IommuError::from(AmdViAttachError::InvalidationTimeout),
+            IommuError::ActivationFailed
+        );
+    }
+
+    #[test]
+    fn fresh_backend_has_no_attachments() {
+        let backend = AmdViBackend::new();
+        assert!(backend.attachments().is_empty());
+        assert!(!backend.has_attachment(PciBdf::from_parts(0, 0, 0)));
     }
 }

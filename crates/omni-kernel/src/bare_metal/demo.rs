@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "P6.7.9-pre.6 AMD-Vi live MMIO",
+        "P6.7.9-pre.7 IOMMU device wire",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1048,7 +1048,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "P6.7.9-pre.7 IOMMU domain wire",
+        "P6.7.9-pre.8 driver PCI bind",
         graphics::WHITE,
     );
     row(
@@ -1056,7 +1056,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Tests    : ",
         11,
-        "1128 workspace pass",
+        "1161 workspace pass",
         graphics::WHITE,
     );
     row(6, cx_r, "Author   : ", 11, "cySalazar", graphics::WHITE);

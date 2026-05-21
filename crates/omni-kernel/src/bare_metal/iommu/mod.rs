@@ -95,6 +95,85 @@ impl DomainId {
     }
 }
 
+/// PCI Bus / Device / Function identifier.
+///
+/// Packed into a 16-bit requester ID matching both the VT-d source-id
+/// (high 8 bits = bus, low 8 bits = devfn) and the AMD-Vi 16-bit
+/// `DeviceID` used to index the Device Table.
+///
+/// The encoding follows the PCI Local Bus Specification rev 3.0:
+/// ```text
+/// bits 15..8 : bus       (8 bits, 0..=255)
+/// bits  7..3 : device    (5 bits, 0..=31)
+/// bits  2..0 : function  (3 bits, 0..=7)
+/// ```
+///
+/// Constructed via [`PciBdf::from_parts`] or [`PciBdf::from_raw`]. The
+/// accessors below extract the individual fields without allocating.
+///
+/// ## Why a newtype and not three `u8`s
+///
+/// VT-d source-id (spec rev 4.1 § 6.5.2.3) and AMD-Vi `DeviceID` (spec
+/// rev 3.10 § 5.4.3) both consume the requester ID as a single 16-bit
+/// value. Keeping `PciBdf` as a `u16`-wrapped newtype matches the
+/// hardware wire format and avoids per-call repacking when descriptors
+/// are written into the invalidation queue or the command buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PciBdf(u16);
+
+impl PciBdf {
+    /// Build a [`PciBdf`] from explicit bus + device + function
+    /// components. `device` is masked to 5 bits and `function` to
+    /// 3 bits so out-of-range callers never produce a non-canonical
+    /// packing.
+    #[must_use]
+    pub const fn from_parts(bus: u8, device: u8, function: u8) -> Self {
+        let bus_field = (bus as u16) << 8;
+        let dev_field = ((device & 0x1F) as u16) << 3;
+        let func_field = (function & 0x7) as u16;
+        Self(bus_field | dev_field | func_field)
+    }
+
+    /// Build a [`PciBdf`] directly from its 16-bit packed form.
+    #[must_use]
+    pub const fn from_raw(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    /// Raw 16-bit packed value.
+    #[must_use]
+    pub const fn raw(self) -> u16 {
+        self.0
+    }
+
+    /// Extract the bus number (bits 15..8).
+    #[must_use]
+    pub const fn bus(self) -> u8 {
+        (self.0 >> 8) as u8
+    }
+
+    /// Extract the combined device + function byte (bits 7..0).
+    ///
+    /// This is the index used by VT-d to locate the matching context
+    /// entry inside the per-bus context table (spec § 9.3).
+    #[must_use]
+    pub const fn devfn(self) -> u8 {
+        (self.0 & 0xFF) as u8
+    }
+
+    /// Extract the device number (bits 7..3).
+    #[must_use]
+    pub const fn device(self) -> u8 {
+        ((self.0 >> 3) & 0x1F) as u8
+    }
+
+    /// Extract the function number (bits 2..0).
+    #[must_use]
+    pub const fn function(self) -> u8 {
+        (self.0 & 0x7) as u8
+    }
+}
+
 /// Vendor of the running IOMMU backend.
 ///
 /// Reported by [`IommuBackend::vendor`]; the kernel boot path logs
@@ -590,6 +669,42 @@ pub trait IommuBackend {
     ///
     /// [`IommuError::InvalidDomain`] when `id` was never installed.
     fn flush(&mut self, id: DomainId) -> Result<(), IommuError>;
+
+    /// Bind a PCI device (identified by [`PciBdf`]) to `domain` in the
+    /// vendor-specific table (VT-d root + per-bus context entry,
+    /// AMD-Vi Device Table Entry) so DMA originating from that
+    /// requester ID is routed through the domain's translation tables.
+    ///
+    /// Phase 1 scope: scaffold backends record the `(bdf, domain)`
+    /// association in an internal vector for host-test assertion. The
+    /// **live MMIO** half (writes the actual table entry + queues the
+    /// per-domain context-cache / IOTLB invalidate) is exercised via
+    /// the vendor-specific `install_device_entry` method on each
+    /// backend, gated on `cfg(target_os = "none")`. The trait surface
+    /// keeps the kernel-wide attach API host-testable without the
+    /// caller having to know which vendor is in play.
+    ///
+    /// # Errors
+    ///
+    /// - [`IommuError::InvalidDomain`] — `domain` was never installed.
+    /// - [`IommuError::DomainTableFull`] — backend's per-vendor table
+    ///   ran out of slots (AMD-Vi: requester ID exceeds the configured
+    ///   device-table size; VT-d: context tables would overflow the
+    ///   per-bus 256-entry budget).
+    /// - [`IommuError::Unsupported`] — backend refuses re-binding an
+    ///   already-attached `bdf` (callers must `detach_device` first).
+    fn attach_device(&mut self, bdf: PciBdf, domain: DomainId) -> Result<(), IommuError>;
+
+    /// Symmetric to [`Self::attach_device`]: removes the binding for
+    /// `bdf`. Subsequent DMA requests from that requester ID land in
+    /// the vendor-specific "no translation" path (pass-through or
+    /// blocked, depending on the backend's default DTE state).
+    ///
+    /// # Errors
+    ///
+    /// [`IommuError::Unsupported`] when `bdf` is not currently
+    /// attached.
+    fn detach_device(&mut self, bdf: PciBdf) -> Result<(), IommuError>;
 }
 
 /// Phase 1 default backend: silently accepts every operation and
@@ -642,6 +757,17 @@ impl IommuBackend for PassthroughBackend {
     }
 
     fn flush(&mut self, _id: DomainId) -> Result<(), IommuError> {
+        Ok(())
+    }
+
+    fn attach_device(&mut self, _bdf: PciBdf, _domain: DomainId) -> Result<(), IommuError> {
+        // Passthrough: no per-device translation state — every
+        // requester ID is already pass-through.
+        Ok(())
+    }
+
+    fn detach_device(&mut self, _bdf: PciBdf) -> Result<(), IommuError> {
+        // Passthrough: nothing to remove.
         Ok(())
     }
 }
@@ -762,6 +888,22 @@ impl IommuBackend for IommuKind {
             Self::Amd(backend) => backend.flush(id),
         }
     }
+
+    fn attach_device(&mut self, bdf: PciBdf, domain: DomainId) -> Result<(), IommuError> {
+        match self {
+            Self::Passthrough(backend) => backend.attach_device(bdf, domain),
+            Self::Intel(backend) => backend.attach_device(bdf, domain),
+            Self::Amd(backend) => backend.attach_device(bdf, domain),
+        }
+    }
+
+    fn detach_device(&mut self, bdf: PciBdf) -> Result<(), IommuError> {
+        match self {
+            Self::Passthrough(backend) => backend.detach_device(bdf),
+            Self::Intel(backend) => backend.detach_device(bdf),
+            Self::Amd(backend) => backend.detach_device(bdf),
+        }
+    }
 }
 
 /// Kernel-wide [`IommuBackend`] instance routed by [`IommuKind`].
@@ -806,6 +948,62 @@ pub fn install_backend_for_vendor(vendor: IommuVendor) {
 pub fn with_iommu_backend<R>(f: impl FnOnce(&mut IommuKind) -> R) -> R {
     let mut backend = IOMMU_BACKEND.lock();
     f(&mut backend)
+}
+
+// =============================================================================
+// Per-device attach surface — P6.7.9-pre.7 (IOMMU device wire).
+//
+// The two helpers below dispatch through [`with_iommu_backend`] to the
+// trait methods of the same name. They are the kernel-wide host-testable
+// entry points; the **live MMIO** half (which actually writes the per-
+// device DTE / context entry) lives in the vendor-specific
+// `install_*_device_entry` functions further down (gated on
+// `cfg(target_os = "none")`).
+//
+// The driver framework (future P6.7.9-pre.8) will:
+//   1. Allocate the per-domain page-table root.
+//   2. Resolve the device's [`PciBdf`] from the PCI capability the
+//      driver process owns (cap-token resource match).
+//   3. Call [`iommu_attach_device`] to record the binding.
+//   4. Call the vendor-specific live install function with the
+//      direct-map offset + the BDF + the page-table root pointer.
+//
+// Splitting (3) and (4) keeps the host-testable surface separate from
+// the bare-metal-only MMIO programming, mirroring the
+// `prepare_activation` / `activate_hardware` split that P6.7.9-pre.5 +
+// pre.6 established.
+// =============================================================================
+
+/// Record a `(bdf, domain)` binding in the live IOMMU backend.
+///
+/// Pure state update — no MMIO touched. The live entry programming
+/// happens via the vendor-specific `install_vt_d_device_entry` /
+/// `install_amd_vi_device_entry` functions further down (gated on
+/// `cfg(target_os = "none")` and therefore only present in the
+/// bare-metal build).
+///
+/// # Errors
+///
+/// Surfaces whichever [`IommuError`] the backend returns. Most
+/// commonly:
+///
+/// - [`IommuError::InvalidDomain`] — `domain` was never installed via
+///   [`IommuBackend::install_domain`].
+/// - [`IommuError::Unsupported`] — `bdf` is already attached (callers
+///   must [`iommu_detach_device`] first).
+pub fn iommu_attach_device(bdf: PciBdf, domain: DomainId) -> Result<(), IommuError> {
+    with_iommu_backend(|kind| kind.attach_device(bdf, domain))
+}
+
+/// Remove the `bdf` binding from the live IOMMU backend.
+///
+/// Pure state update — no MMIO touched.
+///
+/// # Errors
+///
+/// [`IommuError::Unsupported`] when `bdf` is not currently attached.
+pub fn iommu_detach_device(bdf: PciBdf) -> Result<(), IommuError> {
+    with_iommu_backend(|kind| kind.detach_device(bdf))
 }
 
 // =============================================================================
@@ -1011,6 +1209,140 @@ pub unsafe fn activate_amd_vi(phys_offset: u64) -> Result<bool, IommuError> {
     })
 }
 
+// =============================================================================
+// Per-device live install surface — P6.7.9-pre.7 (IOMMU device wire).
+//
+// `install_vt_d_device_entry` and `install_amd_vi_device_entry` are the
+// bare-metal-only entry points the driver framework will use (future
+// P6.7.9-pre.8) to bind a real PCI device to a per-domain page table.
+// Each function:
+//
+//   1. Records the `(bdf, domain)` binding through the
+//      [`IommuBackend::attach_device`] trait method (host-testable
+//      bookkeeping).
+//   2. Writes the per-device entry into the appropriate vendor table
+//      via the backend's `install_device_entry` MMIO routine.
+//   3. Submits the vendor-specific per-domain invalidation descriptors
+//      so the IOMMU drops any stale translation cache for the requester.
+//
+// Both helpers are no-ops (return `Ok(false)`) when the live backend
+// does not match the requested vendor — same shape as
+// `activate_intel_vt_d` / `activate_amd_vi` so the kmain wiring can
+// call them unconditionally without first sniffing `iommu_vendor()`.
+// =============================================================================
+
+/// VT-d live per-device install.
+///
+/// Drives the legacy root + context-entry MMIO writes for the given
+/// `bdf` plus per-domain context-cache + IOTLB invalidations on the
+/// queued-invalidation ring. The first attach on a bus also installs
+/// the root-entry pointer for that bus.
+///
+/// Returns:
+///
+/// - `Ok(true)` when the live install + invalidation pump completed
+///   cleanly.
+/// - `Ok(false)` when the live backend is not Intel (no-op — passthrough
+///   or AMD).
+///
+/// # Errors
+///
+/// Forwards every [`IommuError`] variant emitted by the trait dispatch
+/// or the vendor-specific install ([`vtd::VtdAttachError`] mapped via
+/// `From<VtdAttachError> for IommuError`).
+///
+/// # Safety
+///
+/// `phys_offset` must be the live bootloader direct-map offset.
+/// `context_table_phys` and `slpt_phys` must reference 4-KiB-aligned
+/// pages owned by the kernel that are reachable through that direct
+/// map. The function performs `volatile_write64` against the per-bus
+/// context-table page and the global root-table page (recorded via
+/// [`prepare_vt_d_unit`]), plus descriptor writes into the
+/// invalidation-queue page.
+#[cfg(target_os = "none")]
+pub unsafe fn install_vt_d_device_entry(
+    phys_offset: u64,
+    bdf: PciBdf,
+    domain: DomainId,
+    slpt_phys: u64,
+    context_table_phys: u64,
+    width: vtd::AddressWidth,
+    translation: vtd::TranslationType,
+) -> Result<bool, IommuError> {
+    with_iommu_backend(|kind| match kind {
+        IommuKind::Intel(backend) => {
+            // SAFETY: invariants forwarded from the caller — VtdBackend
+            // performs the volatile writes under the same MMIO-window
+            // ownership contract.
+            unsafe {
+                backend.install_device_entry(
+                    phys_offset,
+                    bdf,
+                    domain,
+                    slpt_phys,
+                    context_table_phys,
+                    width,
+                    translation,
+                )
+            }
+            .map(|()| true)
+            .map_err(IommuError::from)
+        }
+        IommuKind::Passthrough(_) | IommuKind::Amd(_) => Ok(false),
+    })
+}
+
+/// AMD-Vi live per-device install.
+///
+/// Drives the Device Table Entry MMIO write for `bdf` plus an
+/// `INVALIDATE_DEVTAB_ENTRY(device_id=bdf)` and an
+/// `INVALIDATE_IOMMU_PAGES(domain)` command on the command-buffer
+/// ring.
+///
+/// Returns:
+///
+/// - `Ok(true)` when the live install + invalidation pump completed
+///   cleanly.
+/// - `Ok(false)` when the live backend is not AMD.
+///
+/// # Errors
+///
+/// Forwards every [`IommuError`] variant emitted by the trait dispatch
+/// or the vendor-specific install ([`amdvi::AmdViAttachError`] mapped
+/// via `From<AmdViAttachError> for IommuError`).
+///
+/// # Safety
+///
+/// `phys_offset` must be the live bootloader direct-map offset.
+/// `iopt_phys` must reference a 4-KiB-aligned page owned by the kernel
+/// reachable through that direct map. The function performs
+/// `volatile_write64` against the device-table + command-buffer pages
+/// recorded via [`prepare_amd_vi_unit`].
+#[cfg(target_os = "none")]
+pub unsafe fn install_amd_vi_device_entry(
+    phys_offset: u64,
+    bdf: PciBdf,
+    domain: DomainId,
+    iopt_phys: u64,
+    flags: IommuFlags,
+    mode: amdvi::PageMode,
+) -> Result<bool, IommuError> {
+    with_iommu_backend(|kind| match kind {
+        IommuKind::Amd(backend) => {
+            // SAFETY: invariants forwarded from the caller — AmdViBackend
+            // performs the volatile writes under the same MMIO-window
+            // ownership contract.
+            unsafe {
+                backend.install_device_entry(phys_offset, bdf, domain, iopt_phys, flags, mode)
+            }
+            .map(|()| true)
+            .map_err(IommuError::from)
+        }
+        IommuKind::Passthrough(_) | IommuKind::Intel(_) => Ok(false),
+    })
+}
+
 /// Derive the per-process [`DomainId`] from a kernel `TaskId`.
 ///
 /// Phase 1 model: one IOMMU domain per driver process. The mapping
@@ -1032,10 +1364,11 @@ pub const fn domain_for_task(task_id: u64) -> DomainId {
 mod tests {
     use super::{
         DomainId, IOMMU_BACKEND, IOMMU_UNIT_BASE, IOMMU_UNIT_COUNT, IOMMU_VENDOR, IommuBackend,
-        IommuError, IommuFlags, IommuKind, IommuVendor, PassthroughBackend, ProbeResult,
-        domain_for_task, install_backend_for_vendor, iommu_hardware_activated, iommu_unit_base,
-        iommu_unit_count, iommu_vendor, prepare_amd_vi_unit, prepare_vt_d_unit, select_vendor,
-        set_iommu_unit_base, set_iommu_unit_count, set_iommu_vendor, with_iommu_backend,
+        IommuError, IommuFlags, IommuKind, IommuVendor, PassthroughBackend, PciBdf, ProbeResult,
+        domain_for_task, install_backend_for_vendor, iommu_attach_device, iommu_detach_device,
+        iommu_hardware_activated, iommu_unit_base, iommu_unit_count, iommu_vendor,
+        prepare_amd_vi_unit, prepare_vt_d_unit, select_vendor, set_iommu_unit_base,
+        set_iommu_unit_count, set_iommu_vendor, with_iommu_backend,
     };
     use core::sync::atomic::Ordering;
 
@@ -1605,6 +1938,125 @@ mod tests {
         install_backend_for_vendor(IommuVendor::Intel);
         let res = prepare_amd_vi_unit(0xFEB8_0000, 0x10_0000, 0x10_1000, 0x10_2000);
         assert_eq!(res, Err(IommuError::Unsupported));
+        install_backend_for_vendor(prior);
+    }
+
+    // -----------------------------------------------------------------
+    // P6.7.9-pre.7 — Per-device attach surface tests.
+    //
+    // The host-side coverage exercises the **pure-state half** of the
+    // attach contract: `PciBdf` packing + `iommu_attach_device` /
+    // `iommu_detach_device` round-trip + per-backend dispatch. The
+    // live MMIO `install_*_device_entry` halves are `cfg(target_os =
+    // "none")` gated and exercised by the QEMU + Proxmox smoke.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn pci_bdf_from_parts_packs_canonical_layout() {
+        let bdf = PciBdf::from_parts(0x12, 0x1F, 0x07);
+        assert_eq!(bdf.bus(), 0x12);
+        assert_eq!(bdf.device(), 0x1F);
+        assert_eq!(bdf.function(), 0x07);
+        assert_eq!(bdf.devfn(), (0x1F << 3) | 0x07);
+        assert_eq!(bdf.raw(), (0x12 << 8) | (0x1F << 3) | 0x07);
+    }
+
+    #[test]
+    fn pci_bdf_from_parts_masks_oversized_device_and_function() {
+        // Device is 5 bits, function is 3 bits. Out-of-range inputs
+        // get masked so the packed form is always canonical.
+        let bdf = PciBdf::from_parts(0xAB, 0xFF, 0xFF);
+        assert_eq!(bdf.device(), 0x1F);
+        assert_eq!(bdf.function(), 0x7);
+        assert_eq!(bdf.bus(), 0xAB);
+        // Devfn never overflows beyond 8 bits.
+        assert_eq!(bdf.devfn(), 0xFF);
+    }
+
+    #[test]
+    fn pci_bdf_raw_round_trip() {
+        let raw = 0x1234_u16;
+        let bdf = PciBdf::from_raw(raw);
+        assert_eq!(bdf.raw(), raw);
+        // Bits 15..8 = 0x12 → bus.
+        assert_eq!(bdf.bus(), 0x12);
+        // Bits 7..0 = 0x34 → devfn = (device << 3) | function.
+        assert_eq!(bdf.devfn(), 0x34);
+    }
+
+    #[test]
+    fn passthrough_attach_device_is_ok() {
+        let mut backend = PassthroughBackend::new();
+        let bdf = PciBdf::from_parts(1, 2, 3);
+        assert_eq!(backend.attach_device(bdf, DomainId::new(0)), Ok(()));
+        // Detach also OK, even on never-attached BDF (passthrough is
+        // permissive).
+        assert_eq!(backend.detach_device(bdf), Ok(()));
+    }
+
+    #[test]
+    fn iommu_attach_device_routes_through_intel_backend() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Intel);
+        let dom = DomainId::new(0x21);
+        with_iommu_backend(|b| b.install_domain(dom)).unwrap();
+        let bdf = PciBdf::from_parts(0, 1, 0);
+        assert_eq!(iommu_attach_device(bdf, dom), Ok(()));
+        // Double-attach is rejected with Unsupported (per trait
+        // contract — callers must detach first).
+        assert_eq!(iommu_attach_device(bdf, dom), Err(IommuError::Unsupported));
+        // Detach must succeed and then re-attach must be accepted.
+        assert_eq!(iommu_detach_device(bdf), Ok(()));
+        assert_eq!(iommu_attach_device(bdf, dom), Ok(()));
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn iommu_attach_device_rejects_unknown_domain_on_intel() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Intel);
+        let bdf = PciBdf::from_parts(0, 2, 0);
+        // Domain never installed → InvalidDomain.
+        assert_eq!(
+            iommu_attach_device(bdf, DomainId::new(0x77)),
+            Err(IommuError::InvalidDomain)
+        );
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn iommu_attach_device_routes_through_amd_backend() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Amd);
+        let dom = DomainId::new(0x33);
+        with_iommu_backend(|b| b.install_domain(dom)).unwrap();
+        let bdf = PciBdf::from_parts(0, 0, 1);
+        assert_eq!(iommu_attach_device(bdf, dom), Ok(()));
+        assert_eq!(iommu_attach_device(bdf, dom), Err(IommuError::Unsupported));
+        assert_eq!(iommu_detach_device(bdf), Ok(()));
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn iommu_attach_device_passthrough_is_noop() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Passthrough);
+        let bdf = PciBdf::from_parts(0, 0, 0);
+        // Passthrough never tracks state — both calls always succeed.
+        assert_eq!(iommu_attach_device(bdf, DomainId::new(0)), Ok(()));
+        assert_eq!(iommu_attach_device(bdf, DomainId::new(0)), Ok(()));
+        assert_eq!(iommu_detach_device(bdf), Ok(()));
+        assert_eq!(iommu_detach_device(bdf), Ok(()));
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn iommu_detach_device_rejects_unknown_on_intel() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Intel);
+        let bdf = PciBdf::from_parts(0, 3, 0);
+        // Never attached → Unsupported.
+        assert_eq!(iommu_detach_device(bdf), Err(IommuError::Unsupported));
         install_backend_for_vendor(prior);
     }
 }
