@@ -314,12 +314,32 @@ pub unsafe fn enumerate_cpus(rsdp_phys: u64, phys_offset: u64) -> Option<CpuTopo
 /// # Safety
 ///
 /// Same as [`enumerate_cpus`].
+/// Locate an ACPI table by 4-byte signature, returning its physical
+/// address.
+///
+/// This is the shared ACPI table-walk used by:
+///
+/// - [`enumerate_cpus`] (looking for the MADT, `b"APIC"`),
+/// - [`super::iommu::probe`] (looking for DMAR `b"DMAR"` and IVRS `b"IVRS"`).
+///
+/// Walks the firmware-supplied RSDP → XSDT (ACPI 2.0+) or RSDT (legacy)
+/// chain. Prefers XSDT when `revision >= 2`.
+///
+/// # Safety
+///
+/// Same invariants as [`enumerate_cpus`]: `phys_offset + rsdp_phys` must
+/// reference a valid RSDP, and every table physical address reachable
+/// from there must lie within the firmware-mapped physical-memory window.
 #[cfg(target_arch = "x86_64")]
 #[allow(
     clippy::integer_division,
     reason = "ACPI SDT entry count is `(length - 36) / entry_size`; both operands are bounded by the firmware-supplied table size and the division is the canonical decoding rule from the spec"
 )]
-unsafe fn find_table_phys(rsdp_phys: u64, phys_offset: u64, target: &[u8; 4]) -> Option<u64> {
+pub(crate) unsafe fn find_table_phys(
+    rsdp_phys: u64,
+    phys_offset: u64,
+    target: &[u8; 4],
+) -> Option<u64> {
     let p2v = |phys: u64| -> *const u8 { phys_offset.wrapping_add(phys) as *const u8 };
     let read32 = |ptr: *const u8, off: usize| -> u32 {
         unsafe { ptr.add(off).cast::<u32>().read_unaligned() }

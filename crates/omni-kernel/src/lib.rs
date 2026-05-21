@@ -353,6 +353,54 @@ pub fn kmain(
     // the new driver process's address space without depending on the
     // calling process's CR3 (loader != kernel image).
     bare_metal::set_boot_cr3(cr3_raw);
+
+    // P6.7.9-pre.1 — IOMMU probe.
+    //
+    // Walks the firmware-supplied RSDP for DMAR (Intel VT-d) and IVRS
+    // (AMD-Vi). Selects the right vendor or falls back to Phase 1
+    // passthrough mode when no IOMMU is advertised. The selector
+    // result is stashed in `bare_metal::iommu::IOMMU_VENDOR` so the
+    // upcoming `DmaMap` rewire (P6.7.9-pre.2) can dispatch without an
+    // additional ACPI walk.
+    //
+    // The walk is best-effort: if `BootInfo.rsdp_addr` is `None` (no
+    // UEFI RSDP — extremely unusual on the configurations we boot)
+    // or any table dereference fails, the global stays at the safe
+    // Passthrough default. The `[iommu] vendor=…` log line is the
+    // smoke surface emitted regardless of outcome.
+    {
+        use bare_metal::iommu;
+        let rsdp = boot_info.rsdp_addr.into_option();
+        // SAFETY: same invariants the FADT walker depends on
+        // (firmware-mapped physical-memory window covers the RSDP and
+        // the entire RSDT/XSDT chain). The boot pipeline has already
+        // validated `physical_memory_offset` via `set_phys_offset`
+        // above. When `rsdp` is `None` the closure is never invoked
+        // and the safe `PASSTHROUGH` fallback is returned.
+        #[allow(
+            unsafe_code,
+            reason = "ACPI table walk requires dereferencing firmware-supplied physical addresses; same shape as mp::enumerate_cpus"
+        )]
+        let probe = rsdp.map_or(iommu::ProbeResult::PASSTHROUGH, |rsdp_phys| unsafe {
+            iommu::probe(rsdp_phys, phys_offset_mb2)
+        });
+        // Stash the result so the safe-default global covers the
+        // RSDP-missing case too (the bare-metal probe writer is gated
+        // on `rsdp.is_some()`).
+        iommu::set_iommu_vendor(probe.vendor);
+        let unit_count = match probe.vendor {
+            iommu::IommuVendor::Intel => probe.drhd_count,
+            iommu::IommuVendor::Amd => probe.ivhd_count,
+            iommu::IommuVendor::Passthrough => 0,
+        };
+        iommu::set_iommu_unit_count(unit_count);
+
+        early_console::write_str("[iommu] vendor=");
+        early_console::write_str(probe.vendor.label());
+        early_console::write_str(" units=");
+        early_console::write_usize(unit_count);
+        early_console::write_str("\n");
+    }
     // `mut` because MB10's `spawn_kernel_task` will call `pager.map_4k` to
     // map each task's kernel stack into the isolated VA range.
     let mut pager = paging::PageMapper::new(phys_offset_mb2, memory::PhysAddr(cr3_raw & !0xFFF));
