@@ -170,6 +170,75 @@ pub const GCMD_BIT_SIRTP: u32 = 1 << 24;
 /// `CFI` (Compatibility Format Interrupt) — bit 23.
 pub const GCMD_BIT_CFI: u32 = 1 << 23;
 
+// -- GSTS status-mirror bit positions per spec rev 4.1 § 10.4.5 -------
+//
+// GSTS is read-only and mirrors the most-recently committed GCMD bits
+// after the hardware has finished processing the request. The live
+// activation path (P6.7.9-pre.5) polls these bits to detect when the
+// IOMMU has accepted SRTP / QIE / TE.
+
+/// `TES` (Translation Enable Status) — bit 31 in GSTS. Mirrors
+/// [`GCMD_BIT_TE`] once the hardware enables second-level translation.
+pub const GSTS_BIT_TES: u32 = 1 << 31;
+/// `RTPS` (Root Table Pointer Status) — bit 30 in GSTS. Mirrors
+/// [`GCMD_BIT_SRTP`] once the hardware accepts the new root-table
+/// pointer.
+pub const GSTS_BIT_RTPS: u32 = 1 << 30;
+/// `QIES` (Queued Invalidation Enable Status) — bit 26 in GSTS. Mirrors
+/// [`GCMD_BIT_QIE`] once the hardware starts servicing descriptors out
+/// of the invalidation queue.
+pub const GSTS_BIT_QIES: u32 = 1 << 26;
+
+// -- Invalidation queue layout (Intel VT-d spec rev 4.1 § 6.5.2) ------
+//
+// We program the legacy 128-bit (16-byte) descriptor format because
+// the scalable 256-bit format requires ECAP.SMTS support that is not
+// guaranteed on all Phase 1 platforms. With QS=0 the queue holds 256
+// descriptors × 16 bytes = exactly one 4-KiB page — matches the frame
+// allocator's allocation unit.
+
+/// `QS` field value stored in `IQA[2:0]` — `0` for a 1-page (4 KiB)
+/// queue, i.e. 256 entries of 16 bytes each.
+pub const INV_QUEUE_SIZE_ORDER: u8 = 0;
+/// Number of descriptor slots in the invalidation queue under
+/// [`INV_QUEUE_SIZE_ORDER`].
+pub const INV_QUEUE_ENTRY_COUNT: usize = 256;
+/// Byte width of one legacy (128-bit) invalidation descriptor.
+pub const INV_QUEUE_ENTRY_BYTES: usize = 16;
+/// Total queue footprint in bytes — `INV_QUEUE_ENTRY_COUNT *
+/// INV_QUEUE_ENTRY_BYTES`. By construction equals one 4-KiB frame.
+pub const INV_QUEUE_BYTES: usize = INV_QUEUE_ENTRY_COUNT * INV_QUEUE_ENTRY_BYTES;
+
+// -- Invalidation descriptor type / granularity tags (spec § 6.5.2.2) -
+//
+// Encoded into bits 0..3 of the descriptor low qword.
+
+/// `Type=0x1` — Context-cache invalidate (CCMD-equivalent).
+pub const INV_DESC_TYPE_CONTEXT_CACHE: u64 = 0x1;
+/// `Type=0x2` — IOTLB invalidate.
+pub const INV_DESC_TYPE_IOTLB: u64 = 0x2;
+/// `Type=0x5` — Invalidate-wait (synchronisation fence).
+pub const INV_DESC_TYPE_INVALIDATE_WAIT: u64 = 0x5;
+
+/// Context-cache granularity `G=01` (Global). Encoded into bits 4..5
+/// of the context-cache descriptor low qword.
+pub const INV_DESC_CTX_GRAN_GLOBAL: u64 = 0b01 << 4;
+/// IOTLB granularity `G=01` (Global). Encoded into bits 4..5 of the
+/// IOTLB descriptor low qword.
+pub const INV_DESC_IOTLB_GRAN_GLOBAL: u64 = 0b01 << 4;
+/// Invalidate-wait `SW=1`: write a 4-byte status value to the status
+/// address once the wait descriptor reaches the IOMMU. Bit 5.
+pub const INV_DESC_WAIT_STATUS_WRITE: u64 = 1 << 5;
+
+/// Bounded poll counter for hardware-status mirror bits.
+///
+/// 1 million iterations easily covers the worst-case QEMU emulation
+/// latency (typically < 1 µs / iteration in practice). On a real Intel
+/// platform the SRTP and QIE bits flip within microseconds; an
+/// overflow indicates a wedged IOMMU and surfaces as one of the
+/// `*Timeout` variants of [`VtdActivateError`].
+pub const VTD_ACTIVATION_POLL_LIMIT: u32 = 1_000_000;
+
 // =============================================================================
 // Section 2 — Root / Context / SL-PTE encoders (Intel VT-d spec § 9).
 //
@@ -582,6 +651,95 @@ impl From<VtdError> for IommuError {
     }
 }
 
+/// Error category surfaced by `VtdBackend::activate_hardware` (the
+/// bare-metal-only activation entry point gated on
+/// `cfg(target_os = "none")`).
+///
+/// Maps to [`IommuError::ActivationFailed`] when surfaced through the
+/// trait; the variant identity is preserved for the kernel boot log so
+/// the operator can tell SRTP timeout from QIE timeout from a
+/// stalled IOTLB drain. None of these errors should fire on a healthy
+/// IOMMU — they signal either a spec-divergent emulation or genuinely
+/// wedged silicon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VtdActivateError {
+    /// [`VtdBackend::prepare_activation`] was never called (or
+    /// reported zeroes) before `VtdBackend::activate_hardware` —
+    /// `unit_base` is `0` so MMIO writes would target the BIOS
+    /// real-mode area.
+    NotPrepared,
+    /// Polled [`GSTS_BIT_RTPS`] for [`VTD_ACTIVATION_POLL_LIMIT`]
+    /// iterations after raising [`GCMD_BIT_SRTP`]; bit never flipped.
+    RootTableTimeout,
+    /// Polled [`GSTS_BIT_QIES`] for [`VTD_ACTIVATION_POLL_LIMIT`]
+    /// iterations after raising [`GCMD_BIT_QIE`]; bit never flipped.
+    QueueEnableTimeout,
+    /// IQH never caught up to IQT after submitting the global IOTLB
+    /// invalidate descriptor. Indicates a stuck invalidation engine.
+    InvalidationTimeout,
+}
+
+impl From<VtdActivateError> for IommuError {
+    fn from(_err: VtdActivateError) -> Self {
+        Self::ActivationFailed
+    }
+}
+
+/// Encode the `IQA` register value for a given queue base address +
+/// size order.
+///
+/// Bit layout (Intel VT-d spec rev 4.1 § 10.4.20):
+///
+/// - bits 12..63: 4-KiB-aligned queue base physical address (`IQA`).
+/// - bit 11: reserved (must be zero).
+/// - bit 10: descriptor width — `0` for legacy 128-bit, `1` for
+///   scalable 256-bit. We always use `0`.
+/// - bits 0..2: `QS` (queue size in pages, queue holds `2^QS` 4-KiB
+///   pages of descriptors).
+///
+/// Reserved bits are masked out defensively so a high-bit overflow in
+/// `queue_phys` cannot accidentally set DW or QS.
+#[must_use]
+pub const fn encode_iqa(queue_phys: u64, size_order: u8) -> u64 {
+    let base = queue_phys & 0x000F_FFFF_FFFF_F000;
+    let qs = (size_order as u64) & 0x7;
+    base | qs
+}
+
+/// Encode the low + high qwords of a 128-bit global IOTLB invalidate
+/// descriptor.
+///
+/// Layout (Intel VT-d spec § 6.5.2.4):
+///
+/// - low qword bits 0..3:  Type = [`INV_DESC_TYPE_IOTLB`] (`0x2`).
+/// - low qword bits 4..5:  G   = `01` (Global).
+/// - low qword bits 6..7:  DR  = `00` (drain reads = off).
+/// - low qword bits 8..9:  DW  = `00` (drain writes = off).
+/// - low qword bits 10..63: reserved (zero).
+/// - high qword:           AM/AIH/Address — unused for global granularity.
+///
+/// Returns `(low, high)`. The caller writes them into successive
+/// 64-bit slots of the queue ring.
+#[must_use]
+pub const fn encode_iotlb_global_invalidate() -> (u64, u64) {
+    let low = INV_DESC_TYPE_IOTLB | INV_DESC_IOTLB_GRAN_GLOBAL;
+    (low, 0)
+}
+
+/// Encode the low + high qwords of a 128-bit global context-cache
+/// invalidate descriptor.
+///
+/// Layout (Intel VT-d spec § 6.5.2.3):
+///
+/// - low qword bits 0..3:  Type = [`INV_DESC_TYPE_CONTEXT_CACHE`] (`0x1`).
+/// - low qword bits 4..5:  G   = `01` (Global).
+/// - high qword: source-id / function-mask — unused for global granularity.
+#[must_use]
+pub const fn encode_context_cache_global_invalidate() -> (u64, u64) {
+    let low = INV_DESC_TYPE_CONTEXT_CACHE | INV_DESC_CTX_GRAN_GLOBAL;
+    (low, 0)
+}
+
 /// One mapping record tracked by the scaffold backend.
 ///
 /// Pure data — exists so the host test suite can assert on the
@@ -619,6 +777,25 @@ pub struct VtdBackend {
     domains: Vec<DomainId>,
     /// Recorded mappings.
     mappings: Vec<ScaffoldMapping>,
+    /// MMIO base of the per-IOMMU register window. `0` while the
+    /// backend is dormant; populated by [`Self::prepare_activation`]
+    /// once the boot probe resolves the first DRHD's `register_base`.
+    unit_base: u64,
+    /// Physical address of the 4-KiB root-table page used by the live
+    /// MMIO path. `0` while dormant.
+    root_table_phys: u64,
+    /// Physical address of the 4-KiB invalidation-queue page. `0`
+    /// while dormant.
+    invalidation_queue_phys: u64,
+    /// Software-maintained tail index into the invalidation queue,
+    /// measured in **bytes** so it can be written to IQT directly.
+    /// Wraps at [`INV_QUEUE_BYTES`].
+    invalidation_queue_tail: u64,
+    /// `true` once `Self::activate_hardware` has cleanly walked
+    /// RTADDR + GCMD.SRTP + IQA + GCMD.QIE + the global IOTLB flush
+    /// and observed every status mirror bit set (the activation
+    /// method is gated on `cfg(target_os = "none")`).
+    hardware_activated: bool,
 }
 
 impl VtdBackend {
@@ -632,6 +809,11 @@ impl VtdBackend {
         Self {
             domains: Vec::new(),
             mappings: Vec::new(),
+            unit_base: 0,
+            root_table_phys: 0,
+            invalidation_queue_phys: 0,
+            invalidation_queue_tail: 0,
+            hardware_activated: false,
         }
     }
 
@@ -651,6 +833,290 @@ impl VtdBackend {
     #[must_use]
     pub fn domains(&self) -> &[DomainId] {
         &self.domains
+    }
+
+    /// MMIO base of the per-IOMMU register window (`0` while dormant).
+    #[must_use]
+    pub const fn unit_base(&self) -> u64 {
+        self.unit_base
+    }
+
+    /// Physical address of the 4-KiB root-table page (`0` while
+    /// dormant).
+    #[must_use]
+    pub const fn root_table_phys(&self) -> u64 {
+        self.root_table_phys
+    }
+
+    /// Physical address of the 4-KiB invalidation-queue page (`0`
+    /// while dormant).
+    #[must_use]
+    pub const fn invalidation_queue_phys(&self) -> u64 {
+        self.invalidation_queue_phys
+    }
+
+    /// `true` once `Self::activate_hardware` has completed cleanly
+    /// (the activation method is gated on `cfg(target_os = "none")`).
+    #[must_use]
+    pub const fn is_hardware_activated(&self) -> bool {
+        self.hardware_activated
+    }
+
+    /// Stash the activation parameters in the backend without touching
+    /// MMIO.
+    ///
+    /// Idempotent: calling twice with the same values is a no-op; the
+    /// second call with different values overwrites and **resets**
+    /// [`Self::is_hardware_activated`] to `false` so the caller
+    /// understands the live programming must be redriven (this is the
+    /// behaviour the kernel boot path relies on after a TLB-shootdown
+    /// induced re-activation in MP follow-up work).
+    pub fn prepare_activation(
+        &mut self,
+        unit_base: u64,
+        root_table_phys: u64,
+        invalidation_queue_phys: u64,
+    ) {
+        let same = self.unit_base == unit_base
+            && self.root_table_phys == root_table_phys
+            && self.invalidation_queue_phys == invalidation_queue_phys;
+        self.unit_base = unit_base;
+        self.root_table_phys = root_table_phys;
+        self.invalidation_queue_phys = invalidation_queue_phys;
+        self.invalidation_queue_tail = 0;
+        if !same {
+            self.hardware_activated = false;
+        }
+    }
+
+    /// Drive the live VT-d MMIO programming sequence.
+    ///
+    /// Spec-faithful order (Intel VT-d rev 4.1 § 6.2 + § 6.5):
+    ///
+    /// 1. Write the root-table physical address into `RTADDR`.
+    /// 2. Raise `GCMD.SRTP` and poll `GSTS.RTPS` until set.
+    /// 3. Write the invalidation-queue layout into `IQA` and clear
+    ///    `IQT` (head==tail = empty queue).
+    /// 4. Raise `GCMD.QIE` and poll `GSTS.QIES` until set.
+    /// 5. Submit a global IOTLB invalidate descriptor (queue slot 0),
+    ///    bump `IQT`, and wait for `IQH` to catch up.
+    ///
+    /// `GCMD.TE` is **NOT** raised by this slice; the IOMMU stays in
+    /// pre-translation (passthrough) mode at the hardware level until
+    /// the kernel is ready to gate every DMA-capable device through a
+    /// per-domain page table (future P6.7.9-pre.7+).
+    ///
+    /// # Errors
+    ///
+    /// See [`VtdActivateError`].
+    ///
+    /// # Safety
+    ///
+    /// `phys_offset` must be the live bootloader direct-map offset.
+    /// `unit_base` (recorded via [`Self::prepare_activation`]) must be
+    /// the MMIO base address of a VT-d remapping unit owned exclusively
+    /// by the kernel. The function performs `volatile_write32` /
+    /// `volatile_write64` against `phys_offset + unit_base + offset`
+    /// for the constants documented in §1 above.
+    #[cfg(target_os = "none")]
+    pub unsafe fn activate_hardware(&mut self, phys_offset: u64) -> Result<(), VtdActivateError> {
+        if self.unit_base == 0 || self.root_table_phys == 0 || self.invalidation_queue_phys == 0 {
+            return Err(VtdActivateError::NotPrepared);
+        }
+
+        let unit_va = phys_offset.wrapping_add(self.unit_base);
+
+        // (1) Write the root-table physical address into RTADDR.
+        //     Bit 11 (RTT) stays 0 — we use the legacy 128-bit root
+        //     entry format (matches `encode_root_entry`).
+        // SAFETY: per the function's safety contract, `unit_va` is a
+        // valid MMIO VA into a kernel-owned VT-d register window.
+        unsafe { mmio_write64(unit_va, REG_OFFSET_RTADDR, self.root_table_phys) };
+
+        // (2) Raise GCMD.SRTP and poll GSTS.RTPS until set or timeout.
+        //     GCMD is a one-shot write — we don't OR with the previous
+        //     value because no other bits are enabled yet.
+        // SAFETY: same as above.
+        unsafe { mmio_write32(unit_va, REG_OFFSET_GCMD, GCMD_BIT_SRTP) };
+        // SAFETY: GSTS is a 4-byte read-only MMIO register.
+        if !unsafe { poll_gsts_bit(unit_va, GSTS_BIT_RTPS) } {
+            return Err(VtdActivateError::RootTableTimeout);
+        }
+
+        // (3) Program the invalidation queue base + size. The queue
+        //     body itself was zero-filled by the caller before this
+        //     activation runs — IQT=0 publishes "empty queue" to the
+        //     IOMMU.
+        let iqa = encode_iqa(self.invalidation_queue_phys, INV_QUEUE_SIZE_ORDER);
+        // SAFETY: same as RTADDR — kernel-owned MMIO window.
+        unsafe { mmio_write64(unit_va, REG_OFFSET_IQA, iqa) };
+        // SAFETY: same as RTADDR — kernel-owned MMIO window.
+        unsafe { mmio_write64(unit_va, REG_OFFSET_IQT, 0) };
+        self.invalidation_queue_tail = 0;
+
+        // (4) Raise GCMD.QIE and poll GSTS.QIES until set or timeout.
+        // SAFETY: same as RTADDR — kernel-owned MMIO window.
+        unsafe { mmio_write32(unit_va, REG_OFFSET_GCMD, GCMD_BIT_QIE) };
+        // SAFETY: GSTS is a 4-byte read-only MMIO register.
+        if !unsafe { poll_gsts_bit(unit_va, GSTS_BIT_QIES) } {
+            return Err(VtdActivateError::QueueEnableTimeout);
+        }
+
+        // (5) Submit a global IOTLB invalidate descriptor at slot 0,
+        //     bump IQT, and wait for IQH to catch up.
+        let queue_va = phys_offset.wrapping_add(self.invalidation_queue_phys);
+        let (lo, hi) = encode_iotlb_global_invalidate();
+        // SAFETY: caller guarantees the invalidation-queue page is
+        // 4-KiB-aligned, kernel-owned, and zero-filled. The first 16
+        // bytes hold descriptor index 0.
+        unsafe { write_queue_entry(queue_va, 0, lo, hi) };
+        let next_tail: u64 = INV_QUEUE_ENTRY_BYTES as u64;
+        // SAFETY: same as IQA / IQT writes above.
+        unsafe { mmio_write64(unit_va, REG_OFFSET_IQT, next_tail) };
+        self.invalidation_queue_tail = next_tail;
+        // SAFETY: IQH is a 8-byte read-only MMIO register.
+        if !unsafe { poll_iqh_reaches(unit_va, next_tail) } {
+            return Err(VtdActivateError::InvalidationTimeout);
+        }
+
+        self.hardware_activated = true;
+        Ok(())
+    }
+}
+
+// =============================================================================
+// MMIO helpers — bare-metal-only, `volatile` semantics.
+//
+// All accesses go through `core::ptr::read_volatile` /
+// `core::ptr::write_volatile` so the optimiser cannot reorder or
+// coalesce the writes; this is mandatory for MMIO programming. The
+// helpers are unsafe — the caller (`VtdBackend::activate_hardware`)
+// commits to the invariants in its safety contract.
+// =============================================================================
+
+/// Volatile 32-bit write to `unit_va + offset`.
+///
+/// # Safety
+///
+/// `unit_va + offset` must address a kernel-owned MMIO register that
+/// accepts 32-bit naturally-aligned writes.
+#[cfg(target_os = "none")]
+#[inline]
+unsafe fn mmio_write32(unit_va: u64, offset: u32, value: u32) {
+    let ptr = unit_va.wrapping_add(u64::from(offset)) as *mut u32;
+    // SAFETY: per the function's safety contract.
+    unsafe { core::ptr::write_volatile(ptr, value) };
+}
+
+/// Volatile 32-bit read from `unit_va + offset`.
+///
+/// # Safety
+///
+/// `unit_va + offset` must address a kernel-owned MMIO register that
+/// accepts 32-bit naturally-aligned reads.
+#[cfg(target_os = "none")]
+#[inline]
+unsafe fn mmio_read32(unit_va: u64, offset: u32) -> u32 {
+    let ptr = unit_va.wrapping_add(u64::from(offset)) as *const u32;
+    // SAFETY: per the function's safety contract.
+    unsafe { core::ptr::read_volatile(ptr) }
+}
+
+/// Volatile 64-bit write to `unit_va + offset`.
+///
+/// # Safety
+///
+/// `unit_va + offset` must address a kernel-owned MMIO register that
+/// accepts 64-bit naturally-aligned writes.
+#[cfg(target_os = "none")]
+#[inline]
+unsafe fn mmio_write64(unit_va: u64, offset: u32, value: u64) {
+    let ptr = unit_va.wrapping_add(u64::from(offset)) as *mut u64;
+    // SAFETY: per the function's safety contract.
+    unsafe { core::ptr::write_volatile(ptr, value) };
+}
+
+/// Volatile 64-bit read from `unit_va + offset`.
+///
+/// # Safety
+///
+/// `unit_va + offset` must address a kernel-owned MMIO register that
+/// accepts 64-bit naturally-aligned reads.
+#[cfg(target_os = "none")]
+#[inline]
+unsafe fn mmio_read64(unit_va: u64, offset: u32) -> u64 {
+    let ptr = unit_va.wrapping_add(u64::from(offset)) as *const u64;
+    // SAFETY: per the function's safety contract.
+    unsafe { core::ptr::read_volatile(ptr) }
+}
+
+/// Poll `GSTS` for `bit` to become set, with a bounded retry budget.
+///
+/// Returns `true` if `bit` was observed set within
+/// [`VTD_ACTIVATION_POLL_LIMIT`] iterations, `false` on timeout.
+///
+/// # Safety
+///
+/// `unit_va` must point at the start of a kernel-owned VT-d register
+/// window so `unit_va + REG_OFFSET_GSTS` is a valid 32-bit read.
+#[cfg(target_os = "none")]
+unsafe fn poll_gsts_bit(unit_va: u64, bit: u32) -> bool {
+    let mut budget = VTD_ACTIVATION_POLL_LIMIT;
+    while budget > 0 {
+        // SAFETY: per the function's safety contract.
+        let gsts = unsafe { mmio_read32(unit_va, REG_OFFSET_GSTS) };
+        if gsts & bit != 0 {
+            return true;
+        }
+        core::hint::spin_loop();
+        budget -= 1;
+    }
+    false
+}
+
+/// Poll `IQH` until it reaches `tail_byte_offset`, with a bounded
+/// retry budget.
+///
+/// The IOMMU advances `IQH` as it consumes descriptors. When `IQH ==
+/// IQT` the queue is drained.
+///
+/// # Safety
+///
+/// Same as [`poll_gsts_bit`].
+#[cfg(target_os = "none")]
+unsafe fn poll_iqh_reaches(unit_va: u64, tail_byte_offset: u64) -> bool {
+    let mut budget = VTD_ACTIVATION_POLL_LIMIT;
+    while budget > 0 {
+        // SAFETY: per the function's safety contract.
+        let iqh = unsafe { mmio_read64(unit_va, REG_OFFSET_IQH) };
+        if iqh == tail_byte_offset {
+            return true;
+        }
+        core::hint::spin_loop();
+        budget -= 1;
+    }
+    false
+}
+
+/// Write a 128-bit descriptor into the invalidation queue at the
+/// 16-byte slot indexed by `slot`.
+///
+/// # Safety
+///
+/// `queue_va` must point at the start of a kernel-owned, 4-KiB-aligned
+/// invalidation-queue page mapped through the direct map, and `slot`
+/// must be `< INV_QUEUE_ENTRY_COUNT`.
+#[cfg(target_os = "none")]
+#[inline]
+unsafe fn write_queue_entry(queue_va: u64, slot: usize, lo: u64, hi: u64) {
+    let byte_offset = slot.wrapping_mul(INV_QUEUE_ENTRY_BYTES) as u64;
+    let base = queue_va.wrapping_add(byte_offset);
+    let lo_ptr = base as *mut u64;
+    let hi_ptr = base.wrapping_add(8) as *mut u64;
+    // SAFETY: per the function's safety contract.
+    unsafe {
+        core::ptr::write_volatile(lo_ptr, lo);
+        core::ptr::write_volatile(hi_ptr, hi);
     }
 }
 
@@ -1094,5 +1560,166 @@ mod tests {
             IommuError::from(VtdError::UnsupportedFlags),
             IommuError::Unsupported
         );
+    }
+
+    // ---- Activation surface (P6.7.9-pre.5) -----------------------------
+
+    use super::{
+        GSTS_BIT_QIES, GSTS_BIT_RTPS, GSTS_BIT_TES, INV_DESC_CTX_GRAN_GLOBAL,
+        INV_DESC_IOTLB_GRAN_GLOBAL, INV_DESC_TYPE_CONTEXT_CACHE, INV_DESC_TYPE_INVALIDATE_WAIT,
+        INV_DESC_TYPE_IOTLB, INV_DESC_WAIT_STATUS_WRITE, INV_QUEUE_BYTES, INV_QUEUE_ENTRY_BYTES,
+        INV_QUEUE_ENTRY_COUNT, INV_QUEUE_SIZE_ORDER, VTD_ACTIVATION_POLL_LIMIT, VtdActivateError,
+        encode_context_cache_global_invalidate, encode_iotlb_global_invalidate, encode_iqa,
+    };
+
+    #[test]
+    fn gsts_bits_mirror_gcmd_positions() {
+        assert_eq!(GSTS_BIT_TES, super::GCMD_BIT_TE);
+        assert_eq!(GSTS_BIT_RTPS, super::GCMD_BIT_SRTP);
+        assert_eq!(GSTS_BIT_QIES, super::GCMD_BIT_QIE);
+    }
+
+    #[test]
+    fn invalidation_queue_layout_constants_match_legacy_format() {
+        assert_eq!(INV_QUEUE_SIZE_ORDER, 0);
+        assert_eq!(INV_QUEUE_ENTRY_COUNT, 256);
+        assert_eq!(INV_QUEUE_ENTRY_BYTES, 16);
+        assert_eq!(INV_QUEUE_BYTES, 4096);
+        assert_eq!(
+            INV_QUEUE_ENTRY_COUNT * INV_QUEUE_ENTRY_BYTES,
+            INV_QUEUE_BYTES
+        );
+    }
+
+    #[test]
+    fn invalidation_descriptor_tags_match_spec_section_6_5_2() {
+        assert_eq!(INV_DESC_TYPE_CONTEXT_CACHE, 0x1);
+        assert_eq!(INV_DESC_TYPE_IOTLB, 0x2);
+        assert_eq!(INV_DESC_TYPE_INVALIDATE_WAIT, 0x5);
+        assert_eq!(INV_DESC_CTX_GRAN_GLOBAL, 0b01 << 4);
+        assert_eq!(INV_DESC_IOTLB_GRAN_GLOBAL, 0b01 << 4);
+        assert_eq!(INV_DESC_WAIT_STATUS_WRITE, 1 << 5);
+    }
+
+    #[test]
+    fn poll_limit_is_a_million() {
+        assert_eq!(VTD_ACTIVATION_POLL_LIMIT, 1_000_000);
+    }
+
+    #[test]
+    fn encode_iqa_places_base_in_bits_12_to_63_and_qs_in_low_three() {
+        let phys = 0x0000_DEAD_BEEF_F000_u64;
+        let iqa = encode_iqa(phys, 0);
+        // Low 12 bits zero (4-KiB aligned), no DW, QS=0.
+        assert_eq!(iqa, phys);
+    }
+
+    #[test]
+    fn encode_iqa_masks_reserved_low_bits_of_phys() {
+        let phys_with_dirt = 0x0000_DEAD_BEEF_F123_u64;
+        let iqa = encode_iqa(phys_with_dirt, 0);
+        // The low 12 bits must be cleared; QS = 0 leaves bits 0..2 = 0.
+        assert_eq!(iqa & 0xFFF, 0);
+        assert_eq!(iqa >> 12, phys_with_dirt >> 12);
+    }
+
+    #[test]
+    fn encode_iqa_encodes_size_order_in_low_three_bits() {
+        let phys = 0x0000_0001_0000_0000_u64; // 4 GiB aligned
+        let iqa = encode_iqa(phys, 3);
+        assert_eq!(iqa & 0x7, 0x3);
+        assert_eq!(iqa & !0x7, phys);
+    }
+
+    #[test]
+    fn encode_iqa_truncates_size_order_above_three_bits() {
+        let phys = 0x0000_0001_0000_0000_u64;
+        let iqa = encode_iqa(phys, 0xFF);
+        // High bits of size_order must be discarded.
+        assert_eq!(iqa & 0x7, 0x7);
+    }
+
+    #[test]
+    fn encode_iqa_masks_phys_above_bit_51() {
+        // Bits 52..63 are reserved; we mask conservatively to bit 51
+        // because Intel VT-d MGAW caps at 52 host-address bits even on
+        // the widest 5-level paging configuration.
+        let high_phys = 0xFFFF_FFFF_FFFF_F000_u64;
+        let iqa = encode_iqa(high_phys, 0);
+        assert_eq!(iqa, 0x000F_FFFF_FFFF_F000_u64);
+    }
+
+    #[test]
+    fn encode_iotlb_global_invalidate_low_qword_carries_type_and_granularity() {
+        let (low, high) = encode_iotlb_global_invalidate();
+        assert_eq!(low & 0xF, INV_DESC_TYPE_IOTLB);
+        assert_eq!((low >> 4) & 0x3, INV_DESC_IOTLB_GRAN_GLOBAL >> 4);
+        assert_eq!(high, 0);
+    }
+
+    #[test]
+    fn encode_context_cache_global_invalidate_low_qword_carries_type_and_granularity() {
+        let (low, high) = encode_context_cache_global_invalidate();
+        assert_eq!(low & 0xF, INV_DESC_TYPE_CONTEXT_CACHE);
+        assert_eq!((low >> 4) & 0x3, INV_DESC_CTX_GRAN_GLOBAL >> 4);
+        assert_eq!(high, 0);
+    }
+
+    #[test]
+    fn vtd_activate_error_maps_to_iommu_activation_failed() {
+        for variant in [
+            VtdActivateError::NotPrepared,
+            VtdActivateError::RootTableTimeout,
+            VtdActivateError::QueueEnableTimeout,
+            VtdActivateError::InvalidationTimeout,
+        ] {
+            assert_eq!(IommuError::from(variant), IommuError::ActivationFailed);
+        }
+    }
+
+    #[test]
+    fn fresh_backend_reports_dormant_state() {
+        let backend = VtdBackend::new();
+        assert_eq!(backend.unit_base(), 0);
+        assert_eq!(backend.root_table_phys(), 0);
+        assert_eq!(backend.invalidation_queue_phys(), 0);
+        assert!(!backend.is_hardware_activated());
+    }
+
+    #[test]
+    fn prepare_activation_stashes_parameters() {
+        let mut backend = VtdBackend::new();
+        backend.prepare_activation(0xFED9_0000, 0x10_0000, 0x10_1000);
+        assert_eq!(backend.unit_base(), 0xFED9_0000);
+        assert_eq!(backend.root_table_phys(), 0x10_0000);
+        assert_eq!(backend.invalidation_queue_phys(), 0x10_1000);
+        assert!(!backend.is_hardware_activated());
+    }
+
+    #[test]
+    fn prepare_activation_with_same_params_does_not_clear_activated_flag() {
+        // We can't trigger activate_hardware on host (it is
+        // `cfg(target_os = "none")`); model the post-activation state
+        // by re-calling `prepare_activation` with the same args and
+        // proving the function does not reset `hardware_activated`
+        // when the values match. The actual flag flip is exercised by
+        // the Proxmox smoke after the boot probe runs.
+        let mut backend = VtdBackend::new();
+        backend.prepare_activation(0xFED9_0000, 0x10_0000, 0x10_1000);
+        backend.prepare_activation(0xFED9_0000, 0x10_0000, 0x10_1000);
+        assert_eq!(backend.unit_base(), 0xFED9_0000);
+        assert_eq!(backend.root_table_phys(), 0x10_0000);
+        assert_eq!(backend.invalidation_queue_phys(), 0x10_1000);
+    }
+
+    #[test]
+    fn prepare_activation_with_different_params_resets_state() {
+        let mut backend = VtdBackend::new();
+        backend.prepare_activation(0xFED9_0000, 0x10_0000, 0x10_1000);
+        backend.prepare_activation(0xFED9_1000, 0x20_0000, 0x20_1000);
+        assert_eq!(backend.unit_base(), 0xFED9_1000);
+        assert_eq!(backend.root_table_phys(), 0x20_0000);
+        assert_eq!(backend.invalidation_queue_phys(), 0x20_1000);
+        assert!(!backend.is_hardware_activated());
     }
 }

@@ -17,6 +17,46 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **IOMMU — P6.7.9-pre.5 Intel VT-d live MMIO register programming (2026-05-21).**
+  Closes the live-programming half of TASK-010 for the Intel backend.
+  `VtdBackend` gains the activation surface (`unit_base`,
+  `root_table_phys`, `invalidation_queue_phys`, `invalidation_queue_tail`,
+  `hardware_activated` fields + `const fn` accessors + `prepare_activation`
+  pure-state setter); a new `VtdActivateError` taxonomy (`NotPrepared` /
+  `RootTableTimeout` / `QueueEnableTimeout` / `InvalidationTimeout`) with
+  `impl From<VtdActivateError> for IommuError → IommuError::ActivationFailed`;
+  `#[cfg(target_os = "none")] pub unsafe fn activate_hardware(&mut self,
+  phys_offset: u64)` that drives the spec-faithful Intel VT-d rev 4.1
+  § 6.2 + § 6.5 sequence — write `RTADDR ← root_table_phys`, raise
+  `GCMD.SRTP` + poll `GSTS.RTPS`, write `IQA ← encode_iqa(iq_phys, 0)`
+  + `IQT ← 0`, raise `GCMD.QIE` + poll `GSTS.QIES`, submit a global
+  IOTLB invalidate descriptor (`encode_iotlb_global_invalidate`) and
+  poll `IQH` to drain. `GCMD.TE` is deliberately **NOT** raised here
+  (per-domain translation gating lands when the driver framework
+  attaches its first PCI device — future P6.7.9-pre.7+). All MMIO
+  accesses use `core::ptr::{read_volatile, write_volatile}` and a
+  bounded `VTD_ACTIVATION_POLL_LIMIT = 1_000_000` retry budget for
+  status-mirror polls. Module-level additions: 3 new GSTS bit
+  constants, 4 invalidation-queue layout constants, 6 descriptor type
+  / granularity tags, 3 pure-function encoders (`encode_iqa`,
+  `encode_iotlb_global_invalidate`, `encode_context_cache_global_invalidate`).
+  `bare_metal::iommu::mod.rs` exposes a new `IOMMU_UNIT_BASE` `AtomicU64`
+  populated by the boot probe (via new `read_table_drhd_info` /
+  `read_table_ivhd_info` helpers that return `(count, first_register_base)`);
+  `ProbeResult` gains a `register_base: u64` field; `IommuError` gains
+  the `ActivationFailed` variant; new public surface
+  `prepare_vt_d_unit(unit_base, root_table_phys, invalidation_queue_phys)`,
+  `activate_intel_vt_d(phys_offset)` (`#[cfg(target_os = "none")]`), and
+  `iommu_hardware_activated()` accessor. `kmain` extended after
+  `FRAME_ALLOC` initialisation: allocates root-table + invalidation-queue
+  frames, zero-fills them via the direct-map, prepares + activates the
+  VT-d unit only when `iommu_unit_base() != 0 && iommu_vendor() == Intel`,
+  and emits a single-line boot log (`[iommu] vt-d activated unit=<base>` /
+  `activate skip` / `activate err` / `prepare err` / `alloc err`). +23
+  new host-side tests (16 in `vtd::tests`, 7 in `iommu::tests`); workspace
+  test count 1078 → 1101 pass / 0 fail. No new dependency. Aligned
+  with TASK-010 of `docs/planning/2026-05-21-development-plan.md`.
+
 - **IOMMU — P6.7.9-pre.4 DMA-Map vendor switch (2026-05-21).**
   Wires the kernel-wide IOMMU backend dispatch so `DmaMap (71)` syscall
   invocations route through the firmware-selected vendor backend

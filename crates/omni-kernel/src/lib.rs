@@ -488,6 +488,83 @@ pub fn kmain(
     early_console::write_str("[syscall] LSTAR set  INT80=0x80\n");
 
     // -------------------------------------------------------------------------
+    // P6.7.9-pre.5 — Intel VT-d live MMIO programming.
+    //
+    // Allocate the root-table + invalidation-queue frames from the now-
+    // initialised FRAME_ALLOC, zero them via the direct map, publish
+    // their physical addresses + the firmware-reported unit base to the
+    // live `IommuKind::Intel` backend, then drive the activation
+    // sequence (RTADDR + GCMD.SRTP + IQA + GCMD.QIE + global IOTLB
+    // invalidate). The block is a no-op on AMD / passthrough platforms.
+    //
+    // `GCMD.TE` is **NOT** raised here; per-domain translation gating
+    // lands once the driver framework attaches its first PCI device.
+    // Until then the IOMMU stays in pre-translation pass-through at the
+    // hardware level — same observable behaviour as before the slice.
+    //
+    // SAFETY: single-core BSP context; FRAME_ALLOC and IOMMU_BACKEND
+    // are not concurrently accessed. `phys_offset_mb2` is the live
+    // direct-map offset (set above via `set_phys_offset`). Activation
+    // writes go through `core::ptr::write_volatile` against the per-IOMMU
+    // MMIO window, which is part of the firmware-mapped direct-map
+    // region for q35/Proxmox configurations.
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    #[allow(
+        unsafe_code,
+        reason = "single-core static-mut deref + MMIO volatile writes inside the IOMMU activation path; aliasing invariant in SAFETY comment"
+    )]
+    if bare_metal::iommu::iommu_unit_base() != 0
+        && bare_metal::iommu::iommu_vendor() == bare_metal::iommu::IommuVendor::Intel
+    {
+        unsafe {
+            let fa = &mut *core::ptr::addr_of_mut!(FRAME_ALLOC);
+            // Allocate + zero the root-table frame.
+            let root_table_phys = fa.alloc_frame().map_or(0, |p| p.0);
+            // Allocate + zero the invalidation-queue frame.
+            let invalidation_queue_phys = fa.alloc_frame().map_or(0, |p| p.0);
+            if root_table_phys != 0 && invalidation_queue_phys != 0 {
+                // Zero-fill via the bootloader direct map. 4 KiB per
+                // frame.
+                let root_va = phys_offset_mb2.wrapping_add(root_table_phys) as *mut u8;
+                let iq_va = phys_offset_mb2.wrapping_add(invalidation_queue_phys) as *mut u8;
+                core::ptr::write_bytes(root_va, 0u8, 4096);
+                core::ptr::write_bytes(iq_va, 0u8, 4096);
+
+                let unit_base = bare_metal::iommu::iommu_unit_base();
+                if bare_metal::iommu::prepare_vt_d_unit(
+                    unit_base,
+                    root_table_phys,
+                    invalidation_queue_phys,
+                )
+                .is_ok()
+                {
+                    match bare_metal::iommu::activate_intel_vt_d(phys_offset_mb2) {
+                        Ok(true) => {
+                            early_console::write_str("[iommu] vt-d activated  unit=");
+                            #[allow(
+                                clippy::cast_possible_truncation,
+                                reason = "MMIO base fits 32 bits on x86_64; truncation only affects the log readback, not the live address"
+                            )]
+                            early_console::write_usize(unit_base as usize);
+                            early_console::write_str("\n");
+                        }
+                        Ok(false) => {
+                            early_console::write_str("[iommu] vt-d activate skip\n");
+                        }
+                        Err(_) => {
+                            early_console::write_str("[iommu] vt-d activate err\n");
+                        }
+                    }
+                } else {
+                    early_console::write_str("[iommu] vt-d prepare err\n");
+                }
+            } else {
+                early_console::write_str("[iommu] vt-d alloc err\n");
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Scheduler (MB6): initialise cooperative round-robin scheduler and
     // spawn the idle task using a single 4 KiB kernel stack frame.
     //

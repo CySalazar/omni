@@ -63,7 +63,7 @@
     reason = "IommuBackend / IommuVendor / IommuFlags / IommuError share the Iommu prefix by design — disambiguates from any future PCI / interrupt-remapping types in sibling modules"
 )]
 
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 pub mod amdvi;
 pub mod dmar;
@@ -188,6 +188,21 @@ pub static IOMMU_VENDOR: AtomicU8 = AtomicU8::new(IommuVendor::TAG_PASSTHROUGH);
 /// backends will reuse it to size their per-unit register map.
 pub static IOMMU_UNIT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+/// MMIO base address of the first IOMMU remapping unit discovered by
+/// the boot probe.
+///
+/// `0` means "no IOMMU advertised" (Phase 1 passthrough). For Intel
+/// this is the `register_base` field of the first DRHD entry in the
+/// DMAR table; for AMD it is the `base_address` of the first IVHD entry
+/// in the IVRS table (the AMD-Vi live path lands in P6.7.9-pre.6).
+///
+/// Written exactly once from [`probe`]; read by `activate_intel_vt_d`
+/// (and the future AMD-Vi sibling) after `FRAME_ALLOC` is initialised
+/// so the live MMIO programming path can pick up the bus address
+/// without a second ACPI walk. The reader is gated on
+/// `cfg(target_os = "none")`; the host doc build does not link to it.
+pub static IOMMU_UNIT_BASE: AtomicU64 = AtomicU64::new(0);
+
 /// One-shot setter for [`IOMMU_VENDOR`].
 #[inline]
 pub fn set_iommu_vendor(vendor: IommuVendor) {
@@ -215,6 +230,20 @@ pub fn iommu_unit_count() -> usize {
     IOMMU_UNIT_COUNT.load(Ordering::Relaxed)
 }
 
+/// One-shot setter for [`IOMMU_UNIT_BASE`].
+#[inline]
+pub fn set_iommu_unit_base(register_base: u64) {
+    IOMMU_UNIT_BASE.store(register_base, Ordering::Relaxed);
+}
+
+/// Read the MMIO base of the first IOMMU remapping unit. Returns `0`
+/// before the probe has run or when no IOMMU was advertised.
+#[must_use]
+#[inline]
+pub fn iommu_unit_base() -> u64 {
+    IOMMU_UNIT_BASE.load(Ordering::Relaxed)
+}
+
 /// Result of [`probe`]: vendor selection plus advertised unit counts.
 ///
 /// Returned by both the bare-metal `unsafe` variant and the host-side
@@ -234,6 +263,15 @@ pub struct ProbeResult {
     ///
     /// [`vendor`]: ProbeResult::vendor
     pub ivhd_count: usize,
+    /// MMIO register base of the **first** remapping unit advertised by
+    /// the firmware (DRHD entry 0 for Intel, IVHD entry 0 for AMD).
+    /// `0` for [`IommuVendor::Passthrough`] or when the table could not
+    /// be parsed.
+    ///
+    /// P6.7.9-pre.5 (Intel VT-d live MMIO) consumes this value via
+    /// [`set_iommu_unit_base`] / [`iommu_unit_base`] to address the
+    /// per-IOMMU register window without a second ACPI walk.
+    pub register_base: u64,
 }
 
 impl ProbeResult {
@@ -244,6 +282,7 @@ impl ProbeResult {
         vendor: IommuVendor::Passthrough,
         drhd_count: 0,
         ivhd_count: 0,
+        register_base: 0,
     };
 }
 
@@ -269,12 +308,14 @@ pub fn select_vendor(drhd_count: usize, ivhd_count: usize) -> ProbeResult {
             vendor: IommuVendor::Intel,
             drhd_count,
             ivhd_count: 0,
+            register_base: 0,
         }
     } else if ivhd_count > 0 {
         ProbeResult {
             vendor: IommuVendor::Amd,
             drhd_count: 0,
             ivhd_count,
+            register_base: 0,
         }
     } else {
         ProbeResult::PASSTHROUGH
@@ -296,17 +337,28 @@ pub fn select_vendor(drhd_count: usize, ivhd_count: usize) -> ProbeResult {
 /// within the firmware-mapped physical-memory window.
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn probe(rsdp_phys: u64, phys_offset: u64) -> ProbeResult {
-    let drhd_count = unsafe {
+    let drhd_info = unsafe {
         crate::bare_metal::mp::find_table_phys(rsdp_phys, phys_offset, b"DMAR")
-            .and_then(|phys| read_table_drhd_count(phys, phys_offset))
-            .unwrap_or(0)
+            .and_then(|phys| read_table_drhd_info(phys, phys_offset))
+            .unwrap_or((0, 0))
     };
-    let ivhd_count = unsafe {
+    let ivhd_info = unsafe {
         crate::bare_metal::mp::find_table_phys(rsdp_phys, phys_offset, b"IVRS")
-            .and_then(|phys| read_table_ivhd_count(phys, phys_offset))
-            .unwrap_or(0)
+            .and_then(|phys| read_table_ivhd_info(phys, phys_offset))
+            .unwrap_or((0, 0))
     };
-    let result = select_vendor(drhd_count, ivhd_count);
+    let (drhd_count, drhd_base) = drhd_info;
+    let (ivhd_count, ivhd_base) = ivhd_info;
+    let base_select = select_vendor(drhd_count, ivhd_count);
+    let register_base = match base_select.vendor {
+        IommuVendor::Intel => drhd_base,
+        IommuVendor::Amd => ivhd_base,
+        IommuVendor::Passthrough => 0,
+    };
+    let result = ProbeResult {
+        register_base,
+        ..base_select
+    };
     set_iommu_vendor(result.vendor);
     let unit_count = match result.vendor {
         IommuVendor::Intel => result.drhd_count,
@@ -314,6 +366,7 @@ pub unsafe fn probe(rsdp_phys: u64, phys_offset: u64) -> ProbeResult {
         IommuVendor::Passthrough => 0,
     };
     set_iommu_unit_count(unit_count);
+    set_iommu_unit_base(register_base);
     result
 }
 
@@ -330,13 +383,21 @@ pub unsafe fn probe(_rsdp_phys: u64, _phys_offset: u64) -> ProbeResult {
 /// Read the DMAR table at `table_phys`, parse it, return the DRHD
 /// count, or `None` if any step in the walk fails. Used by [`probe`].
 ///
+/// Read the DMAR table at `table_phys`, parse it, return `(drhd_count,
+/// first_drhd_register_base)`, or `None` if any step in the walk fails.
+/// Used by [`probe`].
+///
+/// The live MMIO path (P6.7.9-pre.5) requires the first DRHD's
+/// `register_base` to program the VT-d unit; returning the count alone
+/// would force a second ACPI walk.
+///
 /// # Safety
 ///
 /// `phys_offset.wrapping_add(table_phys)` must reference a 4-byte ACPI
 /// SDT header whose `length` field bounds a buffer entirely contained
 /// within the firmware-mapped physical-memory window.
 #[cfg(target_arch = "x86_64")]
-unsafe fn read_table_drhd_count(table_phys: u64, phys_offset: u64) -> Option<usize> {
+unsafe fn read_table_drhd_info(table_phys: u64, phys_offset: u64) -> Option<(usize, u64)> {
     let header_ptr = phys_offset.wrapping_add(table_phys) as *const u8;
     let length = unsafe { header_ptr.add(4).cast::<u32>().read_unaligned() } as usize;
     if length < 48 {
@@ -345,27 +406,41 @@ unsafe fn read_table_drhd_count(table_phys: u64, phys_offset: u64) -> Option<usi
     // SAFETY: caller guarantees the entire `length` byte range is
     // mapped; the bound is read from the firmware-supplied header.
     let buf = unsafe { core::slice::from_raw_parts(header_ptr, length) };
-    dmar::parse_dmar(buf).ok().map(|t| t.drhd_count())
+    let table = dmar::parse_dmar(buf).ok()?;
+    let count = table.drhd_count();
+    let first_base = table
+        .drhd_entries()
+        .first()
+        .map_or(0, |entry| entry.register_base);
+    Some((count, first_base))
 }
 
-/// Read the IVRS table at `table_phys`, parse it, return the IVHD
-/// count, or `None` if any step in the walk fails. Used by [`probe`].
+/// Read the IVRS table at `table_phys`, parse it, return `(ivhd_count,
+/// first_ivhd_base_address)`, or `None` if any step in the walk fails.
+/// Used by [`probe`].
+///
+/// Symmetric to [`read_table_drhd_info`]; consumed by the future AMD-Vi
+/// live MMIO programming step (P6.7.9-pre.6).
 ///
 /// # Safety
 ///
-/// `phys_offset.wrapping_add(table_phys)` must reference a 4-byte ACPI
-/// SDT header whose `length` field bounds a buffer entirely contained
-/// within the firmware-mapped physical-memory window.
+/// Same invariants as [`read_table_drhd_info`].
 #[cfg(target_arch = "x86_64")]
-unsafe fn read_table_ivhd_count(table_phys: u64, phys_offset: u64) -> Option<usize> {
+unsafe fn read_table_ivhd_info(table_phys: u64, phys_offset: u64) -> Option<(usize, u64)> {
     let header_ptr = phys_offset.wrapping_add(table_phys) as *const u8;
     let length = unsafe { header_ptr.add(4).cast::<u32>().read_unaligned() } as usize;
     if length < 48 {
         return None;
     }
-    // SAFETY: same as [`read_table_drhd_count`].
+    // SAFETY: same as [`read_table_drhd_info`].
     let buf = unsafe { core::slice::from_raw_parts(header_ptr, length) };
-    ivrs::parse_ivrs(buf).ok().map(|t| t.ivhd_count())
+    let table = ivrs::parse_ivrs(buf).ok()?;
+    let count = table.ivhd_count();
+    let first_base = table
+        .ivhd_entries()
+        .first()
+        .map_or(0, |entry| entry.base_address);
+    Some((count, first_base))
 }
 
 /// IOMMU page-permission flags. Bit positions are local to OMNI and
@@ -428,7 +503,8 @@ impl IommuFlags {
 /// Mapped to POSIX errno values by the syscall layer (see
 /// `syscall::syscall_errno`): `InvalidDomain → EINVAL`,
 /// `AddressMisaligned → EINVAL`, `MapFailed → ENOSPC`, `UnmapFailed →
-/// EFAULT`, `DomainTableFull → ENOSPC`, `Unsupported → ENOSYS`.
+/// EFAULT`, `DomainTableFull → ENOSPC`, `Unsupported → ENOSYS`,
+/// `ActivationFailed → EIO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IommuError {
     /// Caller passed a [`DomainId`] not previously returned by
@@ -446,6 +522,11 @@ pub enum IommuError {
     /// Feature not supported by the current vendor backend (e.g.
     /// asked for `EXECUTE` on a backend that lacks XD).
     Unsupported,
+    /// Vendor-specific MMIO activation failed (root-table install,
+    /// queued-invalidation enable, or IOTLB drain timed out). Surfaced
+    /// by the P6.7.9-pre.5 Intel VT-d live programming path; AMD-Vi
+    /// will reuse the same variant.
+    ActivationFailed,
 }
 
 /// Kernel-side IOMMU programming surface.
@@ -727,6 +808,111 @@ pub fn with_iommu_backend<R>(f: impl FnOnce(&mut IommuKind) -> R) -> R {
     f(&mut backend)
 }
 
+// =============================================================================
+// VT-d activation surface — P6.7.9-pre.5 (Intel VT-d live MMIO).
+//
+// Two-phase contract:
+//
+//   1. `prepare_vt_d_unit(unit_base, root_table_phys, invalidation_queue_phys)`
+//      stores the activation parameters in the live [`vtd::VtdBackend`]
+//      without touching MMIO. This is the pure-state half — host tests
+//      exercise it from `tests::*` to assert the field round-trip.
+//
+//   2. `activate_intel_vt_d(phys_offset)` (`#[cfg(target_os = "none")]`)
+//      drives the live MMIO programming: writes RTADDR + flips
+//      GCMD.SRTP, polls GSTS.RTPS, writes IQA + flips GCMD.QIE, polls
+//      GSTS.QIES, and submits a global IOTLB invalidate descriptor.
+//      The kmain wiring calls it once after FRAME_ALLOC is initialised
+//      so the root-table + invalidation-queue frames can be allocated
+//      and zero-filled via the direct map before the IOMMU is poked.
+//
+// Both functions are no-ops when the live backend is not the Intel
+// variant (passthrough on platforms without DMAR) — the caller does
+// not need to gate on `iommu_vendor()` itself.
+// =============================================================================
+
+/// Stash the activation parameters in the live VT-d backend.
+///
+/// Pure state update — no MMIO touched.
+///
+/// # Errors
+///
+/// Returns [`IommuError::Unsupported`] when the live backend is not the
+/// Intel variant (the caller should fall back to the passthrough
+/// dispatch path).
+pub fn prepare_vt_d_unit(
+    unit_base: u64,
+    root_table_phys: u64,
+    invalidation_queue_phys: u64,
+) -> Result<(), IommuError> {
+    with_iommu_backend(|kind| match kind {
+        IommuKind::Intel(backend) => {
+            backend.prepare_activation(unit_base, root_table_phys, invalidation_queue_phys);
+            Ok(())
+        }
+        IommuKind::Passthrough(_) | IommuKind::Amd(_) => Err(IommuError::Unsupported),
+    })
+}
+
+/// Bare-metal IOMMU activation: drives the Intel VT-d MMIO programming
+/// sequence (root-table install + queued-invalidation enable + global
+/// IOTLB invalidate).
+///
+/// Returns:
+///
+/// - `Ok(true)` if the live MMIO sequence completed cleanly,
+/// - `Ok(false)` when the live backend is not Intel or no DRHD base was
+///   recorded (passthrough — nothing to do).
+///
+/// # Errors
+///
+/// Returns [`IommuError::ActivationFailed`] when any hardware-status
+/// poll exceeds its bounded retry budget or the backend rejects the
+/// activation (e.g. the prepare step never published a non-zero
+/// `unit_base`). Other [`IommuError`] variants forwarded from the
+/// dispatch surface are propagated unchanged.
+///
+/// # Safety
+///
+/// Caller must guarantee that `phys_offset` is the live bootloader
+/// direct-map offset (same value passed to
+/// [`crate::bare_metal::set_phys_offset`]) and that the root-table /
+/// invalidation-queue frames previously published via
+/// [`prepare_vt_d_unit`] are 4-KiB-aligned, owned by the kernel, and
+/// reachable through that direct map.
+#[cfg(target_os = "none")]
+pub unsafe fn activate_intel_vt_d(phys_offset: u64) -> Result<bool, IommuError> {
+    if iommu_unit_base() == 0 {
+        return Ok(false);
+    }
+    with_iommu_backend(|kind| match kind {
+        IommuKind::Intel(backend) => {
+            // SAFETY: invariants forwarded from the caller. The backend
+            // performs `unsafe { volatile_write32/64 }` against the
+            // direct-mapped MMIO window of the VT-d unit.
+            unsafe { backend.activate_hardware(phys_offset) }
+                .map(|()| true)
+                .map_err(IommuError::from)
+        }
+        IommuKind::Passthrough(_) | IommuKind::Amd(_) => Ok(false),
+    })
+}
+
+/// Report whether the live IOMMU backend (Intel variant) has completed
+/// its MMIO activation.
+///
+/// Returns `false` for the passthrough fallback, for the AMD-Vi
+/// scaffold (live programming lands in P6.7.9-pre.6), and for Intel
+/// before `activate_intel_vt_d` has run (the bare-metal-only
+/// activation entry point gated on `cfg(target_os = "none")`).
+#[must_use]
+pub fn iommu_hardware_activated() -> bool {
+    with_iommu_backend(|kind| match kind {
+        IommuKind::Intel(backend) => backend.is_hardware_activated(),
+        IommuKind::Passthrough(_) | IommuKind::Amd(_) => false,
+    })
+}
+
 /// Derive the per-process [`DomainId`] from a kernel `TaskId`.
 ///
 /// Phase 1 model: one IOMMU domain per driver process. The mapping
@@ -747,9 +933,10 @@ pub const fn domain_for_task(task_id: u64) -> DomainId {
 #[cfg(test)]
 mod tests {
     use super::{
-        DomainId, IOMMU_BACKEND, IOMMU_UNIT_COUNT, IOMMU_VENDOR, IommuBackend, IommuError,
-        IommuFlags, IommuKind, IommuVendor, PassthroughBackend, ProbeResult, domain_for_task,
-        install_backend_for_vendor, iommu_unit_count, iommu_vendor, select_vendor,
+        DomainId, IOMMU_BACKEND, IOMMU_UNIT_BASE, IOMMU_UNIT_COUNT, IOMMU_VENDOR, IommuBackend,
+        IommuError, IommuFlags, IommuKind, IommuVendor, PassthroughBackend, ProbeResult,
+        domain_for_task, install_backend_for_vendor, iommu_hardware_activated, iommu_unit_base,
+        iommu_unit_count, iommu_vendor, prepare_vt_d_unit, select_vendor, set_iommu_unit_base,
         set_iommu_unit_count, set_iommu_vendor, with_iommu_backend,
     };
     use core::sync::atomic::Ordering;
@@ -876,6 +1063,7 @@ mod tests {
             IommuError::UnmapFailed,
             IommuError::DomainTableFull,
             IommuError::Unsupported,
+            IommuError::ActivationFailed,
         ];
         for (i, a) in variants.iter().enumerate() {
             for (j, b) in variants.iter().enumerate() {
@@ -1005,6 +1193,27 @@ mod tests {
         assert_eq!(ProbeResult::PASSTHROUGH.vendor, IommuVendor::Passthrough);
         assert_eq!(ProbeResult::PASSTHROUGH.drhd_count, 0);
         assert_eq!(ProbeResult::PASSTHROUGH.ivhd_count, 0);
+        assert_eq!(ProbeResult::PASSTHROUGH.register_base, 0);
+    }
+
+    #[test]
+    fn iommu_unit_base_round_trip() {
+        let prior = IOMMU_UNIT_BASE.load(Ordering::Relaxed);
+        set_iommu_unit_base(0xFED9_0000);
+        assert_eq!(iommu_unit_base(), 0xFED9_0000);
+        set_iommu_unit_base(0);
+        assert_eq!(iommu_unit_base(), 0);
+        IOMMU_UNIT_BASE.store(prior, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn select_vendor_returns_zero_register_base_by_default() {
+        // Pure-function selector never sets a non-zero base — the
+        // bare-metal `probe` overlays the DMAR-derived value above the
+        // selection.
+        assert_eq!(select_vendor(2, 3).register_base, 0);
+        assert_eq!(select_vendor(0, 4).register_base, 0);
+        assert_eq!(select_vendor(0, 0).register_base, 0);
     }
 
     // Note: `probe` itself is **not** unit-tested from host code. The
@@ -1199,6 +1408,63 @@ mod tests {
         install_backend_for_vendor(IommuVendor::Passthrough);
         let observed = IOMMU_BACKEND.lock().vendor();
         assert_eq!(observed, IommuVendor::Passthrough);
+        install_backend_for_vendor(prior);
+    }
+
+    // -----------------------------------------------------------------
+    // P6.7.9-pre.5 — VT-d activation surface tests.
+    //
+    // The host-side coverage here exercises the **pure-state half** of
+    // the activation contract (`prepare_vt_d_unit` →
+    // `is_hardware_activated`); the live MMIO programming is
+    // `#[cfg(target_os = "none")]` and exercised by the Proxmox boot
+    // smoke. The mutex is restored to its prior vendor on exit.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn prepare_vt_d_unit_routes_through_intel_backend() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Intel);
+        let res = prepare_vt_d_unit(0xFED9_0000, 0x10_0000, 0x10_1000);
+        assert_eq!(res, Ok(()));
+        // The host build cannot drive `activate_hardware`, so the flag
+        // stays false. The assertion proves the routing landed on the
+        // Intel variant rather than throwing `Unsupported`.
+        assert!(!iommu_hardware_activated());
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn prepare_vt_d_unit_rejects_passthrough_backend() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Passthrough);
+        let res = prepare_vt_d_unit(0xFED9_0000, 0x10_0000, 0x10_1000);
+        assert_eq!(res, Err(IommuError::Unsupported));
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn prepare_vt_d_unit_rejects_amd_backend() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Amd);
+        let res = prepare_vt_d_unit(0xFEB8_0000, 0x10_0000, 0x10_1000);
+        assert_eq!(res, Err(IommuError::Unsupported));
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn iommu_hardware_activated_false_for_passthrough() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Passthrough);
+        assert!(!iommu_hardware_activated());
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn iommu_hardware_activated_false_for_amd() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Amd);
+        assert!(!iommu_hardware_activated());
         install_backend_for_vendor(prior);
     }
 }
