@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "P6.7.9-pre.8 driver PCI bind",
+        "P6.7.9-pre.9 IOMMU PT alloc",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1048,7 +1048,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "P6.7.9-pre.9 IOMMU PT alloc",
+        "P6.7.9-pre.10 PT wire DriverLoad",
         graphics::WHITE,
     );
     row(

@@ -920,6 +920,13 @@ pub struct VtdBackend {
     /// API share this vector so the host-testable scaffold and the
     /// live MMIO path agree on `(bdf → domain)` state.
     attachments: Vec<VtdAttachment>,
+    /// Per-domain second-level page-table root registry (P6.7.9-pre.9).
+    ///
+    /// Populated through [`Self::provision_domain_pt`] before the live
+    /// `install_device_entry` MMIO path runs; the recorded
+    /// `root_phys` is what `install_device_entry` consumes as the
+    /// `slpt_phys` argument for the matching domain.
+    domain_pts: super::pt_alloc::DomainPageTables,
 }
 
 impl VtdBackend {
@@ -939,7 +946,59 @@ impl VtdBackend {
             invalidation_queue_tail: 0,
             hardware_activated: false,
             attachments: Vec::new(),
+            domain_pts: super::pt_alloc::DomainPageTables::new(),
         }
+    }
+
+    /// Allocate the per-domain second-level page-table root frame for
+    /// `domain` through the supplied [`super::pt_alloc::FrameSource`]
+    /// and record the `(domain, root_phys)` binding so the live
+    /// per-device install MMIO call can read `root_phys` back via
+    /// [`Self::domain_pt_root_phys`].
+    ///
+    /// Must be preceded by a successful [`Self::install_domain`]; the
+    /// caller is responsible for ordering (the registry does not depend
+    /// on the domain list, but the live MMIO path will refuse to bind a
+    /// device whose `domain` has no recorded root).
+    ///
+    /// # Errors
+    ///
+    /// Forwards every [`super::pt_alloc::DomainPtError`] variant
+    /// unchanged — see the module documentation for the taxonomy.
+    pub fn provision_domain_pt(
+        &mut self,
+        domain: DomainId,
+        src: &mut dyn super::pt_alloc::FrameSource,
+    ) -> Result<u64, super::pt_alloc::DomainPtError> {
+        self.domain_pts.provision(domain, src)
+    }
+
+    /// Release the per-domain page-table root frame and remove the
+    /// `(domain, root_phys)` binding.
+    ///
+    /// # Errors
+    ///
+    /// [`super::pt_alloc::DomainPtError::NotProvisioned`] when `domain`
+    /// has no recorded root frame.
+    pub fn release_domain_pt(
+        &mut self,
+        domain: DomainId,
+        src: &mut dyn super::pt_alloc::FrameSource,
+    ) -> Result<(), super::pt_alloc::DomainPtError> {
+        self.domain_pts.release(domain, src)
+    }
+
+    /// Recorded per-domain page-table root, or `None` if `domain` has
+    /// not been provisioned through [`Self::provision_domain_pt`].
+    #[must_use]
+    pub fn domain_pt_root_phys(&self, domain: DomainId) -> Option<u64> {
+        self.domain_pts.root_phys(domain)
+    }
+
+    /// Snapshot of the per-domain page-table registry (insertion order).
+    #[must_use]
+    pub fn domain_pt_entries(&self) -> &[super::pt_alloc::DomainPtEntry] {
+        self.domain_pts.entries()
     }
 
     /// Snapshot of the recorded per-device attachments (insertion

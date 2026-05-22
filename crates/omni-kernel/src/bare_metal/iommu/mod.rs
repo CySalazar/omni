@@ -69,6 +69,7 @@ pub mod amdvi;
 pub mod dmar;
 pub mod domain;
 pub mod ivrs;
+pub mod pt_alloc;
 pub mod vtd;
 
 /// Opaque IOMMU domain identifier (16-bit by VT-d spec).
@@ -1004,6 +1005,84 @@ pub fn iommu_attach_device(bdf: PciBdf, domain: DomainId) -> Result<(), IommuErr
 /// [`IommuError::Unsupported`] when `bdf` is not currently attached.
 pub fn iommu_detach_device(bdf: PciBdf) -> Result<(), IommuError> {
     with_iommu_backend(|kind| kind.detach_device(bdf))
+}
+
+// =============================================================================
+// Per-domain page-table root registry — P6.7.9-pre.9 (IOMMU PT alloc).
+//
+// `iommu_provision_domain_pt` allocates one 4-KiB-aligned root frame
+// from the supplied [`pt_alloc::FrameSource`] and records the
+// `(domain, root_phys)` binding inside whichever vendor backend is
+// live. `iommu_domain_pt_root_phys` exposes the recorded address back
+// to the driver framework so the future P6.7.9-pre.10 wiring of
+// `DriverLoad` into `install_*_device_entry` can read `slpt_phys` /
+// `iopt_phys` from a single vendor-neutral helper.
+//
+// Passthrough returns `Ok(0)` from `provision` / `Some(0)` from
+// `root_phys` so callers that have no per-domain PT to mint (no IOMMU
+// present) can still take the same code path — `install_device_entry`
+// is `cfg(target_os = "none")`-gated and never runs on the
+// passthrough path, so the zero sentinel never reaches MMIO.
+// =============================================================================
+
+/// Allocate the per-domain page-table root for `domain` through the
+/// live IOMMU backend and record the binding.
+///
+/// On the passthrough fallback (no IOMMU advertised by firmware) the
+/// function returns `Ok(0)` without consulting `src` — there is no
+/// per-domain translation table to mint.
+///
+/// # Errors
+///
+/// Forwards every [`pt_alloc::DomainPtError`] variant from the
+/// underlying vendor backend.
+pub fn iommu_provision_domain_pt(
+    domain: DomainId,
+    src: &mut dyn pt_alloc::FrameSource,
+) -> Result<u64, pt_alloc::DomainPtError> {
+    with_iommu_backend(|kind| match kind {
+        IommuKind::Intel(backend) => backend.provision_domain_pt(domain, src),
+        IommuKind::Amd(backend) => backend.provision_domain_pt(domain, src),
+        IommuKind::Passthrough(_) => Ok(0),
+    })
+}
+
+/// Release the per-domain page-table root for `domain` through the
+/// live IOMMU backend.
+///
+/// On the passthrough fallback the function returns `Ok(())` without
+/// touching `src` — the matching [`iommu_provision_domain_pt`] returned
+/// the zero sentinel without recording state, so there is nothing to
+/// release.
+///
+/// # Errors
+///
+/// Forwards [`pt_alloc::DomainPtError::NotProvisioned`] when the live
+/// backend has no recorded root for `domain`.
+pub fn iommu_release_domain_pt(
+    domain: DomainId,
+    src: &mut dyn pt_alloc::FrameSource,
+) -> Result<(), pt_alloc::DomainPtError> {
+    with_iommu_backend(|kind| match kind {
+        IommuKind::Intel(backend) => backend.release_domain_pt(domain, src),
+        IommuKind::Amd(backend) => backend.release_domain_pt(domain, src),
+        IommuKind::Passthrough(_) => Ok(()),
+    })
+}
+
+/// Recorded per-domain page-table root for `domain` through the live
+/// backend.
+///
+/// Returns `None` when `domain` has not been provisioned via
+/// [`iommu_provision_domain_pt`]. The passthrough fallback always
+/// returns `None` (no per-domain table).
+#[must_use]
+pub fn iommu_domain_pt_root_phys(domain: DomainId) -> Option<u64> {
+    with_iommu_backend(|kind| match kind {
+        IommuKind::Intel(backend) => backend.domain_pt_root_phys(domain),
+        IommuKind::Amd(backend) => backend.domain_pt_root_phys(domain),
+        IommuKind::Passthrough(_) => None,
+    })
 }
 
 // =============================================================================
@@ -2245,5 +2324,124 @@ mod tests {
         let first = bdfs.first().copied().expect("first BDF");
         let second = bdfs.get(1).copied().expect("second BDF");
         assert_eq!(first.raw(), second.raw());
+    }
+
+    // -----------------------------------------------------------------
+    // P6.7.9-pre.9 — Per-domain page-table root registry dispatch tests.
+    //
+    // Exercise the module-level `iommu_provision_domain_pt` /
+    // `iommu_release_domain_pt` / `iommu_domain_pt_root_phys` helpers
+    // through every `IommuKind` variant. The vendor backends themselves
+    // are exercised in `vtd::tests::*` and `amdvi::tests::*`; the tests
+    // below cover only the dispatch surface.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn iommu_provision_domain_pt_passthrough_returns_zero_sentinel() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Passthrough);
+        let mut src = super::pt_alloc::MockFrameSource::new();
+        let res = super::iommu_provision_domain_pt(DomainId::new(0), &mut src);
+        assert_eq!(res, Ok(0));
+        // Passthrough must NOT have touched the source.
+        assert_eq!(src.alloc_calls, 0);
+        assert_eq!(src.free_calls, 0);
+        // Release on passthrough is also a no-op.
+        assert_eq!(
+            super::iommu_release_domain_pt(DomainId::new(0), &mut src),
+            Ok(())
+        );
+        assert_eq!(src.free_calls, 0);
+        // Passthrough never records a root.
+        assert_eq!(super::iommu_domain_pt_root_phys(DomainId::new(0)), None);
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn iommu_provision_domain_pt_intel_round_trip() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Intel);
+        let dom = DomainId::new(0xAA);
+        // Pre-install the domain so the per-vendor backend sees it
+        // (matches the live ordering: `install_domain` happens in
+        // `DriverLoad` before `provision_domain_pt`).
+        with_iommu_backend(|b| b.install_domain(dom)).unwrap();
+        let mut src = super::pt_alloc::MockFrameSource::new();
+        let root = super::iommu_provision_domain_pt(dom, &mut src).unwrap();
+        assert_eq!(root & 0xFFF, 0);
+        assert_eq!(src.alloc_calls, 1);
+        // The same root is observable via the readback helper.
+        assert_eq!(super::iommu_domain_pt_root_phys(dom), Some(root));
+        // Release reverses the binding and returns the frame.
+        super::iommu_release_domain_pt(dom, &mut src).unwrap();
+        assert_eq!(src.free_calls, 1);
+        assert_eq!(super::iommu_domain_pt_root_phys(dom), None);
+        // Reset the backend so the next test starts clean.
+        install_backend_for_vendor(IommuVendor::Passthrough);
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn iommu_provision_domain_pt_amd_round_trip() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Amd);
+        let dom = DomainId::new(0xBB);
+        with_iommu_backend(|b| b.install_domain(dom)).unwrap();
+        let mut src = super::pt_alloc::MockFrameSource::new();
+        let root = super::iommu_provision_domain_pt(dom, &mut src).unwrap();
+        assert_eq!(root & 0xFFF, 0);
+        assert_eq!(src.alloc_calls, 1);
+        assert_eq!(super::iommu_domain_pt_root_phys(dom), Some(root));
+        super::iommu_release_domain_pt(dom, &mut src).unwrap();
+        assert_eq!(src.free_calls, 1);
+        assert_eq!(super::iommu_domain_pt_root_phys(dom), None);
+        install_backend_for_vendor(IommuVendor::Passthrough);
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn iommu_provision_domain_pt_intel_rejects_double_provision() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Intel);
+        let dom = DomainId::new(0xCC);
+        with_iommu_backend(|b| b.install_domain(dom)).unwrap();
+        let mut src = super::pt_alloc::MockFrameSource::new();
+        let _ = super::iommu_provision_domain_pt(dom, &mut src).unwrap();
+        let err = super::iommu_provision_domain_pt(dom, &mut src).unwrap_err();
+        assert_eq!(err, super::pt_alloc::DomainPtError::AlreadyProvisioned);
+        // The failed second call must not have consumed another frame.
+        assert_eq!(src.alloc_calls, 1);
+        // Cleanup so the static backend state does not bleed into the
+        // next test (the IOMMU_BACKEND singleton is process-wide).
+        super::iommu_release_domain_pt(dom, &mut src).unwrap();
+        install_backend_for_vendor(IommuVendor::Passthrough);
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn iommu_release_domain_pt_intel_rejects_unknown_domain() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Intel);
+        let mut src = super::pt_alloc::MockFrameSource::new();
+        // Never provisioned → NotProvisioned.
+        let err = super::iommu_release_domain_pt(DomainId::new(0xDD), &mut src).unwrap_err();
+        assert_eq!(err, super::pt_alloc::DomainPtError::NotProvisioned);
+        assert_eq!(src.free_calls, 0);
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn iommu_provision_domain_pt_surfaces_frame_alloc_failure() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Intel);
+        let dom = DomainId::new(0xEE);
+        with_iommu_backend(|b| b.install_domain(dom)).unwrap();
+        let mut src = super::pt_alloc::MockFrameSource::new();
+        src.force_alloc_fail = true;
+        let err = super::iommu_provision_domain_pt(dom, &mut src).unwrap_err();
+        assert_eq!(err, super::pt_alloc::DomainPtError::FrameAllocFailed);
+        assert_eq!(super::iommu_domain_pt_root_phys(dom), None);
+        install_backend_for_vendor(IommuVendor::Passthrough);
+        install_backend_for_vendor(prior);
     }
 }
