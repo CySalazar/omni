@@ -17,6 +17,77 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.25 NVMe Identify response parsers
+  (2026-05-22) — TASK-005 continuation.**
+  New `crates/omni-driver-nvme/src/identify.rs` module declares
+  pure-function decoders for the 4 KiB response payloads the
+  controller writes after `Identify Controller` (NVMe 1.4
+  § 5.15.2 Figure 247) and `Identify Namespace` (Figure 245).
+  Closes the gap between the Identify admin commands the driver
+  issues (pre.18) and the Phase-1 bring-up's need to inspect
+  controller capabilities + namespace geometry per
+  OIP-Driver-NVMe-014 § S6 steps 8 + 10.
+  - **`IdentifyController<'a>`** zero-copy view over `&[u8]`:
+    - `nn() -> u32` (Number of Namespaces, offset 516, 32-bit
+      LE per Figure 247).
+  - **`IdentifyNamespace<'a>`** zero-copy view:
+    - `nsze() -> u64` (Namespace Size, offset 0).
+    - `ncap() -> u64` (Namespace Capacity, offset 8).
+    - `flbas() -> u8` (Formatted LBA Size byte, offset 26).
+    - `active_format_index() -> u8` (`flbas & 0x0F`).
+    - `lbads() -> u8` (LBA Data Size = `log2(sector_size)` from
+      the active LBAF descriptor at offset 128 + 4 *
+      format_index + 2, masked to bits 4..=0).
+    - `validated_byte_size() -> Result<u64, IdentifyError>`
+      performs the OIP-014 § S6 step 10 check: returns
+      `Ok(NSZE << LBADS)` when `LBADS == PHASE_1_REQUIRED_LBADS =
+      12` (4 KiB sectors), or `Err(IdentifyError::UnsupportedLbads
+      { observed })` otherwise so the bring-up FSM aborts cleanly
+      on legacy 512-byte-sector namespaces.
+  - **`IdentifyError` taxonomy** (`#[non_exhaustive]`):
+    `PageTooSmall`, `UnsupportedLbads { observed: u8 }`.
+  - **Anchor constants**: `IDENTIFY_RESPONSE_BYTES = 4096`,
+    `PHASE_1_REQUIRED_LBADS = 12`.
+  - **Internal `read_le_u32` / `read_le_u64` helpers** use
+    bounds-checked `get` + `try_into` to satisfy
+    `clippy::indexing_slicing` outside the tests; the test
+    module carries an explicit
+    `#[allow(clippy::indexing_slicing)]` carve-out documenting
+    that fixtures write canonical NVMe field offsets in-place
+    per Figure 245/247.
+  - **`crates/omni-driver-nvme/src/lib.rs`** extended with
+    `pub mod identify;` declaration.
+  - **+15 new host-side tests** under
+    `omni_driver_nvme::identify::tests::*`:
+    - 2 constant tripwires (`IDENTIFY_RESPONSE_BYTES`,
+      `PHASE_1_REQUIRED_LBADS`).
+    - 3 `IdentifyController` checks (rejects undersized page
+      with `PageTooSmall`, NN at offset 516 LE round-trip, NN
+      zero on empty page).
+    - 3 `IdentifyNamespace` byte-offset pins (NSZE at offset 0,
+      NCAP at offset 8, FLBAS active-format-index mask).
+    - 2 LBADS reads (reads active format descriptor at the
+      right offset, masks the high 3 bits of the LBADS byte).
+    - 3 `validated_byte_size` checks (returns `NSZE * 4096`
+      when LBADS=12, rejects LBADS=9 with `UnsupportedLbads {
+      observed: 9 }`, rejects empty page with
+      `UnsupportedLbads { observed: 0 }`).
+    - 1 `IdentifyError` taxonomy distinctness (different
+      `observed` values produce distinct error variants).
+  - **Workspace test count**: 1516 → 1531 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.25 Identify parser`,
+    Next=`P6.7.10-pre.26 nsid wire FSM`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1531 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — pure-state byte decoders consume only
+    `core::convert::TryInto`.
+
 - **Storage — P6.7.10-pre.24 NVMe IO queue pair end-to-end smoke
   (2026-05-22) — TASK-005 continuation.**
   New integration test

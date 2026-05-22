@@ -76,6 +76,7 @@ pub mod blk_gateway;
 pub mod bringup;
 pub mod bringup_live;
 pub mod controller_regs;
+pub mod identify;
 pub mod io;
 pub mod io_session;
 pub mod pci_ids;
