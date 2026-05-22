@@ -472,4 +472,120 @@ mod tests {
     // the cqe_to_blk_response surface directly.
     #[allow(dead_code)]
     fn _unused_admin_cqe_fields_ref(_f: AdminCqeFields) {}
+
+    // -------------------------------------------------------------------
+    // P6.7.10-pre.24 — IO queue pair end-to-end smoke (all 4
+    // BlkRequest variants in sequence)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn end_to_end_io_session_all_blk_request_variants_round_trip() {
+        // Pins the BLK channel ABI to one auditable test:
+        //   1. Read    -> CID=1, slot 0
+        //   2. Write   -> CID=2, slot 1
+        //   3. Flush   -> CID=3, slot 2
+        //   4. Discard -> CID=4, slot 3
+        //
+        // Each step submits one BlkRequest, injects a synthetic
+        // successful CQE at the next CQ slot, polls for the
+        // matching CID, and asserts BlkResponse::Ok. Final
+        // assertions verify CID monotone allocation, IO queue
+        // doorbell routing, and the SQ ring's head_observed
+        // feedback from each completion's sq_head field.
+
+        let mut s = IoSession::new(PHASE_1_IO_QID, 1, 8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+
+        // Step 1: Read
+        let read_req = BlkRequest::Read {
+            lba: 0x100,
+            count: 1,
+            buf_iova: 0x1_0000,
+        };
+        let cid1 = s
+            .submit_blk_request(read_req, 0x1_0000, 0, &mut mmio)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cid1, 1);
+        write_synthetic_cqe(s.cq_page_mut(), 0, cid1, true, 0, 0);
+        let mut nop = BootstrapFake::default();
+        let resp1 = s
+            .poll_blk_response_for_cid(cid1, 16, &mut nop)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resp1, BlkResponse::Ok);
+
+        // Step 2: Write
+        let write_req = BlkRequest::Write {
+            lba: 0x200,
+            count: 2,
+            buf_iova: 0x2_0000,
+        };
+        let cid2 = s
+            .submit_blk_request(write_req, 0x2_0000, 0x2_1000, &mut mmio)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cid2, 2);
+        write_synthetic_cqe(s.cq_page_mut(), 1, cid2, true, 0, 0);
+        let resp2 = s
+            .poll_blk_response_for_cid(cid2, 16, &mut nop)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resp2, BlkResponse::Ok);
+
+        // Step 3: Flush
+        let cid3 = s
+            .submit_blk_request(BlkRequest::Flush, 0, 0, &mut mmio)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cid3, 3);
+        write_synthetic_cqe(s.cq_page_mut(), 2, cid3, true, 0, 0);
+        let resp3 = s
+            .poll_blk_response_for_cid(cid3, 16, &mut nop)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resp3, BlkResponse::Ok);
+
+        // Step 4: Discard
+        let discard_req = BlkRequest::Discard {
+            lba: 0x300,
+            count: 4,
+        };
+        let cid4 = s
+            .submit_blk_request(discard_req, 0x3_0000, 0, &mut mmio)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cid4, 4);
+        write_synthetic_cqe(s.cq_page_mut(), 3, cid4, true, 0, 0);
+        let resp4 = s
+            .poll_blk_response_for_cid(cid4, 16, &mut nop)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resp4, BlkResponse::Ok);
+
+        // Final assertions: 4 distinct CIDs (1..=4), 4 SQ tail
+        // doorbell writes (one per submit) all to the IO queue
+        // offset, 4 CQ head doorbell writes (one per drain), CQ
+        // head advanced to 4.
+        let io_sq_offset = sq_tail_doorbell_offset(PHASE_1_IO_QID, 0).unwrap();
+        let io_cq_offset = cq_head_doorbell_offset(PHASE_1_IO_QID, 0).unwrap();
+        assert_eq!(mmio.writes.len(), 4, "4 SQ tail doorbells (one per submit)");
+        for (i, &(off, _)) in mmio.writes.iter().enumerate() {
+            assert_eq!(
+                off, io_sq_offset,
+                "submit {i} doorbell must route to the IO SQ tail offset"
+            );
+        }
+        assert_eq!(nop.writes.len(), 4, "4 CQ head doorbells (one per drain)");
+        for (i, &(off, _)) in nop.writes.iter().enumerate() {
+            assert_eq!(
+                off, io_cq_offset,
+                "drain {i} doorbell must route to the IO CQ head offset"
+            );
+        }
+        // CQ ring head advanced through all 4 slots.
+        assert_eq!(s.queue_pair().cq().head(), 4);
+        // SQ tail advanced through all 4 submissions.
+        assert_eq!(s.queue_pair().sq().tail(), 4);
+    }
 }

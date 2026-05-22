@@ -17,6 +17,58 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.24 NVMe IO queue pair end-to-end smoke
+  (2026-05-22) — TASK-005 continuation.**
+  New integration test
+  `end_to_end_io_session_all_blk_request_variants_round_trip` in
+  `crates/omni-driver-nvme/src/io_session.rs::tests` pins the
+  full BLK channel ABI to a single auditable test covering all
+  4 `BlkRequest` variants in sequence per OIP-Driver-NVMe-014
+  § S4:
+  - Step 1: `BlkRequest::Read{lba: 0x100, count: 1,
+    buf_iova: 0x1_0000}` → CID = 1, CQ slot 0.
+  - Step 2: `BlkRequest::Write{lba: 0x200, count: 2,
+    buf_iova: 0x2_0000}` with PRP1+PRP2 (two-page transfer) →
+    CID = 2, CQ slot 1.
+  - Step 3: `BlkRequest::Flush` → CID = 3, CQ slot 2.
+  - Step 4: `BlkRequest::Discard{lba: 0x300, count: 4}` →
+    CID = 4, CQ slot 3.
+  Each step submits through `IoSession::submit_blk_request`,
+  injects a synthetic successful CQE at the next CQ slot via
+  the `write_synthetic_cqe` fixture (SCT=0 + SC=0 + phase=true),
+  polls for the matching CID via
+  `IoSession::poll_blk_response_for_cid`, and asserts
+  `BlkResponse::Ok`.
+  - **Final-state assertions** pin the IO queue pair invariants:
+    - CID monotone allocation 1..=4 (skipping the reserved 0).
+    - 4 SQ tail doorbell writes (one per submit), all routed
+      to `sq_tail_doorbell_offset(PHASE_1_IO_QID = 1, 0)` —
+      NOT the admin offset.
+    - 4 CQ head doorbell writes (one per drain), all routed to
+      `cq_head_doorbell_offset(PHASE_1_IO_QID, 0)`.
+    - CQ ring `head` advanced through all 4 slots (= 4).
+    - SQ ring `tail` advanced through all 4 submissions (= 4).
+  - **Split MMIO recorder**: `mmio` captures the submit-side
+    doorbells, `nop` captures the drain-side doorbells, so the
+    test verifies both halves of the BLK pipeline routing
+    independently.
+  - **Workspace test count**: 1515 → 1516 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.24 IO e2e smoke`,
+    Next=`P6.7.10-pre.25 TASK-005 close`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1516 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — exercises the existing `IoSession`
+    (pre.23) + `blk_gateway` (pre.22) + `AdminQueuePair` (pre.11
+    with pre.23 runtime-qid generalisation) +
+    `omni_types::blk::{BlkRequest, BlkResponse}` (pre.1)
+    surfaces.
+
 - **Storage — P6.7.10-pre.23 NVMe `IoSession` (IO queue pair
   traffic) (2026-05-22) — TASK-005 continuation.**
   `crates/omni-driver-nvme/src/queue.rs::AdminQueuePair`
