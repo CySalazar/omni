@@ -116,6 +116,7 @@ desktop.ini
 # DOE Framework specific
 doe-framework/start.md
 doe-framework/.startup-prompt.txt
+doe-framework/.startup-prompt-loop.md
 
 # Python bytecode cache (e.g., from /scripts/lint-oips.py)
 __pycache__/

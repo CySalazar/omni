@@ -125,6 +125,37 @@ pub enum SyscallNumber {
     /// ABI: `(msr_index, value_lo, value_hi, payload_ptr, payload_len) -> 0`.
     /// See `OIP-Driver-TEE-016` § S6.3 (editorially reconciled to 75).
     TeeMsr = 75,
+
+    // ----- BLK service-channel registry (OIP-Driver-NVMe-014 § S4) -----
+    // Numeric range `76..=78` reserved for the kernel-mediated BLK
+    // channel registry that backs the `omni.svc.blk.<diskN>` IPC
+    // channel namespace. Producer drivers (NVMe today, future
+    // SATA / virtio-blk) call `BlkRegister` after they create the
+    // channel via `IpcCreateChannel`; the consumer filesystem
+    // service calls `BlkLookup` to resolve `disk_slot → ChannelId`
+    // without sniffing the IPC layer by string. See
+    // `OIP-Driver-NVMe-014` § S4 + § S6 step 12.
+    /// Record an `omni.svc.blk.<disk_slot>` channel in the kernel
+    /// BLK registry. ABI:
+    /// `(disk_slot_ptr, disk_slot_len, channel_id, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    /// The caller MUST already own the supplied `channel_id`; the
+    /// kernel rejects the call with `EACCES` otherwise. Disk-slot
+    /// validation matches [`crate::services::blk::BlkChannelRegistry::register`]
+    /// (ASCII `[A-Za-z0-9_-]`, ≤ `MAX_DISK_SLOT_LEN` bytes).
+    BlkRegister = 76,
+    /// Remove an `omni.svc.blk.<disk_slot>` mapping the caller owns.
+    /// ABI: `(disk_slot_ptr, disk_slot_len, 0, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    /// Returns `EACCES` if the caller is not the recorded owner;
+    /// task-exit clean-up is handled separately via
+    /// [`crate::services::blk::BlkChannelRegistry::clear_for_owner`].
+    BlkUnregister = 77,
+    /// Resolve `omni.svc.blk.<disk_slot>` to its live channel id.
+    /// ABI: `(disk_slot_ptr, disk_slot_len, 0, 0, 0, 0) -> (rax=channel_id, rdx=0)`
+    /// on success; `(rax=0, rdx=ENOENT)` if the slot is not
+    /// registered. Read-only — the channel id alone confers no
+    /// IPC authority (`IpcSend` / `IpcRecv` still require the
+    /// per-channel capability tokens minted at create time).
+    BlkLookup = 78,
 }
 
 // -----------------------------------------------------------------------------
@@ -173,17 +204,29 @@ impl SyscallReturn {
 /// path. Numbering follows Linux `errno-base.h` for the subset that
 /// `OIP-Driver-Framework-013` § S2.3 references.
 pub mod syscall_errno {
+    /// No such entry — used by the BLK lookup syscall when the
+    /// requested disk slot is not registered. POSIX `ENOENT = 2`.
+    pub const ENOENT: u64 = 2;
     /// Permission denied — capability verification failed.
     pub const EACCES: u64 = 13;
     /// Bad address — user pointer or length is invalid.
     pub const EFAULT: u64 = 14;
     /// Invalid argument — alignment, range, or reserved bits.
     pub const EINVAL: u64 = 22;
-    /// No space left — driver VA range exhausted.
+    /// No space left — driver VA range exhausted, or BLK registry
+    /// full (`MAX_BLK_CHANNELS`).
     pub const ENOSPC: u64 = 28;
     /// Function not implemented — feature requires runtime support
     /// that has not been initialised (e.g. PAT for WC mappings).
     pub const ENOSYS: u64 = 38;
+    /// Object already exists — BLK registry already holds an entry
+    /// for the requested disk slot. POSIX `EEXIST = 17`.
+    pub const EEXIST: u64 = 17;
+    /// Internal kernel invariant violation — surfaces
+    /// [`crate::services::blk::BlkRegistryError::Internal`] at
+    /// the BLK syscall boundary without aborting the kernel. POSIX
+    /// `EIO = 5`.
+    pub const EIO: u64 = 5;
 }
 
 // -----------------------------------------------------------------------------
@@ -244,6 +287,13 @@ mod tests {
         assert_eq!(SyscallNumber::DriverLoad as u32, 73);
         assert_eq!(SyscallNumber::TeeTdcall as u32, 74);
         assert_eq!(SyscallNumber::TeeMsr as u32, 75);
+        // OIP-Driver-NVMe-014 § S4 + § S6 step 12 BLK registry decade.
+        // Pinning these numbers prevents an accidental renumber that
+        // would silently break a future NVMe / SATA / virtio-blk
+        // driver manifest signed against the old numbers.
+        assert_eq!(SyscallNumber::BlkRegister as u32, 76);
+        assert_eq!(SyscallNumber::BlkUnregister as u32, 77);
+        assert_eq!(SyscallNumber::BlkLookup as u32, 78);
     }
 
     #[test]
@@ -285,8 +335,11 @@ mod tests {
 
     #[test]
     fn syscall_errno_codes_are_posix_aligned() {
+        assert_eq!(syscall_errno::ENOENT, 2);
+        assert_eq!(syscall_errno::EIO, 5);
         assert_eq!(syscall_errno::EACCES, 13);
         assert_eq!(syscall_errno::EFAULT, 14);
+        assert_eq!(syscall_errno::EEXIST, 17);
         assert_eq!(syscall_errno::EINVAL, 22);
         assert_eq!(syscall_errno::ENOSPC, 28);
         assert_eq!(syscall_errno::ENOSYS, 38);

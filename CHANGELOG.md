@@ -17,6 +17,93 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.3 kernel-side BLK registry syscalls (2026-05-22) —
+  TASK-005 continuation.**
+  Lands the user-space bridge for the kernel-internal `BlkChannelRegistry`
+  (landed P6.7.10-pre.2): three new syscalls in the `7x` driver-framework
+  decade per OIP-Driver-NVMe-014 § S4 + § S6 step 12 expose the
+  `omni.svc.blk.<diskN>` registry to user space through the rich
+  two-register return path (`SyscallReturn { rax, rdx }`).
+  - **`crates/omni-kernel/src/syscall.rs`** extended with three new
+    `SyscallNumber` discriminants — `BlkRegister = 76`,
+    `BlkUnregister = 77`, `BlkLookup = 78` — and three new POSIX-aligned
+    errno constants — `ENOENT = 2`, `EIO = 5`, `EEXIST = 17` — in
+    `syscall_errno`. ABI numbers are pinned by
+    `syscall_numbers_are_stable` / `syscall_errno_codes_are_posix_aligned`
+    so a future commit cannot silently renumber them.
+  - **`crates/omni-kernel/src/services/blk.rs`** gains:
+    - Process-global `static mut BLK_REGISTRY: BlkChannelRegistry =
+      BlkChannelRegistry::new()` (gated on
+      `bare-metal + target_arch = "x86_64"`, mirroring the
+      `IPC_REGISTRY` singleton — single-CPU + interrupt-masked SYSCALL
+      provides the no-aliasing invariant per ADR-0005).
+    - `blk_registry_mut() -> &'static mut BlkChannelRegistry` and
+      `blk_registry() -> &'static BlkChannelRegistry` accessors
+      (both `unsafe fn`; `SAFETY` documented at the fn boundary).
+    - `errno_for(BlkRegistryError) -> u64` host-callable mapper that
+      publishes the POSIX-aligned errno taxonomy
+      (`EINVAL`/`EEXIST`/`ENOSPC`/`ENOENT`/`EACCES`/`EIO`).
+  - **`crates/omni-kernel/src/bare_metal/syscall_entry.rs::blk_handlers`**
+    new bare-metal-only module:
+    - `copy_user_disk_slot` validates the user pointer (`EFAULT` on
+      out-of-user-half / null with non-zero len), bounds the length
+      (`EINVAL` on empty / oversized), and decodes UTF-8 (the registry's
+      allowed alphabet is ASCII so UTF-8 is a superset).
+    - `check_channel_owner` verifies
+      `ipc_registry().channel(channel_id).owner == caller_task`;
+      mismatch surfaces `EACCES`, unknown id surfaces `EINVAL`.
+    - `blk_register` / `blk_unregister` / `blk_lookup` chain validation
+      → ownership check → registry mutation; every error path routes
+      through `errno_for` so the syscall boundary stays consistent
+      with `OIP-Driver-Framework-013` § S2.3.
+    - `tear_down_blk_channels(task)` drains `BLK_REGISTRY` for the
+      exiting owner; invoked from `task_exit` AFTER the existing
+      `tear_down_mmio_mappings` / `tear_down_dma_mappings` /
+      `tear_down_irq_attachments` / `tear_down_pci_bindings` chain so
+      a crashed/killed driver does not leak stale registry entries on
+      PCB retire.
+  - **Dispatcher routing**: new `BlkRegister | BlkUnregister | BlkLookup`
+    arms in legacy `dispatch` (`CapabilityDenied`, rich-path-only
+    convention — same as `MmioMap`/`DmaMap`/`IrqAttach`/`DriverLoad`);
+    three new arms in `dispatch_full` route to the live handlers;
+    three new arms in `kernel_syscall_dispatch (extern "C")`
+    translate the wire-level `u32` numbers `76 → BlkRegister`,
+    `77 → BlkUnregister`, `78 → BlkLookup`.
+  - **+8 new host-side tests**:
+    - `services::blk::tests::errno_for_*` (7): one per
+      `BlkRegistryError` variant + a tripwire
+      (`errno_for_is_total_over_known_variants`) that fails on the
+      next contributor who adds a variant without revisiting
+      `errno_for`'s semantics.
+    - `bare_metal::syscall_entry::tests::kernel_syscall_dispatch_blk_numbers_translate_to_blk_variants`
+      (1): exercises the 76/77/78 → `SyscallNumber` arm explicitly so
+      a future commit that drops the translation surfaces under a
+      clear test name.
+  - **Existing tests extended**:
+    `syscall_numbers_are_stable` /
+    `syscall_errno_codes_are_posix_aligned` /
+    `dispatcher_full_dma_map_irq_attach_and_driver_load_surface_eaccess_on_host` /
+    `kernel_syscall_dispatch_driver_framework_numbers_route` /
+    `dispatcher_driver_framework_legacy_arm_returns_capability_denied`
+    now cover the BLK triplet;
+    `kernel_syscall_dispatch_unknown_driver_decade_number_returns_sentinel`
+    narrows to `79` (the only number inside `7x` still
+    reserved-but-unallocated after this slice).
+  - **Workspace test count**: 1269 → 1277 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.3 BLK syscalls`,
+    Next=`P6.7.10-pre.4 NVMe driver image`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1277 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    bare-metal + rustdoc workspace + lint-oips (0 error / 0 warning su
+    19 file).
+  - **No new dependency** — `BLK_REGISTRY` lives inside `omni-kernel`
+    and the ownership check reuses the existing
+    `crate::ipc::ipc_registry` immutable accessor.
+
 - **Storage — P6.7.10-pre.2 kernel-side BLK channel registry (2026-05-22) —
   TASK-005 continuation.**
   Lands the kernel-side bookkeeping table that maps disk slot

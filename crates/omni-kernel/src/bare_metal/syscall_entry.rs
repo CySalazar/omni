@@ -805,6 +805,16 @@ fn task_exit(code: u64) -> KernelResult<u64> {
                 // `pcb.bound_pci_devices` so a respawn into the same
                 // PCB slot never inherits stale vendor-table entries.
                 driver_load_handlers::tear_down_pci_bindings(current);
+                // P6.7.10-pre.3 — drop every BLK registry entry the
+                // exiting task owns (OIP-Driver-NVMe-014 § S4). Done
+                // AFTER the PCI / IOMMU teardown so a re-entrant
+                // teardown path triggered by a future MP build does
+                // not observe a half-dead registry. The underlying
+                // IPC channels are torn down by the IPC layer when
+                // its task-exit hook lands; until then they leak
+                // alongside the PCB which is benign in Phase 1
+                // single-CPU because no other observer exists.
+                blk_handlers::tear_down_blk_channels(current);
                 let _ = sched.dequeue(current);
                 // MB12: if another task is still runnable, hand the CPU
                 // over to it. `yield_current(Terminated)` keeps the
@@ -2498,6 +2508,223 @@ mod driver_load_handlers {
     }
 }
 
+// -----------------------------------------------------------------------
+// BlkRegister / BlkUnregister / BlkLookup (OIP-Driver-NVMe-014 § S4 +
+// § S6 step 12, P6.7.10-pre.3)
+//
+// Three thin handlers that bridge the kernel-internal
+// [`crate::services::blk::BlkChannelRegistry`] to user space through
+// the rich two-register return path. The handlers exist only in the
+// bare-metal build because they consume the `BLK_REGISTRY`,
+// `IPC_REGISTRY`, and `SCHEDULER` singletons; host tests exercise
+// the underlying registry directly via
+// [`crate::services::blk::BlkChannelRegistry`] tests.
+// -----------------------------------------------------------------------
+
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+mod blk_handlers {
+    use crate::ipc::ChannelId;
+    use crate::scheduling::TaskId;
+    use crate::services::blk::{MAX_DISK_SLOT_LEN, blk_registry_mut, errno_for};
+    use crate::syscall::{SyscallReturn, syscall_errno};
+
+    /// Validate that `[ptr, ptr + len)` lies entirely in the user
+    /// half. Mirrors the IPC / MMIO helpers so the three paths
+    /// cannot drift on the validation contract.
+    fn user_range_ok(ptr: u64, len: u64) -> bool {
+        use crate::bare_metal::usermode::USER_HALF_END;
+        if len == 0 {
+            return true;
+        }
+        let Some(end) = ptr.checked_add(len) else {
+            return false;
+        };
+        end <= USER_HALF_END
+    }
+
+    /// Copy the user-space disk-slot bytes into the supplied kernel
+    /// buffer and return a `&str` view over them.
+    ///
+    /// Validation order matches `OIP-013` § S2.3:
+    /// 1. `len ∈ (0, MAX_DISK_SLOT_LEN]` (empty is `EINVAL`, oversized
+    ///    is `EINVAL` so the handler never touches a user pointer
+    ///    that the registry would reject anyway);
+    /// 2. `[ptr, ptr + len)` lies in the canonical user half;
+    /// 3. the copied bytes form valid UTF-8 (the registry's allowed
+    ///    alphabet is ASCII so UTF-8 is a superset; this gives a
+    ///    cleaner error path than a raw byte-slice view).
+    ///
+    /// Returns `Err(errno)` on any failure so the caller can route
+    /// it through the rich return path without a second match.
+    fn copy_user_disk_slot(
+        ptr: u64,
+        len: u64,
+        buf: &mut [u8; MAX_DISK_SLOT_LEN],
+    ) -> Result<&str, u64> {
+        if len == 0 || len > MAX_DISK_SLOT_LEN as u64 {
+            return Err(syscall_errno::EINVAL);
+        }
+        if ptr == 0 || !user_range_ok(ptr, len) {
+            return Err(syscall_errno::EFAULT);
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "len ≤ MAX_DISK_SLOT_LEN = 32 fits u64 trivially"
+        )]
+        let len_usize = len as usize;
+        // SAFETY: `user_range_ok` verified `[ptr, ptr + len)` lies
+        // in the user half; the active CR3 is the caller's own AS,
+        // so the hardware PT walk faults on any missing page before
+        // the copy returns garbage. `len_usize` ≤ `buf.len()` by
+        // the cap above.
+        unsafe {
+            core::ptr::copy_nonoverlapping(ptr as *const u8, buf.as_mut_ptr(), len_usize);
+        }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "len_usize ≤ MAX_DISK_SLOT_LEN = buf.len() by the cap above"
+        )]
+        let slice = &buf[..len_usize];
+        core::str::from_utf8(slice).map_err(|_| syscall_errno::EINVAL)
+    }
+
+    /// Look up the calling task's `TaskId` from the per-CPU
+    /// scheduler. Falls back to `TaskId(0)` (the kernel bootstrap)
+    /// for syscalls that land before any user-space task is current
+    /// — that case is benign because the registry will reject every
+    /// non-ownership operation initiated by `TaskId(0)`.
+    unsafe fn current_task() -> TaskId {
+        // SAFETY: SYSCALL path masks interrupts and runs single-CPU;
+        // SCHEDULER is not aliased here.
+        unsafe {
+            let sched = &*core::ptr::addr_of!(crate::SCHEDULER);
+            sched.current_task_id().unwrap_or(TaskId(0))
+        }
+    }
+
+    /// Verify that the caller currently owns `channel_id` in the
+    /// kernel IPC registry. Returns `Ok(())` on a match,
+    /// `Err(EACCES)` on a mismatch, and `Err(EINVAL)` when the
+    /// channel id does not resolve to a live channel.
+    unsafe fn check_channel_owner(channel_id: ChannelId, caller: TaskId) -> Result<(), u64> {
+        // SAFETY: same as `current_task`.
+        unsafe {
+            let reg = crate::ipc::ipc_registry();
+            let Some(ch) = reg.channel(channel_id) else {
+                return Err(syscall_errno::EINVAL);
+            };
+            if ch.owner != caller {
+                return Err(syscall_errno::EACCES);
+            }
+            Ok(())
+        }
+    }
+
+    /// `BlkRegister (76)` — `(disk_slot_ptr, disk_slot_len, channel_id,
+    /// _, _, _) -> (rax=0, rdx=errno)`.
+    ///
+    /// Caller MUST already own `channel_id`. The handler:
+    /// 1. validates the user pointer (`EFAULT` on out-of-user-half
+    ///    or null with non-zero len);
+    /// 2. validates length / UTF-8 (`EINVAL` on empty, oversized,
+    ///    or non-UTF-8 input);
+    /// 3. verifies ownership of `channel_id` against the kernel IPC
+    ///    registry (`EACCES` on mismatch, `EINVAL` on unknown id);
+    /// 4. delegates to
+    ///    [`crate::services::blk::BlkChannelRegistry::register`]
+    ///    which enforces the registry-side invariants (charset,
+    ///    duplicate, capacity).
+    pub(super) fn blk_register(args: [u64; 6]) -> SyscallReturn {
+        let mut buf = [0u8; MAX_DISK_SLOT_LEN];
+        let slot = match copy_user_disk_slot(args[0], args[1], &mut buf) {
+            Ok(s) => s,
+            Err(errno) => return SyscallReturn::err(errno),
+        };
+        let channel_id = ChannelId(args[2]);
+        // SAFETY: SYSCALL path is single-CPU; SCHEDULER + IPC_REGISTRY
+        // + BLK_REGISTRY are not aliased here.
+        unsafe {
+            let caller = current_task();
+            if let Err(errno) = check_channel_owner(channel_id, caller) {
+                return SyscallReturn::err(errno);
+            }
+            match blk_registry_mut().register(slot, channel_id, caller) {
+                Ok(_canonical_name) => SyscallReturn::ok(0),
+                Err(err) => SyscallReturn::err(errno_for(err)),
+            }
+        }
+    }
+
+    /// `BlkUnregister (77)` — `(disk_slot_ptr, disk_slot_len, _, _, _,
+    /// _) -> (rax=0, rdx=errno)`.
+    ///
+    /// Owner-only: the registry surfaces `OwnerMismatch` → `EACCES`
+    /// when the caller is not the recorded owner.
+    pub(super) fn blk_unregister(args: [u64; 6]) -> SyscallReturn {
+        let mut buf = [0u8; MAX_DISK_SLOT_LEN];
+        let slot = match copy_user_disk_slot(args[0], args[1], &mut buf) {
+            Ok(s) => s,
+            Err(errno) => return SyscallReturn::err(errno),
+        };
+        // SAFETY: SYSCALL path is single-CPU; SCHEDULER + BLK_REGISTRY
+        // are not aliased here.
+        unsafe {
+            let caller = current_task();
+            match blk_registry_mut().unregister(slot, caller) {
+                Ok(_entry) => SyscallReturn::ok(0),
+                Err(err) => SyscallReturn::err(errno_for(err)),
+            }
+        }
+    }
+
+    /// `BlkLookup (78)` — `(disk_slot_ptr, disk_slot_len, _, _, _, _)
+    /// -> (rax=channel_id, rdx=0)` on success, `(rax=0, rdx=ENOENT)`
+    /// on miss.
+    ///
+    /// Read-only — the channel id alone confers no IPC authority
+    /// (`IpcSend` / `IpcRecv` still require the per-channel
+    /// capability tokens minted at create time). The handler does
+    /// NOT consult the IPC registry; the registry-side lookup is
+    /// sufficient because the producer's `BlkRegister` already
+    /// validated ownership at insert time.
+    pub(super) fn blk_lookup(args: [u64; 6]) -> SyscallReturn {
+        let mut buf = [0u8; MAX_DISK_SLOT_LEN];
+        let slot = match copy_user_disk_slot(args[0], args[1], &mut buf) {
+            Ok(s) => s,
+            Err(errno) => return SyscallReturn::err(errno),
+        };
+        // SAFETY: SYSCALL path is single-CPU; BLK_REGISTRY immutable
+        // borrow scope ends with this block.
+        unsafe {
+            let reg = crate::services::blk::blk_registry();
+            reg.lookup_disk_slot(slot).map_or_else(
+                || SyscallReturn::err(syscall_errno::ENOENT),
+                |entry| SyscallReturn::ok(entry.channel_id.0),
+            )
+        }
+    }
+
+    /// Drain every BLK registry entry owned by the exiting task.
+    ///
+    /// Invoked from [`super::task_exit`] (OIP-013 § S2.4) before the
+    /// PCB is retired. Symmetric to the `tear_down_*` helpers in
+    /// the MMIO / DMA / IRQ / PCI sibling modules: best-effort,
+    /// silently swallows the count return because the calling task
+    /// is already `Terminated` and there is no caller to surface
+    /// the count to. The underlying IPC channels are torn down by
+    /// the IPC layer's own task-exit hook (when wired) or, until
+    /// then, leak alongside the PCB — Phase 1 single-CPU keeps that
+    /// safe because there is no other observer.
+    pub(super) fn tear_down_blk_channels(task: TaskId) {
+        // SAFETY: SYSCALL path is single-CPU; BLK_REGISTRY not
+        // aliased; the task is `Terminated` so no other code path
+        // can be issuing `Blk*` syscalls against it concurrently.
+        unsafe {
+            let _ = blk_registry_mut().clear_for_owner(task);
+        }
+    }
+}
+
 struct KernelSyscallDispatcher;
 
 impl SyscallDispatcher for KernelSyscallDispatcher {
@@ -2620,10 +2847,19 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
             // an explicit `dispatch` caller). Report `CapabilityDenied`
             // so the contract is loud and observable in host tests
             // without the bare-metal singletons.
+            //
+            // P6.7.10-pre.3 — the BLK registry syscalls
+            // (`BlkRegister`, `BlkUnregister`, `BlkLookup`) follow
+            // the same rich-path convention as the OIP-013
+            // siblings; the fallback arm reports
+            // `CapabilityDenied` for the same triage reasons.
             SyscallNumber::MmioMap
             | SyscallNumber::DmaMap
             | SyscallNumber::IrqAttach
-            | SyscallNumber::DriverLoad => {
+            | SyscallNumber::DriverLoad
+            | SyscallNumber::BlkRegister
+            | SyscallNumber::BlkUnregister
+            | SyscallNumber::BlkLookup => {
                 let _ = args;
                 Err(KernelError::CapabilityDenied)
             }
@@ -2695,6 +2931,42 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                     Ok(SyscallReturn::err(crate::syscall::syscall_errno::EACCES))
                 }
             }
+            // P6.7.10-pre.3 — BLK registry syscalls
+            // (OIP-Driver-NVMe-014 § S4 + § S6 step 12). Same
+            // rich-path convention as the OIP-013 siblings above.
+            SyscallNumber::BlkRegister => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(blk_handlers::blk_register(args))
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Ok(SyscallReturn::err(crate::syscall::syscall_errno::EACCES))
+                }
+            }
+            SyscallNumber::BlkUnregister => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(blk_handlers::blk_unregister(args))
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Ok(SyscallReturn::err(crate::syscall::syscall_errno::EACCES))
+                }
+            }
+            SyscallNumber::BlkLookup => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(blk_handlers::blk_lookup(args))
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Ok(SyscallReturn::err(crate::syscall::syscall_errno::EACCES))
+                }
+            }
             other => self.dispatch(other, args).map(SyscallReturn::ok),
         }
     }
@@ -2756,6 +3028,14 @@ extern "C" fn kernel_syscall_dispatch(
         73 => SyscallNumber::DriverLoad,
         74 => SyscallNumber::TeeTdcall,
         75 => SyscallNumber::TeeMsr,
+        // OIP-Driver-NVMe-014 § S4 + § S6 step 12 BLK registry
+        // (P6.7.10-pre.3). Translation here MUST stay in lock-step
+        // with the `SyscallNumber` discriminants — the
+        // `syscall_numbers_are_stable` test in `crate::syscall`
+        // pins both ends against drift.
+        76 => SyscallNumber::BlkRegister,
+        77 => SyscallNumber::BlkUnregister,
+        78 => SyscallNumber::BlkLookup,
         _ => return SyscallReturn::ok(SYSCALL_ERROR),
     };
 
@@ -2863,17 +3143,46 @@ mod tests {
         // all reach their rich handler via `dispatch_full`. The legacy
         // single-register `dispatch` path returns `CapabilityDenied`
         // so an accidental fallthrough surfaces.
+        //
+        // P6.7.10-pre.3 — extended to cover `BlkRegister`,
+        // `BlkUnregister`, `BlkLookup` which share the same
+        // rich-path-only convention as the OIP-013 siblings.
         for n in [
             SyscallNumber::MmioMap,
             SyscallNumber::DmaMap,
             SyscallNumber::IrqAttach,
             SyscallNumber::DriverLoad,
+            SyscallNumber::BlkRegister,
+            SyscallNumber::BlkUnregister,
+            SyscallNumber::BlkLookup,
         ] {
             let result = KernelSyscallDispatcher.dispatch(n, [0; 6]);
             assert_eq!(
                 result,
                 Err(KernelError::CapabilityDenied),
                 "unexpected legacy dispatch result for {n:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn kernel_syscall_dispatch_blk_numbers_translate_to_blk_variants() {
+        // P6.7.10-pre.3 — exercise the 76/77/78 → SyscallNumber arm
+        // explicitly. The host build's rich path returns `EACCES`
+        // (no bare-metal singletons available); we re-assert here so
+        // a future commit that drops the translation arm surfaces
+        // with a clear test name instead of a generic sentinel
+        // regression.
+        for n in [76, 77, 78] {
+            let ret = kernel_syscall_dispatch(n, 0, 0, 0, 0, 0, 0);
+            assert_eq!(
+                ret.rax, 0,
+                "BLK syscall {n} must route through rich path on host"
+            );
+            assert_eq!(
+                ret.rdx,
+                crate::syscall::syscall_errno::EACCES,
+                "BLK syscall {n} must surface EACCES on host"
             );
         }
     }
@@ -2907,10 +3216,16 @@ mod tests {
         // P6.7.8.8: same host-side contract as MmioMap — the rich
         // handlers return EACCES because the bare-metal singletons
         // are not linked into the host test binary.
+        // P6.7.10-pre.3: extended to cover the BLK registry triplet
+        // (`BlkRegister`, `BlkUnregister`, `BlkLookup`) which share
+        // the same rich-path convention as the OIP-013 siblings.
         for n in [
             SyscallNumber::DmaMap,
             SyscallNumber::IrqAttach,
             SyscallNumber::DriverLoad,
+            SyscallNumber::BlkRegister,
+            SyscallNumber::BlkUnregister,
+            SyscallNumber::BlkLookup,
         ] {
             let ret = KernelSyscallDispatcher
                 .dispatch_full(n, [0; 6])
@@ -2926,15 +3241,18 @@ mod tests {
 
     #[test]
     fn kernel_syscall_dispatch_driver_framework_numbers_route() {
-        // ABI numbers 70..=75: `MmioMap (70)`, `DmaMap (71)`,
+        // ABI numbers 70..=78: `MmioMap (70)`, `DmaMap (71)`,
         // `IrqAttach (72)`, and `DriverLoad (73)` all go through the
         // rich two-register path and surface `EACCES` on the host
         // build (no SCHEDULER/FRAME_ALLOC). TEE syscalls (74/75)
         // still funnel to the `NotYetImplemented` sentinel via the
-        // legacy unwrap_or.
-        for n in 70..=75u32 {
+        // legacy unwrap_or. BLK syscalls (76/77/78) — P6.7.10-pre.3
+        // — share the rich-path convention so they too report
+        // `EACCES` on the host build.
+        for n in 70..=78u32 {
             let ret = kernel_syscall_dispatch(n, 0, 0, 0, 0, 0, 0);
-            if (70..=73).contains(&n) {
+            let is_rich = matches!(n, 70..=73 | 76..=78);
+            if is_rich {
                 assert_eq!(
                     ret.rax, 0,
                     "syscall {n} should report rax=0 on host error path"
@@ -2955,14 +3273,15 @@ mod tests {
 
     #[test]
     fn kernel_syscall_dispatch_unknown_driver_decade_number_returns_sentinel() {
-        // 76..=79 are reserved inside the `7x` driver decade but NOT yet
-        // assigned. They MUST hit the `_ => return SYSCALL_ERROR` arm so
-        // userspace cannot accidentally invoke a not-yet-defined slot.
-        for n in 76..=79 {
-            let ret = kernel_syscall_dispatch(n, 0, 0, 0, 0, 0, 0);
-            assert_eq!(ret.rax, SYSCALL_ERROR, "reserved number {n} leaked");
-            assert_eq!(ret.rdx, 0);
-        }
+        // 79 is the only number inside the `7x` driver decade still
+        // reserved-but-unallocated after the P6.7.10-pre.3 BLK
+        // registry expansion. It MUST hit the
+        // `_ => return SYSCALL_ERROR` arm so userspace cannot
+        // accidentally invoke a not-yet-defined slot.
+        let n = 79u32;
+        let ret = kernel_syscall_dispatch(n, 0, 0, 0, 0, 0, 0);
+        assert_eq!(ret.rax, SYSCALL_ERROR, "reserved number {n} leaked");
+        assert_eq!(ret.rdx, 0);
     }
 
     #[test]

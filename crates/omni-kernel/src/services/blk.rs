@@ -43,6 +43,14 @@
 //! storage topology plus headroom for future SATA / virtio-blk
 //! drivers without committing to an unbounded allocation.
 
+#![cfg_attr(
+    all(feature = "bare-metal", target_arch = "x86_64"),
+    allow(
+        unsafe_code,
+        reason = "BLK_REGISTRY static mut singleton + addr_of_mut accessor; SAFETY documented at the fn boundary"
+    )
+)]
+
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -365,6 +373,110 @@ impl BlkChannelRegistry {
         s.push_str(CHANNEL_NAME_PREFIX);
         s.push_str(slot);
         s
+    }
+}
+
+// ===========================================================================
+// errno mapping
+// ===========================================================================
+
+/// Map a [`BlkRegistryError`] to a POSIX-aligned errno.
+///
+/// The errno is consumed by the rich two-register syscall return
+/// path ([`crate::syscall::SyscallReturn`]). The mapping matches
+/// the vocabulary `OIP-Driver-Framework-013` § S2.3 publishes for
+/// the driver-framework syscalls so user-space tooling can reuse
+/// the same triage table across `MmioMap`, `DmaMap`, `IrqAttach`,
+/// and the new `BlkRegister` / `BlkUnregister` / `BlkLookup`
+/// syscalls.
+#[must_use]
+pub const fn errno_for(err: BlkRegistryError) -> u64 {
+    use crate::syscall::syscall_errno;
+    match err {
+        // Argument-shape violations → `EINVAL`.
+        BlkRegistryError::DiskSlotEmpty
+        | BlkRegistryError::DiskSlotTooLong
+        | BlkRegistryError::DiskSlotInvalidChar => syscall_errno::EINVAL,
+        // Disk slot already in use → `EEXIST`. Distinguishing this
+        // from `EINVAL` lets user space tell "the kernel rejected
+        // my disk-slot string" (programmer bug) from "another
+        // driver got there first" (operational race).
+        BlkRegistryError::DiskSlotAlreadyRegistered => syscall_errno::EEXIST,
+        // Capacity ceiling → `ENOSPC`.
+        BlkRegistryError::RegistryFull => syscall_errno::ENOSPC,
+        // Lookup-failed (`unregister` path) → `ENOENT`. The
+        // dedicated `BlkLookup` syscall surfaces the same code for
+        // the read-only path.
+        BlkRegistryError::DiskSlotNotRegistered => syscall_errno::ENOENT,
+        // Caller is not the recorded owner → `EACCES`.
+        BlkRegistryError::OwnerMismatch => syscall_errno::EACCES,
+        // Defensive invariant — should never surface in well-formed
+        // code; reported as `EIO` so the kernel does not abort and
+        // user space sees a non-`EINVAL` error code that triage
+        // tooling can grep for.
+        BlkRegistryError::Internal => syscall_errno::EIO,
+    }
+}
+
+// ===========================================================================
+// Kernel-global singleton
+// ===========================================================================
+
+/// Process-global BLK channel registry, mirroring
+/// [`crate::ipc::IPC_REGISTRY`].
+///
+/// Phase 1 is single-CPU and the SYSCALL entry path masks interrupts
+/// via `IA32_FMASK`, so a `static mut` rather than a `Mutex<...>` is
+/// sufficient. The MP transition (ADR-0005) will swap this for a
+/// shared lock guard analogous to the planned IPC rework. The
+/// `static mut` lives behind `bare-metal` + `target_arch = "x86_64"`
+/// because (a) only the bare-metal build owns the SYSCALL path that
+/// provides the no-aliasing invariant and (b) host tests exercise
+/// [`BlkChannelRegistry`] directly without the singleton.
+#[cfg(all(feature = "bare-metal", target_arch = "x86_64"))]
+#[unsafe(no_mangle)]
+static mut BLK_REGISTRY: BlkChannelRegistry = BlkChannelRegistry::new();
+
+/// Borrow the global BLK registry mutably.
+///
+/// # Safety
+///
+/// Caller must be in a context where no other reference to
+/// `BLK_REGISTRY` is live. The SYSCALL path provides this
+/// invariant in single-CPU Phase 1 (interrupts masked, no
+/// recursion).
+#[cfg(all(feature = "bare-metal", target_arch = "x86_64"))]
+#[allow(
+    clippy::mut_from_ref,
+    static_mut_refs,
+    reason = "single-CPU kernel singleton; SAFETY documented at the call site"
+)]
+pub unsafe fn blk_registry_mut() -> &'static mut BlkChannelRegistry {
+    // SAFETY: caller invariant — see fn doc.
+    unsafe {
+        let p = core::ptr::addr_of_mut!(BLK_REGISTRY);
+        &mut *p
+    }
+}
+
+/// Borrow the global BLK registry immutably.
+///
+/// # Safety
+///
+/// Caller must be in a context where no `&mut` to `BLK_REGISTRY`
+/// is concurrently live. Phase 1 single-CPU + interrupt-masked
+/// SYSCALL provides this; MP introduction swaps the accessor for a
+/// lock guard per ADR-0005.
+#[cfg(all(feature = "bare-metal", target_arch = "x86_64"))]
+#[allow(
+    static_mut_refs,
+    reason = "single-CPU kernel singleton; SAFETY documented at the call site"
+)]
+pub unsafe fn blk_registry() -> &'static BlkChannelRegistry {
+    // SAFETY: caller invariant — see fn doc.
+    unsafe {
+        let p = core::ptr::addr_of!(BLK_REGISTRY);
+        &*p
     }
 }
 
@@ -751,5 +863,107 @@ mod tests {
         let kept_sata0 = r.lookup_disk_slot("sata0").expect("sata0 survives");
         assert_eq!(kept_sata0.channel_id, channel(3));
         assert_eq!(r.len(), 2);
+    }
+
+    // -----------------------------------------------------------------
+    // errno mapping (P6.7.10-pre.3 BLK syscall boundary)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn errno_for_argument_shape_violations_maps_to_einval() {
+        use crate::syscall::syscall_errno;
+        assert_eq!(
+            errno_for(BlkRegistryError::DiskSlotEmpty),
+            syscall_errno::EINVAL
+        );
+        assert_eq!(
+            errno_for(BlkRegistryError::DiskSlotTooLong),
+            syscall_errno::EINVAL
+        );
+        assert_eq!(
+            errno_for(BlkRegistryError::DiskSlotInvalidChar),
+            syscall_errno::EINVAL
+        );
+    }
+
+    #[test]
+    fn errno_for_duplicate_slot_maps_to_eexist() {
+        use crate::syscall::syscall_errno;
+        assert_eq!(
+            errno_for(BlkRegistryError::DiskSlotAlreadyRegistered),
+            syscall_errno::EEXIST
+        );
+    }
+
+    #[test]
+    fn errno_for_capacity_ceiling_maps_to_enospc() {
+        use crate::syscall::syscall_errno;
+        assert_eq!(
+            errno_for(BlkRegistryError::RegistryFull),
+            syscall_errno::ENOSPC
+        );
+    }
+
+    #[test]
+    fn errno_for_lookup_failed_maps_to_enoent() {
+        use crate::syscall::syscall_errno;
+        assert_eq!(
+            errno_for(BlkRegistryError::DiskSlotNotRegistered),
+            syscall_errno::ENOENT
+        );
+    }
+
+    #[test]
+    fn errno_for_owner_mismatch_maps_to_eacces() {
+        use crate::syscall::syscall_errno;
+        assert_eq!(
+            errno_for(BlkRegistryError::OwnerMismatch),
+            syscall_errno::EACCES
+        );
+    }
+
+    #[test]
+    fn errno_for_internal_invariant_maps_to_eio() {
+        use crate::syscall::syscall_errno;
+        // Defensive: surfaces as EIO rather than panicking the
+        // kernel; user space sees a non-EINVAL code that triage
+        // tooling can grep for.
+        assert_eq!(errno_for(BlkRegistryError::Internal), syscall_errno::EIO);
+    }
+
+    #[test]
+    fn errno_for_is_total_over_known_variants() {
+        // Tripwire: every variant currently surfaceable from the
+        // registry MUST have a documented errno mapping. Adding a
+        // new variant to `BlkRegistryError` forces the contributor
+        // to either extend this list or revisit `errno_for`'s
+        // semantics.
+        let variants = [
+            BlkRegistryError::DiskSlotEmpty,
+            BlkRegistryError::DiskSlotTooLong,
+            BlkRegistryError::DiskSlotInvalidChar,
+            BlkRegistryError::DiskSlotAlreadyRegistered,
+            BlkRegistryError::RegistryFull,
+            BlkRegistryError::DiskSlotNotRegistered,
+            BlkRegistryError::OwnerMismatch,
+            BlkRegistryError::Internal,
+        ];
+        for v in variants {
+            // Either an explicit-mapping arm or the `#[non_exhaustive]`
+            // catch-all would assign one of the documented errnos.
+            // We assert the codomain rather than the exact map so
+            // the test does not duplicate the table — `errno_for`
+            // itself already pins the per-variant mapping above.
+            let e = errno_for(v);
+            assert!(matches!(
+                e,
+                crate::syscall::syscall_errno::EINVAL
+                    | crate::syscall::syscall_errno::EEXIST
+                    | crate::syscall::syscall_errno::ENOSPC
+                    | crate::syscall::syscall_errno::ENOENT
+                    | crate::syscall::syscall_errno::EACCES
+                    | crate::syscall::syscall_errno::EIO
+            ));
+        }
     }
 }
