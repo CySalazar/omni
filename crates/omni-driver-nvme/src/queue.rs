@@ -28,9 +28,9 @@
 //!   mutable slice that the driver has already obtained from the
 //!   kernel via `DmaMap`; the seam treats it as opaque storage.
 
-use crate::admin::{ADMIN_SQE_BYTES, AdminSqe};
-use crate::controller_regs::sq_tail_doorbell_offset;
-use crate::ring::{RingError, SqRing};
+use crate::admin::{ADMIN_CQE_BYTES, ADMIN_SQE_BYTES, AdminCqe, AdminCqeFields, AdminSqe};
+use crate::controller_regs::{cq_head_doorbell_offset, sq_tail_doorbell_offset};
+use crate::ring::{CqRing, RingError, SqRing};
 
 // =============================================================================
 // MmioBackend — abstract doorbell sink
@@ -78,6 +78,10 @@ pub enum QueueError {
     /// SQ page through `DmaMap` per OIP-014 § S6 step 4; landing
     /// here indicates a buffer-shape regression upstream.
     SqPageTooSmall,
+    /// The caller-supplied CQ data page is smaller than
+    /// `cq_capacity * ADMIN_CQE_BYTES`. Symmetric to
+    /// [`Self::SqPageTooSmall`] — buffer-shape regression upstream.
+    CqPageTooSmall,
     /// The [`SqRing`] is full and no more commands can be submitted
     /// until the controller drains a completion.
     Full,
@@ -97,21 +101,25 @@ impl From<RingError> for QueueError {
 // AdminQueuePair — SQ-only scaffold (pre.11)
 // =============================================================================
 
-/// Admin queue pair scaffold — Phase 1 submission half.
+/// Admin queue pair scaffold — submission + completion halves.
 ///
-/// Owns the local [`SqRing`] and the controller-side doorbell-array
-/// layout parameters (`doorbell_base` is the MMIO offset of the
-/// doorbell array per NVMe 1.4 § 3.1.21 — typically
+/// Owns the local [`SqRing`] + [`CqRing`] and the controller-side
+/// doorbell-array layout parameters (`doorbell_base` is the MMIO
+/// offset of the doorbell array per NVMe 1.4 § 3.1.21 — typically
 /// [`crate::controller_regs::DOORBELL_ARRAY_OFFSET`] = `0x1000`;
 /// `dstrd` is the `CAP.DSTRD` field that scales the per-doorbell
 /// stride).
 ///
-/// The completion half (CQ ring + CQ head doorbell write) lands in
-/// a sibling sub-slice; this scaffold is sufficient to exercise the
-/// SQE-into-page write + tail-doorbell write path host-side.
+/// The completion path automatically feeds the `sq_head` field from
+/// each consumed [`AdminCqeFields`] back into the [`SqRing`] via
+/// [`SqRing::update_head`] — this is the NVMe 1.4 § 4.6 contract
+/// (the controller always reports its current SQ head every
+/// completion so the driver knows when to consider the matching SQ
+/// slot free for reuse).
 #[derive(Debug)]
 pub struct AdminQueuePair {
     sq: SqRing,
+    cq: CqRing,
     dstrd: u8,
 }
 
@@ -126,11 +134,12 @@ impl AdminQueuePair {
     /// # Errors
     ///
     /// - [`QueueError::Ring`] wrapping any [`RingError`] the
-    ///   underlying [`SqRing::new`] surfaces (capacity zero or
-    ///   beyond `u16::MAX`).
-    pub fn new(sq_depth: u32, dstrd: u8) -> Result<Self, QueueError> {
+    ///   underlying [`SqRing::new`] / [`CqRing::new`] surfaces
+    ///   (capacity zero or beyond `u16::MAX`).
+    pub fn new(sq_depth: u32, cq_depth: u32, dstrd: u8) -> Result<Self, QueueError> {
         let sq = SqRing::new(sq_depth)?;
-        Ok(Self { sq, dstrd })
+        let cq = CqRing::new(cq_depth)?;
+        Ok(Self { sq, cq, dstrd })
     }
 
     /// Borrow the underlying [`SqRing`] for read-only introspection
@@ -138,6 +147,12 @@ impl AdminQueuePair {
     #[must_use]
     pub const fn sq(&self) -> &SqRing {
         &self.sq
+    }
+
+    /// Borrow the underlying [`CqRing`] for read-only introspection.
+    #[must_use]
+    pub const fn cq(&self) -> &CqRing {
+        &self.cq
     }
 
     /// Returns the configured doorbell stride (`CAP.DSTRD`).
@@ -217,11 +232,87 @@ impl AdminQueuePair {
 
     /// Update the local view of the controller's SQ head pointer.
     ///
-    /// Called from the future CQE drain loop with the `sq_head`
-    /// field parsed from a matching completion entry. Frees ring
-    /// slots so subsequent [`Self::submit`] calls succeed.
+    /// Called from [`Self::drain_completion`] with the `sq_head`
+    /// field parsed from a matching completion entry, or by the
+    /// caller in advanced flows where the head is observed
+    /// out-of-band. Frees ring slots so subsequent
+    /// [`Self::submit`] calls succeed.
     pub fn record_head_observed(&mut self, head: u16) {
         self.sq.update_head(head);
+    }
+
+    /// Try to drain the next admin completion.
+    ///
+    /// Steps:
+    /// 1. Read the 16-byte CQE at `cq_page[head * ADMIN_CQE_BYTES..]`
+    ///    where `head` is the local [`CqRing`] head; on
+    ///    out-of-bounds surface [`QueueError::CqPageTooSmall`].
+    /// 2. Try to consume the slot via [`CqRing::try_take`]; if the
+    ///    parsed phase tag does not match the locally-expected
+    ///    value the slot belongs to a previous lap — return
+    ///    `Ok(None)` without touching MMIO.
+    /// 3. On consume success: (a) ring the CQ head doorbell with
+    ///    the new `head` value so the controller knows the slot is
+    ///    free; (b) feed `fields.sq_head` back into the local
+    ///    [`SqRing`] via [`SqRing::update_head`] so the matching SQ
+    ///    slot becomes available for future submits.
+    ///
+    /// Returns `Ok(Some(fields))` on a consumed completion,
+    /// `Ok(None)` when the next slot still belongs to the previous
+    /// lap.
+    ///
+    /// # Errors
+    ///
+    /// - [`QueueError::CqPageTooSmall`] when `cq_page` is shorter
+    ///   than `cq_capacity * ADMIN_CQE_BYTES`.
+    /// - [`QueueError::DoorbellOffsetOverflow`] when the per-slot
+    ///   stride arithmetic overflows `usize` (Phase 1 unreachable).
+    pub fn drain_completion<M: MmioBackend>(
+        &mut self,
+        mmio: &mut M,
+        cq_page: &[u8],
+    ) -> Result<Option<AdminCqeFields>, QueueError> {
+        // CQ page bounds check before parsing.
+        let needed = (self.cq.capacity() as usize)
+            .checked_mul(ADMIN_CQE_BYTES)
+            .ok_or(QueueError::CqPageTooSmall)?;
+        if cq_page.len() < needed {
+            return Err(QueueError::CqPageTooSmall);
+        }
+
+        // Compute the doorbell offset eagerly so a stride-arithmetic
+        // overflow surfaces before any state mutation.
+        let doorbell = cq_head_doorbell_offset(Self::ADMIN_QID, self.dstrd)
+            .ok_or(QueueError::DoorbellOffsetOverflow)?;
+
+        // Locate the current slot. `cq.head() < capacity` by
+        // construction; the bounds check above guarantees the
+        // 16-byte slot range is in `cq_page`.
+        let slot = self.cq.head() as usize;
+        let start = slot * ADMIN_CQE_BYTES;
+        let end = start + ADMIN_CQE_BYTES;
+        let bytes = cq_page.get(start..end).ok_or(QueueError::CqPageTooSmall)?;
+        let mut raw = [0u8; ADMIN_CQE_BYTES];
+        raw.copy_from_slice(bytes);
+        let cqe = AdminCqe::from_bytes(raw);
+
+        // Try to consume the slot. The CqRing checks the phase tag
+        // against the locally-expected value; mismatch means the
+        // controller has not filled this slot yet on the current
+        // lap.
+        let Some(fields) = self.cq.try_take(&cqe) else {
+            return Ok(None);
+        };
+
+        // Ring the CQ head doorbell with the new head value.
+        let new_head = u32::from(self.cq.head());
+        mmio.write_doorbell(doorbell, new_head);
+
+        // Feed the controller's SQ head back into the local ring so
+        // the matching SQ slot becomes free.
+        self.sq.update_head(fields.sq_head);
+
+        Ok(Some(fields))
     }
 }
 
@@ -251,7 +342,11 @@ mod tests {
     }
 
     fn admin_pair_with(sq_depth: u32, dstrd: u8) -> AdminQueuePair {
-        AdminQueuePair::new(sq_depth, dstrd).expect("ctor")
+        // CQ depth = SQ depth for the test fixtures — the live
+        // driver typically sizes CQ ≥ SQ to absorb async completions
+        // without blocking, but equal depth is sufficient for the
+        // host harness.
+        AdminQueuePair::new(sq_depth, sq_depth, dstrd).expect("ctor")
     }
 
     fn empty_sq_page(capacity: u32) -> Vec<u8> {
@@ -269,13 +364,16 @@ mod tests {
 
     #[test]
     fn admin_queue_new_propagates_ring_error_for_zero_depth() {
-        let res = AdminQueuePair::new(0, 0);
+        let res = AdminQueuePair::new(0, 64, 0);
+        assert_eq!(res.err(), Some(QueueError::Ring(RingError::CapacityZero)));
+        // CQ-side error is symmetric.
+        let res = AdminQueuePair::new(64, 0, 0);
         assert_eq!(res.err(), Some(QueueError::Ring(RingError::CapacityZero)));
     }
 
     #[test]
     fn admin_queue_new_propagates_ring_error_for_oversized_depth() {
-        let res = AdminQueuePair::new(u32::from(u16::MAX) + 1, 0);
+        let res = AdminQueuePair::new(u32::from(u16::MAX) + 1, 64, 0);
         assert_eq!(
             res.err(),
             Some(QueueError::Ring(RingError::CapacityTooLarge))
@@ -473,5 +571,162 @@ mod tests {
         assert_eq!(s0, sqe_a.as_bytes());
         assert_eq!(s1, sqe_b.as_bytes());
         assert_ne!(s0, s1, "two distinct SQEs must occupy distinct slots");
+    }
+
+    // -------------------------------------------------------------------
+    // drain_completion (P6.7.10-pre.12)
+    // -------------------------------------------------------------------
+
+    /// Build a synthetic CQE byte slot with the supplied phase bit
+    /// + CID + sq_head, all other fields zero.
+    fn build_cqe(phase: bool, cid: u16, sq_head: u16) -> [u8; ADMIN_CQE_BYTES] {
+        let mut raw = [0u8; ADMIN_CQE_BYTES];
+        // CDW2: sq_head in bits 15:0, sq_id zero.
+        let cdw2: u32 = u32::from(sq_head);
+        // CDW3: CID in bits 15:0, status word in bits 31:16 (phase
+        // bit at position 0 of the status word).
+        let status: u32 = u32::from(phase);
+        let cdw3: u32 = u32::from(cid) | (status << 16);
+        let mut chunks = raw.chunks_exact_mut(4);
+        let _ = chunks.next(); // CDW0
+        let _ = chunks.next(); // CDW1
+        chunks.next().unwrap().copy_from_slice(&cdw2.to_le_bytes());
+        chunks.next().unwrap().copy_from_slice(&cdw3.to_le_bytes());
+        raw
+    }
+
+    fn empty_cq_page(capacity: u32) -> Vec<u8> {
+        vec![0u8; (capacity as usize) * ADMIN_CQE_BYTES]
+    }
+
+    fn write_cqe_to_page(page: &mut [u8], slot: usize, cqe: &[u8; ADMIN_CQE_BYTES]) {
+        let start = slot * ADMIN_CQE_BYTES;
+        let dest = page
+            .get_mut(start..start + ADMIN_CQE_BYTES)
+            .expect("slot in range");
+        dest.copy_from_slice(cqe);
+    }
+
+    #[test]
+    fn drain_completion_returns_none_when_phase_mismatch() {
+        // Initial expected_phase = true. CQE with phase = 0 is
+        // stale-from-previous-lap.
+        let mut q = admin_pair_with(8, 0);
+        let mut mmio = MockMmioBackend::default();
+        let cq_page = empty_cq_page(8); // all zero → phase = 0
+        let res = q.drain_completion(&mut mmio, &cq_page).unwrap();
+        assert!(res.is_none());
+        // No doorbell write on a no-op drain.
+        assert!(mmio.writes.is_empty());
+        // Ring state untouched.
+        assert_eq!(q.cq().head(), 0);
+        assert!(q.cq().expected_phase());
+    }
+
+    #[test]
+    fn drain_completion_consumes_matching_phase_and_advances_head() {
+        let mut q = admin_pair_with(8, 0);
+        let mut mmio = MockMmioBackend::default();
+        let mut cq_page = empty_cq_page(8);
+        write_cqe_to_page(&mut cq_page, 0, &build_cqe(true, 0x42, 5));
+        let res = q.drain_completion(&mut mmio, &cq_page).unwrap();
+        let fields = res.expect("phase matched");
+        assert_eq!(fields.cid, 0x42);
+        assert_eq!(fields.sq_head, 5);
+        // CqRing head advanced to 1.
+        assert_eq!(q.cq().head(), 1);
+        // No wrap yet — phase stays true.
+        assert!(q.cq().expected_phase());
+        // CQ head doorbell rung exactly once with new_head = 1.
+        assert_eq!(mmio.writes.len(), 1);
+        let expected_off = cq_head_doorbell_offset(0, 0).unwrap();
+        let (off, val) = mmio.writes.first().copied().unwrap();
+        assert_eq!(off, expected_off);
+        assert_eq!(val, 1);
+    }
+
+    #[test]
+    fn drain_completion_feeds_sq_head_back_into_sq_ring() {
+        let mut q = admin_pair_with(8, 0);
+        let mut sq_page = empty_sq_page(8);
+        let mut cq_page = empty_cq_page(8);
+        let mut mmio = MockMmioBackend::default();
+
+        let sqe = encode_identify(IdentifyTarget::Controller, 0x1000, 0, 1);
+        // Three submits → tail = 3, head_observed = 0.
+        q.submit(&sqe, &mut mmio, &mut sq_page).unwrap();
+        q.submit(&sqe, &mut mmio, &mut sq_page).unwrap();
+        q.submit(&sqe, &mut mmio, &mut sq_page).unwrap();
+        assert_eq!(q.sq().head_observed(), 0);
+
+        // Controller emits a completion reporting sq_head = 2 (it
+        // has consumed slots 0 and 1).
+        write_cqe_to_page(&mut cq_page, 0, &build_cqe(true, 1, 2));
+        q.drain_completion(&mut mmio, &cq_page).unwrap().unwrap();
+
+        // SqRing head_observed updated to 2 → slots 0 and 1 are now
+        // free.
+        assert_eq!(q.sq().head_observed(), 2);
+    }
+
+    #[test]
+    fn drain_completion_phase_flips_on_cq_ring_wrap() {
+        // Capacity = 2 ⇒ wrap after the second consumed CQE.
+        let mut q = admin_pair_with(2, 0);
+        let mut mmio = MockMmioBackend::default();
+        let mut cq_page = empty_cq_page(2);
+        // Lap 0, slots 0 and 1, both with phase = true.
+        write_cqe_to_page(&mut cq_page, 0, &build_cqe(true, 1, 1));
+        write_cqe_to_page(&mut cq_page, 1, &build_cqe(true, 2, 2));
+        q.drain_completion(&mut mmio, &cq_page).unwrap().unwrap();
+        assert_eq!(q.cq().head(), 1);
+        assert!(q.cq().expected_phase());
+        q.drain_completion(&mut mmio, &cq_page).unwrap().unwrap();
+        // Wrapped → head = 0, phase flipped.
+        assert_eq!(q.cq().head(), 0);
+        assert!(!q.cq().expected_phase());
+        // Two doorbell writes, one per consumed CQE.
+        assert_eq!(mmio.writes.len(), 2);
+        let vals: Vec<u32> = mmio.writes.iter().map(|&(_, v)| v).collect();
+        // First write head = 1; second write head wrapped to 0.
+        assert_eq!(vals, vec![1, 0]);
+    }
+
+    #[test]
+    fn drain_completion_rejects_undersized_cq_page() {
+        let mut q = admin_pair_with(4, 0);
+        let mut mmio = MockMmioBackend::default();
+        // CQ page only large enough for 2 slots, capacity = 4.
+        let page = vec![0u8; 2 * ADMIN_CQE_BYTES];
+        let res = q.drain_completion(&mut mmio, &page);
+        assert_eq!(res, Err(QueueError::CqPageTooSmall));
+        // No doorbell write, no ring mutation.
+        assert!(mmio.writes.is_empty());
+        assert_eq!(q.cq().head(), 0);
+    }
+
+    #[test]
+    fn drain_completion_uses_cq_head_doorbell_offset_not_sq() {
+        let mut q = admin_pair_with(4, 0);
+        let mut mmio = MockMmioBackend::default();
+        let mut cq_page = empty_cq_page(4);
+        write_cqe_to_page(&mut cq_page, 0, &build_cqe(true, 1, 0));
+        q.drain_completion(&mut mmio, &cq_page).unwrap().unwrap();
+
+        let sq_doorbell = sq_tail_doorbell_offset(0, 0).unwrap();
+        let cq_doorbell = cq_head_doorbell_offset(0, 0).unwrap();
+        // Tripwire: SQ and CQ doorbells live at distinct offsets;
+        // the drain MUST ring the CQ side, NOT the SQ side.
+        assert_ne!(sq_doorbell, cq_doorbell);
+        let (off, _) = mmio.writes.first().copied().unwrap();
+        assert_eq!(off, cq_doorbell);
+        assert_ne!(off, sq_doorbell);
+    }
+
+    #[test]
+    fn cq_page_too_small_in_queue_error_taxonomy() {
+        // Pin the new variant against the prior set.
+        assert_ne!(QueueError::SqPageTooSmall, QueueError::CqPageTooSmall);
+        assert_ne!(QueueError::Full, QueueError::CqPageTooSmall);
     }
 }

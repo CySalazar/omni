@@ -17,6 +17,74 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.12 NVMe Admin CQ live drain (2026-05-22) —
+  TASK-005 continuation.**
+  `crates/omni-driver-nvme/src/queue.rs::AdminQueuePair` extended
+  with the completion-half scaffold that closes the admin queue
+  pair surface per NVMe 1.4 § 4.6.
+  - **`cq: CqRing` field** — initial state `head = 0`,
+    `expected_phase = true` per spec.
+  - **`AdminQueuePair::new(sq_depth, cq_depth, dstrd)`** —
+    constructor signature widened to accept independent SQ/CQ
+    depths (NVMe spec allows them to differ; live drivers size
+    CQ ≥ SQ to absorb async completions without blocking).
+  - **`AdminQueuePair::cq()`** — read-only accessor.
+  - **`drain_completion<M: MmioBackend>(mmio: &mut M,
+    cq_page: &[u8]) -> Result<Option<AdminCqeFields>, QueueError>`**
+    performs the canonical NVMe drain sequence:
+    1. bounds-check `cq_page.len() >= cq_capacity * 16`;
+    2. eagerly compute the CQ-head doorbell offset via
+       `controller_regs::cq_head_doorbell_offset(0, dstrd)`;
+    3. locate the current slot at
+       `cq_page[head * ADMIN_CQE_BYTES..]` and parse via
+       `AdminCqe::from_bytes`;
+    4. `CqRing::try_take` validates the phase tag and either
+       advances `head` (flipping `expected_phase` on wrap) or
+       returns `Ok(None)` if the slot belongs to a previous lap;
+    5. on consume success: ring the CQ head doorbell with the new
+       head value AND feed `fields.sq_head` back into the local
+       `SqRing::update_head` so the matching SQ slot becomes
+       available for future submits automatically.
+  - **`QueueError::CqPageTooSmall`** variant added; the existing
+    `From<RingError>` impl already covers `CqRing::new`
+    propagation.
+  - **+7 new host-side tests** under
+    `omni_driver_nvme::queue::tests::*`:
+    - 1 phase-tag mismatch → `Ok(None)` without touching MMIO or
+      ring state.
+    - 1 matching phase consumes slot, advances head, rings CQ
+      doorbell with correct `(offset, value)`.
+    - 1 `sq_head` feedback drains the `SqRing`'s outstanding
+      submission count (3 submits + 1 completion with
+      `sq_head = 2` → `head_observed` jumps from 0 to 2).
+    - 1 phase flip on CQ ring wrap (capacity = 2 → two drains
+      exhibit head 0→1→0 and phase true→true→false, two doorbell
+      writes with values 1 then 0).
+    - 1 undersized CQ page rejected without doorbell write or
+      ring mutation.
+    - 1 tripwire that the drain uses the CQ head doorbell offset,
+      not the SQ tail offset — symmetric anti-aliasing.
+    - 1 `QueueError::CqPageTooSmall` discriminant distinctness.
+  - **Existing tests updated** for the new
+    `new(sq_depth, cq_depth, dstrd)` signature: the
+    `admin_pair_with` fixture passes `sq_depth` for both rings;
+    the error-propagation tests cover both SQ-side and CQ-side
+    zero-capacity rejection.
+  - **Workspace test count**: 1419 → 1426 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.12 CQ live drain`,
+    Next=`P6.7.10-pre.13 NVMe bringup fwd`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1426 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — composes the pre.11 `MmioBackend`
+    trait + `CqRing` from pre.9 + `parse_admin_cqe` from pre.6 +
+    `cq_head_doorbell_offset` from the existing `controller_regs`.
+
 - **Storage — P6.7.10-pre.11 NVMe Admin SQ live-submission scaffold
   (2026-05-22) — TASK-005 continuation.**
   New `crates/omni-driver-nvme/src/queue.rs` module declares the seam
