@@ -17,6 +17,68 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.27 NVMe Dataset Management Discard
+  Range Descriptor builder (2026-05-22) — TASK-005 continuation.**
+  New `crates/omni-driver-nvme/src/discard.rs` module declares
+  `write_single_discard_range(buf: &mut [u8], lba: u64,
+  count: u32) -> Result<(), DiscardError>` writing the canonical
+  16-byte NVMe 1.4 § 6.7.1 Figure 256 Range Descriptor into a
+  caller-supplied IOVA buffer (the same buffer whose IOVA goes
+  into the `Dataset Management` SQE's PRP1 — produced by
+  `crate::io::encode_discard` from pre.7).
+  - **Field layout per Figure 256**:
+    - bytes 0..=3 — Context Attributes (Phase-1 driver writes 0
+      — no optional metadata).
+    - bytes 4..=7 — Length in Logical Blocks (32-bit LE).
+    - bytes 8..=15 — Starting LBA (64-bit LE).
+  - **Phase-1 scope**: exactly one range per Discard command
+    (matching the `omni_types::blk::BlkRequest::Discard{lba,
+    count}` shape carrying a single tuple). Multi-range Discard
+    lands behind a future OIP without changing the per-range
+    descriptor layout.
+  - **`DISCARD_RANGE_DESCRIPTOR_BYTES = 16`** anchor constant.
+  - **`DiscardError::BufferTooSmall`** taxonomy
+    (`#[non_exhaustive]`) — surfaced via bounds-checked
+    `get_mut(..16)` so the builder NEVER panics on a too-small
+    caller buffer.
+  - **+12 new host-side tests** under
+    `omni_driver_nvme::discard::tests::*`:
+    - 1 `DISCARD_RANGE_DESCRIPTOR_BYTES = 16` tripwire.
+    - 1 over-write protection (writer touches exactly bytes
+      0..=15 on a 32-byte buffer pre-filled with `0xFF` — bytes
+      16+ stay `0xFF`).
+    - 1 Context Attributes = 0 check.
+    - 1 Length field LE round-trip via offset 4..=7 with
+      `count = 0xDEAD_BEEF`.
+    - 1 Starting LBA LE round-trip via offset 8..=15 with
+      `lba = 0xCAFE_BABE_DEAD_BEEF`.
+    - 2 buffer-size rejections (15-byte and empty buffers
+      surface `DiscardError::BufferTooSmall`).
+    - 1 larger-buffer test (4 KiB DMA arena page — writer
+      touches only the first 16 bytes, rest stays zeroed).
+    - 1 full-field-layout round-trip (CA=0 +
+      Length=`0x55AA_55AA` + LBA=`0x0123_4567_89AB_CDEF`).
+    - 1 taxonomy distinctness.
+    - 1 zero-lba zero-count canonical-zero descriptor.
+    - 1 max-LBA max-count round-trip (`u32::MAX` + `u64::MAX`
+      boundaries).
+  - **`crates/omni-driver-nvme/src/lib.rs`** extended with
+    `pub mod discard;` declaration (slotted alphabetically
+    between `controller_regs` and `identify`).
+  - **Workspace test count**: 1541 → 1553 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.27 Discard range`,
+    Next=`P6.7.10-pre.28 v0.3.0-alpha.2`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1553 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — pure-state byte writer using
+    `core::slice::get_mut`.
+
 - **Storage — P6.7.10-pre.26 NVMe Active NSID list parser
   (2026-05-22) — TASK-005 continuation.**
   `crates/omni-driver-nvme/src/identify.rs` extended with the
