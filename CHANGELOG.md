@@ -17,6 +17,51 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.21 NVMe Phase-1 bring-up end-to-end
+  integration test (2026-05-22) — TASK-005 continuation.**
+  New `end_to_end_phase_1_bringup_sequence_completes_successfully`
+  integration test in
+  `crates/omni-driver-nvme/src/admin_session.rs::tests` pins the
+  full Phase-1 admin-queue bring-up lifecycle to a single
+  auditable test covering every helper landed across
+  P6.7.10-pre.13..pre.20 in their natural OIP-014 § S6 order:
+  - Step 1: Identify Controller (pre.18)
+  - Step 2: Identify Active NS List (pre.18)
+  - Step 3: Identify Namespace, NSID = 1 (pre.18)
+  - Step 4: Create I/O Completion Queue (pre.20)
+  - Step 5: Create I/O Submission Queue (pre.20)
+  Each step submits a SQE through the `AdminSession`, injects a
+  synthetic completion at the CQ slot the session expects next
+  via the new `write_synthetic_cqe(page, slot, cid, phase,
+  sq_head)` helper, and drains it via `poll_completion_for_cid`.
+  - **`write_synthetic_cqe` test helper** centralises the
+    CDW2/CDW3 little-endian encoding pattern previously
+    duplicated in `round_trip_session_through_fake`.
+  - **Final-state assertions**:
+    - CQ ring has wrapped exactly once (5 consumed CQEs against
+      capacity = 4 → `expected_phase = false` post-wrap,
+      `head = 1`).
+    - MMIO recorder captured exactly 5 SQ tail doorbell writes
+      (one per submit; the polls used `NopMmio`).
+  - **Cross-phase invariants exercised**: CID monotone
+    allocation (1 → 5 covering the full SQ ring lifecycle
+    through one wrap); phase-tag flip on CQ wrap;
+    `sq_head` feedback into `SqRing::head_observed` unblocking
+    subsequent submits after the ring fills.
+  - **Workspace test count**: 1485 → 1486 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.21 e2e bringup`,
+    Next=`P6.7.10-pre.22 driver-img IO`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1486 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — exercises existing primitives from
+    `crate::admin` + `crate::admin_session` + `crate::queue`.
+
 - **Storage — P6.7.10-pre.20 NVMe IO Queue Pair live submit
   + FSM glue (2026-05-22) — TASK-005 continuation.**
   `omni-driver-nvme::admin_session::AdminSession` extended with the

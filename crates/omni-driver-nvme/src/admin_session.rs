@@ -914,6 +914,149 @@ mod tests {
         assert!(fields.is_success());
     }
 
+    // -------------------------------------------------------------------
+    // P6.7.10-pre.21 — end-to-end Phase-1 bring-up smoke
+    // -------------------------------------------------------------------
+
+    /// Build a synthetic CQE at the given CQ slot for the supplied
+    /// CID + phase. Used by the e2e test to step through CQEs one
+    /// at a time across multiple lap-aware slots.
+    fn write_synthetic_cqe(
+        page: &mut [u8],
+        slot: usize,
+        cid: u16,
+        phase: bool,
+        sq_head: u16,
+    ) {
+        let start = slot * ADMIN_CQE_BYTES;
+        let end = start + ADMIN_CQE_BYTES;
+        let dest = page.get_mut(start..end).expect("slot in range");
+        // Zero the slot first so stale bytes do not leak through.
+        for byte in dest.iter_mut() {
+            *byte = 0;
+        }
+        let cdw2: u32 = u32::from(sq_head);
+        let status_word: u16 = u16::from(phase);
+        let cdw3: u32 = u32::from(cid) | (u32::from(status_word) << 16);
+        let mut chunks = dest.chunks_exact_mut(4);
+        let _ = chunks.next(); // CDW0
+        let _ = chunks.next(); // CDW1
+        chunks
+            .next()
+            .expect("cdw2 chunk")
+            .copy_from_slice(&cdw2.to_le_bytes());
+        chunks
+            .next()
+            .expect("cdw3 chunk")
+            .copy_from_slice(&cdw3.to_le_bytes());
+    }
+
+    #[test]
+    fn end_to_end_phase_1_bringup_sequence_completes_successfully() {
+        // This integration test pins the full Phase-1 admin-queue
+        // bring-up lifecycle to a single test, covering every
+        // helper landed across P6.7.10-pre.13..pre.20:
+        //
+        //   1. Identify Controller        (pre.18)
+        //   2. Identify Active NS List    (pre.18)
+        //   3. Identify Namespace         (pre.18)
+        //   4. Create I/O Completion Queue (pre.20)
+        //   5. Create I/O Submission Queue (pre.20)
+        //
+        // Each step submits a SQE through the AdminSession,
+        // injects a synthetic completion at the CQ slot the
+        // session expects next, and drains it via
+        // poll_completion_for_cid. Phase tag tracking flips
+        // appropriately at every wrap.
+
+        let mut s = AdminSession::new(4, 4, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+
+        // Step 1: Identify Controller — CID = 1, SQ tail = 1.
+        let cid1 = s.submit_identify_controller(0x1000, &mut mmio).unwrap();
+        assert_eq!(cid1, 1);
+        // Synthetic completion at CQ slot 0 with phase=true.
+        write_synthetic_cqe(s.cq_page_mut(), 0, cid1, true, 1);
+        let mut nop = NopMmio;
+        let f1 = s
+            .poll_completion_for_cid(cid1, 16, &mut nop)
+            .unwrap()
+            .expect("step 1 completion");
+        assert!(f1.is_success());
+        assert_eq!(f1.sq_head, 1);
+
+        // Step 2: Identify Active NS List — CID = 2, SQ tail = 2.
+        let cid2 = s.submit_identify_active_ns_list(0x2000, &mut mmio).unwrap();
+        assert_eq!(cid2, 2);
+        // CQ head advanced to slot 1 by the previous poll. Phase
+        // tag still true (no wrap yet since capacity is 4).
+        write_synthetic_cqe(s.cq_page_mut(), 1, cid2, true, 2);
+        let f2 = s
+            .poll_completion_for_cid(cid2, 16, &mut nop)
+            .unwrap()
+            .expect("step 2 completion");
+        assert!(f2.is_success());
+
+        // Step 3: Identify Namespace — CID = 3, SQ tail = 3.
+        let cid3 = s
+            .submit_identify_namespace(1, 0x3000, &mut mmio)
+            .unwrap();
+        assert_eq!(cid3, 3);
+        write_synthetic_cqe(s.cq_page_mut(), 2, cid3, true, 3);
+        let f3 = s
+            .poll_completion_for_cid(cid3, 16, &mut nop)
+            .unwrap()
+            .expect("step 3 completion");
+        assert!(f3.is_success());
+
+        // Step 4: Create I/O Completion Queue — CID = 4. But
+        // wait: SQ capacity is 4, and the SqRing reserves one
+        // slot for empty/full distinction (usable = 3). After 3
+        // submits the ring is full. The previous polls fed back
+        // sq_head=1/2/3, so head_observed advanced and the ring
+        // unblocked. Verify by submitting Create IO CQ at slot 3
+        // (last slot before wrap).
+        let cid4 = s
+            .submit_create_io_cq(1, 64, 0x10_0000, 1, &mut mmio)
+            .unwrap();
+        assert_eq!(cid4, 4);
+        // CQ slot 3 — still phase=true (capacity=4, no wrap yet).
+        write_synthetic_cqe(s.cq_page_mut(), 3, cid4, true, 0);
+        let f4 = s
+            .poll_completion_for_cid(cid4, 16, &mut nop)
+            .unwrap()
+            .expect("step 4 completion");
+        assert!(f4.is_success());
+
+        // Step 5: Create I/O Submission Queue — CID = 5. SQ tail
+        // wraps to 0 here (sq_head fed back to 0 by the previous
+        // CQE). CQ also wraps to slot 0 with phase=false (after
+        // 4 completions consumed → expected_phase flipped).
+        let cid5 = s
+            .submit_create_io_sq(1, 64, 0x20_0000, 1, crate::admin::CIOSQ_QPRIO_MEDIUM, &mut mmio)
+            .unwrap();
+        assert_eq!(cid5, 5);
+        // CQ wrapped → write at slot 0 with phase=false.
+        write_synthetic_cqe(s.cq_page_mut(), 0, cid5, false, 1);
+        let f5 = s
+            .poll_completion_for_cid(cid5, 16, &mut nop)
+            .unwrap()
+            .expect("step 5 completion");
+        assert!(f5.is_success());
+
+        // Final state asserts: CQ ring wrapped exactly once →
+        // expected_phase = true (initial), flipped to false after
+        // 4 consumed CQEs, no further wrap on the 5th consumption
+        // because head is now 1.
+        assert!(!s.queue_pair().cq().expected_phase());
+        assert_eq!(s.queue_pair().cq().head(), 1);
+        // Driver issued 5 SQ tail doorbell writes total (one per
+        // submit) + 5 CQ head doorbell writes (one per drain).
+        // The mmio recorder only captured SUBMIT-side writes (the
+        // polls used `nop`).
+        assert_eq!(mmio.writes.len(), 5);
+    }
+
     #[test]
     fn poll_skips_sibling_completions_until_matching_cid_arrives() {
         let mut s = AdminSession::new(4, 4, 0).expect("ctor");
