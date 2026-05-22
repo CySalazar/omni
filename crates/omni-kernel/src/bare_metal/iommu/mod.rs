@@ -69,8 +69,11 @@ pub mod amdvi;
 pub mod dmar;
 pub mod domain;
 pub mod ivrs;
+pub mod kernel_frame_source;
 pub mod pt_alloc;
 pub mod vtd;
+
+pub use kernel_frame_source::KernelFrameSource;
 
 /// Opaque IOMMU domain identifier (16-bit by VT-d spec).
 ///

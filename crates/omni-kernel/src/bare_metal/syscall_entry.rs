@@ -2195,23 +2195,35 @@ mod driver_load_handlers {
         // attach calls so subsequent `DmaMap` requests from the driver
         // land in a domain that the IOMMU knows about (the live MMIO
         // half — VT-d context-entry + AMD-Vi DTE writes — lands in
-        // P6.7.9-pre.9; today the binding is host-testable bookkeeping
+        // P6.7.9-pre.11; today the binding is host-testable bookkeeping
         // that exercises the trait dispatch on `IommuKind` and seeds the
         // PCB-side teardown list).
         //
-        // Failure mode: a missing IOMMU domain install (out of DIDs) or
-        // a vendor-table conflict (re-attach without prior detach) is
-        // logged as a best-effort warning — the driver process stays
-        // alive with whatever bindings did succeed; the first `DmaMap`
-        // call against an un-attached device will EACCES out of the
-        // capability check before reaching the IOMMU surface. We
-        // accept this so partial-attach failure is observable in user
-        // space, matching the cap-deposit failure mode above.
+        // P6.7.9-pre.10 — after the per-BDF attach loop, provision the
+        // per-domain page-table root through the live IOMMU backend.
+        // The root frame is a 4-KiB-aligned, zero-filled physical page
+        // pulled from `FRAME_ALLOC` via the [`KernelFrameSource`]
+        // adapter; passthrough returns `Ok(0)` without touching the
+        // adapter (no per-domain table to mint). The recorded root is
+        // looked up via [`iommu_domain_pt_root_phys`] by the upcoming
+        // P6.7.9-pre.11 wiring of `install_vt_d_device_entry` /
+        // `install_amd_vi_device_entry` so this slice does not yet
+        // drive any MMIO writes — it only stages the input for the
+        // live install path that lands next.
+        //
+        // Failure mode: a missing IOMMU domain install (out of DIDs)
+        // or a vendor-table conflict (re-attach without prior detach)
+        // is logged as a best-effort warning — the driver process
+        // stays alive with whatever bindings did succeed; the first
+        // `DmaMap` call against an un-attached device will EACCES out
+        // of the capability check before reaching the IOMMU surface.
+        // We accept this so partial-attach failure is observable in
+        // user space, matching the cap-deposit failure mode above.
         // -------------------------------------------------------------
         {
             use crate::bare_metal::iommu::{
-                IommuBackend, domain_for_task, iommu_attach_device, pci_bdfs_from_resources,
-                with_iommu_backend,
+                IommuBackend, KernelFrameSource, domain_for_task, iommu_attach_device,
+                iommu_provision_domain_pt, pci_bdfs_from_resources, with_iommu_backend,
             };
             let domain_id = domain_for_task(task_id.0);
             let bdfs = pci_bdfs_from_resources(&manifest.capabilities.pci_devices);
@@ -2221,6 +2233,7 @@ mod driver_load_handlers {
             // designed for it).
             let domain_install_ok =
                 with_iommu_backend(|kind| kind.install_domain(domain_id)).is_ok();
+            let mut any_bdf_attached = false;
             if domain_install_ok {
                 // SAFETY: single-CPU syscall path; SCHEDULER not
                 // aliased. `process_mut` cannot return `None` because
@@ -2240,9 +2253,42 @@ mod driver_load_handlers {
                             // remaining bind iterations.
                             if iommu_attach_device(bdf, domain_id).is_ok() {
                                 pcb.bound_pci_devices.push(bdf);
+                                any_bdf_attached = true;
                             }
                         }
                     }
+                }
+            }
+            // Provision the per-domain page-table root once at least
+            // one BDF has bound to the domain. We deliberately gate on
+            // `any_bdf_attached` so driver processes that declare no
+            // PCI devices (rare; the manifest typically lists at
+            // least one) do not consume a frame for an unreachable
+            // root. The passthrough backend short-circuits to `Ok(0)`
+            // without touching the frame source anyway, so the no-op
+            // is cheap on platforms without an IOMMU.
+            //
+            // SAFETY: single-CPU syscall path; FRAME_ALLOC not
+            // concurrently aliased. The `KernelFrameSource` borrow
+            // ends with the surrounding scope, so FRAME_ALLOC is
+            // released before the next syscall can land.
+            if any_bdf_attached {
+                #[allow(
+                    unsafe_code,
+                    reason = "single-CPU static-mut deref into FRAME_ALLOC for the IOMMU PT provisioning helper"
+                )]
+                unsafe {
+                    let fa = &mut *core::ptr::addr_of_mut!(crate::FRAME_ALLOC);
+                    let mut src = KernelFrameSource::new(fa, phys_off);
+                    // Best-effort: surfacing a provisioning failure
+                    // back to user space would leak kernel detail and
+                    // is not actionable — the driver process stays
+                    // alive; if the IOMMU is live (Intel/AMD) and the
+                    // root is missing the upcoming
+                    // `install_*_device_entry` call from pre.11 will
+                    // refuse to write the per-device entry and the
+                    // first DmaMap from the driver will EACCES.
+                    let _ = iommu_provision_domain_pt(domain_id, &mut src);
                 }
             }
         }
@@ -2255,14 +2301,27 @@ mod driver_load_handlers {
     /// `pcb.bound_pci_devices` so the PCB slot can be reused by a
     /// later spawn without inheriting stale vendor-table entries.
     ///
+    /// P6.7.9-pre.10 — after the per-BDF detach pass, also release
+    /// the per-domain page-table root provisioned by `driver_load`
+    /// (the matching call to [`iommu_provision_domain_pt`]). The
+    /// release returns the 4-KiB root frame to `FRAME_ALLOC` via the
+    /// [`KernelFrameSource`] adapter; on the passthrough backend
+    /// (`iommu_domain_pt_root_phys` returns `None`) the helper is a
+    /// no-op so this teardown is safe to call unconditionally — we
+    /// nevertheless gate on the `Some` return to keep the
+    /// `FRAME_ALLOC` borrow scope as tight as possible.
+    ///
     /// Best-effort: per-BDF detach failures (e.g. the backend never
     /// recorded the binding because the original attach raced an
-    /// install-domain failure) are silently swallowed; the goal is to
-    /// release whatever IOMMU state did get recorded, not to surface a
-    /// teardown error to user space (the calling task is already
-    /// `Terminated` by the time this runs).
+    /// install-domain failure) are silently swallowed; the goal is
+    /// to release whatever IOMMU state did get recorded, not to
+    /// surface a teardown error to user space (the calling task is
+    /// already `Terminated` by the time this runs).
     pub(super) fn tear_down_pci_bindings(task: crate::scheduling::TaskId) {
-        use crate::bare_metal::iommu::iommu_detach_device;
+        use crate::bare_metal::iommu::{
+            KernelFrameSource, domain_for_task, iommu_detach_device, iommu_domain_pt_root_phys,
+            iommu_release_domain_pt,
+        };
         // SAFETY: SYSCALL path is single-CPU; SCHEDULER not aliased.
         unsafe {
             let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
@@ -2272,6 +2331,28 @@ mod driver_load_handlers {
             let bdfs = core::mem::take(&mut pcb.bound_pci_devices);
             for bdf in bdfs {
                 let _ = iommu_detach_device(bdf);
+            }
+        }
+        // Release the per-domain PT root if `driver_load` provisioned
+        // one. `iommu_domain_pt_root_phys` returns `None` on
+        // passthrough or when the domain was never provisioned, so
+        // the `if let Some(_)` guard skips the FRAME_ALLOC reborrow
+        // on those paths.
+        let domain_id = domain_for_task(task.0);
+        if iommu_domain_pt_root_phys(domain_id).is_some() {
+            let phys_off = crate::bare_metal::phys_offset();
+            // SAFETY: SYSCALL path is single-CPU; FRAME_ALLOC not
+            // concurrently aliased. The `KernelFrameSource` borrow
+            // ends with the surrounding scope, so `FRAME_ALLOC` is
+            // released before the next syscall can land.
+            unsafe {
+                let fa = &mut *core::ptr::addr_of_mut!(crate::FRAME_ALLOC);
+                let mut src = KernelFrameSource::new(fa, phys_off);
+                // Best-effort: a `NotProvisioned` error here means
+                // the live backend has no recorded root (race with a
+                // concurrent release on a future MP build) and is
+                // benign in the teardown context.
+                let _ = iommu_release_domain_pt(domain_id, &mut src);
             }
         }
     }

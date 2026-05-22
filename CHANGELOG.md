@@ -17,6 +17,64 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **IOMMU — P6.7.9-pre.10 PT root provisioning wired into `DriverLoad` (2026-05-22).**
+  Closes the fifth TASK-010 milestone — per-domain page-table root provisioning
+  is now driven from the live `DriverLoad (73)` syscall handler. New
+  `crates/omni-kernel/src/bare_metal/iommu/kernel_frame_source.rs` module exposes
+  `KernelFrameSource<'a, const N: usize>`, a thin adapter wrapping
+  `&'a mut BitmapFrameAllocator<N>` + the bootloader direct-map offset, that
+  implements `pt_alloc::FrameSource`. On bare-metal it allocates a 4-KiB frame
+  via `BitmapFrameAllocator::alloc_frame`, zero-fills the page through the
+  direct map (`core::ptr::write_bytes`), defensively validates 4-KiB alignment
+  (returning the frame to the pool on mismatch — belt-and-braces vs. the
+  allocator's invariant), and returns the physical address. On host
+  (`cfg(target_os != "none")`) the zero-fill is elided because tests never
+  dereference the address. `free_frame(phys)` routes through
+  `BitmapFrameAllocator::free_frame`. `bare_metal::iommu::mod` re-exports
+  `KernelFrameSource` so the syscall handler can build one without exposing
+  the inner module path. The `driver_load` handler's existing P6.7.9-pre.8
+  PCI-bind block now also calls
+  `iommu_provision_domain_pt(domain_for_task(task_id.0), &mut src)` after at
+  least one BDF binds successfully; on passthrough the helper short-circuits
+  to `Ok(0)` without touching the frame source, so the same code path is safe
+  on platforms without an IOMMU. The `tear_down_pci_bindings` teardown helper
+  is extended symmetrically — after the per-BDF detach pass, if
+  `iommu_domain_pt_root_phys(domain)` reports a recorded root it calls
+  `iommu_release_domain_pt` through a fresh `KernelFrameSource`, returning the
+  4-KiB root frame to `FRAME_ALLOC`. Build Info panel
+  (`crates/omni-kernel/src/bare_metal/demo.rs::render_buildinfo`):
+  Active=`P6.7.9-pre.10 PT wire DriverLoad` (cyan),
+  Next=`P6.7.9-pre.11 PT install DTE`,
+  Phase=`1 - Microkernel POC  (~99.95%)`,
+  Tests=`1192 workspace pass`.
+  +6 new host-side tests under
+  `bare_metal::iommu::kernel_frame_source::tests::*`
+  (`alloc_returns_aligned_frame_from_pool`,
+  `alloc_exhausts_pool_then_returns_none`,
+  `free_returns_frame_to_pool_for_reuse`,
+  `provision_through_domain_page_tables_round_trips`,
+  `provision_surfaces_pool_exhaustion_as_frame_alloc_failed`,
+  `release_then_reprovision_distinct_domain_reuses_pool`).
+  Workspace test count 1186 → **1192 pass / 0 fail**
+  (`cargo test --workspace --all-features -- --test-threads=1`). Acceptance
+  gates: `cargo fmt --all -- --check` clean,
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+  clean,
+  `cargo clippy -p omni-kernel --target x86_64-unknown-none --features bare-metal -- -D warnings`
+  clean,
+  `cargo clippy -p omni-kernel --target x86_64-unknown-none --features bare-metal,mb12-userprobe -- -D warnings`
+  clean,
+  `cargo clippy --manifest-path kernel-runner/Cargo.toml --target x86_64-unknown-none -- -D warnings`
+  clean, all 3 driver-image siblings
+  (`x86_64-unknown-none --release`) clean,
+  `bash scripts/check-no-blanket-allow.sh` →
+  `ok (scanned 16 crate-root files)`,
+  `RUSTDOCFLAGS=-Dwarnings cargo doc -p omni-kernel --features bare-metal --target x86_64-unknown-none --no-deps`
+  clean,
+  `RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps --all-features`
+  clean, `python3 scripts/lint-oips.py` →
+  `0 error(s), 0 warning(s) across 19 file(s)`. No new dependency.
+
 - **IOMMU — P6.7.9-pre.7 per-device attach surface + live device-entry install (2026-05-21).**
   Closes the third TASK-010 milestone: per-device translation gating.
   Vendor-neutral `PciBdf(u16)` newtype on `bare_metal::iommu` packs the
