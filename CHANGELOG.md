@@ -17,6 +17,65 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.7 NVMe IO submission encoder (2026-05-22) —
+  TASK-005 continuation.**
+  New `crates/omni-driver-nvme/src/io.rs` module declares the four
+  NVM Command Set IO submission encoders OMNI OS Phase 1 surfaces on
+  `omni.svc.blk.<diskN>` per NVMe 1.4 § 6. The 64-byte SQE layout is
+  shared with `crate::admin` (§ 4.2 applies to both Admin and IO
+  queues — only the opcode and CDWx semantics differ); re-using
+  `AdminSqe` avoids doubling the auditable surface.
+  - **`encode_read(nsid, lba, block_count, prp1, prp2, cid) -> AdminSqe`**:
+    NVM Read (opcode `0x02`, § 6.9).
+  - **`encode_write(nsid, lba, block_count, prp1, prp2, cid) -> AdminSqe`**:
+    NVM Write (opcode `0x01`, § 6.15).
+  - **`encode_flush(nsid, cid) -> AdminSqe`**: NVM Flush (opcode
+    `0x00`, § 6.8). No PRPs, no CDWx — spec defines none.
+  - **`encode_discard(nsid, lba, block_count, prp1, cid) -> AdminSqe`**:
+    Dataset Management Deallocate (opcode `0x09`, § 6.7) with
+    `AD = 1` bit set in CDW11; CDW10.NR = 0 (single range);
+    CDW12+CDW13+CDW14 encoder-side tripwires (controller treats
+    these as reserved for the DSM opcode).
+  - **Internal `encode_nvm_data_transfer`** factors the shared
+    Read/Write field layout: CDW0 = OPC|CID, NSID, DPTR.PRP1+PRP2,
+    CDW10 = SLBA[31:0], CDW11 = SLBA[63:32], CDW12 = NLB (0-based;
+    encoder computes `block_count.saturating_sub(1)`).
+  - **Constants**: 4 opcodes (`OPC_NVM_FLUSH`, `OPC_NVM_WRITE`,
+    `OPC_NVM_READ`, `OPC_NVM_DATASET_MGMT`); 2 DSM helpers
+    (`DSM_AD_BIT = 1 << 2`, `DSM_CDW10_NR_SINGLE_RANGE = 0`).
+  - **`crates/omni-driver-nvme/src/lib.rs`** extended with
+    `pub mod io;` declaration.
+  - **+21 new host-side tests** under
+    `omni_driver_nvme::io::tests::*`:
+    - 3 constant tripwires (`opcodes_match_nvme_spec`,
+      `dsm_ad_bit_is_bit_2`, `dsm_single_range_is_zero`).
+    - 8 `encode_read` field-layout checks (opcode, CID LE, NSID LE,
+      PRP1+PRP2, LBA split across CDW10/CDW11, NLB 0-based encoding
+      for 1/8/2048, `saturating_sub` on zero input, CDW13..15 zero).
+    - 2 `encode_write` checks (opcode 0x01, byte-by-byte identical
+      to Read modulo opcode — tripwire).
+    - 2 `encode_flush` checks (opcode + CID + NSID only, PRPs +
+      CDWx zero).
+    - 4 `encode_discard` checks (opcode 0x09, PRP1 + PRP2 zero,
+      CDW10.NR + CDW11.AD bit, LBA + block_count tripwires in
+      CDW12..14).
+    - 2 cross-encoder invariants (every encoder produces 64-byte
+      SQE; distinct opcodes produce distinct byte-0).
+  - **Workspace test count**: 1337 → 1358 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.7 NVMe IO encoder`,
+    Next=`P6.7.10-pre.8 NVMe PRP list`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1358 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — the `omni-types` dep added in pre.6 is
+    unused by `io.rs` (the IO encoders take primitive numeric
+    inputs).
+
 - **Storage — P6.7.10-pre.6 NVMe Admin SQE/CQE primitives (2026-05-22) —
   TASK-005 continuation.**
   New `crates/omni-driver-nvme/src/admin.rs` module declares the

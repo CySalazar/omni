@@ -73,6 +73,7 @@ extern crate alloc;
 pub mod admin;
 pub mod bringup;
 pub mod controller_regs;
+pub mod io;
 pub mod pci_ids;
 pub mod queue_config;
 pub mod transfer_model;
