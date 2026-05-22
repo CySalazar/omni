@@ -87,9 +87,9 @@ These are intended dependencies. Final selections will be confirmed during Phase
 | `serde` | 1.x | General serialization |
 | `prost` | 0.13.x | Protocol Buffers |
 | `capnp` | latest | Cap'n Proto (alternative for low-latency wire format) |
-| `bincode` | 2.x | Internal binary serialization |
+| `postcard` | 1.x | Internal binary serialization (canonical OMNI wire encoding per [`OIP-Serde-004`](../oips/oip-serde-004.md), Active since 2026-05-22 by `OIP-Process-001` §5.3 ¶1 founder ballot). Accessed only via [`omni_types::wire::encode_canonical`](../crates/omni-types/src/wire.rs) / `decode_canonical`. The originally-planned `bincode 2.x` was withdrawn after RUSTSEC-2025-0141 marked `bincode v2` unmaintained on 2025-12-16. |
 
-Final wire format (Cap'n Proto vs. Protocol Buffers vs. custom) deferred to OIP-001.
+Final wire format (Cap'n Proto vs. Protocol Buffers vs. custom) deferred to OIP-001 for cross-system / mesh boundaries; the canonical OMNI internal binary serialization is locked to `postcard` 1.x per OIP-Serde-004 § S2.
 
 ### AI / Tensors
 
