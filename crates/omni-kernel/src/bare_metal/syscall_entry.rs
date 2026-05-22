@@ -799,6 +799,12 @@ fn task_exit(code: u64) -> KernelResult<u64> {
                 // released from the per-vector slot table.
                 dma_map_handlers::tear_down_dma_mappings(current);
                 irq_attach_handlers::tear_down_irq_attachments(current);
+                // P6.7.9-pre.8 — detach every PCI binding the driver
+                // owned. Symmetric to the `iommu_attach_device` calls
+                // wired into `driver_load` above; the helper drains
+                // `pcb.bound_pci_devices` so a respawn into the same
+                // PCB slot never inherits stale vendor-table entries.
+                driver_load_handlers::tear_down_pci_bindings(current);
                 let _ = sched.dequeue(current);
                 // MB12: if another task is still runnable, hand the CPU
                 // over to it. `yield_current(Terminated)` keeps the
@@ -2183,7 +2189,91 @@ mod driver_load_handlers {
             }
         }
 
+        // -------------------------------------------------------------
+        // P6.7.9-pre.8 — driver PCI bind. Translate the manifest's
+        // `capabilities.pci_devices` table into the per-device IOMMU
+        // attach calls so subsequent `DmaMap` requests from the driver
+        // land in a domain that the IOMMU knows about (the live MMIO
+        // half — VT-d context-entry + AMD-Vi DTE writes — lands in
+        // P6.7.9-pre.9; today the binding is host-testable bookkeeping
+        // that exercises the trait dispatch on `IommuKind` and seeds the
+        // PCB-side teardown list).
+        //
+        // Failure mode: a missing IOMMU domain install (out of DIDs) or
+        // a vendor-table conflict (re-attach without prior detach) is
+        // logged as a best-effort warning — the driver process stays
+        // alive with whatever bindings did succeed; the first `DmaMap`
+        // call against an un-attached device will EACCES out of the
+        // capability check before reaching the IOMMU surface. We
+        // accept this so partial-attach failure is observable in user
+        // space, matching the cap-deposit failure mode above.
+        // -------------------------------------------------------------
+        {
+            use crate::bare_metal::iommu::{
+                IommuBackend, domain_for_task, iommu_attach_device, pci_bdfs_from_resources,
+                with_iommu_backend,
+            };
+            let domain_id = domain_for_task(task_id.0);
+            let bdfs = pci_bdfs_from_resources(&manifest.capabilities.pci_devices);
+            // Idempotent: returns Ok(()) if the domain is already
+            // installed (the dma_map handler may have raced ahead on
+            // a future MP build; today it cannot, but the API is
+            // designed for it).
+            let domain_install_ok =
+                with_iommu_backend(|kind| kind.install_domain(domain_id)).is_ok();
+            if domain_install_ok {
+                // SAFETY: single-CPU syscall path; SCHEDULER not
+                // aliased. `process_mut` cannot return `None` because
+                // `task_id` was just inserted by `spawn_from_elf` and
+                // no other code path removes PCBs single-CPU.
+                unsafe {
+                    let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+                    if let Some(pcb) = sched.process_mut(task_id) {
+                        for bdf in bdfs {
+                            // Record the binding through the IOMMU
+                            // trait dispatch (`PassthroughBackend`
+                            // accepts unconditionally; `VtdBackend` /
+                            // `AmdViBackend` track in their internal
+                            // attachment vector for host-testable
+                            // assertion). Skip the bdf on conflict so
+                            // a stuck duplicate does not block the
+                            // remaining bind iterations.
+                            if iommu_attach_device(bdf, domain_id).is_ok() {
+                                pcb.bound_pci_devices.push(bdf);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         SyscallReturn::ok(task_id.0)
+    }
+
+    /// Detach every PCI device the exiting `task` had bound to its
+    /// IOMMU domain at [`driver_load`]. Drains
+    /// `pcb.bound_pci_devices` so the PCB slot can be reused by a
+    /// later spawn without inheriting stale vendor-table entries.
+    ///
+    /// Best-effort: per-BDF detach failures (e.g. the backend never
+    /// recorded the binding because the original attach raced an
+    /// install-domain failure) are silently swallowed; the goal is to
+    /// release whatever IOMMU state did get recorded, not to surface a
+    /// teardown error to user space (the calling task is already
+    /// `Terminated` by the time this runs).
+    pub(super) fn tear_down_pci_bindings(task: crate::scheduling::TaskId) {
+        use crate::bare_metal::iommu::iommu_detach_device;
+        // SAFETY: SYSCALL path is single-CPU; SCHEDULER not aliased.
+        unsafe {
+            let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+            let Some(pcb) = sched.process_mut(task) else {
+                return;
+            };
+            let bdfs = core::mem::take(&mut pcb.bound_pci_devices);
+            for bdf in bdfs {
+                let _ = iommu_detach_device(bdf);
+            }
+        }
     }
 }
 

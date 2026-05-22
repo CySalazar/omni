@@ -1360,6 +1360,58 @@ pub const fn domain_for_task(task_id: u64) -> DomainId {
     DomainId::new((task_id & 0xFFFF) as u16)
 }
 
+// =============================================================================
+// Driver-manifest → PCI BDF helper — P6.7.9-pre.8 (driver PCI bind).
+//
+// Translates the `Resource::PciDevice { segment, bus, device, function }`
+// entries declared in a driver manifest's `capabilities.pci_devices`
+// table into the kernel-side [`PciBdf`] newtype used by the IOMMU
+// per-device attach surface. The translation is host-testable + pure:
+// non-`PciDevice` resources are skipped silently (manifests routinely
+// mix `MmioRegion`, `DmaWindow`, and `PciDevice` entries inside one
+// `Vec<Resource>` table, e.g. the `pci_devices` field is `Vec<Resource>`
+// rather than `Vec<PciDevice>` for forward-compatible wire stability).
+//
+// Phase 1 ignores the `segment` field — the per-vendor IOMMU `DeviceID`
+// is a 16-bit requester ID that does not include the PCIe segment.
+// Multi-segment platforms (rare on desktops; common on large servers)
+// are tracked as a follow-up in OIP-013 § S3.5 for the Phase 2+
+// segment-aware domain allocator.
+// =============================================================================
+
+/// Extract the [`PciBdf`] for every `Resource::PciDevice` entry in
+/// `pci_devices`.
+///
+/// Non-`PciDevice` resources are skipped; the returned vector preserves
+/// the input order. Duplicates are NOT deduplicated — the caller is
+/// expected to be the driver framework, which mints one binding per
+/// manifest entry and tolerates the rare case where a manifest names
+/// the same device twice (the IOMMU backend will reject the second
+/// attach with `IommuError::Unsupported`).
+///
+/// Used by `DriverLoad` to translate the manifest's PCI-device
+/// declarations into the per-device attach calls
+/// ([`iommu_attach_device`]) that bind the driver process to the IOMMU
+/// domain returned by [`domain_for_task`].
+#[must_use]
+pub fn pci_bdfs_from_resources(
+    pci_devices: &[omni_capability::scope::Resource],
+) -> alloc::vec::Vec<PciBdf> {
+    let mut out = alloc::vec::Vec::with_capacity(pci_devices.len());
+    for resource in pci_devices {
+        if let omni_capability::scope::Resource::PciDevice {
+            segment: _,
+            bus,
+            device,
+            function,
+        } = resource
+        {
+            out.push(PciBdf::from_parts(*bus, *device, *function));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2058,5 +2110,140 @@ mod tests {
         // Never attached → Unsupported.
         assert_eq!(iommu_detach_device(bdf), Err(IommuError::Unsupported));
         install_backend_for_vendor(prior);
+    }
+
+    // -----------------------------------------------------------------
+    // P6.7.9-pre.8 — Driver-manifest PCI BDF extractor tests.
+    //
+    // The host-side coverage exercises the manifest → BDF translation
+    // used by `DriverLoad` to derive the per-device attach calls
+    // (`iommu_attach_device`) for every `Resource::PciDevice` declared
+    // in the manifest's `capabilities.pci_devices` table.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn pci_bdfs_from_resources_extracts_single_entry() {
+        use alloc::vec;
+        use omni_capability::scope::Resource;
+        let resources = vec![Resource::PciDevice {
+            segment: 0,
+            bus: 0x12,
+            device: 0x1F,
+            function: 0x07,
+        }];
+        let bdfs = super::pci_bdfs_from_resources(&resources);
+        assert_eq!(bdfs.len(), 1);
+        let bdf = bdfs.first().copied().expect("one BDF extracted");
+        assert_eq!(bdf.bus(), 0x12);
+        assert_eq!(bdf.device(), 0x1F);
+        assert_eq!(bdf.function(), 0x07);
+    }
+
+    #[test]
+    fn pci_bdfs_from_resources_preserves_input_order() {
+        use alloc::vec;
+        use omni_capability::scope::Resource;
+        let resources = vec![
+            Resource::PciDevice {
+                segment: 0,
+                bus: 0x00,
+                device: 0x04,
+                function: 0x00,
+            },
+            Resource::PciDevice {
+                segment: 0,
+                bus: 0x00,
+                device: 0x03,
+                function: 0x00,
+            },
+            Resource::PciDevice {
+                segment: 0,
+                bus: 0x00,
+                device: 0x05,
+                function: 0x00,
+            },
+        ];
+        let bdfs = super::pci_bdfs_from_resources(&resources);
+        assert_eq!(bdfs.len(), 3);
+        let devs: alloc::vec::Vec<u8> = bdfs.iter().map(|b| b.device()).collect();
+        assert_eq!(devs, alloc::vec![0x04, 0x03, 0x05]);
+    }
+
+    #[test]
+    fn pci_bdfs_from_resources_skips_non_pci_resources() {
+        use alloc::vec;
+        use omni_capability::scope::Resource;
+        let resources = vec![
+            Resource::MmioRegion {
+                phys_base: 0x10_0000,
+                len: 0x1000,
+            },
+            Resource::PciDevice {
+                segment: 0,
+                bus: 0x01,
+                device: 0x02,
+                function: 0x03,
+            },
+            Resource::DmaWindow {
+                iova_base: 0x10_0000,
+                len: 0x1000,
+            },
+            Resource::IrqLine(33),
+        ];
+        let bdfs = super::pci_bdfs_from_resources(&resources);
+        assert_eq!(bdfs.len(), 1);
+        let bdf = bdfs.first().copied().expect("one PciDevice extracted");
+        assert_eq!(bdf.bus(), 0x01);
+        assert_eq!(bdf.device(), 0x02);
+        assert_eq!(bdf.function(), 0x03);
+    }
+
+    #[test]
+    fn pci_bdfs_from_resources_returns_empty_for_no_pci() {
+        use alloc::vec;
+        use omni_capability::scope::Resource;
+        let resources = vec![
+            Resource::MmioRegion {
+                phys_base: 0,
+                len: 0x1000,
+            },
+            Resource::IrqLine(11),
+        ];
+        let bdfs = super::pci_bdfs_from_resources(&resources);
+        assert!(bdfs.is_empty());
+    }
+
+    #[test]
+    fn pci_bdfs_from_resources_handles_empty_input() {
+        let bdfs = super::pci_bdfs_from_resources(&[]);
+        assert!(bdfs.is_empty());
+    }
+
+    #[test]
+    fn pci_bdfs_from_resources_ignores_segment_field() {
+        // Phase 1: the 16-bit IOMMU requester ID does not include the
+        // PCIe segment. Two `PciDevice` entries with the same BDF but
+        // different segments must produce the same `PciBdf`.
+        use alloc::vec;
+        use omni_capability::scope::Resource;
+        let resources = vec![
+            Resource::PciDevice {
+                segment: 0,
+                bus: 1,
+                device: 2,
+                function: 3,
+            },
+            Resource::PciDevice {
+                segment: 7,
+                bus: 1,
+                device: 2,
+                function: 3,
+            },
+        ];
+        let bdfs = super::pci_bdfs_from_resources(&resources);
+        assert_eq!(bdfs.len(), 2);
+        let first = bdfs.first().copied().expect("first BDF");
+        let second = bdfs.get(1).copied().expect("second BDF");
+        assert_eq!(first.raw(), second.raw());
     }
 }

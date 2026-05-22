@@ -39,6 +39,8 @@
 #[cfg(feature = "bare-metal")]
 use crate::bare_metal::address_space::AddressSpace;
 #[cfg(feature = "bare-metal")]
+use crate::bare_metal::iommu::PciBdf;
+#[cfg(feature = "bare-metal")]
 use crate::capabilities::KernelPrincipal;
 #[cfg(feature = "bare-metal")]
 use crate::ipc::ChannelId;
@@ -187,6 +189,26 @@ pub struct ProcessControlBlock {
     /// `None` for non-driver processes spawned without a deposit
     /// (developer mode, mb11/mb12 userprobe).
     pub cap_deposit_va: Option<u64>,
+    /// PCI BDFs bound to this process's IOMMU domain
+    /// (P6.7.9-pre.8 — driver PCI bind).
+    ///
+    /// Populated by the `DriverLoad (73)` syscall handler (see
+    /// `crate::bare_metal::syscall_entry`) after a successful spawn
+    /// from the manifest's `capabilities.pci_devices` table; the kernel
+    /// records the `(bdf, domain)` binding through
+    /// [`crate::bare_metal::iommu::iommu_attach_device`] before user
+    /// code runs.
+    ///
+    /// On `TaskExit` the same list drives the symmetric
+    /// [`crate::bare_metal::iommu::iommu_detach_device`] calls so the
+    /// vendor table does not retain stale entries pointing at a
+    /// dead per-process IOMMU domain.
+    ///
+    /// Empty for non-driver processes (developer mode, mb11/mb12
+    /// userprobe, scheduler workers) and for driver processes whose
+    /// manifest declares no `PciDevice` resources (rare — every
+    /// first-party driver in Phase 1 declares ≥ 1 PCI device).
+    pub bound_pci_devices: Vec<PciBdf>,
 }
 
 #[cfg(feature = "bare-metal")]
@@ -328,6 +350,7 @@ impl ProcessControlBlock {
                 dma_mappings: Vec::new(),
                 irq_attachments: Vec::new(),
                 cap_deposit_va: None,
+                bound_pci_devices: Vec::new(),
             },
         );
 
@@ -366,6 +389,7 @@ mod tests {
             dma_mappings: Vec::new(),
             irq_attachments: Vec::new(),
             cap_deposit_va: None,
+            bound_pci_devices: Vec::new(),
         }
     }
 
