@@ -17,6 +17,62 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.14 `MmioReadBackend` trait + CSTS.RDY poll
+  helper (2026-05-22) — TASK-005 continuation.**
+  `crates/omni-driver-nvme/src/queue.rs` extended with the read-side
+  MMIO seam that complements the existing `MmioBackend` write-side
+  trait (P6.7.10-pre.11).
+  - **`MmioReadBackend` trait** with a single method
+    `read_register(offset: usize) -> u32`. Two-trait split avoids
+    forcing every doorbell-only impl to also implement a read
+    method — the existing `MmioBackend` impls in `MockMmioBackend`
+    and the live-driver path stay unchanged.
+  - **`wait_for_csts_rdy<R: MmioReadBackend>(mmio: &mut R,
+    poll_limit: u32) -> Result<(), QueueError>`** free function
+    polls `controller_regs::CSTS_OFFSET` (`0x1C` per NVMe 1.4
+    § 3.1.6) up to `poll_limit` iterations, returning `Ok(())` on
+    the first read where `(csts & CSTS_RDY_BIT) != 0` (bit 0 set)
+    or `Err(QueueError::ControllerNotReady)` on exhaustion. Used by
+    OIP-Driver-NVMe-014 § S6 step 6 (after writing `CC.EN = 1` the
+    driver must wait for the controller to acknowledge by setting
+    `CSTS.RDY = 1`).
+  - **`QueueError::ControllerNotReady`** variant added to the
+    `#[non_exhaustive]` taxonomy.
+  - **+6 new host-side tests** under
+    `omni_driver_nvme::queue::tests::*`:
+    - 1 happy-path "RDY set on first iteration" (consumes 1 read).
+    - 1 multi-iteration "3 not-ready → 1 ready" (consumes 4 reads).
+    - 1 exhaustion (`poll_limit = 4` with all-zero CSTS →
+      `ControllerNotReady` after exactly 4 reads).
+    - 1 mask robustness (high bits of CSTS set + `RDY` →
+      success — the helper looks ONLY at bit 0).
+    - 1 zero-`poll_limit` edge case (immediate
+      `ControllerNotReady` with no reads consumed).
+    - 1 `QueueError::ControllerNotReady` discriminant distinctness
+      (pairwise-distinct against `Full`, `SqPageTooSmall`,
+      `CqPageTooSmall`, `DoorbellOffsetOverflow`).
+  - **`ScriptedMmioRead` test fixture** —
+    `{ script: Vec<(usize, u32)>, cursor: usize }` returns a
+    pre-canned sequence of `(offset, value)` pairs one per
+    `read_register` call, asserting that the caller queries the
+    expected register offset at each step; once the script is
+    exhausted, subsequent reads return `0` (matches NVMe's
+    "unmapped MMIO reads as zero" semantic).
+  - **Workspace test count**: 1435 → 1441 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.14 MmioRead+RDY`,
+    Next=`P6.7.10-pre.15 CC.EN sequencer`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1441 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — composes
+    `controller_regs::{CSTS_OFFSET, CSTS_RDY_BIT}` already pinned
+    by NVMe 1.4 § 3.1.6.
+
 - **Storage — P6.7.10-pre.13 NVMe `AdminSession` integration scaffold
   (2026-05-22) — TASK-005 continuation.**
   New `crates/omni-driver-nvme/src/admin_session.rs` module declares

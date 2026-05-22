@@ -29,7 +29,9 @@
 //!   kernel via `DmaMap`; the seam treats it as opaque storage.
 
 use crate::admin::{ADMIN_CQE_BYTES, ADMIN_SQE_BYTES, AdminCqe, AdminCqeFields, AdminSqe};
-use crate::controller_regs::{cq_head_doorbell_offset, sq_tail_doorbell_offset};
+use crate::controller_regs::{
+    CSTS_OFFSET, CSTS_RDY_BIT, cq_head_doorbell_offset, sq_tail_doorbell_offset,
+};
 use crate::ring::{CqRing, RingError, SqRing};
 
 // =============================================================================
@@ -41,9 +43,9 @@ use crate::ring::{CqRing, RingError, SqRing};
 /// The live driver implements this with a `volatile_write` to the
 /// controller's BAR0 page; host tests implement it with an in-memory
 /// recorder for assertion. The trait is deliberately minimal — one
-/// method, no read side, no error type — so a future
-/// `volatile_read` for status-register polling lands as a separate
-/// trait without breaking the doorbell-write surface.
+/// method, no read side, no error type — so the read-side
+/// [`MmioReadBackend`] for status-register polling lands as a
+/// separate trait without breaking the doorbell-write surface.
 pub trait MmioBackend {
     /// Write a 32-bit doorbell value at the given byte offset
     /// inside the controller's MMIO region.
@@ -54,6 +56,27 @@ pub trait MmioBackend {
     /// byte offset returned by
     /// [`crate::controller_regs::sq_tail_doorbell_offset`].
     fn write_doorbell(&mut self, offset: usize, value: u32);
+}
+
+/// Abstract MMIO source for status-register reads.
+///
+/// Separate from [`MmioBackend`] because the doorbell write path
+/// and the status read path have independent lifetimes — the
+/// bring-up FSM polls CSTS during initialization (when no doorbells
+/// are written yet), and the live IO path writes doorbells without
+/// re-reading any status. Splitting the traits avoids forcing
+/// every doorbell-only impl to also implement a read method.
+///
+/// The live impl performs a `volatile_read` (NVMe 1.4 § 3.0
+/// "Endianness" mandates 32-bit aligned, little-endian register
+/// reads); host impls return a pre-canned sequence of values per
+/// call site so the bring-up FSM tests can simulate
+/// "controller not ready" → "controller ready" transitions
+/// deterministically.
+pub trait MmioReadBackend {
+    /// Read a 32-bit register value at the given byte offset
+    /// inside the controller's MMIO region.
+    fn read_register(&mut self, offset: usize) -> u32;
 }
 
 // =============================================================================
@@ -89,6 +112,12 @@ pub enum QueueError {
     /// [`crate::controller_regs::sq_tail_doorbell_offset`]
     /// (unreachable in well-formed code; defensive sentinel).
     DoorbellOffsetOverflow,
+    /// [`wait_for_csts_rdy`] polled `CSTS` for `poll_limit`
+    /// iterations without observing the [`CSTS_RDY_BIT`] set. The
+    /// live driver translates this to OIP-014 § S6 step 6 / step 4
+    /// timeout — the controller either failed to acknowledge the
+    /// enable/disable transition or was never wired correctly.
+    ControllerNotReady,
 }
 
 impl From<RingError> for QueueError {
@@ -314,6 +343,42 @@ impl AdminQueuePair {
 
         Ok(Some(fields))
     }
+}
+
+// =============================================================================
+// wait_for_csts_rdy — CSTS.RDY polling helper
+// =============================================================================
+
+/// Poll the controller's `CSTS` register until `CSTS.RDY` is set, up
+/// to `poll_limit` iterations.
+///
+/// Used by OIP-Driver-NVMe-014 § S6 step 6 (after writing `CC.EN = 1`
+/// the driver must wait for the controller to acknowledge by setting
+/// `CSTS.RDY = 1`) and step 4 (`CC.EN = 0` → `CSTS.RDY = 0`,
+/// callers invert the success bit with [`CSTS_RDY_BIT`] then re-use
+/// this loop with their own predicate — left for a future helper).
+///
+/// `poll_limit` is the maximum number of read iterations the helper
+/// will attempt before surfacing [`QueueError::ControllerNotReady`].
+/// The live driver typically sets this to `CAP.TO` (Time Out, in
+/// 500 ms units) × spin delay; the host harness passes a smaller
+/// number to keep tests fast.
+///
+/// # Errors
+///
+/// - [`QueueError::ControllerNotReady`] when the poll budget is
+///   exhausted without observing `CSTS.RDY = 1`.
+pub fn wait_for_csts_rdy<R: MmioReadBackend>(
+    mmio: &mut R,
+    poll_limit: u32,
+) -> Result<(), QueueError> {
+    for _ in 0..poll_limit {
+        let csts = mmio.read_register(CSTS_OFFSET);
+        if (csts & CSTS_RDY_BIT) != 0 {
+            return Ok(());
+        }
+    }
+    Err(QueueError::ControllerNotReady)
 }
 
 // =============================================================================
@@ -728,5 +793,106 @@ mod tests {
         // Pin the new variant against the prior set.
         assert_ne!(QueueError::SqPageTooSmall, QueueError::CqPageTooSmall);
         assert_ne!(QueueError::Full, QueueError::CqPageTooSmall);
+    }
+
+    // -------------------------------------------------------------------
+    // wait_for_csts_rdy (P6.7.10-pre.14)
+    // -------------------------------------------------------------------
+
+    /// Test-only `MmioReadBackend` that returns a pre-canned
+    /// sequence of `(offset, value)` pairs, one per `read_register`
+    /// call. Once the sequence is exhausted, subsequent reads
+    /// return `0` (matches NVMe's "register reads as zero before
+    /// MMIO is mapped" semantic).
+    #[derive(Debug, Default)]
+    struct ScriptedMmioRead {
+        script: Vec<(usize, u32)>,
+        cursor: usize,
+    }
+
+    impl ScriptedMmioRead {
+        fn push(&mut self, offset: usize, value: u32) {
+            self.script.push((offset, value));
+        }
+    }
+
+    impl MmioReadBackend for ScriptedMmioRead {
+        fn read_register(&mut self, offset: usize) -> u32 {
+            let next = self.script.get(self.cursor).copied();
+            self.cursor += 1;
+            match next {
+                Some((expected_off, value)) => {
+                    assert_eq!(
+                        offset, expected_off,
+                        "ScriptedMmioRead: expected offset {expected_off:#x}, got {offset:#x}"
+                    );
+                    value
+                }
+                None => 0,
+            }
+        }
+    }
+
+    #[test]
+    fn wait_for_csts_rdy_returns_ok_on_first_iteration_when_ready() {
+        let mut mmio = ScriptedMmioRead::default();
+        // First read returns CSTS with RDY = 1.
+        mmio.push(CSTS_OFFSET, CSTS_RDY_BIT);
+        let res = wait_for_csts_rdy(&mut mmio, 16);
+        assert_eq!(res, Ok(()));
+        // Only one read consumed.
+        assert_eq!(mmio.cursor, 1);
+    }
+
+    #[test]
+    fn wait_for_csts_rdy_polls_until_rdy_set() {
+        let mut mmio = ScriptedMmioRead::default();
+        // Three "not ready" reads, then RDY = 1.
+        for _ in 0..3 {
+            mmio.push(CSTS_OFFSET, 0);
+        }
+        mmio.push(CSTS_OFFSET, CSTS_RDY_BIT);
+        let res = wait_for_csts_rdy(&mut mmio, 16);
+        assert_eq!(res, Ok(()));
+        assert_eq!(mmio.cursor, 4);
+    }
+
+    #[test]
+    fn wait_for_csts_rdy_surfaces_controller_not_ready_after_poll_limit() {
+        let mut mmio = ScriptedMmioRead::default();
+        // Every read returns 0 (not ready).
+        for _ in 0..16 {
+            mmio.push(CSTS_OFFSET, 0);
+        }
+        let res = wait_for_csts_rdy(&mut mmio, 4);
+        assert_eq!(res, Err(QueueError::ControllerNotReady));
+        // Exactly poll_limit reads consumed.
+        assert_eq!(mmio.cursor, 4);
+    }
+
+    #[test]
+    fn wait_for_csts_rdy_ignores_other_csts_bits() {
+        let mut mmio = ScriptedMmioRead::default();
+        // CSTS with RDY = 1 AND other bits set (e.g. CFS, SHST).
+        // The helper MUST recognise RDY regardless of the rest.
+        mmio.push(CSTS_OFFSET, CSTS_RDY_BIT | 0xFFFF_FFFE);
+        let res = wait_for_csts_rdy(&mut mmio, 16);
+        assert_eq!(res, Ok(()));
+    }
+
+    #[test]
+    fn wait_for_csts_rdy_zero_poll_limit_surfaces_immediately() {
+        let mut mmio = ScriptedMmioRead::default();
+        let res = wait_for_csts_rdy(&mut mmio, 0);
+        assert_eq!(res, Err(QueueError::ControllerNotReady));
+        assert_eq!(mmio.cursor, 0);
+    }
+
+    #[test]
+    fn controller_not_ready_in_queue_error_taxonomy() {
+        assert_ne!(QueueError::ControllerNotReady, QueueError::Full);
+        assert_ne!(QueueError::ControllerNotReady, QueueError::SqPageTooSmall);
+        assert_ne!(QueueError::ControllerNotReady, QueueError::CqPageTooSmall);
+        assert_ne!(QueueError::ControllerNotReady, QueueError::DoorbellOffsetOverflow);
     }
 }
