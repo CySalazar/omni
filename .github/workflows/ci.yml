@@ -279,8 +279,13 @@ jobs:
             > /tmp/test.seed
           chmod 0400 /tmp/test.seed
 
-          # Run the tool; exit 0 is the acceptance criterion.
-          ./target/release/omni-driver-pack \
+          # Run the tool; exit 0 is the acceptance criterion. The
+          # binary lives under tools/omni-driver-pack/target/ because
+          # that crate is NOT part of the workspace (excluded via the
+          # root Cargo.toml [workspace.exclude] list) and the cargo
+          # build step above used --manifest-path, which places the
+          # output beside its manifest, not at the repo-root target/.
+          ./tools/omni-driver-pack/target/release/omni-driver-pack \
             --manifest     tools/omni-driver-pack/tests/fixtures/test-manifest.json \
             --image        /tmp/test-driver.elf \
             --signing-key  /tmp/test.seed \
