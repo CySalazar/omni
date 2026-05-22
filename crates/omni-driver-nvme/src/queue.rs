@@ -30,7 +30,8 @@
 
 use crate::admin::{ADMIN_CQE_BYTES, ADMIN_SQE_BYTES, AdminCqe, AdminCqeFields, AdminSqe};
 use crate::controller_regs::{
-    ACQ_OFFSET, AQA_OFFSET, ASQ_OFFSET, CC_EN_BIT, CC_OFFSET, CSTS_OFFSET, CSTS_RDY_BIT,
+    ACQ_OFFSET, AQA_OFFSET, ASQ_OFFSET, CC_AMS_SHIFT, CC_CSS_SHIFT, CC_EN_BIT,
+    CC_IOCQES_SHIFT, CC_IOSQES_SHIFT, CC_MPS_SHIFT, CC_OFFSET, CSTS_OFFSET, CSTS_RDY_BIT,
     cq_head_doorbell_offset, sq_tail_doorbell_offset,
 };
 use crate::ring::{CqRing, RingError, SqRing};
@@ -594,6 +595,79 @@ pub fn program_admin_queue_bases<W: MmioBackend>(
     mmio_w.write_register(ACQ_OFFSET, acq_lo);
     mmio_w.write_register(ACQ_OFFSET + 4, acq_hi);
 
+    Ok(())
+}
+
+// =============================================================================
+// CC field programmer (P6.7.10-pre.30)
+// =============================================================================
+
+/// `CC.MPS` Phase-1 value — `log2(4096) - 12 = 0` per NVMe 1.4
+/// § 3.1.5. The Phase-1 driver pins host memory page size to 4 KiB
+/// because the OMNI OS kernel allocates DMA arenas at 4 KiB
+/// alignment.
+pub const PHASE_1_MPS_LOG2: u32 = 0;
+
+/// `CC.IOSQES` Phase-1 value — `log2(64) = 6` per NVMe 1.4 § 5.4
+/// (Submission Queue Entry Size).
+pub const PHASE_1_IOSQES_LOG2: u32 = 6;
+
+/// `CC.IOCQES` Phase-1 value — `log2(16) = 4` per NVMe 1.4 § 5.5
+/// (Completion Queue Entry Size).
+pub const PHASE_1_IOCQES_LOG2: u32 = 4;
+
+/// Maximum legal value for any 4-bit CC field (`IOSQES`,
+/// `IOCQES`, `CSS`, `AMS`). NVMe 1.4 § 3.1.5 allocates 4 bits to
+/// each of these encoded fields.
+const CC_FIELD_4BIT_MAX: u32 = 0xF;
+
+/// Maximum legal value for `CC.MPS` (4 bits per § 3.1.5).
+const CC_FIELD_MPS_MAX: u32 = 0xF;
+
+/// Program the canonical `CC` initialisation fields before
+/// [`enable_controller`].
+///
+/// Writes `CC` (with `EN = 0`) packed with:
+/// - `CC.MPS = mps_log2`
+/// - `CC.IOSQES = iosqes_log2`
+/// - `CC.IOCQES = iocqes_log2`
+/// - `CC.CSS = 0` (NVM Command Set per OIP-014 § R3)
+/// - `CC.AMS = 0` (Round Robin arbitration per § R4)
+/// - `CC.EN = 0` (the helper assumes the controller is disabled;
+///   call [`disable_controller`] first per OIP-014 § S6 step 4)
+///
+/// The bring-up FSM calls this between
+/// [`program_admin_queue_bases`] and [`enable_controller`].
+///
+/// # Errors
+///
+/// - [`QueueError::AdminDepthOutOfRange`] is reused for the
+///   "field out of range" condition since the failure modes are
+///   identical (out-of-range bring-up parameter). All four field
+///   values are bounded to 4 bits (`0..=0xF`); larger values
+///   surface this variant.
+#[allow(
+    clippy::similar_names,
+    reason = "iosqes/iocqes are spec-mandated NVMe field names (NVMe 1.4 § 3.1.5)"
+)]
+pub fn program_cc_fields<W: MmioBackend>(
+    mmio_w: &mut W,
+    mps_log2: u32,
+    iosqes_log2: u32,
+    iocqes_log2: u32,
+) -> Result<(), QueueError> {
+    if mps_log2 > CC_FIELD_MPS_MAX
+        || iosqes_log2 > CC_FIELD_4BIT_MAX
+        || iocqes_log2 > CC_FIELD_4BIT_MAX
+    {
+        return Err(QueueError::AdminDepthOutOfRange);
+    }
+    let cc: u32 = (mps_log2 << CC_MPS_SHIFT)
+        | (iosqes_log2 << CC_IOSQES_SHIFT)
+        | (iocqes_log2 << CC_IOCQES_SHIFT)
+        | (0u32 << CC_CSS_SHIFT)
+        | (0u32 << CC_AMS_SHIFT);
+    mmio_w.write_register(CC_OFFSET, cc);
     Ok(())
 }
 
@@ -1429,5 +1503,116 @@ mod tests {
         assert_eq!((final_cc >> 20) & 0xF, 4);
         // Writer recorded two CC writes (disable + enable).
         assert_eq!(writer.writes.len(), 2);
+    }
+
+    // -------------------------------------------------------------------
+    // program_cc_fields (P6.7.10-pre.30)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn phase_1_cc_field_constants_match_nvme_spec() {
+        // NVMe 1.4 § 3.1.5 — 4 KiB pages MPS = 0, SQE 64 bytes
+        // IOSQES = 6, CQE 16 bytes IOCQES = 4.
+        assert_eq!(PHASE_1_MPS_LOG2, 0);
+        assert_eq!(PHASE_1_IOSQES_LOG2, 6);
+        assert_eq!(PHASE_1_IOCQES_LOG2, 4);
+    }
+
+    #[test]
+    fn program_cc_fields_writes_packed_register_value() {
+        let mut writer = MockMmioBackend::default();
+        program_cc_fields(
+            &mut writer,
+            PHASE_1_MPS_LOG2,
+            PHASE_1_IOSQES_LOG2,
+            PHASE_1_IOCQES_LOG2,
+        )
+        .unwrap();
+        assert_eq!(writer.writes.len(), 1);
+        let (off, val) = writer.writes.first().copied().unwrap();
+        assert_eq!(off, CC_OFFSET);
+        // Expected: MPS(0)<<7 | IOSQES(6)<<16 | IOCQES(4)<<20 = (6<<16) | (4<<20)
+        let expected: u32 = (6u32 << 16) | (4u32 << 20);
+        assert_eq!(val, expected);
+        // CC.EN bit MUST be clear (helper assumes controller is
+        // disabled).
+        assert_eq!(val & CC_EN_BIT, 0);
+        // CC.CSS bits 4..=6 must be zero (NVM command set).
+        assert_eq!((val >> 4) & 0x7, 0);
+        // CC.AMS bits 11..=13 must be zero (Round Robin).
+        assert_eq!((val >> 11) & 0x7, 0);
+    }
+
+    #[test]
+    fn program_cc_fields_with_nonzero_mps_packs_bits_seven_through_ten() {
+        let mut writer = MockMmioBackend::default();
+        // MPS = 5 → 4 KiB * 2^5 = 128 KiB pages (hypothetical
+        // future host).
+        program_cc_fields(&mut writer, 5, 6, 4).unwrap();
+        let (_, val) = writer.writes.first().copied().unwrap();
+        assert_eq!((val >> 7) & 0xF, 5);
+    }
+
+    #[test]
+    fn program_cc_fields_rejects_mps_above_fifteen() {
+        let mut writer = MockMmioBackend::default();
+        let res = program_cc_fields(&mut writer, 16, 6, 4);
+        assert_eq!(res, Err(QueueError::AdminDepthOutOfRange));
+        assert!(writer.writes.is_empty());
+    }
+
+    #[test]
+    fn program_cc_fields_rejects_iosqes_above_fifteen() {
+        let mut writer = MockMmioBackend::default();
+        let res = program_cc_fields(&mut writer, 0, 16, 4);
+        assert_eq!(res, Err(QueueError::AdminDepthOutOfRange));
+        assert!(writer.writes.is_empty());
+    }
+
+    #[test]
+    fn program_cc_fields_rejects_iocqes_above_fifteen() {
+        let mut writer = MockMmioBackend::default();
+        let res = program_cc_fields(&mut writer, 0, 6, 16);
+        assert_eq!(res, Err(QueueError::AdminDepthOutOfRange));
+        assert!(writer.writes.is_empty());
+    }
+
+    #[test]
+    fn program_cc_fields_accepts_max_field_values() {
+        let mut writer = MockMmioBackend::default();
+        program_cc_fields(&mut writer, 0xF, 0xF, 0xF).unwrap();
+        let (_, val) = writer.writes.first().copied().unwrap();
+        assert_eq!((val >> 7) & 0xF, 0xF);
+        assert_eq!((val >> 16) & 0xF, 0xF);
+        assert_eq!((val >> 20) & 0xF, 0xF);
+    }
+
+    #[test]
+    fn program_cc_fields_then_enable_round_trip_preserves_initialisation() {
+        // Simulate: disable_controller cleared CC, then
+        // program_cc_fields wrote the canonical initialisation
+        // fields, then enable_controller ORs EN. The final CC
+        // MUST carry MPS + IOSQES + IOCQES from the
+        // program_cc_fields step.
+        let mut writer = MockMmioBackend::default();
+        program_cc_fields(
+            &mut writer,
+            PHASE_1_MPS_LOG2,
+            PHASE_1_IOSQES_LOG2,
+            PHASE_1_IOCQES_LOG2,
+        )
+        .unwrap();
+        let (_, cc_initialised) = writer.writes.first().copied().unwrap();
+        // The reader returns the value the writer just wrote.
+        let mut reader = ScriptedMmioRead::default();
+        reader.push(CC_OFFSET, cc_initialised);
+        reader.push(CSTS_OFFSET, CSTS_RDY_BIT);
+        let final_cc = enable_controller(&mut writer, &mut reader, 16).unwrap();
+        // EN bit set.
+        assert_eq!(final_cc & CC_EN_BIT, CC_EN_BIT);
+        // IOSQES preserved.
+        assert_eq!((final_cc >> 16) & 0xF, PHASE_1_IOSQES_LOG2);
+        // IOCQES preserved.
+        assert_eq!((final_cc >> 20) & 0xF, PHASE_1_IOCQES_LOG2);
     }
 }

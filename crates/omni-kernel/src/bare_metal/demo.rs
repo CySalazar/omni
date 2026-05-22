@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "P6.7.10-pre.29 BLK auto-submit",
+        "P6.7.10-pre.30 CC fields prog",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1048,7 +1048,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "P6.7.10-pre.30 v0.3.0-alpha.2",
+        "P6.7.10-pre.31 v0.3.0-alpha.2",
         graphics::WHITE,
     );
     row(
@@ -1056,7 +1056,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Tests    : ",
         11,
-        "1575 workspace pass",
+        "1583 workspace pass",
         graphics::WHITE,
     );
     row(6, cx_r, "Author   : ", 11, "cySalazar", graphics::WHITE);

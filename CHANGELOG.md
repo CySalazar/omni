@@ -17,6 +17,69 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.30 NVMe controller `CC` initialisation
+  field programmer (2026-05-22) — TASK-005 continuation.**
+  `crates/omni-driver-nvme/src/queue.rs` extended with
+  `program_cc_fields<W: MmioBackend>(mmio_w, mps_log2,
+  iosqes_log2, iocqes_log2) -> Result<(), QueueError>` — the
+  missing CC-initialisation step between `disable_controller`
+  (pre.15) and `enable_controller` (pre.15) in the OIP-014 § S6
+  bring-up sequence per NVMe 1.4 § 3.1.5.
+  - **CC fields written** (with `EN = 0`):
+    - `CC.MPS = mps_log2` (host memory page size, bits 7..=10).
+    - `CC.IOSQES = iosqes_log2` (IO SQ entry size shift,
+      bits 19..=16).
+    - `CC.IOCQES = iocqes_log2` (IO CQ entry size shift,
+      bits 23..=20).
+    - `CC.CSS = 0` (NVM Command Set per OIP-014 § R3,
+      bits 4..=6).
+    - `CC.AMS = 0` (Round Robin arbitration per § R4,
+      bits 11..=13).
+  - **New Phase-1 constants**:
+    - `PHASE_1_MPS_LOG2 = 0` (4 KiB pages).
+    - `PHASE_1_IOSQES_LOG2 = 6` (`log2(64)` for NVMe SQE).
+    - `PHASE_1_IOCQES_LOG2 = 4` (`log2(16)` for NVMe CQE).
+  - **Field validation**: each of MPS/IOSQES/IOCQES is bounded
+    to 4 bits (`0..=0xF`) per § 3.1.5; out-of-range values
+    surface `QueueError::AdminDepthOutOfRange` (reused since the
+    failure mode is identical "out-of-range bring-up
+    parameter").
+  - **`#[allow(clippy::similar_names)]`** carve-out documenting
+    that `iosqes_log2` / `iocqes_log2` are spec-mandated NVMe
+    field names.
+  - **+8 new host-side tests** under
+    `omni_driver_nvme::queue::tests::*`:
+    - 1 Phase-1 constants tripwire (MPS=0, IOSQES=6, IOCQES=4
+      match NVMe spec).
+    - 1 packed-register-value check (single CC register write
+      with `(6<<16) | (4<<20)` shape, EN bit clear, CSS+AMS
+      bits zero).
+    - 1 nonzero MPS test (MPS=5 → bits 7..=10 = 5).
+    - 3 boundary rejection tests (MPS/IOSQES/IOCQES = 16 →
+      `AdminDepthOutOfRange` without any write).
+    - 1 max-field-value acceptance (`0xF` allowed in all three
+      slots).
+    - 1 round-trip integration
+      (`program_cc_fields_then_enable_round_trip_preserves_initialisation`)
+      — runs program_cc_fields, then feeds the captured CC
+      value to enable_controller, asserts final CC has
+      `EN | IOSQES(6) | IOCQES(4)` shape preserved through the
+      read-modify-write.
+  - **Workspace test count**: 1575 → 1583 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.30 CC fields prog`,
+    Next=`P6.7.10-pre.31 v0.3.0-alpha.2`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1583 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — composes existing register constants
+    `crate::controller_regs::{CC_MPS_SHIFT, CC_IOSQES_SHIFT,
+    CC_IOCQES_SHIFT, CC_CSS_SHIFT, CC_AMS_SHIFT, CC_OFFSET}`.
+
 - **Storage — P6.7.10-pre.29 NVMe `IoSession::submit_blk_request_auto`
   high-level BLK channel adapter (2026-05-22) — TASK-005
   continuation.**
