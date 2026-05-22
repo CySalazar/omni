@@ -17,6 +17,76 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.19 NVMe `bringup_live` FSM glue
+  (2026-05-22) — TASK-005 continuation.**
+  New `crates/omni-driver-nvme/src/bringup_live.rs` module composes
+  the pure-state `BringUp` FSM (P6.7.8.4) with the live
+  `AdminSession` (pre.13) + the `MmioBackend` seam (pre.11),
+  bridging the "did the admin command succeed?" gateway the
+  driver image would otherwise re-implement at every phase
+  transition.
+  - **`advance_with_admin_session<M: MmioBackend>(fsm: BringUp,
+    session: &mut AdminSession, buf_iova: u64, poll_limit: u32,
+    mmio: &mut M) -> Result<BringUp, BringUpError>`** dispatches
+    on the FSM's current phase:
+    - `Phase::IdentifyController` → `run_identify_controller`
+    - `Phase::IdentifyActiveNsList` → `run_identify_active_ns_list`
+    - `Phase::IdentifyNamespace` →
+      `run_identify_namespace(DEFAULT_NSID = 1, ...)`
+    - any other phase → `Event::Advance` without invoking the
+      session (the caller drives non-Identify side effects).
+  - **Outcome translation**: `is_success()` → `Event::Advance`;
+    non-success status word →
+    `Event::Abort(BringUpError::AdminCommandFailed)`;
+    underlying `QueueError` → `Event::Abort` with
+    `bringup_error_for(QueueError)`.
+  - **`bringup_error_for(QueueError) -> BringUpError`** maps
+    `ControllerNotReady → ControllerReadyTimeout` and everything
+    else → `AdminCommandFailed` (most queue failures leave the
+    controller recoverable; the kernel reaps resources via the
+    existing task-exit chain).
+  - **`DEFAULT_NSID: u32 = 1`** pins the NSID the Phase-1 driver
+    passes to `Identify Namespace` per OIP-014 § S6 step 9
+    (NSID 0 is reserved by the NVMe spec).
+  - **`crates/omni-driver-nvme/src/lib.rs`** extended with
+    `pub mod bringup_live;` declaration.
+  - **+9 new host-side tests** under
+    `omni_driver_nvme::bringup_live::tests::*`:
+    - 3 `bringup_error_for` mapping tests
+      (`ControllerNotReady → ReadyTimeout`,
+      `IdentifyCompletionTimeout → AdminCommandFailed`,
+      `Full → AdminCommandFailed`).
+    - 1 non-Identify pass-through (`PciEnumeration → MmioMap`
+      via `Event::Advance` without touching the session — zero
+      doorbell writes).
+    - 1 IdentifyController timeout propagation (empty CQ →
+      submit succeeds + 1 doorbell write + poll times out →
+      `BringUpError::AdminCommandFailed`).
+    - 1 IdentifyActiveNsList routing (verifies CDW10.CNS =
+      `CNS_ACTIVE_NSID_LIST = 0x02` in the submitted SQE).
+    - 1 IdentifyNamespace NSID propagation (verifies SQE bytes
+      4..=7 hold `DEFAULT_NSID = 1` little-endian).
+    - 1 `DEFAULT_NSID` constant tripwire.
+    - 1 `emit_synthetic_completion` fixture sanity check —
+      round-trips a CID through the FakeController-style
+      pattern and verifies the session's drain consumes it.
+  - **Workspace test count**: 1466 → 1475 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.19 NVMe FSM glue`,
+    Next=`P6.7.10-pre.20 IO QP wire`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1475 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — composes
+    `crate::admin_session::AdminSession` +
+    `crate::bringup::{BringUp, Event, Phase, BringUpError}` +
+    `crate::queue::{MmioBackend, QueueError}` already in
+    workspace.
+
 - **Storage — P6.7.10-pre.18 NVMe `AdminSession::run_identify_*`
   high-level helpers (2026-05-22) — TASK-005 continuation.**
   `crates/omni-driver-nvme/src/admin_session.rs::AdminSession`
