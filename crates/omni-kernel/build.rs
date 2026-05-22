@@ -33,8 +33,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
     // Re-run when the HEAD or the index move (covers `git commit`, `checkout`,
-    // and rebases). The `.git/HEAD` watch also catches branch switches.
+    // and rebases).
+    //
+    // - `.git/HEAD` itself only contains `ref: refs/heads/<branch>` and does
+    //   NOT change mtime on `git commit` to the same branch (only on branch
+    //   switches). Watching it alone leaks the wrong commit hash into the
+    //   embedded `OMNI_GIT_HASH` when the same shell rebuilds after a
+    //   same-branch commit — observed 2026-05-22 P6.7.9-pre.8.
+    // - `.git/logs/HEAD` is the HEAD reflog: an append-only file that gets a
+    //   fresh trailing record on EVERY HEAD-affecting operation (commit,
+    //   checkout, reset, merge, amend). Its mtime is therefore the reliable
+    //   "did HEAD move?" signal — at the cost of one extra newline of churn
+    //   per commit, which is fine for a build-script rerun trigger.
+    // - `.git/index` covers staging-area changes (dirty-flag refresh).
+    //
+    // The `.git/HEAD` watch is retained so a `git checkout <branch>` still
+    // forces a rerun even on repos where the reflog is disabled
+    // (`core.logAllRefUpdates = false`, rare).
     println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/logs/HEAD");
     println!("cargo:rerun-if-changed=../../.git/index");
 
     let git_hash = run_git(&["rev-parse", "--short=7", "HEAD"]).unwrap_or_else(|| "unknown".into());
