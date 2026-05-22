@@ -40,6 +40,11 @@
 //! - [`blk`] — BLK service-channel ABI (`BlkRequest` / `BlkResponse`) per
 //!   `OIP-Driver-NVMe-014` § M3 / § S4. Wire shape every storage driver
 //!   (NVMe today, future SATA/virtio-blk) MUST expose.
+//! - [`nvme`] — NVMe driver-private command + event channel ABI
+//!   (`NvmeCommand` / `NvmeEvent` / `IdentifyTarget`) per
+//!   `OIP-Driver-NVMe-014` § S2 / § S3. Lower-level NVMe-specific
+//!   surface the user-space NVMe driver uses between its hardware
+//!   interaction code and its admin / IO queue logic.
 //! - [`encrypted`] — Sealed marker types for encrypted-by-default data.
 //! - [`identity`] — Node, agent, model, capability, session identifiers.
 //! - [`error`] — Top-level [`error::OmniError`] taxonomy and [`error::Result`].
@@ -87,6 +92,7 @@ extern crate alloc;
 pub mod blk;
 pub mod encrypted;
 pub mod error;
+pub mod nvme;
 // `identity` is feature-gated behind `id-types` (default ON via
 // `id-generation`) because its newtypes wrap `uuid::Uuid`. The
 // CSPRNG-driven `::new()` constructors live in the same module but are

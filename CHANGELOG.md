@@ -17,6 +17,90 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.5 NVMe driver-private command + event channel
+  ABI types (2026-05-22) — TASK-005 continuation.**
+  New `crates/omni-types/src/nvme.rs` module declares the canonical
+  wire shapes carried on the two driver-private NVMe channels per
+  OIP-Driver-NVMe-014 § S2 (`omni.driver.nvme.cmd`) and § S3
+  (`omni.driver.nvme.evt`).
+  - **`IdentifyTarget`** enum (`#[non_exhaustive]`): three variants
+    (`Controller`, `Namespace{nsid}`, `ActiveNsList`) mirroring the
+    NVMe `Identify` admin command CNS field per NVMe 1.4 § 5.15.1,
+    restricted to the values OMNI OS Phase 1 actually issues.
+  - **`NvmeCommand`** enum (`#[non_exhaustive]`): seven variants the
+    user-space NVMe driver accepts on `omni.driver.nvme.cmd` —
+    `Identify`, `Read`, `Write`, `Flush`, `Discard`, `GetLogPage`,
+    `FormatNVM`. Every variant carries `opaque_id: u64` for
+    client-side multiplexing; the driver echoes the value verbatim
+    in the matching `CommandComplete` event.
+  - **`NvmeEvent`** enum (`#[non_exhaustive]`): four variants the
+    driver emits on `omni.driver.nvme.evt` — `CommandComplete{opaque_id,
+    status, cdw0}` (raw 16-bit NVMe status word per NVMe 1.4 § 4.5),
+    `AsyncEvent{event_type, event_info, log_page}`,
+    `LinkStateChange{link_up}`, `ControllerFatal{cstatus}`.
+  - **Anchor constants**:
+    - `CMD_CHANNEL_NAME = "omni.driver.nvme.cmd"`
+    - `EVT_CHANNEL_NAME = "omni.driver.nvme.evt"`
+    - `MAX_BLOCK_COUNT_PER_REQUEST = 2048` (matches
+      `omni_types::blk::MAX_BLOCK_COUNT_PER_REQUEST`; tripwire test
+      enforces equality so the BLK→NVMe lowering layer never
+      chunks a single BLK request)
+    - `BLOCK_SIZE_BYTES = 4096` (matches `omni_types::blk::BLOCK_SIZE_BYTES`)
+    - `RESERVED_DRIVER_OPAQUE_ID = 0` (sentinel for driver-internal
+      admin commands; clients MUST NOT use)
+  - All encoding routes through `omni_types::wire::encode_canonical`
+    / `decode_canonical` per OIP-Serde-004; the `repr(Rust)` enums
+    make the in-memory layout irrelevant to the cross-process
+    contract.
+  - **`crates/omni-types/src/lib.rs`** extended with `pub mod nvme;`
+    declaration + module-index docs entry.
+  - **+30 new host-side tests** under `omni_types::nvme::tests::*`:
+    - 5 constant tripwires
+      (`cmd_channel_name_matches_oip_014_s2`,
+      `evt_channel_name_matches_oip_014_s3`,
+      `max_block_count_matches_blk_module`,
+      `block_size_matches_blk_module`,
+      `reserved_driver_opaque_id_is_zero`).
+    - 10 `NvmeCommand` round-trips (Identify Controller/Namespace/
+      ActiveNsList, Read happy-path + Read at
+      `MAX_BLOCK_COUNT_PER_REQUEST`, Write, Flush, Discard,
+      GetLogPage SMART, FormatNVM).
+    - 6 `NvmeEvent` round-trips (CommandComplete success +
+      non-success status word, AsyncEvent, LinkStateChange up +
+      down, ControllerFatal).
+    - 5 wire invariants
+      (`nvme_command_encoding_is_deterministic`,
+      `nvme_event_encoding_is_deterministic`,
+      `nvme_command_decode_rejects_trailing_bytes`,
+      `nvme_command_decode_rejects_truncated_input`,
+      `nvme_event_decode_rejects_empty_input`).
+    - 3 discriminator-distinctness checks
+      (`nvme_command_variants_are_distinguishable_on_the_wire` —
+      7 variants pairwise-distinct first byte;
+      `nvme_event_variants_are_distinguishable_on_the_wire` —
+      4 variants pairwise-distinct;
+      `identify_target_variants_are_distinguishable_on_the_wire` —
+      3 variants pairwise-distinct).
+    - 1 cross-channel correlation test
+      (`opaque_id_round_trips_unchanged_command_to_event`).
+  - **Workspace test count**: 1277 → 1307 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.5 NVMe ABI types`,
+    Next=`P6.7.10-pre.6 NVMe admin queue`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1307 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    omni-types + rustdoc workspace + lint-oips (0 error / 0 warning
+    su 19 file).
+  - **No new dependency** — `serde` + `postcard` were already
+    workspace-pinned (consumed by `crate::blk` + `crate::wire`).
+  - Pure-types host-only slice — zero MMIO bytes emitted. The live
+    NVMe admin-queue programming (CC.EN=1, Identify, Create IO QP)
+    lands once P6.7.10-pre.6 wires the kernel-side admin SQ/CQ
+    allocator + ring-buffer write helpers.
+
 - **Storage — P6.7.10-pre.4 NVMe driver image consumes BLK syscalls
   (2026-05-22) — TASK-005 continuation.**
   Extends `crates/omni-driver-nvme-image/src/main.rs` with a new
