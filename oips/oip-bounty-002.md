@@ -2,11 +2,11 @@
 oip: 2
 title: Bug Bounty Program for OMNI OS
 track: Process
-status: Last Call
+status: Active
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-10
-updated: 2026-05-12
+updated: 2026-05-22
 requires:
   - 1
 supersedes: ~
@@ -593,6 +593,7 @@ in `docs/04-security-model.md`.
 |---|---|---|
 | 2026-05-12 | `Draft → Review` | Editorial transition by the interim editor body (founder, sole editor during the Bootstrap Period per `OIP-Process-001` §6.2). No substantive content change: the OIP enters the public discussion phase with all 10 canonical sections intact. The defaults applied at filing (CVSS v4.0 severity tiers anchored to `SECURITY.md` §4; payout ranges Critical €5K–€50K / High €1K–€10K / Medium €250–€2.5K / Low €50–€500; 6-month contributor guard; crypto-payout opt-in; non-monetary mode during Bootstrap with 24-month retroactive commitment) carry into `Review` unchanged. As the **first non-`Meta` OIP** under `OIP-Process-001`, this OIP also dogfoods §5 of the process — its `Review → Last Call → Active` path will be the project's first formal vote. |
 | 2026-05-12 | `Review → Last Call` | Editorial transition by the interim editor body. **14-day public-objection window opens 2026-05-12 and closes 2026-05-26** per `OIP-Process-001` §4 and §5.3. No content change carried by this transition; the OIP enters the vote window with the same text the Draft and Review phases had. Transition to `Active` requires either ≥30% weighted vote OR the 14-day window elapsing — whichever fires first — per `OIP-Process-001` §5.3. Because the editor body is in Bootstrap (1 interim editor), the Bootstrap clause of `OIP-Process-001` §6.3 applies to ratification once the window closes. |
+| 2026-05-22 | `Last Call → Active` | Editorial closure of the Last Call window under `OIP-Process-001` §5.3 ¶1 second branch: the dominant voter (`cySalazar`, 100% weighted eligibility under §5.2 bootstrap defaults — sole §5.1-eligible device, identical state to the §5.5 fast-track log entry for OIP-Kernel-005/012 on 2026-05-14) cast an in-favor ballot, satisfying both clauses of §5.3 simultaneously (≥30% weighted vote cast AND ≥50%+1 weighted in favor). Founder ballot recorded in `docs/audits/oip-editors-report-2026-Q2.md`. No blocking objection raised during the 10-day partial window (2026-05-12 → 2026-05-22) on the linked GitHub Discussion thread. No content change carried by this transition; the `Active` text is identical to the `Last Call` text. §5.5 fast-track was **not** invoked (the §5.5 (c) banner required at `Review → Last Call` entry was not in place); §5.3 ¶1 was the operative closure clause. Because OIP-Bounty-002 is `Process` track (not `Standards Track`), no activation-phase per §7 applies — `Active` is effectively `Final` until amended or superseded. |
 
 ## Copyright
 
