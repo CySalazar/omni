@@ -283,6 +283,98 @@ pub fn write_prp_list_entries(
     Ok(())
 }
 
+// =============================================================================
+// High-level PRP-pair derivation (P6.7.10-pre.28)
+// =============================================================================
+
+/// Errors specific to the [`derive_prp_pair_for_blocks`] helper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PrpDeriveError {
+    /// `buf_iova` is not 4 KiB-aligned per OIP-014 § TC5 + NVMe 1.4
+    /// § 4.1.4. The caller MUST reject misaligned buffers upstream
+    /// at the BLK channel boundary; surfacing here is
+    /// defence-in-depth.
+    BufferMisaligned,
+    /// `block_count` is zero. The encoder cannot derive a PRP pair
+    /// without at least one block of data; the caller MUST emit
+    /// `BlkResponse::InvalidArgument` upstream.
+    ZeroBlockCount,
+    /// `block_count` exceeds [`MAX_BLOCK_COUNT_PER_COMMAND`]. The
+    /// caller MUST split the transfer at the BLK channel boundary
+    /// before reaching the encoder.
+    TooManyBlocks,
+    /// `list_page_iova` is required (the layout is `PrpList`) but
+    /// the caller passed zero. The caller MUST allocate a 4 KiB
+    /// IOVA buffer via `DmaMap` and pass its IOVA whenever the
+    /// transfer spans more than two pages.
+    PrpListPageMissing,
+    /// `list_page_iova` is not 4 KiB-aligned. Same alignment rule
+    /// as `buf_iova`.
+    PrpListPageMisaligned,
+}
+
+/// Derive the `(layout, prp1, prp2)` triple from a BLK-level
+/// `(buf_iova, block_count)` pair, falling back to
+/// `list_page_iova` for transfers that need a PRP-list page.
+///
+/// Composes the existing primitives:
+/// 1. [`block_payload_bytes`] computes the byte length from the
+///    block count (Phase-1 uses 4 KiB sectors per OIP-014 § S6
+///    step 10 so `len = block_count * 4096`).
+/// 2. [`prp_layout`] picks the layout (`SinglePage` / `TwoPages` /
+///    `PrpList`).
+/// 3. [`prp1_for`] / [`prp2_for`] produce the two SQE fields.
+///
+/// The caller passes `list_page_iova = 0` for transfers that
+/// don't need it (1 or 2 blocks); the helper validates the value
+/// only when [`prp_layout`] returns `PrpList`.
+///
+/// # Errors
+///
+/// - [`PrpDeriveError::BufferMisaligned`] if `buf_iova` is not
+///   4 KiB-aligned.
+/// - [`PrpDeriveError::ZeroBlockCount`] if `block_count == 0`.
+/// - [`PrpDeriveError::TooManyBlocks`] if
+///   `block_count > MAX_BLOCK_COUNT_PER_COMMAND`.
+/// - [`PrpDeriveError::PrpListPageMissing`] if the derived
+///   layout is `PrpList` but `list_page_iova == 0`.
+/// - [`PrpDeriveError::PrpListPageMisaligned`] if
+///   `list_page_iova` is not 4 KiB-aligned.
+pub fn derive_prp_pair_for_blocks(
+    buf_iova: u64,
+    block_count: u32,
+    list_page_iova: u64,
+) -> Result<(PrpLayout, u64, u64), PrpDeriveError> {
+    if !is_prp_aligned(buf_iova) {
+        return Err(PrpDeriveError::BufferMisaligned);
+    }
+    if block_count == 0 {
+        return Err(PrpDeriveError::ZeroBlockCount);
+    }
+    if block_count > MAX_BLOCK_COUNT_PER_COMMAND {
+        return Err(PrpDeriveError::TooManyBlocks);
+    }
+    // `block_payload_bytes` returns `Some` for `block_count > 0`
+    // and `<= MAX_BLOCK_COUNT_PER_COMMAND`; the early returns
+    // above guarantee we get a `Some` here.
+    let len = block_payload_bytes(block_count).ok_or(PrpDeriveError::TooManyBlocks)?;
+    let layout = prp_layout(len);
+
+    if matches!(layout, PrpLayout::PrpList { .. }) {
+        if list_page_iova == 0 {
+            return Err(PrpDeriveError::PrpListPageMissing);
+        }
+        if !is_prp_aligned(list_page_iova) {
+            return Err(PrpDeriveError::PrpListPageMisaligned);
+        }
+    }
+
+    let prp1 = prp1_for(buf_iova);
+    let prp2 = prp2_for(buf_iova, layout, list_page_iova);
+    Ok((layout, prp1, prp2))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,6 +628,151 @@ mod tests {
                     assert_eq!(e, f);
                 } else {
                     assert_ne!(e, f);
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // derive_prp_pair_for_blocks (P6.7.10-pre.28)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn derive_prp_pair_single_block_returns_single_page_layout() {
+        let buf: u64 = 0x1_0000;
+        let (layout, prp1, prp2) =
+            derive_prp_pair_for_blocks(buf, 1, 0).expect("1 block");
+        assert_eq!(layout, PrpLayout::SinglePage);
+        assert_eq!(prp1, buf);
+        assert_eq!(prp2, 0);
+    }
+
+    #[test]
+    fn derive_prp_pair_two_blocks_returns_two_pages_layout() {
+        let buf: u64 = 0x2_0000;
+        let (layout, prp1, prp2) =
+            derive_prp_pair_for_blocks(buf, 2, 0).expect("2 blocks");
+        assert_eq!(layout, PrpLayout::TwoPages);
+        assert_eq!(prp1, buf);
+        // PRP2 points at the second 4 KiB page directly.
+        assert_eq!(prp2, buf + PRP_PAGE_SIZE as u64);
+    }
+
+    #[test]
+    fn derive_prp_pair_three_blocks_returns_prp_list_layout() {
+        let buf: u64 = 0x3_0000;
+        let list_page: u64 = 0x10_0000;
+        let (layout, prp1, prp2) =
+            derive_prp_pair_for_blocks(buf, 3, list_page).expect("3 blocks");
+        // 3 blocks = 12 KiB = 3 pages → PrpList with 2 entries
+        // (PRP1 covers page 0, list covers pages 1 + 2).
+        match layout {
+            PrpLayout::PrpList { n_entries } => {
+                assert_eq!(n_entries, 2);
+            }
+            _ => panic!("expected PrpList, got {layout:?}"),
+        }
+        assert_eq!(prp1, buf);
+        assert_eq!(prp2, list_page);
+    }
+
+    #[test]
+    fn derive_prp_pair_rejects_misaligned_buf_iova() {
+        // 0x1001 is not 4 KiB-aligned.
+        let res = derive_prp_pair_for_blocks(0x1001, 1, 0);
+        assert_eq!(res, Err(PrpDeriveError::BufferMisaligned));
+    }
+
+    #[test]
+    fn derive_prp_pair_rejects_zero_block_count() {
+        let res = derive_prp_pair_for_blocks(0x1_0000, 0, 0);
+        assert_eq!(res, Err(PrpDeriveError::ZeroBlockCount));
+    }
+
+    #[test]
+    fn derive_prp_pair_rejects_block_count_above_cap() {
+        let res = derive_prp_pair_for_blocks(
+            0x1_0000,
+            MAX_BLOCK_COUNT_PER_COMMAND + 1,
+            0x10_0000,
+        );
+        assert_eq!(res, Err(PrpDeriveError::TooManyBlocks));
+    }
+
+    #[test]
+    fn derive_prp_pair_rejects_missing_list_page_for_multi_page_transfer() {
+        // 3 blocks needs a PRP list; passing list_page_iova = 0
+        // surfaces PrpListPageMissing.
+        let res = derive_prp_pair_for_blocks(0x1_0000, 3, 0);
+        assert_eq!(res, Err(PrpDeriveError::PrpListPageMissing));
+    }
+
+    #[test]
+    fn derive_prp_pair_rejects_misaligned_list_page() {
+        // 3 blocks + non-aligned list page → PrpListPageMisaligned.
+        let res = derive_prp_pair_for_blocks(0x1_0000, 3, 0x10_0001);
+        assert_eq!(res, Err(PrpDeriveError::PrpListPageMisaligned));
+    }
+
+    #[test]
+    fn derive_prp_pair_ignores_list_page_iova_for_single_page() {
+        // Single-page transfer: the helper should NOT validate
+        // list_page_iova alignment (it's unused). Pass a garbage
+        // value and verify the call succeeds.
+        let res = derive_prp_pair_for_blocks(0x1_0000, 1, 0xDEAD_BEEF);
+        let (layout, _, prp2) = res.expect("ok");
+        assert_eq!(layout, PrpLayout::SinglePage);
+        assert_eq!(prp2, 0);
+    }
+
+    #[test]
+    fn derive_prp_pair_ignores_list_page_iova_for_two_pages() {
+        // TwoPages also ignores list_page_iova; PRP2 is computed
+        // from buf_iova directly.
+        let buf: u64 = 0x4_0000;
+        let res = derive_prp_pair_for_blocks(buf, 2, 0xDEAD_BEEF);
+        let (layout, _, prp2) = res.expect("ok");
+        assert_eq!(layout, PrpLayout::TwoPages);
+        assert_eq!(prp2, buf + PRP_PAGE_SIZE as u64);
+    }
+
+    #[test]
+    fn derive_prp_pair_max_block_count_uses_prp_list() {
+        // The maximum legal block count (`MAX_BLOCK_COUNT_PER_COMMAND
+        // = 2048` for 8 MiB) MUST resolve to PrpList with the
+        // expected n_entries = 2047 (2048 pages total, PRP1 covers
+        // page 0, list covers pages 1..=2047).
+        let buf: u64 = 0x10_0000;
+        let list_page: u64 = 0x20_0000;
+        let (layout, _, _) =
+            derive_prp_pair_for_blocks(buf, MAX_BLOCK_COUNT_PER_COMMAND, list_page).unwrap();
+        match layout {
+            PrpLayout::PrpList { n_entries } => {
+                assert_eq!(
+                    n_entries,
+                    MAX_BLOCK_COUNT_PER_COMMAND as usize - 1
+                );
+            }
+            _ => panic!("expected PrpList at MAX_BLOCK_COUNT_PER_COMMAND, got {layout:?}"),
+        }
+    }
+
+    #[test]
+    fn prp_derive_error_taxonomy_is_distinguishable() {
+        // All 5 variants distinct from each other.
+        let errs = [
+            PrpDeriveError::BufferMisaligned,
+            PrpDeriveError::ZeroBlockCount,
+            PrpDeriveError::TooManyBlocks,
+            PrpDeriveError::PrpListPageMissing,
+            PrpDeriveError::PrpListPageMisaligned,
+        ];
+        for (i, e) in errs.iter().enumerate() {
+            for (j, f) in errs.iter().enumerate() {
+                if i == j {
+                    assert_eq!(e, f);
+                } else {
+                    assert_ne!(e, f, "variants {i} and {j} must differ");
                 }
             }
         }

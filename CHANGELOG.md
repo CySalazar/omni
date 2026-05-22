@@ -17,6 +17,65 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.28 NVMe high-level PRP-pair derivation
+  helper (2026-05-22) — TASK-005 continuation.**
+  `crates/omni-driver-nvme/src/transfer_model.rs` extended with
+  `derive_prp_pair_for_blocks(buf_iova: u64, block_count: u32,
+  list_page_iova: u64) -> Result<(PrpLayout, u64, u64),
+  PrpDeriveError>` — the one-shot adapter bridging the BLK
+  channel boundary (`BlkRequest::{Read, Write}{buf_iova, count}`)
+  to the SQE-shape `(prp1, prp2)` field pair that
+  `crate::io::encode_read` / `encode_write` consume.
+  - **Composition** of existing pre.8 primitives:
+    1. `block_payload_bytes(block_count)` computes byte length
+       (Phase-1 uses 4 KiB sectors per OIP-014 § S6 step 10 so
+       `len = block_count * 4096`).
+    2. `prp_layout(len)` picks one of `SinglePage` / `TwoPages` /
+       `PrpList { n_entries }`.
+    3. `prp1_for(buf_iova)` + `prp2_for(buf_iova, layout,
+       list_page_iova)` produce the two SQE fields.
+  - **`PrpDeriveError` taxonomy** (`#[non_exhaustive]`):
+    - `BufferMisaligned` (buf_iova not 4 KiB-aligned).
+    - `ZeroBlockCount` (count = 0).
+    - `TooManyBlocks` (count > `MAX_BLOCK_COUNT_PER_COMMAND` =
+      2048).
+    - `PrpListPageMissing` (PrpList layout but list_page_iova
+      = 0).
+    - `PrpListPageMisaligned` (list_page_iova not 4 KiB-aligned).
+  - **Validation scope**: `list_page_iova` validated ONLY when
+    the derived layout is `PrpList`. Callers can pass `0` for
+    1- or 2-block transfers without triggering a spurious
+    rejection.
+  - **+12 new host-side tests** under
+    `omni_driver_nvme::transfer_model::tests::*`:
+    - 3 happy-path layout dispatches: 1 block → `SinglePage`
+      with `prp2 = 0`; 2 blocks → `TwoPages` with
+      `prp2 = buf + 4096`; 3 blocks → `PrpList { n_entries=2 }`
+      with `prp2 = list_page`.
+    - 5 error-path tests (misaligned buf, zero count,
+      count > MAX, PrpList without list_page, misaligned
+      list_page).
+    - 2 invariant tests: single-page + two-pages ignore
+      `list_page_iova` value (even garbage `0xDEAD_BEEF`
+      succeeds).
+    - 1 max-block boundary
+      (`MAX_BLOCK_COUNT_PER_COMMAND = 2048` →
+      `PrpList { n_entries = 2047 }`).
+    - 1 taxonomy distinctness check across all 5 variants.
+  - **Workspace test count**: 1553 → 1565 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.28 PRP derive`,
+    Next=`P6.7.10-pre.29 v0.3.0-alpha.2`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1565 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — pure-state composition of existing
+    pre.8 primitives.
+
 - **Storage — P6.7.10-pre.27 NVMe Dataset Management Discard
   Range Descriptor builder (2026-05-22) — TASK-005 continuation.**
   New `crates/omni-driver-nvme/src/discard.rs` module declares
