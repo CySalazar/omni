@@ -17,6 +17,77 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.22 NVMe BLK gateway (2026-05-22) —
+  TASK-005 continuation.**
+  New `crates/omni-driver-nvme/src/blk_gateway.rs` module declares
+  two pure functions that close the BLK ↔ NVMe boundary the
+  file-system service consumes per OIP-Driver-NVMe-014 § S4.
+  - **`encode_blk_request(req: BlkRequest, cid: u16, nsid: u32,
+    prp1: u64, prp2: u64) -> Option<AdminSqe>`** dispatches on
+    the `BlkRequest` variant and returns the matching NVMe IO
+    SQE via the encoders from pre.7:
+    - `BlkRequest::Read → encode_read` (opcode `0x02` NVM Read).
+    - `BlkRequest::Write → encode_write` (`0x01` NVM Write).
+    - `BlkRequest::Flush → encode_flush` (`0x00` NVM Flush).
+    - `BlkRequest::Discard → encode_discard` (`0x09` Dataset
+      Management with `AD = 1`).
+    Returns `None` for unknown `#[non_exhaustive]` future
+    variants per OIP-Serde-004.
+  - **`cqe_to_blk_response(fields: &AdminCqeFields) ->
+    BlkResponse`** translates the parsed completion to the BLK
+    response type:
+    - `is_success() == true` → `Ok`.
+    - Generic Command Status (`SCT == 0`) with sub-codes `0x02`
+      (Invalid Field) / `0x0B` (Invalid Namespace) →
+      `InvalidArgument`.
+    - SC `0x80` (LBA Out of Range) → `OutOfRange`.
+    - Any other non-success status → `DeviceError(status)`
+      carrying the SCT:SC pair packed as `(sct << 8) | sc` per
+      OIP-014 § S4.
+  - **Defensive fallback**: a corrupt parser yielding
+    `SCT ≠ 0 + SC = 0` still emits `DeviceError` with
+    `(sct << 8)`. The `NON_NVME_DEVICE_ERROR = 0xFFFF` sentinel
+    fires only if the packed status word collapses to zero —
+    unreachable in well-formed code.
+  - **+15 new host-side tests** under
+    `omni_driver_nvme::blk_gateway::tests::*`:
+    - 6 `encode_blk_request` dispatch checks: Read →
+      `OPC_NVM_READ` at byte 0 + CID at bytes 2..=3; Write →
+      `OPC_NVM_WRITE`; Flush → `OPC_NVM_FLUSH`; Discard →
+      `OPC_NVM_DATASET_MGMT`; NSID `0xDEAD_BEEF` passes through
+      to SQE bytes 4..=7 little-endian; every encoder emits
+      exactly a 64-byte SQE.
+    - 8 `cqe_to_blk_response` mapping checks: success → `Ok`;
+      Invalid Field → `InvalidArgument`; Invalid Namespace →
+      `InvalidArgument`; LBA Out of Range → `OutOfRange`;
+      Invalid Opcode → `DeviceError(0x0001)`; Command-Specific
+      with SC=`0x82` → `DeviceError(0x0282)`; Media+Data
+      Integrity → `DeviceError(0x0282)`; SCT≠0+SC=0 defensive
+      fallback → `DeviceError(0x0100)`.
+    - 1 round-trip integration
+      (`encode_and_response_round_trip_read_to_ok`) — submit a
+      Read with CID=`0xABCD`, verify CID preserved in SQE bytes
+      2..=3, synthesise the matching success CQE, assert
+      `BlkResponse::Ok`.
+  - **`crates/omni-driver-nvme/src/lib.rs`** extended with
+    `pub mod blk_gateway;` declaration.
+  - **Workspace test count**: 1486 → 1501 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.22 BLK gateway`,
+    Next=`P6.7.10-pre.23 IO QP session`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1501 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — composes
+    `omni_types::blk::{BlkRequest, BlkResponse, NON_NVME_DEVICE_ERROR}`
+    (pre.1) + `crate::admin::{AdminSqe, AdminCqeFields}`
+    (pre.6) + `crate::io::{encode_read, encode_write,
+    encode_flush, encode_discard, OPC_NVM_*}` (pre.7).
+
 - **Storage — P6.7.10-pre.21 NVMe Phase-1 bring-up end-to-end
   integration test (2026-05-22) — TASK-005 continuation.**
   New `end_to_end_phase_1_bringup_sequence_completes_successfully`
