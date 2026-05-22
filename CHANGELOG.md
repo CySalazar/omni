@@ -17,6 +17,63 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.8 NVMe PRP list page encoder (2026-05-22) —
+  TASK-005 continuation.**
+  `crates/omni-driver-nvme/src/transfer_model.rs` extended with the
+  PRP descriptor encoders that complete the multi-page transfer
+  surface the IO ring-buffer driver consumes per NVMe 1.4 § 4.1.4.
+  - **`prp1_for(buffer_iova) -> u64`**: pass-through helper for the
+    PRP1 dword. Kept named so call sites avoid embedding the inline
+    literal and stay symmetric with `prp2_for`.
+  - **`prp2_for(buffer_iova, layout, list_page_iova) -> u64`**:
+    dispatches across the three legal PRP layouts —
+    `SinglePage → 0`, `TwoPages → buffer_iova + PRP_PAGE_SIZE`
+    (PRP2 points directly at the second page; no list allocation),
+    `PrpList { .. } → list_page_iova` (PRP2 points at the
+    host-prepared 4 KiB PRP list page).
+  - **`write_prp_list_entries(buffer_iova, n_entries, dest: &mut [u8])
+    -> Result<(), PrpError>`**: populates the host-allocated PRP list
+    page with `n_entries` 64-bit little-endian pointers to consecutive
+    4 KiB pages, starting at `buffer_iova + PRP_PAGE_SIZE` (PRP1
+    covers page index 0, so the list starts at index 1). Walks
+    `dest` via `chunks_exact_mut(PRP_ENTRY_BYTES = 8)` to satisfy
+    the workspace `clippy::indexing_slicing` deny-lint. Wraparound
+    at `u64::MAX` is silently saturated via `wrapping_add`
+    (defensive against future cap relaxations).
+  - **`PrpError`** taxonomy (`#[non_exhaustive]`):
+    - `ListBufferTooSmall` — `dest.len() < n_entries * 8`.
+    - `TooManyEntries` — `n_entries > PRP_ENTRIES_PER_LIST_PAGE`
+      (= 512; the chained-PRP-list threshold v0.3 caps below per
+      OIP-014 § S2).
+  - **+12 new host-side tests** under
+    `omni_driver_nvme::transfer_model::tests::*`:
+    - 1 fixture (`read_prp_entry` helper).
+    - 1 `prp1_for` round-trip.
+    - 4 `prp2_for` dispatch checks (`SinglePage → 0`,
+      `TwoPages → buf + 4096`, `PrpList → list_page_iova`, the
+      `list_page_iova` argument is ignored for single+two-page
+      layouts).
+    - 6 `write_prp_list_entries` tests (happy-path 3 entries with
+      untouched-tail check, zero-entries no-op preserves marker
+      bytes, full `PRP_ENTRIES_PER_LIST_PAGE` list, rejects
+      `n_entries > capacity`, rejects undersized buffer, accepts
+      exact-size buffer).
+    - 1 little-endian byte-ordering check.
+    - 1 `PrpError` discriminant tripwire.
+  - **Workspace test count**: 1358 → 1371 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.8 NVMe PRP list`,
+    Next=`P6.7.10-pre.9 NVMe SQ/CQ ring`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1371 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — pure extension of the existing
+    `transfer_model` module.
+
 - **Storage — P6.7.10-pre.7 NVMe IO submission encoder (2026-05-22) —
   TASK-005 continuation.**
   New `crates/omni-driver-nvme/src/io.rs` module declares the four

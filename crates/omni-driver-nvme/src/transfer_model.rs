@@ -166,6 +166,123 @@ pub const fn prp_layout(len: usize) -> PrpLayout {
     }
 }
 
+// =============================================================================
+// PRP1 / PRP2 / PRP-list encoder (P6.7.10-pre.8)
+// =============================================================================
+
+/// Reason a PRP encoder helper could not complete.
+///
+/// All variants are observable through the future IO ring-buffer
+/// driver's `BlkResponse::InvalidArgument` path; the encoder maps
+/// each variant deterministically without touching MMIO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PrpError {
+    /// [`write_prp_list_entries`] was called with a destination slice
+    /// shorter than `n_entries * PRP_ENTRY_BYTES` bytes. The driver
+    /// MUST allocate a full [`PRP_PAGE_SIZE`]-byte buffer per
+    /// OIP-014 § S2 and pass it verbatim; landing here indicates a
+    /// buffer-shape regression in the caller.
+    ListBufferTooSmall,
+    /// [`write_prp_list_entries`] was called with `n_entries`
+    /// exceeding [`PRP_ENTRIES_PER_LIST_PAGE`]. v0.3 caps transfer
+    /// size below the chained-PRP-list threshold per
+    /// [`MAX_BLOCK_COUNT_PER_COMMAND`]; landing here means the
+    /// driver attempted a transfer larger than the documented cap,
+    /// a contract violation upstream of the encoder.
+    TooManyEntries,
+}
+
+/// Return the PRP1 dword for a transfer that starts at `buffer_iova`.
+///
+/// PRP1 is the IOVA of the first 4 KiB page of the data buffer. The
+/// encoder does NOT validate alignment — the caller MUST have already
+/// rejected misaligned buffers via [`is_prp_aligned`] per OIP-014
+/// § TC5. Provided as a named helper so the call sites do not
+/// embed the trivial pass-through inline (this also keeps the API
+/// symmetric with [`prp2_for`]).
+#[must_use]
+pub const fn prp1_for(buffer_iova: u64) -> u64 {
+    buffer_iova
+}
+
+/// Return the PRP2 dword for a transfer of the given [`PrpLayout`].
+///
+/// - [`PrpLayout::SinglePage`] → `0` (PRP2 unused per NVMe 1.4
+///   § 4.1.4 when the entire transfer fits in one page).
+/// - [`PrpLayout::TwoPages`] → `buffer_iova + PRP_PAGE_SIZE` (PRP2
+///   points directly at the second page; no list allocation needed).
+/// - [`PrpLayout::PrpList { .. }`] → `list_page_iova` (PRP2 points at
+///   the host-prepared 4 KiB PRP list page; the caller MUST have
+///   already populated the page through [`write_prp_list_entries`]
+///   before submitting the SQE).
+///
+/// `list_page_iova` is ignored when `layout` is not `PrpList`. The
+/// caller may pass `0` in those cases for symmetry with the
+/// encoder API.
+#[must_use]
+pub const fn prp2_for(buffer_iova: u64, layout: PrpLayout, list_page_iova: u64) -> u64 {
+    match layout {
+        PrpLayout::SinglePage => 0,
+        PrpLayout::TwoPages => buffer_iova.wrapping_add(PRP_PAGE_SIZE as u64),
+        PrpLayout::PrpList { .. } => list_page_iova,
+    }
+}
+
+/// Populate a host-allocated PRP list page with the 4 KiB-page
+/// pointers for the tail of a multi-page transfer.
+///
+/// Each PRP list entry is a 64-bit little-endian pointer to the
+/// `(1 + i)`-th 4 KiB page of the data buffer — PRP1 covers the
+/// first page (index 0), so the list starts at index 1. NVMe 1.4
+/// § 4.1.4 requires every PRP list entry to be 4 KiB-aligned, which
+/// is satisfied by construction here because each entry is
+/// `buffer_iova + (1 + i) * PRP_PAGE_SIZE`.
+///
+/// Wraparound at `u64::MAX` is silently saturated via
+/// `wrapping_add` — the caller is responsible for keeping the buffer
+/// inside the addressable IOVA range. Phase-1 IOVA allocator caps
+/// buffers below the 4 GiB DMA arena ceiling so the wraparound path
+/// is unreachable; the helper documents the behaviour for
+/// defence-in-depth.
+///
+/// # Errors
+///
+/// - [`PrpError::TooManyEntries`] if `n_entries >
+///   PRP_ENTRIES_PER_LIST_PAGE` (v0.3 caps below the chained-PRP-list
+///   threshold).
+/// - [`PrpError::ListBufferTooSmall`] if
+///   `dest.len() < n_entries * PRP_ENTRY_BYTES`.
+///
+/// On success the helper writes exactly `n_entries * PRP_ENTRY_BYTES`
+/// bytes starting at `dest[0]`. Bytes past the last entry are left
+/// untouched (the caller MUST zero-initialise the PRP list page
+/// before passing it here — un-touched entries with non-zero stale
+/// data would be interpreted as garbage page pointers by the
+/// controller).
+pub fn write_prp_list_entries(
+    buffer_iova: u64,
+    n_entries: usize,
+    dest: &mut [u8],
+) -> Result<(), PrpError> {
+    if n_entries > PRP_ENTRIES_PER_LIST_PAGE {
+        return Err(PrpError::TooManyEntries);
+    }
+    let needed = n_entries.saturating_mul(PRP_ENTRY_BYTES);
+    if dest.len() < needed {
+        return Err(PrpError::ListBufferTooSmall);
+    }
+    let entries_slice = dest.get_mut(..needed).ok_or(PrpError::ListBufferTooSmall)?;
+    for (i, chunk) in entries_slice.chunks_exact_mut(PRP_ENTRY_BYTES).enumerate() {
+        // PRP1 covers page index 0; PRP list entry `i` covers page
+        // index `i + 1`.
+        let page_index = (i as u64).wrapping_add(1);
+        let entry = buffer_iova.wrapping_add(page_index.wrapping_mul(PRP_PAGE_SIZE as u64));
+        chunk.copy_from_slice(&entry.to_le_bytes());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +398,146 @@ mod tests {
             prp_layout(2 * PRP_PAGE_SIZE + 1),
             PrpLayout::PrpList { n_entries: 2 }
         );
+    }
+
+    // -----------------------------------------------------------------
+    // PRP1 / PRP2 / list encoder (P6.7.10-pre.8)
+    // -----------------------------------------------------------------
+
+    fn read_prp_entry(buf: &[u8], i: usize) -> u64 {
+        let off = i * PRP_ENTRY_BYTES;
+        let slice = buf.get(off..off + PRP_ENTRY_BYTES).expect("entry in bounds");
+        let mut tmp = [0u8; 8];
+        tmp.copy_from_slice(slice);
+        u64::from_le_bytes(tmp)
+    }
+
+    #[test]
+    fn prp1_for_returns_buffer_iova_verbatim() {
+        assert_eq!(prp1_for(0), 0);
+        assert_eq!(prp1_for(0x1000), 0x1000);
+        assert_eq!(prp1_for(0xDEAD_BEEF_0000), 0xDEAD_BEEF_0000);
+    }
+
+    #[test]
+    fn prp2_for_single_page_returns_zero() {
+        assert_eq!(prp2_for(0x1000, PrpLayout::SinglePage, 0x9000), 0);
+    }
+
+    #[test]
+    fn prp2_for_two_pages_returns_buffer_plus_page_size() {
+        let buf: u64 = 0x4000;
+        let prp2 = prp2_for(buf, PrpLayout::TwoPages, 0);
+        assert_eq!(prp2, buf + PRP_PAGE_SIZE as u64);
+    }
+
+    #[test]
+    fn prp2_for_prp_list_returns_list_page_iova() {
+        let list: u64 = 0xCAFE_C000;
+        let prp2 = prp2_for(0x1000, PrpLayout::PrpList { n_entries: 5 }, list);
+        assert_eq!(prp2, list);
+    }
+
+    #[test]
+    fn prp2_for_ignores_list_arg_for_single_and_two_page_layouts() {
+        assert_eq!(prp2_for(0x1000, PrpLayout::SinglePage, 0xDEAD), 0);
+        assert_eq!(
+            prp2_for(0x1000, PrpLayout::TwoPages, 0xDEAD),
+            0x1000 + PRP_PAGE_SIZE as u64
+        );
+    }
+
+    #[test]
+    fn write_prp_list_entries_happy_path_three_entries() {
+        let buf_iova: u64 = 0x1_0000;
+        let mut page = [0u8; PRP_PAGE_SIZE];
+        // 3 entries → list covers buffer pages 1, 2, 3 (PRP1 covers
+        // page 0).
+        write_prp_list_entries(buf_iova, 3, &mut page).expect("write");
+        assert_eq!(read_prp_entry(&page, 0), buf_iova + PRP_PAGE_SIZE as u64);
+        assert_eq!(read_prp_entry(&page, 1), buf_iova + 2 * PRP_PAGE_SIZE as u64);
+        assert_eq!(read_prp_entry(&page, 2), buf_iova + 3 * PRP_PAGE_SIZE as u64);
+        // Untouched tail stays zero (page was zero-initialised).
+        let untouched = page.get(24..).expect("tail in bounds");
+        for &b in untouched {
+            assert_eq!(b, 0);
+        }
+    }
+
+    #[test]
+    fn write_prp_list_entries_zero_entries_is_noop() {
+        let mut page = [0xAAu8; PRP_PAGE_SIZE];
+        write_prp_list_entries(0x1000, 0, &mut page).expect("zero entries");
+        // No bytes touched; the 0xAA marker survives end-to-end.
+        for &b in &page {
+            assert_eq!(b, 0xAA);
+        }
+    }
+
+    #[test]
+    fn write_prp_list_entries_full_list_page() {
+        let buf_iova: u64 = 0x10_0000;
+        let mut page = [0u8; PRP_PAGE_SIZE];
+        write_prp_list_entries(buf_iova, PRP_ENTRIES_PER_LIST_PAGE, &mut page).expect("full");
+        // First entry covers buffer page 1; last entry covers
+        // buffer page 512 (since list has 512 entries indexed 0..511,
+        // each pointing at page (i + 1)).
+        assert_eq!(read_prp_entry(&page, 0), buf_iova + PRP_PAGE_SIZE as u64);
+        assert_eq!(
+            read_prp_entry(&page, PRP_ENTRIES_PER_LIST_PAGE - 1),
+            buf_iova + (PRP_ENTRIES_PER_LIST_PAGE as u64) * PRP_PAGE_SIZE as u64
+        );
+    }
+
+    #[test]
+    fn write_prp_list_entries_rejects_too_many_entries() {
+        let mut page = [0u8; PRP_PAGE_SIZE];
+        let res =
+            write_prp_list_entries(0x1000, PRP_ENTRIES_PER_LIST_PAGE + 1, &mut page);
+        assert_eq!(res, Err(PrpError::TooManyEntries));
+    }
+
+    #[test]
+    fn write_prp_list_entries_rejects_undersized_buffer() {
+        let mut page = [0u8; 16]; // room for 2 entries (16 / 8)
+        let res = write_prp_list_entries(0x1000, 3, &mut page);
+        assert_eq!(res, Err(PrpError::ListBufferTooSmall));
+    }
+
+    #[test]
+    fn write_prp_list_entries_accepts_exact_size_buffer() {
+        // dest.len() == n_entries * 8 — boundary case.
+        let mut buf = [0u8; 24]; // exactly 3 entries
+        write_prp_list_entries(0x1000, 3, &mut buf).expect("exact size");
+        assert_eq!(read_prp_entry(&buf, 0), 0x1000 + PRP_PAGE_SIZE as u64);
+        assert_eq!(read_prp_entry(&buf, 2), 0x1000 + 3 * PRP_PAGE_SIZE as u64);
+    }
+
+    #[test]
+    fn write_prp_list_entries_emits_little_endian_bytes() {
+        let buf_iova: u64 = 0xCAFE_BABE_0000;
+        let mut page = [0u8; 8];
+        write_prp_list_entries(buf_iova, 1, &mut page).expect("one entry");
+        // Expected: buf_iova + 4096 = 0xCAFE_BABE_1000 in LE.
+        let expected = (buf_iova + PRP_PAGE_SIZE as u64).to_le_bytes();
+        assert_eq!(page, expected);
+    }
+
+    #[test]
+    fn prp_error_taxonomy_is_non_exhaustive_tripwire() {
+        // Defensive sanity-check that the two variants we publish
+        // round-trip through the workspace `match` rules. A future
+        // addition to `PrpError` will not break source-level
+        // consumers as long as they use a `_ =>` arm.
+        let errs = [PrpError::ListBufferTooSmall, PrpError::TooManyEntries];
+        for (i, e) in errs.iter().enumerate() {
+            for (j, f) in errs.iter().enumerate() {
+                if i == j {
+                    assert_eq!(e, f);
+                } else {
+                    assert_ne!(e, f);
+                }
+            }
+        }
     }
 }
