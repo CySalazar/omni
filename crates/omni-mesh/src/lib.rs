@@ -46,11 +46,26 @@ pub mod discovery {
 }
 
 /// QUIC + Noise transport layer.
+///
+/// **Wire format (per OIP-Serde-004, Active 2026-05-22).** All
+/// mesh messages serialize via
+/// [`omni_types::wire::encode_canonical`] / `decode_canonical`
+/// (postcard 1.0). The wire schema is locked: little-endian
+/// integers, postcard's varint length prefix on `Vec`/`String`,
+/// enum discriminants in source-declaration order. See
+/// `OIP-Serde-004` § Motivation for the full history of this
+/// choice; this docstring is the canonical pointer for future
+/// maintainers.
 pub mod transport {
     // TODO(phase-4): QUIC streams with Noise_XX handshake.
-    // TODO(TASK-022): align wire format to postcard 1.0
-    //   per OIP-Serde-004; current bincode 2.0 usage is a
-    //   documented gap, see docs/03-mesh-protocol.md:197.
+    //
+    // Concrete message types arrive at the same time as the
+    // QUIC streams (Phase 4 per docs/06-roadmap.md). At that
+    // point the per-variant round-trip + maximum-size + fuzz
+    // tests called for by TASK-022's acceptance criteria will
+    // land in crates/omni-mesh/tests/wire_round_trip.rs; until
+    // then there is nothing to round-trip and no test can
+    // exist.
 }
 
 /// Peer attestation handshake.

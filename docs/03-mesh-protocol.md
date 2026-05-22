@@ -194,7 +194,7 @@ Scope {
 
 #### Encoding
 
-* Encoder: `bincode` 2.0 with `bincode::config::standard()` — little-endian, length-prefixed `Vec` and `String`, no length limit, no trailing data tolerated on decode.
+* Encoder: `postcard` 1.0 via [`omni_types::wire::encode_canonical`](../crates/omni-types/src/wire.rs) per [`OIP-Serde-004`](../oips/oip-serde-004.md) § S2 (Active since 2026-05-22 by `OIP-Process-001` §5.3 ¶1 founder ballot — see [`docs/audits/oip-editors-report-2026-Q2.md`](audits/oip-editors-report-2026-Q2.md)). Little-endian, length-prefixed `Vec` and `String` (varint length per postcard's canonical encoding), no length limit beyond `OmniError::wire` bounds checking, no trailing data tolerated on decode (per `omni_types::wire::decode_canonical`'s explicit trailing-bytes check). See OIP-Serde-004 § Motivation for the full history of why this encoder was selected over the originally-planned alternative.
 * Field order: textual order in the struct definitions above. **Do NOT reorder fields without bumping the wire-protocol major version.**
 * `Option`: 1-byte discriminant (`0x00` = `None`, `0x01` = `Some`) followed by the payload.
 * Enum variants: 1-byte (or varint-extended) discriminant in source-declaration order.

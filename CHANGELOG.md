@@ -93,6 +93,53 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Changed
 
+- **Docs / Mesh — TASK-022 `omni-mesh` wire encoding doc-patch
+  + `TODO(TASK-022)` marker removal (OIP-Serde-004 § S2
+  alignment).** OIP-Serde-004 reached `Active` on 2026-05-22
+  via TASK-002 (§5.3 ¶1 founder ballot), unblocking the
+  long-pending alignment of `omni-mesh` wire encoding from the
+  originally-planned `bincode 2.0` to `postcard 1.0` via
+  `omni_types::wire::{encode_canonical, decode_canonical}`. The
+  current `omni-mesh` crate is pure scaffold (every public
+  module is a stub `pub mod {}` with `TODO(phase-4)`); there is
+  no actual `bincode::{serialize, deserialize}` call site to
+  swap. This slice therefore only:
+  - **Removes the `TODO(TASK-022)` marker** at
+    `crates/omni-mesh/src/lib.rs:51-53` (the planning doc
+    explicitly verifies this via `git grep -n 'TODO(TASK-022)'
+    crates/omni-mesh/`).
+  - **Replaces the marker with a forward-looking docstring** on
+    the `transport` module that pins the wire schema (postcard
+    1.0 via `omni_types::wire::encode_canonical`, little-endian
+    integers, varint length prefix, source-declaration enum
+    discriminants) for the future Phase-4 implementer.
+  - **Updates `docs/03-mesh-protocol.md:197`** "Encoder" bullet
+    from `bincode 2.0 with bincode::config::standard()` to
+    `postcard 1.0 via omni_types::wire::encode_canonical` per
+    OIP-Serde-004 § S2, with a cross-reference link to the
+    editorial closure report at
+    `docs/audits/oip-editors-report-2026-Q2.md`.
+  - **Defers the wire round-trip test suite** to Phase 4. The
+    planning doc TASK-022 acceptance criteria mandate
+    `crates/omni-mesh/tests/wire_round_trip.rs` with per-variant
+    round-trip / empty / max-size / truncated / trailing-bytes /
+    proptest fuzz cases for "each mesh message variant currently
+    defined in `omni-mesh`" — but **no message variants are
+    currently defined**; the modules are all stubs. The test
+    file will land at the same time as the first concrete
+    message type, which is a Phase-4 deliverable. This is
+    documented in the `transport` module's docstring so a future
+    implementer knows the test obligation is pending.
+  - **Acceptance gates**:
+    `git grep -n 'bincode' crates/omni-mesh/ docs/03-mesh-protocol.md` → empty (exit 1).
+    `cargo clippy -p omni-mesh --all-targets --all-features -- -D warnings` → clean.
+    `cargo test -p omni-mesh --all-features` → 0 tests (no message types exist).
+    `cargo fmt --all -- --check` → clean.
+    `cargo test --workspace --all-features -- --test-threads=1` → 1597 pass / 0 fail (unchanged; omni-mesh has no host tests yet).
+  - Closes TASK-022 of `docs/planning/2026-05-21-development-plan.md`
+    at the doc-and-marker level appropriate to the current
+    scaffold state.
+
 - **Tools — TASK-007 `omni-driver-pack` TOML manifest support
   (OIP-Driver-Framework-013 § R4 alignment).** The
   `tools/omni-driver-pack/` CLI already produced byte-exact
