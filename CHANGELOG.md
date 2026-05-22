@@ -17,6 +17,89 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **IOMMU — P6.7.9-pre.11 live per-device DTE/Context-Entry install + `GCMD.TE` / `CTRL.IommuEn` flip (2026-05-22) — TASK-010 CLOSED.**
+  Closes the sixth and final TASK-010 milestone — Phase-1 DMA isolation is now
+  gated by live IOMMU translation through per-domain page tables.
+  - **VT-d per-bus context-table refcounted allocator**
+    (`crates/omni-kernel/src/bare_metal/iommu/vtd.rs`): new
+    `BusContextTable { bus, phys, refcount }` struct + `bus_context_tables`
+    field on `VtdBackend`. `acquire_bus_context_table(bus, src)` lazily
+    allocates one 4-KiB-aligned context-table page per bus through the
+    `pt_alloc::FrameSource`, defensively returns the frame to `src` on
+    misalignment, and increments the refcount on repeat acquisitions.
+    `release_bus_context_table(bus, src)` decrements the refcount and frees
+    the page via `swap_remove` + `free_frame` when the last attached device
+    on that bus detaches. New `VtdAttachError::BusContextAllocFailed →
+    IommuError::DomainTableFull`; new `BusContextTableReleaseError::UnknownBus`.
+  - **VT-d translation-enable surface** (vtd.rs): new `translation_enabled`
+    flag + `is_translation_enabled()` accessor + `enable_translation(phys_off)
+    -> Result<(), VtdActivateError>` `#[cfg(target_os = "none")]` method that
+    writes `GCMD.TE` and polls `GSTS.TES` with the existing
+    `VTD_ACTIVATION_POLL_LIMIT` bounded retry; new
+    `VtdActivateError::TranslationEnableTimeout`; idempotent on repeat calls.
+  - **VT-d managed install + release** (vtd.rs): new
+    `install_device_entry_with_alloc(phys_off, bdf, domain, slpt_phys, width,
+    translation, src)` `#[cfg(target_os = "none")]` wrapper that acquires the
+    per-bus context table through `src`, then drives the existing
+    `install_device_entry` MMIO path with that ctx-table phys; rolls back the
+    refcount on install failure. Symmetric `release_device_entry_with_alloc`
+    zeroes the device's context entry, submits per-domain context-cache +
+    IOTLB invalidates (best-effort drain), decrements the bus refcount, and
+    (when refcount==0) zeroes the root-table entry for the bus AND frees the
+    ctx-table page.
+  - **AMD-Vi translation-enable surface**
+    (`crates/omni-kernel/src/bare_metal/iommu/amdvi.rs`): symmetric
+    `translation_enabled` flag + `enable_translation(phys_off) -> Result<(),
+    AmdViActivateError>` that read-modify-writes `CTRL` to OR in
+    `CTRL_BIT_IOMMU_EN` (preserving `CMD_BUF_EN | EVENT_LOG_EN`), then submits
+    `INVALIDATE_ALL` via `submit_cmd_descriptor` and waits for the
+    command-buffer head to drain. New
+    `AmdViActivateError::TranslationEnableTimeout`; idempotent. AMD-Vi needs
+    no per-bus tables (flat device table already allocated by
+    `prepare_amd_vi_unit`).
+  - **Module-level dispatch**
+    (`crates/omni-kernel/src/bare_metal/iommu/mod.rs`): new
+    `iommu_translation_enabled() -> bool` (dispatches via
+    `with_iommu_backend`; `false` for passthrough), `iommu_enable_translation(
+    phys_off) -> Result<bool, IommuError>` `#[cfg(target_os = "none")]`,
+    `install_vt_d_device_entry_managed(phys_off, bdf, domain, slpt_phys,
+    width, translation, src)`, and `release_vt_d_device_entry_managed(phys_off,
+    bdf, src)`.
+  - **driver_load live wiring**
+    (`crates/omni-kernel/src/bare_metal/syscall_entry.rs::driver_load_handlers::driver_load`):
+    after PT root provisioning, a new `#[cfg(target_os = "none")]` block
+    clones `pcb.bound_pci_devices`, builds a `KernelFrameSource`, and for each
+    BDF dispatches on `iommu_vendor()` — Intel calls
+    `install_vt_d_device_entry_managed` (defaults: `AddressWidth::Bits48Level4`,
+    `TranslationType::UntranslatedAndTranslated`), AMD calls
+    `install_amd_vi_device_entry` (defaults: `IommuFlags::READ|WRITE`,
+    `PageMode::Level4`). After at least one `Ok(true)` install, calls
+    `iommu_enable_translation(phys_off)` — idempotent across subsequent driver
+    loads, flipping `GCMD.TE` / `CTRL.IommuEn` only the first time.
+  - **tear_down_pci_bindings symmetric release** (syscall_entry.rs): on Intel
+    the helper now walks the drained BDF list and calls
+    `release_vt_d_device_entry_managed` for each (returns the per-bus
+    ctx-table page when refcount==0) before dropping the trait-level
+    attachment. AMD-Vi falls back to the existing detach (no per-bus refcount
+    to maintain).
+  - **+21 host-side tests** (12 in `vtd::tests`, 3 in `amdvi::tests`, 4 in
+    `iommu::tests`, plus 2 error-mapping pin tests). Workspace test count
+    1192 → **1213 pass / 0 fail** (`cargo test --workspace --all-features --
+    --test-threads=1`).
+  - Build Info panel (`crates/omni-kernel/src/bare_metal/demo.rs::render_buildinfo`):
+    Active=`P6.7.9-pre.11 DTE+TE live` (cyan), Next=`P6.7.10 NVMe live
+    (TASK-005)`, Phase=`1 - Microkernel POC  (~99.97%)`, Tests=`1213 workspace
+    pass`.
+  - Gates: workspace + bare-metal + mb12-userprobe + kernel-runner clippy
+    clean; `cargo fmt --all -- --check` clean; `bash
+    scripts/check-no-blanket-allow.sh` → `ok (scanned 16 crate-root files)`;
+    `RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps --all-features`
+    clean; `RUSTDOCFLAGS=-Dwarnings cargo doc -p omni-kernel --features
+    bare-metal --target x86_64-unknown-none --no-deps` clean; `python3
+    scripts/lint-oips.py` → `0 error(s), 0 warning(s) across 19 file(s)`.
+  - **No new dependency**.
+  - **TASK-010 (VT-d / AMD-Vi IOMMU backends) CLOSED**. Phase 1 ~99.97 %.
+
 - **IOMMU — P6.7.9-pre.10 PT root provisioning wired into `DriverLoad` (2026-05-22).**
   Closes the fifth TASK-010 milestone — per-domain page-table root provisioning
   is now driven from the live `DriverLoad (73)` syscall handler. New

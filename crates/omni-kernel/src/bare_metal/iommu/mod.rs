@@ -1194,6 +1194,74 @@ pub fn iommu_hardware_activated() -> bool {
     })
 }
 
+/// Report whether the live IOMMU backend has flipped its
+/// translation-enable gate (`GCMD.TE` for Intel / `CTRL.IommuEn` for
+/// AMD) per `iommu_enable_translation` (P6.7.9-pre.11).
+///
+/// Returns `false` for the passthrough fallback (translation is a
+/// no-op concept there), and for either vendor before its
+/// `enable_translation` entry point has run.
+#[must_use]
+pub fn iommu_translation_enabled() -> bool {
+    with_iommu_backend(|kind| match kind {
+        IommuKind::Intel(backend) => backend.is_translation_enabled(),
+        IommuKind::Amd(backend) => backend.is_translation_enabled(),
+        IommuKind::Passthrough(_) => false,
+    })
+}
+
+/// Flip the vendor-specific translation-enable gate
+/// (`GCMD.TE` for Intel / `CTRL.IommuEn` for AMD) (P6.7.9-pre.11).
+///
+/// Idempotent — once flipped, repeat calls short-circuit to `Ok(true)`
+/// without touching MMIO. The flip is irreversible for the kernel
+/// lifetime (we never lower TE / `IommuEn` — doing so would create a
+/// race-window where DMA bypasses the per-domain page tables).
+///
+/// Returns:
+///
+/// - `Ok(true)` when the live MMIO write + status poll completed
+///   cleanly (or the gate was already enabled),
+/// - `Ok(false)` when the live backend is the passthrough fallback
+///   (nothing to do).
+///
+/// # Errors
+///
+/// Returns [`IommuError::ActivationFailed`] when the vendor backend's
+/// status poll exceeds its bounded retry budget. Returns
+/// [`IommuError::Unsupported`] if the backend is in a state that
+/// rejects the flip (e.g. `hardware_activated` is still `false`).
+///
+/// # Safety
+///
+/// `phys_offset` must be the live bootloader direct-map offset (same
+/// value passed to [`crate::bare_metal::set_phys_offset`]). The
+/// per-vendor MMIO window registered by
+/// [`prepare_vt_d_unit`] / [`prepare_amd_vi_unit`] must still be
+/// kernel-owned and reachable through that direct map.
+#[cfg(target_os = "none")]
+pub unsafe fn iommu_enable_translation(phys_offset: u64) -> Result<bool, IommuError> {
+    with_iommu_backend(|kind| match kind {
+        IommuKind::Intel(backend) => {
+            // SAFETY: invariants forwarded from the caller — VtdBackend
+            // performs the volatile writes under the same MMIO-window
+            // ownership contract as `activate_hardware`.
+            unsafe { backend.enable_translation(phys_offset) }
+                .map(|()| true)
+                .map_err(IommuError::from)
+        }
+        IommuKind::Amd(backend) => {
+            // SAFETY: invariants forwarded from the caller — AmdViBackend
+            // performs the volatile writes under the same MMIO-window
+            // ownership contract as `activate_hardware`.
+            unsafe { backend.enable_translation(phys_offset) }
+                .map(|()| true)
+                .map_err(IommuError::from)
+        }
+        IommuKind::Passthrough(_) => Ok(false),
+    })
+}
+
 // =============================================================================
 // AMD-Vi activation surface — P6.7.9-pre.6 (AMD-Vi live MMIO).
 //
@@ -1422,6 +1490,108 @@ pub unsafe fn install_amd_vi_device_entry(
             .map_err(IommuError::from)
         }
         IommuKind::Passthrough(_) | IommuKind::Intel(_) => Ok(false),
+    })
+}
+
+/// VT-d high-level managed install (P6.7.9-pre.11).
+///
+/// Acquires the per-bus context-table page through `src`, then calls
+/// the live `install_device_entry` MMIO path. Failure rolls back the
+/// context-table refcount so the backend's bookkeeping stays
+/// consistent with the live attachments.
+///
+/// Returns:
+///
+/// - `Ok(true)` when the live install completed cleanly,
+/// - `Ok(false)` when the live backend is not Intel (no-op — caller
+///   should not have invoked this for the AMD / passthrough path).
+///
+/// # Errors
+///
+/// Forwards every [`IommuError`] variant emitted by
+/// [`vtd::VtdAttachError`] mapping (notably
+/// [`IommuError::DomainTableFull`] when the underlying frame source is
+/// out of memory).
+///
+/// # Safety
+///
+/// Inherits the safety contract of
+/// [`install_vt_d_device_entry`] — see that function's
+/// documentation. `src` must hand out 4-KiB-aligned, kernel-owned,
+/// zero-filled frames reachable through `phys_offset`.
+#[cfg(target_os = "none")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "managed install needs the install_device_entry surface minus context_table_phys, plus a FrameSource; the explicit positional form keeps the unsafe entry-point auditable"
+)]
+pub unsafe fn install_vt_d_device_entry_managed(
+    phys_offset: u64,
+    bdf: PciBdf,
+    domain: DomainId,
+    slpt_phys: u64,
+    width: vtd::AddressWidth,
+    translation: vtd::TranslationType,
+    src: &mut dyn pt_alloc::FrameSource,
+) -> Result<bool, IommuError> {
+    with_iommu_backend(|kind| match kind {
+        IommuKind::Intel(backend) => {
+            // SAFETY: invariants forwarded from the caller — the
+            // managed install acquires the bus context table through
+            // `src`, then performs the volatile writes against the
+            // MMIO window registered by `prepare_vt_d_unit`.
+            unsafe {
+                backend.install_device_entry_with_alloc(
+                    phys_offset,
+                    bdf,
+                    domain,
+                    slpt_phys,
+                    width,
+                    translation,
+                    src,
+                )
+            }
+            .map(|_| true)
+            .map_err(IommuError::from)
+        }
+        IommuKind::Passthrough(_) | IommuKind::Amd(_) => Ok(false),
+    })
+}
+
+/// VT-d high-level managed release (P6.7.9-pre.11).
+///
+/// Symmetric to [`install_vt_d_device_entry_managed`]. Zeroes the
+/// context entry for `bdf`, decrements the per-bus context-table
+/// refcount, and (when the refcount drops to zero) zeroes the root
+/// entry for the bus and frees the context-table page back to `src`.
+///
+/// Returns:
+///
+/// - `Ok(true)` when the release completed cleanly,
+/// - `Ok(false)` when the live backend is not Intel (no-op).
+///
+/// # Errors
+///
+/// Returns [`IommuError::Unsupported`] when `bdf` is not currently
+/// attached (callers must `install_vt_d_device_entry_managed` first).
+///
+/// # Safety
+///
+/// Same MMIO-window ownership contract as
+/// [`install_vt_d_device_entry`].
+#[cfg(target_os = "none")]
+pub unsafe fn release_vt_d_device_entry_managed(
+    phys_offset: u64,
+    bdf: PciBdf,
+    src: &mut dyn pt_alloc::FrameSource,
+) -> Result<bool, IommuError> {
+    with_iommu_backend(|kind| match kind {
+        IommuKind::Intel(backend) => {
+            // SAFETY: invariants forwarded from the caller.
+            unsafe { backend.release_device_entry_with_alloc(phys_offset, bdf, src) }
+                .map(|()| true)
+                .map_err(|_| IommuError::Unsupported)
+        }
+        IommuKind::Passthrough(_) | IommuKind::Amd(_) => Ok(false),
     })
 }
 
@@ -2445,6 +2615,58 @@ mod tests {
         assert_eq!(err, super::pt_alloc::DomainPtError::FrameAllocFailed);
         assert_eq!(super::iommu_domain_pt_root_phys(dom), None);
         install_backend_for_vendor(IommuVendor::Passthrough);
+        install_backend_for_vendor(prior);
+    }
+
+    // -----------------------------------------------------------------
+    // P6.7.9-pre.11 — translation-enable dispatch tests.
+    //
+    // The host-side coverage exercises the **pure-state half** of the
+    // contract (`iommu_translation_enabled` dispatch). The live MMIO
+    // programming half (`iommu_enable_translation`) is
+    // `cfg(target_os = "none")` gated and exercised by the QEMU +
+    // Proxmox smoke. The mutex is restored to its prior vendor on exit.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn iommu_translation_enabled_false_for_passthrough() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Passthrough);
+        assert!(!super::iommu_translation_enabled());
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn iommu_translation_enabled_false_for_fresh_intel_backend() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Intel);
+        // A freshly-installed backend has never called
+        // `enable_translation` so the flag stays false.
+        assert!(!super::iommu_translation_enabled());
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn iommu_translation_enabled_false_for_fresh_amd_backend() {
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Amd);
+        assert!(!super::iommu_translation_enabled());
+        install_backend_for_vendor(prior);
+    }
+
+    #[test]
+    fn install_backend_for_vendor_resets_translation_enabled_flag() {
+        // Switching vendors lands a freshly-constructed backend, which
+        // by contract starts with `translation_enabled = false`. This
+        // assertion proves the swap goes through `new()` and does not
+        // leak the old vendor's translation-enable state.
+        let prior = snapshot_backend_vendor();
+        install_backend_for_vendor(IommuVendor::Intel);
+        assert!(!super::iommu_translation_enabled());
+        install_backend_for_vendor(IommuVendor::Amd);
+        assert!(!super::iommu_translation_enabled());
+        install_backend_for_vendor(IommuVendor::Passthrough);
+        assert!(!super::iommu_translation_enabled());
         install_backend_for_vendor(prior);
     }
 }

@@ -2284,11 +2284,101 @@ mod driver_load_handlers {
                     // back to user space would leak kernel detail and
                     // is not actionable — the driver process stays
                     // alive; if the IOMMU is live (Intel/AMD) and the
-                    // root is missing the upcoming
-                    // `install_*_device_entry` call from pre.11 will
-                    // refuse to write the per-device entry and the
-                    // first DmaMap from the driver will EACCES.
+                    // root is missing the live `install_*_device_entry`
+                    // call below will refuse to write the per-device
+                    // entry and the first DmaMap from the driver will
+                    // EACCES.
                     let _ = iommu_provision_domain_pt(domain_id, &mut src);
+                }
+            }
+
+            // -------------------------------------------------------------
+            // P6.7.9-pre.11 — drive the live VT-d Context-Entry / AMD-Vi
+            // DTE install for every BDF that the driver process now owns,
+            // then flip the per-vendor translation-enable gate
+            // (`GCMD.TE` / `CTRL.IommuEn`) so DMA from the bound devices
+            // starts honouring the per-domain page tables provisioned by
+            // P6.7.9-pre.10. Bare-metal-only — the host test surface stops
+            // at the trait-level `attach_device` bookkeeping.
+            //
+            // Defaults: VT-d uses Bits48Level4 + UntranslatedAndTranslated
+            // (matches the existing test scaffolding and is the safest
+            // common denominator on every emulated VT-d we ship);
+            // AMD-Vi uses PageMode::Level4 + IommuFlags::READ|WRITE (same
+            // 48-bit address space; flags allow both R and W per device).
+            // Phase 2 will negotiate these from the per-IOMMU capability
+            // registers (CAP.SAGAW / EFR.HATS) via the existing
+            // `pick_highest_supported_agaw` / `efr_highest_supported_mode`
+            // helpers — Phase 1 hardcodes the widely-supported values.
+            //
+            // Best-effort: failures are logged via the
+            // `iommu_install_dte_*` log lines (one per BDF) but never
+            // propagate to user space — partial install state is observable
+            // because the IOMMU rejects DMA from un-DTE'd BDFs the moment
+            // TE / IommuEn is observed, so the driver's first `DmaMap`
+            // call will EACCES out of the cap-check OR the IOMMU PF
+            // handler.
+            // -------------------------------------------------------------
+            #[cfg(target_os = "none")]
+            if any_bdf_attached {
+                use crate::bare_metal::iommu::{
+                    IommuFlags, IommuVendor, amdvi::PageMode, install_amd_vi_device_entry,
+                    install_vt_d_device_entry_managed, iommu_domain_pt_root_phys,
+                    iommu_enable_translation, iommu_vendor, vtd::AddressWidth,
+                    vtd::TranslationType,
+                };
+                if let Some(slpt_phys) = iommu_domain_pt_root_phys(domain_id) {
+                    // SAFETY: single-CPU syscall path; SCHEDULER + FRAME_ALLOC
+                    // not concurrently aliased. The `KernelFrameSource` borrow
+                    // ends with the surrounding scope so FRAME_ALLOC is
+                    // released before the next syscall can land.
+                    #[allow(
+                        unsafe_code,
+                        reason = "single-CPU static-mut deref into SCHEDULER + FRAME_ALLOC for the live IOMMU install MMIO path"
+                    )]
+                    unsafe {
+                        let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+                        let bound = sched
+                            .process_mut(task_id)
+                            .map(|pcb| pcb.bound_pci_devices.clone())
+                            .unwrap_or_default();
+                        let fa = &mut *core::ptr::addr_of_mut!(crate::FRAME_ALLOC);
+                        let mut src = KernelFrameSource::new(fa, phys_off);
+                        let vendor = iommu_vendor();
+                        let mut any_install_ok = false;
+                        for bdf in bound {
+                            let install_result = match vendor {
+                                IommuVendor::Intel => install_vt_d_device_entry_managed(
+                                    phys_off,
+                                    bdf,
+                                    domain_id,
+                                    slpt_phys,
+                                    AddressWidth::Bits48Level4,
+                                    TranslationType::UntranslatedAndTranslated,
+                                    &mut src,
+                                ),
+                                IommuVendor::Amd => install_amd_vi_device_entry(
+                                    phys_off,
+                                    bdf,
+                                    domain_id,
+                                    slpt_phys,
+                                    IommuFlags::READ.union(IommuFlags::WRITE),
+                                    PageMode::Level4,
+                                ),
+                                IommuVendor::Passthrough => Ok(false),
+                            };
+                            if matches!(install_result, Ok(true)) {
+                                any_install_ok = true;
+                            }
+                        }
+                        // Flip the translation-enable gate once at least one
+                        // device install has cleared. Idempotent across
+                        // subsequent driver loads — the backend short-circuits
+                        // after the first success.
+                        if any_install_ok {
+                            let _ = iommu_enable_translation(phys_off);
+                        }
+                    }
                 }
             }
         }
@@ -2322,25 +2412,75 @@ mod driver_load_handlers {
             KernelFrameSource, domain_for_task, iommu_detach_device, iommu_domain_pt_root_phys,
             iommu_release_domain_pt,
         };
+        // -------------------------------------------------------------
+        // P6.7.9-pre.11 teardown — for Intel backends, drain the bound
+        // BDFs through `release_vt_d_device_entry_managed` so the
+        // per-bus context-table refcount is decremented and the page
+        // freed when the last device on a bus detaches. For AMD-Vi we
+        // fall back to the existing `iommu_detach_device` bookkeeping
+        // because the device table is flat (one global page per IOMMU
+        // unit), so there is no per-bus refcount to maintain.
+        //
+        // The PT root release at the bottom must run AFTER the device
+        // releases above: a Phase 1+ refactor might wire SL-PTE leaves
+        // that reference the per-domain PT root, so freeing the root
+        // first would create a window where the IOMMU still has the
+        // device entry alive but the SLPT is recycled. Today the leaf
+        // mappings go through `dma_map` (which clears them in
+        // `tear_down_dma_mappings`); keeping the order is defence-in-
+        // depth.
+        // -------------------------------------------------------------
+        let domain_id = domain_for_task(task.0);
+        let phys_off = crate::bare_metal::phys_offset();
         // SAFETY: SYSCALL path is single-CPU; SCHEDULER not aliased.
-        unsafe {
+        let bdfs = unsafe {
             let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
             let Some(pcb) = sched.process_mut(task) else {
                 return;
             };
-            let bdfs = core::mem::take(&mut pcb.bound_pci_devices);
-            for bdf in bdfs {
-                let _ = iommu_detach_device(bdf);
+            core::mem::take(&mut pcb.bound_pci_devices)
+        };
+        #[cfg(target_os = "none")]
+        {
+            use crate::bare_metal::iommu::{
+                IommuVendor, iommu_vendor, release_vt_d_device_entry_managed,
+            };
+            if iommu_vendor() == IommuVendor::Intel {
+                // SAFETY: SYSCALL path is single-CPU; FRAME_ALLOC not
+                // concurrently aliased. The KernelFrameSource borrow
+                // ends with the surrounding scope.
+                #[allow(
+                    unsafe_code,
+                    reason = "single-CPU static-mut deref into FRAME_ALLOC for the IOMMU release MMIO path"
+                )]
+                unsafe {
+                    let fa = &mut *core::ptr::addr_of_mut!(crate::FRAME_ALLOC);
+                    let mut src = KernelFrameSource::new(fa, phys_off);
+                    for bdf in &bdfs {
+                        // Best-effort: a release failure here means the
+                        // backend never recorded the attachment (race
+                        // with a concurrent detach on a future MP
+                        // build) and is benign in the teardown context
+                        // — the bookkeeping vector is the source of
+                        // truth for what we still need to release.
+                        let _ = release_vt_d_device_entry_managed(phys_off, *bdf, &mut src);
+                    }
+                }
             }
+        }
+        // Drop the trait-level attachment record for every drained BDF
+        // (idempotent: returns Unsupported when the backend never had
+        // the binding — including after the managed release above
+        // already cleared it, which is the expected steady-state).
+        for bdf in &bdfs {
+            let _ = iommu_detach_device(*bdf);
         }
         // Release the per-domain PT root if `driver_load` provisioned
         // one. `iommu_domain_pt_root_phys` returns `None` on
         // passthrough or when the domain was never provisioned, so
         // the `if let Some(_)` guard skips the FRAME_ALLOC reborrow
         // on those paths.
-        let domain_id = domain_for_task(task.0);
         if iommu_domain_pt_root_phys(domain_id).is_some() {
-            let phys_off = crate::bare_metal::phys_offset();
             // SAFETY: SYSCALL path is single-CPU; FRAME_ALLOC not
             // concurrently aliased. The `KernelFrameSource` borrow
             // ends with the surrounding scope, so `FRAME_ALLOC` is

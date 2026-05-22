@@ -932,6 +932,12 @@ pub enum AmdViActivateError {
     /// the bring-up `INVALIDATE_DEVTAB_ENTRY` descriptor. Indicates a
     /// stuck command pipeline.
     InvalidationTimeout,
+    /// Command-buffer Head never caught up to Tail after submitting
+    /// the post-`IommuEn` `INVALIDATE_ALL` descriptor in
+    /// `AmdViBackend::enable_translation`. Indicates a stuck command
+    /// pipeline AFTER translation was nominally enabled — the IOMMU
+    /// may now be gating DMA but cannot observe new entries.
+    TranslationEnableTimeout,
 }
 
 impl From<AmdViActivateError> for IommuError {
@@ -1081,6 +1087,13 @@ pub struct AmdViBackend {
     /// is what `install_device_entry` consumes as the `iopt_phys`
     /// argument for the matching domain.
     domain_pts: super::pt_alloc::DomainPageTables,
+    /// `true` once `Self::enable_translation` has flipped
+    /// `CTRL.IommuEn` and the post-flip `INVALIDATE_ALL` command has
+    /// drained. Sticky for the lifetime of the kernel;
+    /// [`Self::prepare_activation`] resets it back to `false` together
+    /// with [`Self::hardware_activated`] when re-prepared with different
+    /// parameters (MP follow-up).
+    translation_enabled: bool,
 }
 
 impl AmdViBackend {
@@ -1102,6 +1115,7 @@ impl AmdViBackend {
             hardware_activated: false,
             attachments: Vec::new(),
             domain_pts: super::pt_alloc::DomainPageTables::new(),
+            translation_enabled: false,
         }
     }
 
@@ -1223,6 +1237,13 @@ impl AmdViBackend {
         self.hardware_activated
     }
 
+    /// `true` once `Self::enable_translation` has flipped
+    /// `CTRL.IommuEn` (the method is gated on `cfg(target_os = "none")`).
+    #[must_use]
+    pub const fn is_translation_enabled(&self) -> bool {
+        self.translation_enabled
+    }
+
     /// Stash the activation parameters in the backend without
     /// touching MMIO.
     ///
@@ -1250,6 +1271,7 @@ impl AmdViBackend {
         self.command_buffer_tail = 0;
         if !same {
             self.hardware_activated = false;
+            self.translation_enabled = false;
         }
     }
 
@@ -1360,6 +1382,84 @@ impl AmdViBackend {
         }
 
         self.hardware_activated = true;
+        Ok(())
+    }
+
+    /// Flip `CTRL.IommuEn` to start gating every DMA-capable device
+    /// through its per-domain page table (P6.7.9-pre.11).
+    ///
+    /// Idempotent — repeat calls after the first success short-circuit
+    /// to `Ok(())` without touching MMIO. Must run **after**
+    /// [`Self::activate_hardware`] and **after** the first successful
+    /// [`Self::install_device_entry`] (the IOMMU rejects DMA from any
+    /// DTE-without-Valid the moment `IommuEn` is observed).
+    ///
+    /// Spec-faithful (AMD IOMMU rev 3.10 § 5.5.3): read-modify-writes
+    /// the `CTRL` register to OR in [`CTRL_BIT_IOMMU_EN`] while
+    /// preserving the already-raised
+    /// `CMD_BUF_EN | EVENT_LOG_EN` bits, then submits one
+    /// `INVALIDATE_ALL` command and waits for the command-buffer Head
+    /// to drain. The post-flip invalidation forces the IOMMU to evict
+    /// any pre-translation cache so the per-device DTEs installed by
+    /// [`Self::install_device_entry`] are taken into account on the
+    /// very next DMA from the device.
+    ///
+    /// # Errors
+    ///
+    /// - [`AmdViActivateError::NotPrepared`] if the backend was never
+    ///   `prepare_activation`'d or [`Self::activate_hardware`] never
+    ///   succeeded.
+    /// - [`AmdViActivateError::TranslationEnableTimeout`] if the
+    ///   command-buffer Head does not catch up to the new Tail within
+    ///   the poll budget.
+    ///
+    /// # Safety
+    ///
+    /// `phys_offset` must be the live bootloader direct-map offset.
+    /// Same MMIO-window ownership contract as
+    /// [`Self::activate_hardware`].
+    #[cfg(target_os = "none")]
+    pub unsafe fn enable_translation(
+        &mut self,
+        phys_offset: u64,
+    ) -> Result<(), AmdViActivateError> {
+        if !self.hardware_activated {
+            return Err(AmdViActivateError::NotPrepared);
+        }
+        if self.translation_enabled {
+            return Ok(());
+        }
+        let unit_va = phys_offset.wrapping_add(self.unit_base);
+
+        // (1) RMW CTRL ← CTRL | IommuEn so the previous
+        //     CmdBufEn / EventLogEn bits are preserved.
+        // SAFETY: per the function's safety contract, `unit_va` is the
+        // kernel-owned AMD-Vi MMIO register window.
+        let current_ctrl = unsafe { mmio_read64(unit_va, REG_OFFSET_CONTROL) };
+        // SAFETY: same as above.
+        unsafe {
+            mmio_write64(
+                unit_va,
+                REG_OFFSET_CONTROL,
+                current_ctrl | CTRL_BIT_IOMMU_EN,
+            );
+        }
+
+        // (2) Submit INVALIDATE_ALL so the IOMMU drops any cached
+        //     pre-translation entries that may have been speculatively
+        //     populated before the per-device DTEs were programmed.
+        //     The opcode lives in the high 4 bits of byte 7 (bit 60..63
+        //     of the low qword) per § 5.4.7; the rest of the descriptor
+        //     is reserved-zero for the global INVALIDATE_ALL granularity.
+        let inv_all_lo = CMD_OPCODE_INVALIDATE_ALL << 60;
+        let buf_va = phys_offset.wrapping_add(self.command_buffer_phys);
+        // SAFETY: command-buffer page is kernel-owned 4-KiB aligned; the
+        // submit helper updates `self.command_buffer_tail` and bounds
+        // the new tail to `CMD_BUFFER_BYTES`.
+        unsafe { self.submit_cmd_descriptor(buf_va, unit_va, inv_all_lo, 0) }
+            .map_err(|()| AmdViActivateError::TranslationEnableTimeout)?;
+
+        self.translation_enabled = true;
         Ok(())
     }
 
@@ -2579,5 +2679,35 @@ mod tests {
         let backend = AmdViBackend::new();
         assert!(backend.attachments().is_empty());
         assert!(!backend.has_attachment(PciBdf::from_parts(0, 0, 0)));
+    }
+
+    // ---- P6.7.9-pre.11 translation enable state machine ---------------
+
+    #[test]
+    fn fresh_backend_is_not_translation_enabled() {
+        let backend = AmdViBackend::new();
+        assert!(!backend.is_translation_enabled());
+    }
+
+    #[test]
+    fn amdvi_activate_error_translation_enable_timeout_maps_to_activation_failed() {
+        assert_eq!(
+            IommuError::from(AmdViActivateError::TranslationEnableTimeout),
+            IommuError::ActivationFailed
+        );
+    }
+
+    #[test]
+    fn prepare_activation_with_different_params_resets_translation_enabled() {
+        let mut backend = AmdViBackend::new();
+        backend.prepare_activation(0xFEE0_0000, 0x20_0000, 0x20_1000, 0x20_2000);
+        assert!(!backend.is_translation_enabled());
+        // Same params: state preserved.
+        backend.prepare_activation(0xFEE0_0000, 0x20_0000, 0x20_1000, 0x20_2000);
+        assert!(!backend.is_translation_enabled());
+        // Different params: reset both flags.
+        backend.prepare_activation(0xFEE0_4000, 0x20_0000, 0x20_1000, 0x20_2000);
+        assert!(!backend.is_hardware_activated());
+        assert!(!backend.is_translation_enabled());
     }
 }
