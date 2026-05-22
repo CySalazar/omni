@@ -17,6 +17,77 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.20 NVMe IO Queue Pair live submit
+  + FSM glue (2026-05-22) — TASK-005 continuation.**
+  `omni-driver-nvme::admin_session::AdminSession` extended with the
+  IO-queue-creation helpers per NVMe 1.4 § 5.4 + § 5.5;
+  `bringup_live` extended with the matching FSM phase glue.
+  - **`submit_create_io_cq<M: MmioBackend>(qid, qsize, prp1,
+    irq_vector, mmio) -> Result<u16, QueueError>`** encodes the
+    Create I/O Completion Queue admin command via
+    `encode_create_io_cq` (pre.10) with `IEN = true` + `PC = true`
+    (Phase-1 always enables interrupts and physical contiguity per
+    OIP-014 § R5), allocates a CID, submits through
+    `AdminQueuePair::submit`, returns the CID.
+  - **`submit_create_io_sq<M>(qid, qsize, prp1, cq_id,
+    queue_priority, mmio)`** symmetric for the Create I/O
+    Submission Queue command (opcode 0x01).
+  - **`run_create_io_cq<M>(qid, qsize, prp1, irq_vector,
+    poll_limit, mmio) -> Result<AdminCqeFields, QueueError>`**
+    composes submit + poll, surfacing
+    `QueueError::IdentifyCompletionTimeout` on poll exhaustion
+    (the variant covers both Identify and Create-IO timeouts).
+  - **`run_create_io_sq<M>(qid, qsize, prp1, cq_id,
+    queue_priority, poll_limit, mmio)`** symmetric for SQ. Carries
+    an explicit `#[allow(clippy::too_many_arguments)]` carve-out
+    documenting the future struct-arg refactor lands alongside the
+    multi-queue OIP work.
+  - **`bringup_live::CreateIoQueuesConfig`** struct with 8 fields
+    covering CQ + SQ (qid/qsize/prp1) + CQ irq_vector + SQ
+    queue_priority. Provides
+    `phase_1_default(cq_prp1, sq_prp1, cq_irq_vector)` const
+    constructor that pins Phase-1 defaults (qid = 1, qsize = 1024,
+    MEDIUM priority matching QEMU `weighted_round_robin`).
+  - **`bringup_live::advance_create_io_queues<M: MmioBackend>(fsm,
+    session, config, poll_limit, mmio) -> Result<BringUp,
+    BringUpError>`** issues Create I/O Completion Queue first (the
+    SQ command depends on the CQ existing per § 5.4) then Create
+    I/O Submission Queue; either failure aborts the FSM via
+    `bringup_error_for`. No-op pass-through (`Event::Advance`) when
+    the FSM is NOT at `Phase::CreateIoQueues`, so callers can drive
+    the phase loop blindly.
+  - **+10 new host-side tests**:
+    - 4 `admin_session` submit-encoding checks (opcode at byte 0
+      for CQ + SQ, IEN+PC bits in CDW11 for CQ, CQID + QPRIO bits
+      in CDW11 for SQ).
+    - 3 `admin_session` run-helper tests (run_create_io_cq +
+      run_create_io_sq surface `IdentifyCompletionTimeout` on
+      empty CQ; run_create_io_cq round-trips to success via the
+      `FakeController` fixture).
+    - 3 `bringup_live` tests (`CreateIoQueuesConfig::phase_1_default`
+      matches spec, `advance_create_io_queues` non-matching phase
+      pass-through with zero doorbell writes,
+      `advance_create_io_queues` at matching phase dispatches
+      CQ-first then aborts on empty CQ with `OPC_CREATE_IO_CQ`
+      verified at SQE byte 0).
+  - **Workspace test count**: 1475 → 1485 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.20 IO QP wire`,
+    Next=`P6.7.10-pre.21 e2e bringup loop`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1485 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — composes
+    `crate::admin::{encode_create_io_cq, encode_create_io_sq,
+    CIOSQ_QPRIO_MEDIUM, OPC_CREATE_IO_CQ, OPC_CREATE_IO_SQ}`
+    (pre.10) + `crate::admin_session::AdminSession` (pre.13) +
+    `crate::bringup::{BringUp, Event, Phase, BringUpError}`
+    (P6.7.8.4).
+
 - **Storage — P6.7.10-pre.19 NVMe `bringup_live` FSM glue
   (2026-05-22) — TASK-005 continuation.**
   New `crates/omni-driver-nvme/src/bringup_live.rs` module composes

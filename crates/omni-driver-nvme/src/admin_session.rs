@@ -24,7 +24,10 @@ use alloc::vec::Vec;
 
 use omni_types::nvme::IdentifyTarget;
 
-use crate::admin::{ADMIN_CQE_BYTES, ADMIN_SQE_BYTES, AdminCqeFields, encode_identify};
+use crate::admin::{
+    ADMIN_CQE_BYTES, ADMIN_SQE_BYTES, AdminCqeFields, encode_create_io_cq, encode_create_io_sq,
+    encode_identify,
+};
 use crate::queue::{AdminQueuePair, MmioBackend, QueueError};
 
 /// PRP2 value for Identify commands (single 4 KiB response buffer
@@ -232,6 +235,117 @@ impl AdminSession {
         mmio: &mut M,
     ) -> Result<AdminCqeFields, QueueError> {
         let cid = self.submit_identify_active_ns_list(buf_iova, mmio)?;
+        self.poll_completion_for_cid(cid, poll_limit, mmio)?
+            .ok_or(QueueError::IdentifyCompletionTimeout)
+    }
+
+    /// Submit `Create I/O Completion Queue` (NVMe 1.4 § 5.5) and
+    /// return the assigned CID.
+    ///
+    /// `qid` is the new IO CQ identifier (1..=`io_queue_count`),
+    /// `qsize` is 1-based (the encoder subtracts one to match the
+    /// spec's 0-based wire field), `prp1` points at the host-prepared
+    /// IO CQ data page (4 KiB-aligned, physically contiguous).
+    /// `irq_vector` selects the MSI-X vector the controller signals
+    /// completions on; Phase-1 always enables interrupts
+    /// (`IEN = true`) and physical contiguity (`PC = true`) per
+    /// OIP-Driver-NVMe-014 § R5.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`QueueError`] the underlying
+    /// [`AdminQueuePair::submit`] surfaces.
+    pub fn submit_create_io_cq<M: MmioBackend>(
+        &mut self,
+        qid: u16,
+        qsize: u16,
+        prp1: u64,
+        irq_vector: u16,
+        mmio: &mut M,
+    ) -> Result<u16, QueueError> {
+        let cid = self.allocate_cid();
+        let sqe = encode_create_io_cq(qid, qsize, prp1, irq_vector, true, true, cid);
+        self.queue_pair.submit(&sqe, mmio, &mut self.sq_page)?;
+        Ok(cid)
+    }
+
+    /// Submit `Create I/O Submission Queue` (NVMe 1.4 § 5.4) and
+    /// return the assigned CID.
+    ///
+    /// `cq_id` MUST reference a CQ the driver has already created
+    /// via [`Self::submit_create_io_cq`] (the controller validates
+    /// the CQID and surfaces a non-success completion otherwise).
+    /// `queue_priority` is one of the
+    /// [`crate::admin::CIOSQ_QPRIO_URGENT`] /
+    /// [`crate::admin::CIOSQ_QPRIO_HIGH`] /
+    /// [`crate::admin::CIOSQ_QPRIO_MEDIUM`] /
+    /// [`crate::admin::CIOSQ_QPRIO_LOW`] constants; Phase-1
+    /// default is `CIOSQ_QPRIO_MEDIUM`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`QueueError`] the underlying
+    /// [`AdminQueuePair::submit`] surfaces.
+    pub fn submit_create_io_sq<M: MmioBackend>(
+        &mut self,
+        qid: u16,
+        qsize: u16,
+        prp1: u64,
+        cq_id: u16,
+        queue_priority: u32,
+        mmio: &mut M,
+    ) -> Result<u16, QueueError> {
+        let cid = self.allocate_cid();
+        let sqe = encode_create_io_sq(qid, qsize, prp1, cq_id, queue_priority, true, cid);
+        self.queue_pair.submit(&sqe, mmio, &mut self.sq_page)?;
+        Ok(cid)
+    }
+
+    /// Submit `Create I/O Completion Queue` and poll the matching
+    /// completion in a single call.
+    ///
+    /// # Errors
+    ///
+    /// - Any [`QueueError`] [`Self::submit_create_io_cq`] surfaces.
+    /// - [`QueueError::IdentifyCompletionTimeout`] if the matching
+    ///   CQE does not arrive within `poll_limit` iterations (same
+    ///   sentinel as the Identify family — the timeout semantics
+    ///   are identical).
+    pub fn run_create_io_cq<M: MmioBackend>(
+        &mut self,
+        qid: u16,
+        qsize: u16,
+        prp1: u64,
+        irq_vector: u16,
+        poll_limit: u32,
+        mmio: &mut M,
+    ) -> Result<AdminCqeFields, QueueError> {
+        let cid = self.submit_create_io_cq(qid, qsize, prp1, irq_vector, mmio)?;
+        self.poll_completion_for_cid(cid, poll_limit, mmio)?
+            .ok_or(QueueError::IdentifyCompletionTimeout)
+    }
+
+    /// Submit `Create I/O Submission Queue` and poll the matching
+    /// completion in a single call.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::run_create_io_cq`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "NVMe Create I/O Submission Queue takes 7 spec-mandated parameters; a struct-arg refactor lands in pre.21 alongside the multi-queue OIP work"
+    )]
+    pub fn run_create_io_sq<M: MmioBackend>(
+        &mut self,
+        qid: u16,
+        qsize: u16,
+        prp1: u64,
+        cq_id: u16,
+        queue_priority: u32,
+        poll_limit: u32,
+        mmio: &mut M,
+    ) -> Result<AdminCqeFields, QueueError> {
+        let cid = self.submit_create_io_sq(qid, qsize, prp1, cq_id, queue_priority, mmio)?;
         self.poll_completion_for_cid(cid, poll_limit, mmio)?
             .ok_or(QueueError::IdentifyCompletionTimeout)
     }
@@ -671,6 +785,133 @@ mod tests {
             QueueError::ControllerNotReady
         );
         assert_ne!(QueueError::IdentifyCompletionTimeout, QueueError::Full);
+    }
+
+    // -------------------------------------------------------------------
+    // Create IO CQ / Create IO SQ (P6.7.10-pre.20)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn submit_create_io_cq_encodes_opcode_and_returns_cid() {
+        let mut s = AdminSession::new(8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        let cid = s
+            .submit_create_io_cq(1, 128, 0x10_0000, 3, &mut mmio)
+            .expect("submit");
+        // CID is the freshly-allocated one (next_cid started at 1).
+        assert_eq!(cid, 1);
+        // Inspect the encoded SQE at slot 0: byte 0 = OPC = 0x05.
+        let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
+        assert_eq!(
+            sqe.first().copied().unwrap(),
+            crate::admin::OPC_CREATE_IO_CQ
+        );
+    }
+
+    #[test]
+    fn submit_create_io_sq_encodes_opcode_and_returns_cid() {
+        let mut s = AdminSession::new(8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        let cid = s
+            .submit_create_io_sq(
+                1,
+                1024,
+                0x20_0000,
+                1,
+                crate::admin::CIOSQ_QPRIO_MEDIUM,
+                &mut mmio,
+            )
+            .expect("submit");
+        assert_eq!(cid, 1);
+        let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
+        assert_eq!(
+            sqe.first().copied().unwrap(),
+            crate::admin::OPC_CREATE_IO_SQ
+        );
+    }
+
+    #[test]
+    fn submit_create_io_cq_sets_ien_and_pc_bits() {
+        let mut s = AdminSession::new(8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        s.submit_create_io_cq(1, 64, 0x10_0000, 5, &mut mmio).unwrap();
+        // Read CDW11 from bytes 44..=47.
+        let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
+        let mut cdw11_buf = [0u8; 4];
+        cdw11_buf.copy_from_slice(sqe.get(44..48).unwrap());
+        let cdw11 = u32::from_le_bytes(cdw11_buf);
+        // PC bit set.
+        assert_eq!(cdw11 & crate::admin::CIOQ_CDW11_PC_BIT, crate::admin::CIOQ_CDW11_PC_BIT);
+        // IEN bit set.
+        assert_eq!(cdw11 & crate::admin::CIOCQ_CDW11_IEN_BIT, crate::admin::CIOCQ_CDW11_IEN_BIT);
+        // IV = 5 in bits 31:16.
+        assert_eq!(cdw11 >> crate::admin::CIOCQ_CDW11_IV_SHIFT, 5);
+    }
+
+    #[test]
+    fn submit_create_io_sq_packs_cqid_and_qprio() {
+        let mut s = AdminSession::new(8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        s.submit_create_io_sq(
+            1,
+            1024,
+            0x20_0000,
+            7, // CQID
+            crate::admin::CIOSQ_QPRIO_MEDIUM,
+            &mut mmio,
+        )
+        .unwrap();
+        let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
+        let mut cdw11_buf = [0u8; 4];
+        cdw11_buf.copy_from_slice(sqe.get(44..48).unwrap());
+        let cdw11 = u32::from_le_bytes(cdw11_buf);
+        // PC bit set.
+        assert_eq!(cdw11 & crate::admin::CIOQ_CDW11_PC_BIT, crate::admin::CIOQ_CDW11_PC_BIT);
+        // QPRIO = MEDIUM = 0b10 in bits 2:1.
+        let qprio = (cdw11 >> crate::admin::CIOSQ_CDW11_QPRIO_SHIFT) & 0b11;
+        assert_eq!(qprio, crate::admin::CIOSQ_QPRIO_MEDIUM);
+        // CQID = 7 in bits 31:16.
+        let cqid = cdw11 >> crate::admin::CIOSQ_CDW11_CQID_SHIFT;
+        assert_eq!(cqid, 7);
+    }
+
+    #[test]
+    fn run_create_io_cq_returns_timeout_on_empty_cq() {
+        let mut s = AdminSession::new(4, 4, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        let res = s.run_create_io_cq(1, 64, 0x10_0000, 1, 4, &mut mmio);
+        assert_eq!(res, Err(QueueError::IdentifyCompletionTimeout));
+    }
+
+    #[test]
+    fn run_create_io_sq_returns_timeout_on_empty_cq() {
+        let mut s = AdminSession::new(4, 4, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        let res = s.run_create_io_sq(
+            1,
+            64,
+            0x20_0000,
+            1,
+            crate::admin::CIOSQ_QPRIO_MEDIUM,
+            4,
+            &mut mmio,
+        );
+        assert_eq!(res, Err(QueueError::IdentifyCompletionTimeout));
+    }
+
+    #[test]
+    fn run_create_io_cq_round_trips_to_success() {
+        let mut s = AdminSession::new(8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        // Pre-submit so SQ has the SQE, then drive the fake to emit
+        // the matching completion.
+        let cid = s
+            .submit_create_io_cq(1, 64, 0x10_0000, 1, &mut mmio)
+            .unwrap();
+        round_trip_session_through_fake(&mut s, 1);
+        let mut nop = NopMmio;
+        let fields = s.poll_completion_for_cid(cid, 16, &mut nop).unwrap().unwrap();
+        assert!(fields.is_success());
     }
 
     #[test]

@@ -27,6 +27,7 @@
 //! `encode_create_io_sq` submit path is wired through the session
 //! (the current `AdminSession` only exposes the Identify family).
 
+use crate::admin::CIOSQ_QPRIO_MEDIUM;
 use crate::admin_session::AdminSession;
 use crate::bringup::{BringUp, BringUpError, Event, Phase};
 use crate::queue::{MmioBackend, QueueError};
@@ -59,6 +60,123 @@ pub const fn bringup_error_for(err: QueueError) -> BringUpError {
     match err {
         QueueError::ControllerNotReady => BringUpError::ControllerReadyTimeout,
         _ => BringUpError::AdminCommandFailed,
+    }
+}
+
+/// Configuration for the [`advance_create_io_queues`] helper.
+///
+/// Phase-1 NVMe driver creates exactly one IO queue pair (one CQ +
+/// one SQ) per OIP-Driver-NVMe-014 § R2. Future multi-queue
+/// support extends to an iterator of `CreateIoQueuesConfig`
+/// without breaking the single-pair shape used today.
+#[derive(Debug, Clone, Copy)]
+pub struct CreateIoQueuesConfig {
+    /// IO CQ identifier — `1..=io_queue_count` per OIP-014 § R5.
+    pub cq_qid: u16,
+    /// IO CQ depth (1-based; the encoder subtracts one).
+    pub cq_qsize: u16,
+    /// IOVA of the CQ data page (4 KiB-aligned, physically
+    /// contiguous).
+    pub cq_prp1: u64,
+    /// MSI-X vector the controller signals CQ completions on.
+    pub cq_irq_vector: u16,
+    /// IO SQ identifier — typically matches `cq_qid`.
+    pub sq_qid: u16,
+    /// IO SQ depth.
+    pub sq_qsize: u16,
+    /// IOVA of the SQ data page.
+    pub sq_prp1: u64,
+    /// Queue priority — one of
+    /// [`crate::admin::CIOSQ_QPRIO_URGENT`] /
+    /// [`crate::admin::CIOSQ_QPRIO_HIGH`] /
+    /// [`crate::admin::CIOSQ_QPRIO_MEDIUM`] /
+    /// [`crate::admin::CIOSQ_QPRIO_LOW`]. Phase-1 default is
+    /// `MEDIUM` (matches QEMU `weighted_round_robin`).
+    pub sq_queue_priority: u32,
+}
+
+impl CreateIoQueuesConfig {
+    /// Phase-1 default: single IO QP pair with `MEDIUM` priority.
+    ///
+    /// `cq_prp1` + `sq_prp1` MUST be supplied by the caller (they
+    /// come from a `DmaMap` allocation that this layer cannot
+    /// observe).
+    #[must_use]
+    pub const fn phase_1_default(
+        cq_prp1: u64,
+        sq_prp1: u64,
+        cq_irq_vector: u16,
+    ) -> Self {
+        Self {
+            cq_qid: 1,
+            cq_qsize: 1024,
+            cq_prp1,
+            cq_irq_vector,
+            sq_qid: 1,
+            sq_qsize: 1024,
+            sq_prp1,
+            sq_queue_priority: CIOSQ_QPRIO_MEDIUM,
+        }
+    }
+}
+
+/// Advance the FSM through [`Phase::CreateIoQueues`] by issuing
+/// `Create I/O Completion Queue` then `Create I/O Submission Queue`
+/// admin commands in spec order.
+///
+/// Per NVMe 1.4 § 5.4: the IO SQ command depends on the matching IO
+/// CQ already existing in the controller, so the helper issues them
+/// strictly in sequence. Either failure aborts the FSM via
+/// [`bringup_error_for`].
+///
+/// The helper is a no-op (returns `Event::Advance` without invoking
+/// the session) if the FSM is NOT at [`Phase::CreateIoQueues`] —
+/// callers can drive a generic phase-loop blindly through it.
+///
+/// # Errors
+///
+/// - Any [`BringUpError`] [`BringUp::on_event`] surfaces.
+pub fn advance_create_io_queues<M: MmioBackend>(
+    fsm: BringUp,
+    session: &mut AdminSession,
+    config: &CreateIoQueuesConfig,
+    poll_limit: u32,
+    mmio: &mut M,
+) -> Result<BringUp, BringUpError> {
+    let mut next = fsm;
+    if fsm.phase() != Phase::CreateIoQueues {
+        return next.on_event(Event::Advance);
+    }
+
+    // Step 11.a: Create IO CQ first (the SQ command references it).
+    let cq_result = session.run_create_io_cq(
+        config.cq_qid,
+        config.cq_qsize,
+        config.cq_prp1,
+        config.cq_irq_vector,
+        poll_limit,
+        mmio,
+    );
+    match cq_result {
+        Ok(fields) if fields.is_success() => {}
+        Ok(_) => return next.on_event(Event::Abort(BringUpError::AdminCommandFailed)),
+        Err(err) => return next.on_event(Event::Abort(bringup_error_for(err))),
+    }
+
+    // Step 11.b: Create IO SQ.
+    let sq_result = session.run_create_io_sq(
+        config.sq_qid,
+        config.sq_qsize,
+        config.sq_prp1,
+        config.cq_qid,
+        config.sq_queue_priority,
+        poll_limit,
+        mmio,
+    );
+    match sq_result {
+        Ok(fields) if fields.is_success() => next.on_event(Event::Advance),
+        Ok(_) => next.on_event(Event::Abort(BringUpError::AdminCommandFailed)),
+        Err(err) => next.on_event(Event::Abort(bringup_error_for(err))),
     }
 }
 
@@ -327,6 +445,57 @@ mod tests {
     // emit_synthetic_completion fixture sanity check (the inverse of
     // the FakeController in admin_session::tests)
     // -------------------------------------------------------------------
+
+    // -------------------------------------------------------------------
+    // advance_create_io_queues (P6.7.10-pre.20)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn create_io_queues_config_phase_1_default_matches_spec() {
+        let config = CreateIoQueuesConfig::phase_1_default(0x1_0000, 0x2_0000, 5);
+        assert_eq!(config.cq_qid, 1);
+        assert_eq!(config.sq_qid, 1);
+        assert_eq!(config.cq_qsize, 1024);
+        assert_eq!(config.sq_qsize, 1024);
+        assert_eq!(config.cq_prp1, 0x1_0000);
+        assert_eq!(config.sq_prp1, 0x2_0000);
+        assert_eq!(config.cq_irq_vector, 5);
+        assert_eq!(config.sq_queue_priority, CIOSQ_QPRIO_MEDIUM);
+    }
+
+    #[test]
+    fn advance_create_io_queues_non_matching_phase_just_advances() {
+        // Phase = PciEnumeration → helper should not touch the
+        // session and just post Event::Advance.
+        let fsm = BringUp::new();
+        let mut session = AdminSession::new(8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        let config = CreateIoQueuesConfig::phase_1_default(0x1_0000, 0x2_0000, 1);
+        let next = advance_create_io_queues(fsm, &mut session, &config, 4, &mut mmio).unwrap();
+        assert_eq!(next.phase(), Phase::MmioMap);
+        assert!(mmio.writes.is_empty());
+    }
+
+    #[test]
+    fn advance_create_io_queues_at_correct_phase_dispatches_to_session() {
+        let fsm = fsm_at(Phase::CreateIoQueues);
+        let mut session = AdminSession::new(8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        let config = CreateIoQueuesConfig::phase_1_default(0x1_0000, 0x2_0000, 1);
+        let res = advance_create_io_queues(fsm, &mut session, &config, 4, &mut mmio);
+        // Empty CQ → run_create_io_cq times out → IdentifyCompletionTimeout
+        // → bringup_error_for maps to AdminCommandFailed.
+        assert_eq!(res, Err(BringUpError::AdminCommandFailed));
+        // The helper submitted Create IO CQ (1 doorbell write) and
+        // aborted before reaching Create IO SQ.
+        assert_eq!(mmio.writes.len(), 1);
+        // Verify the SQE opcode at slot 0 is OPC_CREATE_IO_CQ.
+        let sqe = session.sq_page().get(0..64).unwrap();
+        assert_eq!(
+            sqe.first().copied().unwrap(),
+            crate::admin::OPC_CREATE_IO_CQ
+        );
+    }
 
     #[test]
     fn emit_synthetic_completion_fills_cq_with_expected_bytes() {
