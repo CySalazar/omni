@@ -53,5 +53,15 @@ workspace = true
 # `caps::find_token` helper for locating capability tokens at bring-up
 # (OIP-013 § S5.3 step 8, P6.7.8.10).  Dep-free, no_std-compatible.
 omni-driver-shared = { workspace = true }
+# `omni-types` provides the canonical `IdentifyTarget` / `NvmeCommand` /
+# `NvmeEvent` wire-shape enums per OIP-Driver-NVMe-014 § S2 + § S3
+# (P6.7.10-pre.5). The admin-queue encoder in `src/admin.rs` consumes
+# `IdentifyTarget` to dispatch the CDW10.CNS byte without redeclaring
+# the enum here. `default-features = false` strips `id-generation`
+# (which pulls in `getrandom` and breaks `x86_64-unknown-none` — same
+# rationale as `omni-kernel`'s pin) — we only need the `nvme` module
+# which is dep-free at the gate level. Pin via path + version since
+# the workspace entry has `default-features = true`.
+omni-types = { path = "../omni-types", version = "0.2.0", default-features = false }
 
 [dev-dependencies]

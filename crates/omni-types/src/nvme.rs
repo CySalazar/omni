@@ -102,10 +102,12 @@ pub const MAX_BLOCK_COUNT_PER_REQUEST: u32 = 2048;
 /// validate `block_count` arithmetic.
 pub const BLOCK_SIZE_BYTES: u32 = 4096;
 
-/// Reserved sentinel for the `opaque_id` field of every
-/// [`NvmeCommand`] variant indicating the command was issued by the
-/// driver itself during bring-up (Identify Controller, Identify
-/// Namespace, Create IO Completion Queue, etc.).
+/// Sentinel `opaque_id` for driver-internal admin commands.
+///
+/// The driver itself emits Identify Controller, Identify Namespace,
+/// Create IO Completion Queue, etc. during bring-up; these commands
+/// are not initiated by a client and so carry this reserved value
+/// instead of a client-chosen correlation token.
 ///
 /// Clients MUST NOT use this value — the driver enforces uniqueness
 /// of `opaque_id` against the reserved set when accepting incoming

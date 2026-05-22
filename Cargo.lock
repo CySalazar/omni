@@ -933,6 +933,7 @@ name = "omni-driver-nvme"
 version = "0.2.0"
 dependencies = [
  "omni-driver-shared",
+ "omni-types",
 ]
 
 [[package]]

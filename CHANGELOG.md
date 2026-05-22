@@ -17,6 +17,92 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.6 NVMe Admin SQE/CQE primitives (2026-05-22) —
+  TASK-005 continuation.**
+  New `crates/omni-driver-nvme/src/admin.rs` module declares the
+  pure-state Admin Submission Queue Entry / Completion Queue Entry
+  primitives per NVMe 1.4 base spec § 4.2 (64-byte SQE) and § 4.6
+  (16-byte CQE). The module is the auditable byte-layout
+  source-of-truth for the future live-admin-queue driver.
+  - **`AdminSqe`**: `repr(transparent)` newtype over `[u8; 64]`
+    (size pinned by `admin_sqe_struct_is_64_bytes` host test).
+    Constructed via `AdminSqe::zeroed()` and mutated only by the
+    encoder helpers below.
+  - **`AdminCqe`**: `repr(transparent)` newtype over `[u8; 16]`
+    (size pinned by `admin_cqe_struct_is_16_bytes`).
+  - **`encode_identify(target: IdentifyTarget, prp1: u64, prp2: u64,
+    cid: u16) -> AdminSqe`** writes the spec-faithful field layout
+    in little-endian per NVMe 1.4 § 3.0:
+    - CDW0 = `OPC=0x06 IDENTIFY` | `CID` (bits 31:16) at bytes 0..3
+    - NSID at bytes 4..7 (zeroed for `Controller`/`ActiveNsList`,
+      non-zero for `Namespace{nsid}`)
+    - Reserved + MPTR at bytes 8..23 (left zero)
+    - DPTR.PRP1 at bytes 24..31
+    - DPTR.PRP2 at bytes 32..39 (zero for Identify per § 5.15)
+    - CDW10 = CNS (`0x01` Controller, `0x00` Namespace, `0x02`
+      ActiveNsList) at bytes 40..43
+    - CDW11..15 left zero
+  - **`parse_admin_cqe(&AdminCqe) -> AdminCqeFields`**: total over
+    the 16-byte input. Extracts 9 fields per § 4.6: `cdw0`,
+    `sq_head`, `sq_id`, `cid`, `phase`, `sc`, `sct` (masked to 3
+    bits per spec), `more`, `do_not_retry`.
+  - **`AdminCqeFields::packed_status() -> u16`**: re-packs the
+    parsed bits into the 16-bit status word
+    `omni_types::nvme::NvmeEvent::CommandComplete::status` carries
+    (P6.7.10-pre.5). Zeroes the CRD bits OMNI OS does not surface.
+  - **`AdminCqeFields::is_success() -> bool`**: returns
+    `SCT == 0 && SC == 0` per § 4.6 Generic Command Status.
+  - **Constants**: 8 opcode + CNS values (`OPC_IDENTIFY = 0x06`,
+    `OPC_CREATE_IO_CQ = 0x05`, `OPC_CREATE_IO_SQ = 0x01`,
+    `OPC_GET_LOG_PAGE = 0x02`, `CNS_IDENTIFY_NAMESPACE = 0x00`,
+    `CNS_IDENTIFY_CONTROLLER = 0x01`, `CNS_ACTIVE_NSID_LIST =
+    0x02`); 2 size constants (`ADMIN_SQE_BYTES = 64`,
+    `ADMIN_CQE_BYTES = 16`).
+  - **Internal helpers**: `write_dw_at` / `write_qw_at` /
+    `read_dw_at` use bounds-checked `Vec::get` / `get_mut` patterns
+    so the workspace `clippy::indexing_slicing` lint (set at deny)
+    stays clean.
+  - **`crates/omni-driver-nvme/src/lib.rs`** extended with
+    `pub mod admin;` declaration.
+  - **`crates/omni-driver-nvme/Cargo.toml`** extended with
+    `omni-types = { path = "../omni-types",
+    default-features = false }`. The `default-features = false`
+    strips `id-generation` (which pulls in `getrandom` and breaks
+    `x86_64-unknown-none`) — mirrors `omni-kernel`'s pin so the
+    downstream `omni-driver-nvme-image` ELF still compiles on the
+    bare-metal target.
+  - **+30 new host-side tests** under
+    `omni_driver_nvme::admin::tests::*`:
+    - 7 constant + struct-size tripwires (size constants,
+      `AdminSqe` zero default, opcode/CNS spec match).
+    - 10 `encode_identify` field-layout checks (opcode, CID
+      little-endian, NSID dispatch, PRP1/PRP2 placement, CNS
+      dispatch across all three targets, reserved-bytes-zero,
+      CDW11..15-zero).
+    - 5 `parse_admin_cqe` field-extraction checks (success status,
+      phase-bit-clear, SC extraction, SCT extraction, More + DNR +
+      CDW0 + CID).
+    - 4 `packed_status` round-trips (success-only-phase, parse→pack
+      round-trip, CRD-bits-zero, max-value status word).
+    - 2 byte-layout pinning (CDW0 little-endian, `parse_admin_cqe`
+      handles `u16::MAX` status word).
+    - 2 supporting fixtures (`cqe_with` test helper, driver-internal
+      correlation test).
+  - **Workspace test count**: 1307 → 1337 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.6 NVMe admin SQE`,
+    Next=`P6.7.10-pre.7 NVMe IO encoder`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1337 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new external dependency** — `omni-types` was already a
+    workspace member; the new `default-features = false` pin reuses
+    the same path the kernel uses.
+
 - **Storage — P6.7.10-pre.5 NVMe driver-private command + event channel
   ABI types (2026-05-22) — TASK-005 continuation.**
   New `crates/omni-types/src/nvme.rs` module declares the canonical
