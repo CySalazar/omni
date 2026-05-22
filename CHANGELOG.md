@@ -17,6 +17,78 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.2 kernel-side BLK channel registry (2026-05-22) —
+  TASK-005 continuation.**
+  Lands the kernel-side bookkeeping table that maps disk slot
+  (`"nvme0"`, `"sata0"`, …) → live IPC `ChannelId` per
+  OIP-Driver-NVMe-014 § S4 + § S6 step 12. Future filesystem services
+  and capability-gated multiplexers consult the registry instead of
+  sniffing the kernel IPC layer by string — the IPC layer remains
+  name-agnostic by design.
+  - **`crates/omni-kernel/src/services/mod.rs`** new module declares
+    the `services::*` submodule tree (kernel-side well-known channel
+    namespaces). Gated `#[cfg(feature = "bare-metal")]`.
+  - **`crates/omni-kernel/src/services/blk.rs`** new module declares
+    `BlkChannelRegistry`, `BlkChannelEntry`, and the
+    `BlkRegistryError` taxonomy.
+    - `register(disk_slot, channel_id, owner) -> Result<&str, ...>` —
+      returns the canonical channel name (`"omni.svc.blk.<diskN>"`)
+      pre-built once at insertion so consumer call sites do not
+      re-allocate on every lookup.
+    - `unregister(disk_slot, owner) -> Result<BlkChannelEntry, ...>` —
+      owner-only teardown; `swap_remove` keeps the average remove
+      path O(1).
+    - `lookup_disk_slot(&str)` / `lookup_channel_name(&str)` /
+      `lookup_channel_id(ChannelId)` — `Option<&BlkChannelEntry>`.
+    - `clear_for_owner(TaskId) -> usize` — task-exit drain hook;
+      returns the count of evicted entries.
+    - Bounded: `MAX_BLK_CHANNELS = 64`, `MAX_DISK_SLOT_LEN = 32`.
+    - Disk-slot validator restricts the alphabet to `[A-Za-z0-9_-]`
+      and rejects empty / oversized / non-ASCII / control-byte /
+      dot inputs — closes a path where a compromised driver could
+      embed log-line forgeries (CRLF, ANSI escapes) into the kernel
+      boot log through the channel name.
+    - `BlkRegistryError::{DiskSlotEmpty, DiskSlotTooLong,
+      DiskSlotInvalidChar, DiskSlotAlreadyRegistered, RegistryFull,
+      DiskSlotNotRegistered, OwnerMismatch, Internal}` — all
+      `#[non_exhaustive]` per OIP-014 § S7. `Internal` is a defensive
+      sentinel for `Vec` invariants the registry expects to hold but
+      cannot statically prove; surfaces an error rather than
+      panicking so the kernel never aborts on a clippy edge case.
+  - **Consumes `omni_types::blk::CHANNEL_NAME_PREFIX`** — the
+    canonical prefix stays single-sourced across the two crates so
+    a future rename cannot desynchronise them.
+  - **`crates/omni-kernel/src/lib.rs`** extended with
+    `#[cfg(feature = "bare-metal")] pub mod services;`.
+  - **+32 host-side tests** under
+    `omni_kernel::services::blk::tests::*`: 5 construction / constant
+    tripwires + 12 `register` cases (validator + duplicate + capacity)
+    + 4 `unregister` cases (owner-only + non-owner reject + unknown
+    + re-register) + 6 lookup cases (by slot / channel name / channel
+    id, with negative cases) + 3 `clear_for_owner` cases + 2 ordering
+    cases (insertion order, `swap_remove` non-aliasing).
+  - **Build Info panel** (`crates/omni-kernel/src/bare_metal/
+    demo.rs::render_buildinfo`): Active=`P6.7.10-pre.2 BLK registry`
+    (cyan), Next=`P6.7.10-pre.3 BLK syscalls`, Phase=`1 - Microkernel
+    POC (~99.97%)`, Tests=`1269 workspace pass`.
+  - **Acceptance gates**: `cargo fmt --all -- --check` clean.
+    `cargo clippy --workspace --all-targets --all-features
+    -- -D warnings` clean. `cargo clippy -p omni-kernel --target
+    x86_64-unknown-none --features bare-metal -- -D warnings` clean.
+    `cargo clippy -p omni-kernel --target x86_64-unknown-none
+    --features bare-metal,mb12-userprobe -- -D warnings` clean.
+    `cargo clippy --manifest-path kernel-runner/Cargo.toml --target
+    x86_64-unknown-none -- -D warnings` clean. Clippy 3 driver-image
+    siblings (`x86_64-unknown-none --release`) clean. `bash scripts/
+    check-no-blanket-allow.sh` → `ok (scanned 16 crate-root files)`.
+    `RUSTDOCFLAGS=-Dwarnings cargo doc -p omni-kernel --features
+    bare-metal --target x86_64-unknown-none --no-deps` clean.
+    `RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps
+    --all-features` clean. `python3 scripts/lint-oips.py` → `0
+    error(s), 0 warning(s) across 19 file(s)`. Workspace test count
+    1237 → **1269 pass / 0 fail**.
+  - **No new dependency**. `alloc::string::String` + `alloc::vec::Vec`
+    are already required by the kernel.
 - **Storage — P6.7.10-pre.1 BLK service-channel ABI types (2026-05-22) — TASK-005 START.**
   Lands the foundational wire types for the generic BLK channel
   (`omni.svc.blk.<diskN>`) per OIP-Driver-NVMe-014 § M3 / § S4. First

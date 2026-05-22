@@ -96,6 +96,14 @@ pub mod mm;
 #[cfg(feature = "bare-metal")]
 pub mod process;
 pub mod scheduling;
+// `services` hosts kernel-side bookkeeping for the well-known
+// `omni.svc.<kind>.<slot>` IPC-channel namespaces surfaced by user-space
+// service drivers (BLK registry as of P6.7.10-pre.2; future NET, GPU, …).
+// Gated behind `bare-metal` to match the OIP-Driver-NVMe-014 § S4 acceptance
+// scope — the registry is consumed by the (bare-metal) driver framework
+// and has no host-side caller outside the unit tests.
+#[cfg(feature = "bare-metal")]
+pub mod services;
 pub mod syscall;
 
 // Bare-metal runtime: panic handler, global allocator, early console,
