@@ -77,6 +77,7 @@ pub mod bringup;
 pub mod bringup_live;
 pub mod controller_regs;
 pub mod io;
+pub mod io_session;
 pub mod pci_ids;
 pub mod queue;
 pub mod queue_config;

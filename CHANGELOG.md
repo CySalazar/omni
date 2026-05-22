@@ -17,6 +17,84 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.23 NVMe `IoSession` (IO queue pair
+  traffic) (2026-05-22) — TASK-005 continuation.**
+  `crates/omni-driver-nvme/src/queue.rs::AdminQueuePair`
+  generalised with a runtime `qid: u16` field (replaces the
+  hardcoded `Self::ADMIN_QID = 0` in the doorbell offset calls).
+  New `AdminQueuePair::new_for_qid(qid, sq_depth, cq_depth,
+  dstrd)` constructor accepts an arbitrary queue id (admin = 0,
+  IO queues = `1..=io_queue_count` per OIP-NVMe-014 § R5). The
+  existing `AdminQueuePair::new(...)` is preserved as a wrapper
+  calling `new_for_qid(ADMIN_QID, ...)` so all prior callers
+  continue to compile without change.
+  - New `crates/omni-driver-nvme/src/io_session.rs` module
+    declares `IoSession` — mirrors the `AdminSession` pattern
+    from pre.13 but bound to a non-admin queue:
+    - `IoSession::new(qid, nsid, sq_depth, cq_depth, dstrd)`
+      zero-initialises the SQ + CQ pages and starts the CID
+      counter at 1 (skipping the reserved 0).
+    - `submit_blk_request<M: MmioBackend>(req: BlkRequest,
+      prp1: u64, prp2: u64, mmio: &mut M)
+      -> Result<Option<u16>, QueueError>` composes
+      `blk_gateway::encode_blk_request(req, cid, nsid, prp1,
+      prp2)` (pre.22) with `AdminQueuePair::submit`. Returns
+      `Ok(None)` when `encode_blk_request` rejects the request
+      (only `#[non_exhaustive]` future variants today; caller
+      emits `BlkResponse::NotSupported` to the client).
+    - `poll_blk_response_for_cid<M>(cid, poll_limit, mmio)
+      -> Result<Option<BlkResponse>, QueueError>` drains the CQ
+      until the matching CID arrives, then composes with
+      `blk_gateway::cqe_to_blk_response` to surface the
+      translated response in one call.
+  - **`PHASE_1_IO_QID = 1`** constant pins the Phase-1
+    single-IO-queue default per OIP-014 § R2.
+  - `crates/omni-driver-nvme/src/lib.rs` extended with
+    `pub mod io_session;` declaration.
+  - **+14 new host-side tests** under
+    `omni_driver_nvme::io_session::tests::*`:
+    - 1 `PHASE_1_IO_QID` constant tripwire.
+    - 2 construction checks: records qid + nsid; SQ tail
+      doorbell routes to the IO queue offset NOT the admin
+      offset (anti-aliasing tripwire).
+    - 3 `submit_blk_request` encoding checks: returns assigned
+      CID; NSID passes through to SQE bytes 4..=7 LE;
+      `BlkRequest::Read` produces `OPC_NVM_READ` at byte 0.
+    - 5 `poll_blk_response_for_cid` mapping tests: success →
+      `Ok`; SC=0x02 → `InvalidArgument`; SC=0x80 → `OutOfRange`;
+      SCT=2 SC=0x82 → `DeviceError(0x0282)`; empty CQ exhausts
+      poll budget → `None`. Each verifies the CQ head doorbell
+      routes to the IO queue offset.
+    - 1 full submit → complete → poll round-trip
+      (`submit_then_poll_round_trips_blk_read_to_ok`).
+    - 1 CID monotone allocation check (1, 2, 3 sequentially).
+    - 1 ring-error propagation on zero depth.
+  - New `write_synthetic_cqe` fixture in the module's tests
+    — symmetric to the admin_session helper but parameterised
+    by SCT/SC for the status-word mapping tests.
+  - **All previously-existing tests** (admin queue, FSM glue,
+    e2e bringup, BLK gateway, etc.) continue to pass — the
+    `AdminQueuePair` runtime-qid generalisation is non-breaking
+    because the default `new(...)` constructor preserves the
+    original `qid = 0` behaviour.
+  - **Workspace test count**: 1501 → 1515 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.23 IoSession`,
+    Next=`P6.7.10-pre.24 IO e2e smoke`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1515 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — composes
+    `crate::queue::AdminQueuePair` (pre.11 + the runtime-qid
+    generalisation here) +
+    `crate::blk_gateway::{encode_blk_request, cqe_to_blk_response}`
+    (pre.22) +
+    `omni_types::blk::{BlkRequest, BlkResponse}` (pre.1).
+
 - **Storage — P6.7.10-pre.22 NVMe BLK gateway (2026-05-22) —
   TASK-005 continuation.**
   New `crates/omni-driver-nvme/src/blk_gateway.rs` module declares

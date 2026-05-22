@@ -195,6 +195,7 @@ pub struct AdminQueuePair {
     sq: SqRing,
     cq: CqRing,
     dstrd: u8,
+    qid: u16,
 }
 
 impl AdminQueuePair {
@@ -203,7 +204,7 @@ impl AdminQueuePair {
     /// head of the doorbell array).
     pub const ADMIN_QID: u16 = 0;
 
-    /// Construct an empty admin queue pair.
+    /// Construct an empty admin queue pair (qid = 0).
     ///
     /// # Errors
     ///
@@ -211,9 +212,28 @@ impl AdminQueuePair {
     ///   underlying [`SqRing::new`] / [`CqRing::new`] surfaces
     ///   (capacity zero or beyond `u16::MAX`).
     pub fn new(sq_depth: u32, cq_depth: u32, dstrd: u8) -> Result<Self, QueueError> {
+        Self::new_for_qid(Self::ADMIN_QID, sq_depth, cq_depth, dstrd)
+    }
+
+    /// Construct an empty queue pair for an arbitrary queue id
+    /// (Phase-1 IO queues use qid `1..=4` per OIP-NVMe-014 § R5).
+    /// The doorbell offset calculation routes to the matching
+    /// SQ-tail / CQ-head doorbells via
+    /// [`crate::controller_regs::sq_tail_doorbell_offset`] /
+    /// [`crate::controller_regs::cq_head_doorbell_offset`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::new`].
+    pub fn new_for_qid(
+        qid: u16,
+        sq_depth: u32,
+        cq_depth: u32,
+        dstrd: u8,
+    ) -> Result<Self, QueueError> {
         let sq = SqRing::new(sq_depth)?;
         let cq = CqRing::new(cq_depth)?;
-        Ok(Self { sq, cq, dstrd })
+        Ok(Self { sq, cq, dstrd, qid })
     }
 
     /// Borrow the underlying [`SqRing`] for read-only introspection
@@ -233,6 +253,13 @@ impl AdminQueuePair {
     #[must_use]
     pub const fn dstrd(&self) -> u8 {
         self.dstrd
+    }
+
+    /// Returns the queue id this queue pair binds to (admin = 0,
+    /// IO queues = `1..=io_queue_count`).
+    #[must_use]
+    pub const fn qid(&self) -> u16 {
+        self.qid
     }
 
     /// Submit one Admin SQE into the queue.
@@ -282,7 +309,7 @@ impl AdminQueuePair {
 
         // Compute the doorbell offset eagerly so a stride-arithmetic
         // overflow surfaces before the ring-state mutation.
-        let doorbell = sq_tail_doorbell_offset(Self::ADMIN_QID, self.dstrd)
+        let doorbell = sq_tail_doorbell_offset(self.qid, self.dstrd)
             .ok_or(QueueError::DoorbellOffsetOverflow)?;
 
         // Claim a slot through the ring. The slot index is bounded
@@ -356,7 +383,7 @@ impl AdminQueuePair {
 
         // Compute the doorbell offset eagerly so a stride-arithmetic
         // overflow surfaces before any state mutation.
-        let doorbell = cq_head_doorbell_offset(Self::ADMIN_QID, self.dstrd)
+        let doorbell = cq_head_doorbell_offset(self.qid, self.dstrd)
             .ok_or(QueueError::DoorbellOffsetOverflow)?;
 
         // Locate the current slot. `cq.head() < capacity` by
