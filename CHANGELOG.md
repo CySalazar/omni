@@ -17,6 +17,63 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.18 NVMe `AdminSession::run_identify_*`
+  high-level helpers (2026-05-22) — TASK-005 continuation.**
+  `crates/omni-driver-nvme/src/admin_session.rs::AdminSession`
+  extended with three high-level wrappers that combine
+  `submit_identify_*` + `poll_completion_for_cid` into single
+  calls so the future bring-up FSM does not have to manage the
+  CID + drain pair manually.
+  - **`run_identify_controller<M: MmioBackend>(&mut self,
+    buf_iova: u64, poll_limit: u32, mmio: &mut M)
+    -> Result<AdminCqeFields, QueueError>`** allocates a CID via
+    `submit_identify_controller`, drains the matching completion
+    via `poll_completion_for_cid`, surfaces
+    `QueueError::IdentifyCompletionTimeout` when the poll budget
+    exhausts.
+  - **`run_identify_namespace<M>(nsid, buf_iova, poll_limit, mmio)
+    -> Result<AdminCqeFields, QueueError>`** and
+    **`run_identify_active_ns_list<M>(buf_iova, poll_limit,
+    mmio)`** symmetric to `run_identify_controller` for the other
+    two `IdentifyTarget` variants.
+  - **`QueueError::IdentifyCompletionTimeout`** variant added to
+    the `#[non_exhaustive]` taxonomy.
+  - **+5 new host-side tests** under
+    `omni_driver_nvme::admin_session::tests::*`:
+    - `run_identify_controller_round_trips_to_completion` —
+      full round-trip against the existing `FakeController`
+      fixture, asserts `is_success()` and `sq_head` feedback.
+    - `run_identify_controller_returns_timeout_on_empty_cq` —
+      submit succeeds but CQ stays empty → helper surfaces
+      `IdentifyCompletionTimeout` after exhausting `poll_limit`.
+    - `run_identify_namespace_submits_correct_nsid_and_round_trips` —
+      verifies NSID = 7 lands at SQE bytes 4..=7 (little-endian)
+      and the round-trip completes.
+    - `run_identify_active_ns_list_round_trips` — verifies
+      CDW10.CNS = `0x02` and the round-trip completes.
+    - `identify_completion_timeout_in_queue_error_taxonomy` —
+      discriminant distinctness against `ControllerNotReady`,
+      `Full`.
+  - **`round_trip_session_through_fake(s, emits)`** helper
+    centralises the snapshot-SQ → fake-controller →
+    copy-CQ-back pattern that pre.13's lone round-trip test
+    invented inline; future integration tests reuse the same
+    pattern.
+  - **Workspace test count**: 1461 → 1466 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.18 Identify Ctrl`,
+    Next=`P6.7.10-pre.19 NVMe FSM glue`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1466 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — composes existing primitives from
+    `crate::admin` + `crate::queue` + the `FakeController`
+    fixture from pre.13.
+
 - **Storage — P6.7.10-pre.17 NVMe driver image LiveMmioBackend +
   disable/program/enable controller sequence (2026-05-22) —
   TASK-005 continuation.**

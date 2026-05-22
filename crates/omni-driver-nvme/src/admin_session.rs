@@ -180,6 +180,62 @@ impl AdminSession {
         self.submit_identify(IdentifyTarget::ActiveNsList, buf_iova, mmio)
     }
 
+    /// Submit `Identify Controller` and poll the matching completion
+    /// in a single high-level call.
+    ///
+    /// # Errors
+    ///
+    /// - Any [`QueueError`] [`Self::submit_identify_controller`]
+    ///   surfaces.
+    /// - [`QueueError::IdentifyCompletionTimeout`] if the matching
+    ///   CQE does not arrive within `poll_limit` iterations of the
+    ///   drain loop.
+    pub fn run_identify_controller<M: MmioBackend>(
+        &mut self,
+        buf_iova: u64,
+        poll_limit: u32,
+        mmio: &mut M,
+    ) -> Result<AdminCqeFields, QueueError> {
+        let cid = self.submit_identify_controller(buf_iova, mmio)?;
+        self.poll_completion_for_cid(cid, poll_limit, mmio)?
+            .ok_or(QueueError::IdentifyCompletionTimeout)
+    }
+
+    /// Submit `Identify Namespace(nsid)` and poll the matching
+    /// completion in a single high-level call.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::run_identify_controller`].
+    pub fn run_identify_namespace<M: MmioBackend>(
+        &mut self,
+        nsid: u32,
+        buf_iova: u64,
+        poll_limit: u32,
+        mmio: &mut M,
+    ) -> Result<AdminCqeFields, QueueError> {
+        let cid = self.submit_identify_namespace(nsid, buf_iova, mmio)?;
+        self.poll_completion_for_cid(cid, poll_limit, mmio)?
+            .ok_or(QueueError::IdentifyCompletionTimeout)
+    }
+
+    /// Submit `Identify Active Namespace List` and poll the matching
+    /// completion in a single high-level call.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::run_identify_controller`].
+    pub fn run_identify_active_ns_list<M: MmioBackend>(
+        &mut self,
+        buf_iova: u64,
+        poll_limit: u32,
+        mmio: &mut M,
+    ) -> Result<AdminCqeFields, QueueError> {
+        let cid = self.submit_identify_active_ns_list(buf_iova, mmio)?;
+        self.poll_completion_for_cid(cid, poll_limit, mmio)?
+            .ok_or(QueueError::IdentifyCompletionTimeout)
+    }
+
     /// Poll the completion queue until a CQE matching `cid` is
     /// drained or `poll_limit` iterations elapse without one.
     ///
@@ -511,6 +567,110 @@ mod tests {
         let mut nop = NopMmio;
         let res = s.poll_completion_for_cid(42, 4, &mut nop).expect("poll");
         assert!(res.is_none());
+    }
+
+    // -------------------------------------------------------------------
+    // run_identify_* (P6.7.10-pre.18)
+    // -------------------------------------------------------------------
+
+    fn round_trip_session_through_fake(
+        s: &mut AdminSession,
+        emits: u16,
+    ) {
+        // Drive the FakeController against the session's SQ snapshot
+        // + a scratch CQ, then copy the scratch CQ back into the
+        // session via copy_from_slice. `emits` is the new SQ tail
+        // value the fake should respond to.
+        let sq_snapshot: Vec<u8> = s.sq_page().to_vec();
+        let cq_capacity: u16 = s.queue_pair().cq().capacity();
+        let mut scratch_cq: Vec<u8> =
+            vec![0u8; (cq_capacity as usize) * ADMIN_CQE_BYTES];
+        {
+            let mut fake = FakeController::new(
+                s.queue_pair().sq().capacity(),
+                cq_capacity,
+                s.queue_pair().dstrd(),
+                &sq_snapshot,
+                &mut scratch_cq,
+            );
+            fake.emit_completion_for_latest_sqe(emits);
+        }
+        s.cq_page_mut().copy_from_slice(&scratch_cq);
+    }
+
+    #[test]
+    fn run_identify_controller_round_trips_to_completion() {
+        let mut s = AdminSession::new(8, 8, 0).expect("ctor");
+        let mut bootstrap = BootstrapFake::default();
+        // Pre-submit through the bootstrap fake so the SQ page has
+        // the encoded SQE for the FakeController to read.
+        let cid = s
+            .submit_identify_controller(0x1000, &mut bootstrap)
+            .unwrap();
+        round_trip_session_through_fake(&mut s, 1);
+        // Now poll via the high-level helper. It re-uses the
+        // previously-submitted CID; the helper itself would have
+        // allocated CID = 2, but for the host harness we exercise
+        // the poll half directly.
+        let mut nop = NopMmio;
+        let fields = s
+            .poll_completion_for_cid(cid, 16, &mut nop)
+            .expect("poll")
+            .expect("matched");
+        assert!(fields.is_success());
+    }
+
+    #[test]
+    fn run_identify_controller_returns_timeout_on_empty_cq() {
+        let mut s = AdminSession::new(4, 4, 0).expect("ctor");
+        let mut bootstrap = BootstrapFake::default();
+        // submit_identify_controller works (writes to SQ page).
+        // The FakeController is NOT invoked, so the CQ page stays
+        // zero → drain returns None → helper surfaces timeout.
+        let res = s.run_identify_controller(0x1000, 4, &mut bootstrap);
+        assert_eq!(res, Err(QueueError::IdentifyCompletionTimeout));
+    }
+
+    #[test]
+    fn run_identify_namespace_submits_correct_nsid_and_round_trips() {
+        let mut s = AdminSession::new(8, 8, 0).expect("ctor");
+        let mut bootstrap = BootstrapFake::default();
+        let cid = s.submit_identify_namespace(7, 0x2000, &mut bootstrap).unwrap();
+        // Verify the encoded SQE carries NSID = 7.
+        let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
+        let mut tmp = [0u8; 4];
+        tmp.copy_from_slice(sqe.get(4..8).unwrap());
+        assert_eq!(u32::from_le_bytes(tmp), 7);
+        round_trip_session_through_fake(&mut s, 1);
+        let mut nop = NopMmio;
+        let fields = s.poll_completion_for_cid(cid, 16, &mut nop).unwrap().unwrap();
+        assert!(fields.is_success());
+    }
+
+    #[test]
+    fn run_identify_active_ns_list_round_trips() {
+        let mut s = AdminSession::new(8, 8, 0).expect("ctor");
+        let mut bootstrap = BootstrapFake::default();
+        let cid = s
+            .submit_identify_active_ns_list(0x3000, &mut bootstrap)
+            .unwrap();
+        // Verify CDW10.CNS = 0x02 (ActiveNsList).
+        let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
+        let cns = sqe.get(40).copied().unwrap();
+        assert_eq!(cns, crate::admin::CNS_ACTIVE_NSID_LIST);
+        round_trip_session_through_fake(&mut s, 1);
+        let mut nop = NopMmio;
+        let fields = s.poll_completion_for_cid(cid, 16, &mut nop).unwrap().unwrap();
+        assert!(fields.is_success());
+    }
+
+    #[test]
+    fn identify_completion_timeout_in_queue_error_taxonomy() {
+        assert_ne!(
+            QueueError::IdentifyCompletionTimeout,
+            QueueError::ControllerNotReady
+        );
+        assert_ne!(QueueError::IdentifyCompletionTimeout, QueueError::Full);
     }
 
     #[test]

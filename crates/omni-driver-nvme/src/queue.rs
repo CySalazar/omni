@@ -157,6 +157,12 @@ pub enum QueueError {
     /// requires the admin queue base addresses to be 4 KiB-aligned
     /// (matching `CC.MPS`).
     QueueBaseMisaligned,
+    /// An `AdminSession::run_identify_*` helper exhausted its
+    /// `poll_limit` without observing the matching completion.
+    /// The live driver translates this to a "controller did not
+    /// respond to Identify within budget" diagnostic — usually a
+    /// bring-up bug (queue not enabled) or hardware fault.
+    IdentifyCompletionTimeout,
 }
 
 impl From<RingError> for QueueError {
