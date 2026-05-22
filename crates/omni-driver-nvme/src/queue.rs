@@ -31,8 +31,8 @@
 use crate::admin::{ADMIN_CQE_BYTES, ADMIN_SQE_BYTES, AdminCqe, AdminCqeFields, AdminSqe};
 use crate::controller_regs::{
     ACQ_OFFSET, AQA_OFFSET, ASQ_OFFSET, CC_AMS_SHIFT, CC_CSS_SHIFT, CC_EN_BIT,
-    CC_IOCQES_SHIFT, CC_IOSQES_SHIFT, CC_MPS_SHIFT, CC_OFFSET, CSTS_OFFSET, CSTS_RDY_BIT,
-    cq_head_doorbell_offset, sq_tail_doorbell_offset,
+    CC_IOCQES_SHIFT, CC_IOSQES_SHIFT, CC_MPS_SHIFT, CC_OFFSET, CSTS_CFS_BIT, CSTS_OFFSET,
+    CSTS_RDY_BIT, cq_head_doorbell_offset, sq_tail_doorbell_offset,
 };
 use crate::ring::{CqRing, RingError, SqRing};
 
@@ -164,6 +164,12 @@ pub enum QueueError {
     /// respond to Identify within budget" diagnostic — usually a
     /// bring-up bug (queue not enabled) or hardware fault.
     IdentifyCompletionTimeout,
+    /// `CSTS.CFS` is set (Controller Fatal Status, NVMe 1.4
+    /// § 3.1.6). The bring-up FSM MUST translate this to
+    /// `BringUpError::ControllerFatal` and abort. CFS is sticky —
+    /// once set, the controller never clears it until a full
+    /// reset cycle.
+    ControllerFatal,
 }
 
 impl From<RingError> for QueueError {
@@ -441,12 +447,19 @@ impl AdminQueuePair {
 ///
 /// - [`QueueError::ControllerNotReady`] when the poll budget is
 ///   exhausted without observing `CSTS.RDY = 1`.
+/// - [`QueueError::ControllerFatal`] if any poll iteration
+///   observes `CSTS.CFS = 1` (Controller Fatal Status). The
+///   poll loop aborts immediately — CFS is sticky per NVMe 1.4
+///   § 3.1.6 so continuing to wait is pointless.
 pub fn wait_for_csts_rdy<R: MmioReadBackend>(
     mmio: &mut R,
     poll_limit: u32,
 ) -> Result<(), QueueError> {
     for _ in 0..poll_limit {
         let csts = mmio.read_register(CSTS_OFFSET);
+        if (csts & CSTS_CFS_BIT) != 0 {
+            return Err(QueueError::ControllerFatal);
+        }
         if (csts & CSTS_RDY_BIT) != 0 {
             return Ok(());
         }
@@ -466,17 +479,33 @@ pub fn wait_for_csts_rdy<R: MmioReadBackend>(
 ///
 /// - [`QueueError::ControllerNotReady`] when the poll budget is
 ///   exhausted without observing `CSTS.RDY = 0`.
+/// - [`QueueError::ControllerFatal`] if any poll iteration
+///   observes `CSTS.CFS = 1`.
 pub fn wait_for_csts_not_rdy<R: MmioReadBackend>(
     mmio: &mut R,
     poll_limit: u32,
 ) -> Result<(), QueueError> {
     for _ in 0..poll_limit {
         let csts = mmio.read_register(CSTS_OFFSET);
+        if (csts & CSTS_CFS_BIT) != 0 {
+            return Err(QueueError::ControllerFatal);
+        }
         if (csts & CSTS_RDY_BIT) == 0 {
             return Ok(());
         }
     }
     Err(QueueError::ControllerNotReady)
+}
+
+/// Inspect `CSTS.CFS` once (no polling).
+///
+/// Returns `true` if Controller Fatal Status is set per NVMe 1.4
+/// § 3.1.6. The bring-up FSM can call this between admin commands
+/// to early-abort if the controller crashed asynchronously.
+#[must_use]
+pub fn check_controller_fatal<R: MmioReadBackend>(mmio: &mut R) -> bool {
+    let csts = mmio.read_register(CSTS_OFFSET);
+    (csts & CSTS_CFS_BIT) != 0
 }
 
 /// Disable the NVMe controller (OIP-014 § S6 step 4 / NVMe 1.4
@@ -1192,11 +1221,18 @@ mod tests {
     }
 
     #[test]
-    fn wait_for_csts_rdy_ignores_other_csts_bits() {
+    fn wait_for_csts_rdy_ignores_other_non_cfs_csts_bits() {
         let mut mmio = ScriptedMmioRead::default();
-        // CSTS with RDY = 1 AND other bits set (e.g. CFS, SHST).
-        // The helper MUST recognise RDY regardless of the rest.
-        mmio.push(CSTS_OFFSET, CSTS_RDY_BIT | 0xFFFF_FFFE);
+        // CSTS with RDY = 1 AND other non-CFS bits set
+        // (e.g. SHST, NSSRO). The helper MUST recognise RDY
+        // regardless of the rest. CFS (bit 1) MUST stay clear or
+        // the helper short-circuits with ControllerFatal — that
+        // path is covered by `wait_for_csts_rdy_aborts_on_cfs`.
+        let csts: u32 = CSTS_RDY_BIT | 0xFFFF_FFFE;
+        // Clear bit 1 (CFS) so the test exercises only "other
+        // bits".
+        let csts = csts & !CSTS_CFS_BIT;
+        mmio.push(CSTS_OFFSET, csts);
         let res = wait_for_csts_rdy(&mut mmio, 16);
         assert_eq!(res, Ok(()));
     }
@@ -1585,6 +1621,83 @@ mod tests {
         assert_eq!((val >> 7) & 0xF, 0xF);
         assert_eq!((val >> 16) & 0xF, 0xF);
         assert_eq!((val >> 20) & 0xF, 0xF);
+    }
+
+    // -------------------------------------------------------------------
+    // CSTS.CFS detection (P6.7.10-pre.31)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn wait_for_csts_rdy_aborts_on_cfs() {
+        let mut mmio = ScriptedMmioRead::default();
+        // First read sees CFS set → helper returns ControllerFatal
+        // immediately without consuming further polls.
+        mmio.push(CSTS_OFFSET, CSTS_CFS_BIT);
+        let res = wait_for_csts_rdy(&mut mmio, 16);
+        assert_eq!(res, Err(QueueError::ControllerFatal));
+        assert_eq!(mmio.cursor, 1);
+    }
+
+    #[test]
+    fn wait_for_csts_rdy_aborts_on_cfs_even_with_rdy_set() {
+        let mut mmio = ScriptedMmioRead::default();
+        // CFS takes precedence over RDY: the controller may have
+        // toggled RDY=1 during the crash latch, but CFS=1
+        // overrides — the driver MUST treat this as fatal.
+        mmio.push(CSTS_OFFSET, CSTS_CFS_BIT | CSTS_RDY_BIT);
+        let res = wait_for_csts_rdy(&mut mmio, 16);
+        assert_eq!(res, Err(QueueError::ControllerFatal));
+    }
+
+    #[test]
+    fn wait_for_csts_rdy_aborts_on_cfs_mid_poll() {
+        let mut mmio = ScriptedMmioRead::default();
+        // Two not-ready iterations, then CFS sets in iteration 3.
+        // The helper MUST surface ControllerFatal on iteration 3
+        // without continuing to the would-be ready iteration 4.
+        mmio.push(CSTS_OFFSET, 0);
+        mmio.push(CSTS_OFFSET, 0);
+        mmio.push(CSTS_OFFSET, CSTS_CFS_BIT);
+        mmio.push(CSTS_OFFSET, CSTS_RDY_BIT); // would set RDY, but never reached
+        let res = wait_for_csts_rdy(&mut mmio, 16);
+        assert_eq!(res, Err(QueueError::ControllerFatal));
+        assert_eq!(mmio.cursor, 3);
+    }
+
+    #[test]
+    fn wait_for_csts_not_rdy_aborts_on_cfs() {
+        let mut mmio = ScriptedMmioRead::default();
+        mmio.push(CSTS_OFFSET, CSTS_CFS_BIT | CSTS_RDY_BIT);
+        let res = wait_for_csts_not_rdy(&mut mmio, 16);
+        assert_eq!(res, Err(QueueError::ControllerFatal));
+    }
+
+    #[test]
+    fn check_controller_fatal_returns_true_when_cfs_set() {
+        let mut mmio = ScriptedMmioRead::default();
+        mmio.push(CSTS_OFFSET, CSTS_CFS_BIT);
+        assert!(check_controller_fatal(&mut mmio));
+    }
+
+    #[test]
+    fn check_controller_fatal_returns_false_when_cfs_clear() {
+        let mut mmio = ScriptedMmioRead::default();
+        // Other bits set but not CFS.
+        mmio.push(CSTS_OFFSET, CSTS_RDY_BIT);
+        assert!(!check_controller_fatal(&mut mmio));
+    }
+
+    #[test]
+    fn check_controller_fatal_returns_false_on_zero_csts() {
+        let mut mmio = ScriptedMmioRead::default();
+        mmio.push(CSTS_OFFSET, 0);
+        assert!(!check_controller_fatal(&mut mmio));
+    }
+
+    #[test]
+    fn controller_fatal_distinct_from_controller_not_ready() {
+        assert_ne!(QueueError::ControllerFatal, QueueError::ControllerNotReady);
+        assert_ne!(QueueError::ControllerFatal, QueueError::Full);
     }
 
     #[test]

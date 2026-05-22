@@ -17,6 +17,66 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.31 NVMe CSTS.CFS (Controller Fatal
+  Status) detection (2026-05-22) — TASK-005 continuation.**
+  `crates/omni-driver-nvme/src/queue.rs` extended with CSTS.CFS
+  (NVMe 1.4 § 3.1.6 bit 1) detection that aborts the bring-up
+  poll loops early instead of waiting for the full poll_limit
+  when the controller has crashed asynchronously.
+  - **`wait_for_csts_rdy` + `wait_for_csts_not_rdy`** now check
+    `csts & CSTS_CFS_BIT` BEFORE the RDY-bit check on every
+    iteration. If CFS is set the helper returns
+    `Err(QueueError::ControllerFatal)` immediately — CFS is
+    sticky per § 3.1.6 (once set, the controller never clears
+    it until a full reset cycle), so continuing to poll is
+    pointless.
+  - **`check_controller_fatal<R: MmioReadBackend>(mmio: &mut R)
+    -> bool`** inspector — single CSTS read, no polling. The
+    bring-up FSM can call this between admin commands to
+    early-abort if the controller crashed mid-bring-up.
+  - **`QueueError::ControllerFatal`** new variant added to the
+    `#[non_exhaustive]` taxonomy. The bring-up FSM in
+    `bringup_live` will translate this to
+    `BringUpError::ControllerFatal` per OIP-014 § S6 error
+    taxonomy.
+  - **Test rename**: the existing
+    `wait_for_csts_rdy_ignores_other_csts_bits` test (which
+    previously OR'd `0xFFFF_FFFE` over RDY) was renamed to
+    `wait_for_csts_rdy_ignores_other_non_cfs_csts_bits` and
+    updated to explicitly mask out CFS so the test exercises
+    the "other bits don't matter" case without colliding with
+    the new CFS short-circuit.
+  - **+8 new host-side tests** under
+    `omni_driver_nvme::queue::tests::*`:
+    - 3 `wait_for_csts_rdy` CFS-detection paths: CFS alone →
+      ControllerFatal immediately; CFS+RDY together →
+      ControllerFatal takes precedence; CFS mid-poll on
+      iteration 3 of 4 → ControllerFatal aborts before
+      iteration 4.
+    - 1 `wait_for_csts_not_rdy` CFS abort.
+    - 3 `check_controller_fatal` inspector checks (true when
+      CFS set, false when only RDY, false on zero CSTS).
+    - 1 taxonomy distinctness
+      (`ControllerFatal != ControllerNotReady != Full`).
+  - **All previously-passing tests continue to pass** — the new
+    behaviour is non-breaking because CFS=0 was implicit in
+    every existing fixture.
+  - **Workspace test count**: 1583 → 1591 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.31 CSTS.CFS detect`,
+    Next=`P6.7.10-pre.32 v0.3.0-alpha.2`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1591 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — composes
+    `crate::controller_regs::{CSTS_CFS_BIT, CSTS_OFFSET,
+    CSTS_RDY_BIT}` already pinned by the existing register
+    constants.
+
 - **Storage — P6.7.10-pre.30 NVMe controller `CC` initialisation
   field programmer (2026-05-22) — TASK-005 continuation.**
   `crates/omni-driver-nvme/src/queue.rs` extended with
