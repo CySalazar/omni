@@ -2,11 +2,12 @@
 oip: 18
 title: Filesystem direction for OMNI OS — native OmniFS as primary, foreign filesystems as read-only compatibility services
 track: Standards Track
-status: Draft
+status: Active
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-22
 updated: 2026-05-22
+activated: 2026-05-22
 requires:
   - 13
   - 14
@@ -750,6 +751,14 @@ the OmniFS posture is necessary but not sufficient for that threat class.
 | **`OIP-FS-Compat-NTFS-NNN`** | `omni-fs-compat-ntfs` driver acceptance (optional) | Phase 3+, opt-in only |
 
 ---
+
+## Amendment history
+
+| Date | Change | Notes |
+|---|---|---|
+| 2026-05-22 | `Draft → Review` | Editorial transition by the interim editor body (`cySalazar`, sole §6.2 Bootstrap editor). No substantive content change: the OIP enters the public discussion phase with all 10 canonical sections intact, and the quantitative parameters frozen in §S1.1 (4 KiB fixed block size, 64 ZiB max volume, 8 EiB max file, BLAKE3-keyed MAC 256-bit integrity, AEAD nonce-misuse-resistant confidentiality, 32-byte capability fingerprint, no hard links, ZSTD opt-in compression default off, no v1 dedup, no v1 multi-device) carry into `Review` unchanged. |
+| 2026-05-22 | `Review → Last Call` | Editorial transition by the interim editor body. The §5.5 fast-track was **not** invoked (the §5.5 (c) banner required at this transition was not in place); the standard §5.3 ¶1 14-day public-objection window opens 2026-05-22 (this date) and is scheduled to close 2026-06-05 unless §5.3 ¶1 second branch fires first. No content change carried by this transition; the OIP enters the vote window with the same text the Draft and Review phases had. |
+| 2026-05-22 | `Last Call → Active` | Editorial closure of the Last Call window under `OIP-Process-001` §5.3 ¶1 second branch: the dominant voter (`cySalazar`, 100% weighted eligibility under §5.2 bootstrap defaults — sole §5.1-eligible device, identical state to the 2026-05-22 `OIP-Bounty-002` / `OIP-Serde-004` ballots in `docs/audits/oip-editors-report-2026-Q2.md` and to the §5.5 fast-track log entry for `OIP-Kernel-005` / `OIP-Kernel-012` on 2026-05-14) cast an in-favor ballot, satisfying both clauses of §5.3 simultaneously (≥30% weighted vote cast AND ≥50%+1 weighted in favor). Founder ballot recorded in `docs/audits/oip-editors-report-2026-Q2.md`. No blocking objection was raised during the same-day window; the §5.5 (d) good-faith objection clause remains operative post-`Active` for the standard 14-day horizon (by 2026-06-05) and a substantive technical objection in that window SHOULD trigger an Amendment OIP. No content change carried by this transition. §5.4 BDFL veto: **not exercised** — OIP-FS-018 does not break Layer 1 cryptographic guarantees (filesystem direction; no cipher suite / signature scheme / capability format / mesh handshake change), so §5.4 does not apply. §7 activation phase opens upon `Active` and is practically dormant until OmniFS v0 ships (Phase 2 entry). |
 
 ## Copyright
 
