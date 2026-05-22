@@ -212,6 +212,159 @@ pub fn encode_identify(target: IdentifyTarget, prp1: u64, prp2: u64, cid: u16) -
 }
 
 // =============================================================================
+// Create I/O Completion Queue / Submission Queue encoders
+// =============================================================================
+
+/// CDW11 bit 0 — `PC` (Physically Contiguous).
+///
+/// Per NVMe 1.4 § 5.4 + § 5.5: set when the queue's data buffer is
+/// one contiguous range. Phase-1 driver always allocates a single
+/// contiguous page-aligned region via `DmaMap`.
+pub const CIOQ_CDW11_PC_BIT: u32 = 1 << 0;
+
+/// CDW11 bit 1 — `IEN` (Interrupts Enabled).
+///
+/// Per NVMe 1.4 § 5.5 (Create I/O Completion Queue only). Phase-1
+/// driver always sets this so MSI-X vectors deliver to the bound
+/// IRQ channel.
+pub const CIOCQ_CDW11_IEN_BIT: u32 = 1 << 1;
+
+/// Queue Priority field shift in CDW11 for Create IO SQ.
+///
+/// Per NVMe 1.4 § 5.4: bits 2:1 hold the priority (0 = Urgent,
+/// 1 = High, 2 = Medium, 3 = Low). Phase-1 driver requests Medium
+/// (`0b10`) to match the QEMU `weighted_round_robin` default.
+pub const CIOSQ_CDW11_QPRIO_SHIFT: u32 = 1;
+
+/// Queue Priority value: Urgent per NVMe 1.4 § 5.4.
+pub const CIOSQ_QPRIO_URGENT: u32 = 0b00;
+/// Queue Priority value: High per NVMe 1.4 § 5.4.
+pub const CIOSQ_QPRIO_HIGH: u32 = 0b01;
+/// Queue Priority value: Medium per NVMe 1.4 § 5.4 (Phase-1 default).
+pub const CIOSQ_QPRIO_MEDIUM: u32 = 0b10;
+/// Queue Priority value: Low per NVMe 1.4 § 5.4.
+pub const CIOSQ_QPRIO_LOW: u32 = 0b11;
+
+/// Interrupt vector shift in CDW11 for Create IO CQ per
+/// NVMe 1.4 § 5.5: bits 31:16 hold the MSI-X vector index.
+pub const CIOCQ_CDW11_IV_SHIFT: u32 = 16;
+
+/// Completion-queue identifier shift in CDW11 for Create IO SQ per
+/// NVMe 1.4 § 5.4: bits 31:16 hold the CQID this SQ pairs with.
+pub const CIOSQ_CDW11_CQID_SHIFT: u32 = 16;
+
+/// Encode a `Create I/O Completion Queue` admin command into a fresh
+/// [`AdminSqe`].
+///
+/// Field layout per NVMe 1.4 § 5.5 + § 4.2:
+///
+/// | Bytes | Field | Source |
+/// |---|---|---|
+/// | 0     | OPC = 0x05        | [`OPC_CREATE_IO_CQ`] |
+/// | 2..=3 | CID               | `cid` |
+/// | 4..=7 | NSID              | 0 (admin command, namespace-agnostic) |
+/// | 24..=31 | DPTR.PRP1       | `prp1` (CQ data buffer, 4 KiB-aligned) |
+/// | 40..=43 | CDW10 = QSIZE\[31:16\] \| QID\[15:0\] | `qsize - 1` (0-based per spec) \| `qid` |
+/// | 44..=47 | CDW11 = IV\[31:16\] \| IEN\[1\] \| PC\[0\] | `irq_vector`, `irq_enabled`, `physically_contig` |
+///
+/// `qsize` is 1-based in OMNI OS (callers see "this many entries");
+/// the encoder subtracts one to match the NVMe 0-based field
+/// convention. `qsize = 0` saturates to `0` (degenerate single-slot
+/// queue) — the bring-up FSM rejects zero upstream.
+#[must_use]
+pub fn encode_create_io_cq(
+    qid: u16,
+    qsize: u16,
+    prp1: u64,
+    irq_vector: u16,
+    irq_enabled: bool,
+    physically_contig: bool,
+    cid: u16,
+) -> AdminSqe {
+    let mut sqe = AdminSqe::zeroed();
+    let buf = sqe.as_bytes_mut();
+
+    let header_dw: u32 = u32::from(OPC_CREATE_IO_CQ) | (u32::from(cid) << 16);
+    write_dw_at(buf, 0, header_dw);
+    // NSID = 0 for admin commands; already zero by `zeroed()`.
+
+    // DPTR.PRP1 at bytes 24..=31. PRP2 stays zero (CQ data buffer
+    // fits in one PRP per the physically-contiguous flag).
+    write_qw_at(buf, 24, prp1);
+
+    // CDW10 = QSIZE 0-based (bits 31:16) | QID (bits 15:0).
+    let qsize_zero_based: u32 = u32::from(qsize.saturating_sub(1));
+    let queue_dw10: u32 = u32::from(qid) | (qsize_zero_based << 16);
+    write_dw_at(buf, 40, queue_dw10);
+
+    // CDW11 = IV (bits 31:16) | IEN (bit 1) | PC (bit 0).
+    let mut flags_dw11: u32 = 0;
+    if physically_contig {
+        flags_dw11 |= CIOQ_CDW11_PC_BIT;
+    }
+    if irq_enabled {
+        flags_dw11 |= CIOCQ_CDW11_IEN_BIT;
+    }
+    flags_dw11 |= u32::from(irq_vector) << CIOCQ_CDW11_IV_SHIFT;
+    write_dw_at(buf, 44, flags_dw11);
+
+    sqe
+}
+
+/// Encode a `Create I/O Submission Queue` admin command into a fresh
+/// [`AdminSqe`].
+///
+/// Field layout per NVMe 1.4 § 5.4 + § 4.2:
+///
+/// | Bytes | Field | Source |
+/// |---|---|---|
+/// | 0     | OPC = 0x01        | [`OPC_CREATE_IO_SQ`] |
+/// | 2..=3 | CID               | `cid` |
+/// | 4..=7 | NSID              | 0 (admin command) |
+/// | 24..=31 | DPTR.PRP1       | `prp1` (SQ data buffer) |
+/// | 40..=43 | CDW10 = QSIZE\[31:16\] \| QID\[15:0\] | `qsize - 1` \| `qid` |
+/// | 44..=47 | CDW11 = CQID\[31:16\] \| QPRIO\[2:1\] \| PC\[0\] | `cq_id`, `queue_priority`, `physically_contig` |
+///
+/// `queue_priority` MUST be one of
+/// [`CIOSQ_QPRIO_URGENT`] / [`CIOSQ_QPRIO_HIGH`] /
+/// [`CIOSQ_QPRIO_MEDIUM`] / [`CIOSQ_QPRIO_LOW`]; values outside
+/// `0..=3` are masked to 2 bits.
+#[must_use]
+pub fn encode_create_io_sq(
+    qid: u16,
+    qsize: u16,
+    prp1: u64,
+    cq_id: u16,
+    queue_priority: u32,
+    physically_contig: bool,
+    cid: u16,
+) -> AdminSqe {
+    let mut sqe = AdminSqe::zeroed();
+    let buf = sqe.as_bytes_mut();
+
+    let header_dw: u32 = u32::from(OPC_CREATE_IO_SQ) | (u32::from(cid) << 16);
+    write_dw_at(buf, 0, header_dw);
+
+    write_qw_at(buf, 24, prp1);
+
+    let qsize_zero_based: u32 = u32::from(qsize.saturating_sub(1));
+    let queue_dw10: u32 = u32::from(qid) | (qsize_zero_based << 16);
+    write_dw_at(buf, 40, queue_dw10);
+
+    // CDW11 = CQID (bits 31:16) | QPRIO (bits 2:1) | PC (bit 0).
+    let mut flags_dw11: u32 = 0;
+    if physically_contig {
+        flags_dw11 |= CIOQ_CDW11_PC_BIT;
+    }
+    let qprio_masked: u32 = queue_priority & 0b11;
+    flags_dw11 |= qprio_masked << CIOSQ_CDW11_QPRIO_SHIFT;
+    flags_dw11 |= u32::from(cq_id) << CIOSQ_CDW11_CQID_SHIFT;
+    write_dw_at(buf, 44, flags_dw11);
+
+    sqe
+}
+
+// =============================================================================
 // AdminCqe — 16-byte Completion Queue Entry
 // =============================================================================
 
@@ -769,5 +922,168 @@ mod tests {
         assert_eq!(f.sct, 0b111);
         assert!(f.more);
         assert!(f.do_not_retry);
+    }
+
+    // -------------------------------------------------------------------
+    // Create IO CQ / Create IO SQ encoders (P6.7.10-pre.10)
+    // -------------------------------------------------------------------
+
+    fn read_le_u32(buf: &[u8], off: usize) -> u32 {
+        let slice = buf.get(off..off + 4).expect("range in bounds");
+        let mut tmp = [0u8; 4];
+        tmp.copy_from_slice(slice);
+        u32::from_le_bytes(tmp)
+    }
+
+    fn read_le_u64(buf: &[u8], off: usize) -> u64 {
+        let slice = buf.get(off..off + 8).expect("range in bounds");
+        let mut tmp = [0u8; 8];
+        tmp.copy_from_slice(slice);
+        u64::from_le_bytes(tmp)
+    }
+
+    #[test]
+    fn create_io_cq_opcode_at_byte_zero() {
+        let sqe = encode_create_io_cq(1, 64, 0x1000, 0, true, true, 1);
+        assert_eq!(
+            sqe.as_bytes().first().copied().expect("opc"),
+            OPC_CREATE_IO_CQ
+        );
+    }
+
+    #[test]
+    fn create_io_cq_cdw10_packs_qid_in_low_and_qsize_zero_based_in_high() {
+        // qid=1, qsize=64 (1-based) → QSIZE field = 63 (0-based).
+        let sqe = encode_create_io_cq(1, 64, 0x1000, 0, true, true, 1);
+        let cdw10 = read_le_u32(sqe.as_bytes(), 40);
+        let qid_field = cdw10 & 0xFFFF;
+        let qsize_field = (cdw10 >> 16) & 0xFFFF;
+        assert_eq!(qid_field, 1);
+        assert_eq!(qsize_field, 63);
+    }
+
+    #[test]
+    fn create_io_cq_cdw11_bits_packed_correctly() {
+        // IV = 3, IEN = true, PC = true.
+        let sqe = encode_create_io_cq(1, 64, 0x1000, 3, true, true, 1);
+        let cdw11 = read_le_u32(sqe.as_bytes(), 44);
+        assert_eq!(cdw11 & CIOQ_CDW11_PC_BIT, CIOQ_CDW11_PC_BIT);
+        assert_eq!(cdw11 & CIOCQ_CDW11_IEN_BIT, CIOCQ_CDW11_IEN_BIT);
+        assert_eq!(cdw11 >> CIOCQ_CDW11_IV_SHIFT, 3);
+    }
+
+    #[test]
+    fn create_io_cq_cdw11_clears_unset_flags() {
+        // IEN = false, PC = false ⇒ low byte = 0.
+        let sqe = encode_create_io_cq(1, 64, 0x1000, 0, false, false, 1);
+        let cdw11 = read_le_u32(sqe.as_bytes(), 44);
+        assert_eq!(cdw11 & CIOQ_CDW11_PC_BIT, 0);
+        assert_eq!(cdw11 & CIOCQ_CDW11_IEN_BIT, 0);
+    }
+
+    #[test]
+    fn create_io_cq_writes_prp1_at_bytes_24_through_31() {
+        let prp1: u64 = 0xCAFE_BABE_DEAD_BEEF;
+        let sqe = encode_create_io_cq(1, 64, prp1, 0, true, true, 1);
+        assert_eq!(read_le_u64(sqe.as_bytes(), 24), prp1);
+    }
+
+    #[test]
+    fn create_io_cq_nsid_zero_for_admin_command() {
+        let sqe = encode_create_io_cq(1, 64, 0x1000, 0, true, true, 1);
+        assert_eq!(read_le_u32(sqe.as_bytes(), 4), 0);
+    }
+
+    #[test]
+    fn create_io_cq_qsize_saturating_sub_keeps_zero_on_zero_input() {
+        let sqe = encode_create_io_cq(1, 0, 0x1000, 0, true, true, 1);
+        let cdw10 = read_le_u32(sqe.as_bytes(), 40);
+        let qsize_field = (cdw10 >> 16) & 0xFFFF;
+        assert_eq!(qsize_field, 0);
+    }
+
+    #[test]
+    fn create_io_sq_opcode_at_byte_zero() {
+        let sqe = encode_create_io_sq(1, 1024, 0x2000, 1, CIOSQ_QPRIO_MEDIUM, true, 1);
+        assert_eq!(
+            sqe.as_bytes().first().copied().expect("opc"),
+            OPC_CREATE_IO_SQ
+        );
+    }
+
+    #[test]
+    fn create_io_sq_cdw10_packs_qid_and_qsize() {
+        let sqe = encode_create_io_sq(2, 1024, 0x2000, 1, CIOSQ_QPRIO_MEDIUM, true, 1);
+        let cdw10 = read_le_u32(sqe.as_bytes(), 40);
+        let qid_field = cdw10 & 0xFFFF;
+        let qsize_field = (cdw10 >> 16) & 0xFFFF;
+        assert_eq!(qid_field, 2);
+        assert_eq!(qsize_field, 1023); // 1024 - 1
+    }
+
+    #[test]
+    fn create_io_sq_cdw11_packs_cqid_qprio_pc() {
+        let sqe = encode_create_io_sq(2, 1024, 0x2000, 1, CIOSQ_QPRIO_MEDIUM, true, 1);
+        let cdw11 = read_le_u32(sqe.as_bytes(), 44);
+        assert_eq!(cdw11 & CIOQ_CDW11_PC_BIT, CIOQ_CDW11_PC_BIT);
+        let qprio_field = (cdw11 >> CIOSQ_CDW11_QPRIO_SHIFT) & 0b11;
+        assert_eq!(qprio_field, CIOSQ_QPRIO_MEDIUM);
+        let cqid_field = cdw11 >> CIOSQ_CDW11_CQID_SHIFT;
+        assert_eq!(cqid_field, 1);
+    }
+
+    #[test]
+    fn create_io_sq_qprio_constants_pin_spec_values() {
+        assert_eq!(CIOSQ_QPRIO_URGENT, 0b00);
+        assert_eq!(CIOSQ_QPRIO_HIGH, 0b01);
+        assert_eq!(CIOSQ_QPRIO_MEDIUM, 0b10);
+        assert_eq!(CIOSQ_QPRIO_LOW, 0b11);
+    }
+
+    #[test]
+    fn create_io_sq_qprio_masked_to_two_bits() {
+        // Out-of-range priority (0xFF) MUST mask to 0b11 = Low, not
+        // bleed into higher bits.
+        let sqe = encode_create_io_sq(2, 8, 0x2000, 1, 0xFF, true, 1);
+        let cdw11 = read_le_u32(sqe.as_bytes(), 44);
+        let qprio_field = (cdw11 >> CIOSQ_CDW11_QPRIO_SHIFT) & 0b11;
+        assert_eq!(qprio_field, 0b11);
+        // No bits should leak beyond the 2-bit qprio field except
+        // CQID (in bits 31:16) and PC (bit 0).
+        let leak_mask = cdw11 & 0xFFF8; // bits 3..=15
+        assert_eq!(leak_mask, 0);
+    }
+
+    #[test]
+    fn create_io_sq_writes_prp1() {
+        let prp1: u64 = 0xDEAD_BEEF_0000;
+        let sqe = encode_create_io_sq(2, 8, prp1, 1, CIOSQ_QPRIO_MEDIUM, true, 1);
+        assert_eq!(read_le_u64(sqe.as_bytes(), 24), prp1);
+    }
+
+    #[test]
+    fn create_io_sq_nsid_zero_for_admin_command() {
+        let sqe = encode_create_io_sq(2, 8, 0x2000, 1, CIOSQ_QPRIO_MEDIUM, true, 1);
+        assert_eq!(read_le_u32(sqe.as_bytes(), 4), 0);
+    }
+
+    #[test]
+    fn create_io_cq_and_sq_opcode_constants_distinct() {
+        // Tripwire: regression that aliased the two admin opcodes
+        // would silently route Create-CQ traffic to Create-SQ (or
+        // vice versa) with disastrous bring-up results.
+        assert_ne!(OPC_CREATE_IO_CQ, OPC_CREATE_IO_SQ);
+    }
+
+    #[test]
+    fn create_io_cq_cdw11_iv_shift_clears_low_bits() {
+        // High vector value (e.g. 0x4000) MUST land entirely in
+        // bits 31:16 and leave bits 0..=15 alone (modulo IEN/PC).
+        let sqe = encode_create_io_cq(1, 64, 0x1000, 0x4000, false, false, 1);
+        let cdw11 = read_le_u32(sqe.as_bytes(), 44);
+        let iv_field = cdw11 >> CIOCQ_CDW11_IV_SHIFT;
+        assert_eq!(iv_field, 0x4000);
+        // Bits 0..=15 should be all zero (no IEN, no PC).
+        assert_eq!(cdw11 & 0xFFFF, 0);
     }
 }

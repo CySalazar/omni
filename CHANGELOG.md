@@ -17,6 +17,64 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.10 NVMe Create IO Queue admin encoders
+  (2026-05-22) — TASK-005 continuation.**
+  `crates/omni-driver-nvme/src/admin.rs` extended with the two admin
+  encoders that complete the bring-up sequence S6 step 11 per
+  NVMe 1.4 § 5.4 + § 5.5.
+  - **`encode_create_io_cq(qid, qsize, prp1, irq_vector, irq_enabled,
+    physically_contig, cid) -> AdminSqe`** (opcode `0x05`): writes
+    CDW0 = OPC|CID, NSID = 0, DPTR.PRP1, CDW10 = QSIZE-1 (bits
+    31:16, 0-based per spec) | QID (bits 15:0), CDW11 = IV (bits
+    31:16) | IEN (bit 1) | PC (bit 0).
+  - **`encode_create_io_sq(qid, qsize, prp1, cq_id, queue_priority,
+    physically_contig, cid) -> AdminSqe`** (opcode `0x01`): same
+    CDW10 layout plus CDW11 = CQID (bits 31:16) | QPRIO (bits 2:1)
+    | PC (bit 0).
+  - **Conventions**:
+    - `qsize` is 1-based in OMNI OS API; encoders compute
+      `saturating_sub(1)` to match the spec's 0-based wire field.
+    - `queue_priority` is masked to 2 bits
+      (`queue_priority & 0b11`) so a corrupt value cannot bleed
+      into the CQID field.
+    - Local bindings renamed (`cdw0 → header_dw`,
+      `cdw10 → queue_dw10`, `cdw11 → flags_dw11`) to satisfy the
+      workspace `clippy::similar_names` lint when more than one
+      CDW binding lives in the same fn.
+  - **Constants**:
+    - `CIOQ_CDW11_PC_BIT = 1 << 0` — Physically Contiguous.
+    - `CIOCQ_CDW11_IEN_BIT = 1 << 1` — Interrupts Enabled.
+    - `CIOSQ_CDW11_QPRIO_SHIFT = 1` — Queue Priority bit 1.
+    - `CIOCQ_CDW11_IV_SHIFT = 16` — Interrupt Vector bit 16.
+    - `CIOSQ_CDW11_CQID_SHIFT = 16` — Completion-queue ID bit 16.
+    - `CIOSQ_QPRIO_{URGENT|HIGH|MEDIUM|LOW}` = `0b00..0b11` —
+      pinning the 4 priority values; Phase-1 default is `MEDIUM`
+      to match the QEMU `weighted_round_robin` scheduler.
+  - **+16 new host-side tests** under
+    `omni_driver_nvme::admin::tests::*`:
+    - 8 `encode_create_io_cq` checks (opcode at byte 0,
+      CDW10 packing, CDW11 IV+IEN+PC, CDW11 unset-flags clear,
+      PRP1 placement, NSID zero, QSIZE saturating-sub on zero,
+      IV shift clears low bits when IEN/PC unset).
+    - 6 `encode_create_io_sq` checks (opcode 0x01, CDW10 packing,
+      CDW11 CQID+QPRIO+PC, QPRIO constants pin, QPRIO 2-bit mask
+      with leak-bit check, PRP1 placement, NSID zero).
+    - 2 helper fixtures (`read_le_u32`, `read_le_u64`).
+    - 1 cross-encoder opcode-distinctness tripwire.
+  - **Workspace test count**: 1389 → 1405 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.10 NVMe CreateIO`,
+    Next=`P6.7.10-pre.11 NVMe live SQ MMIO`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1405 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — pure extension of the existing `admin`
+    module.
+
 - **Storage — P6.7.10-pre.9 NVMe SQ/CQ ring-buffer scaffolds
   (2026-05-22) — TASK-005 continuation.**
   New `crates/omni-driver-nvme/src/ring.rs` module declares the
