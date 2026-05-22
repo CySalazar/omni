@@ -17,6 +17,69 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.9 NVMe SQ/CQ ring-buffer scaffolds
+  (2026-05-22) — TASK-005 continuation.**
+  New `crates/omni-driver-nvme/src/ring.rs` module declares the
+  pure-state Submission Queue / Completion Queue ring-buffer
+  bookkeeping the future live admin / IO queue drivers wrap with
+  their MMIO doorbell pair per NVMe 1.4 base spec § 4.1 + § 4.6.
+  - **`SqRing { capacity, tail, head_observed }`** (`Copy`,
+    `Debug`, `PartialEq`, `Eq`):
+    - `new(capacity: u32) -> Result<Self, RingError>`: validates
+      `1..=u16::MAX`.
+    - `submit(&mut self) -> Option<u16>`: claims the next slot,
+      advances tail; returns `None` on full.
+    - `update_head(head: u16)`: records the controller's view of
+      the SQ head (modulo-clamped defensive).
+    - `is_full()` / `is_empty()` / `capacity()` /
+      `usable_capacity()` (= `capacity - 1`, one slot reserved for
+      empty/full distinction) / `tail()` / `head_observed()`
+      accessors. All take `self` by value (struct is `Copy`).
+  - **`CqRing { capacity, head, expected_phase }`** (`Copy`,
+    `Debug`, `PartialEq`, `Eq`):
+    - `try_take(&mut self, slot: &AdminCqe) ->
+      Option<AdminCqeFields>`: parses via
+      `crate::admin::parse_admin_cqe`, validates phase tag against
+      `expected_phase`, advances head modulo capacity, flips
+      `expected_phase` on wrap.
+    - Initial state: `head = 0`, `expected_phase = true` per
+      NVMe 1.4 § 4.6.
+  - **`RingError`** taxonomy (`#[non_exhaustive]`):
+    - `CapacityZero` — `capacity == 0`.
+    - `CapacityTooLarge` — `capacity > u16::MAX`.
+  - **`crates/omni-driver-nvme/src/lib.rs`** extended with
+    `pub mod ring;` declaration.
+  - **+18 new host-side tests** under
+    `omni_driver_nvme::ring::tests::*`:
+    - 6 construction & invariant checks (zero/oversized capacity
+      rejection for both rings, u16::MAX accepted, CqRing initial
+      phase=true, SqRing initial state empty + usable_capacity).
+    - 5 `SqRing` slot-management tests (`submit` advances tail,
+      tail wraps from capacity-1 to 0 after a drain, full returns
+      None and does not advance, `update_head` clamps modulo
+      capacity, drain unblocks resubmit).
+    - 5 `CqRing` phase-tag scenarios (matching phase advances
+      head, mismatching phase returns None and leaves state
+      unchanged, phase flips on wrap with stale-slot rejection,
+      two full laps restore phase, capacity=1 ring flips on every
+      take).
+    - 1 cross-ring `RingError` discriminant tripwire.
+    - 1 `make_cqe(phase, cid)` test fixture.
+  - **Workspace test count**: 1371 → 1389 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.9 NVMe SQ/CQ ring`,
+    Next=`P6.7.10-pre.10 NVMe live SQ MMIO`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1389 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — the ring scaffolds consume only
+    `crate::admin::{AdminCqe, AdminCqeFields, parse_admin_cqe}`
+    from the prior pre.6 slice.
+
 - **Storage — P6.7.10-pre.8 NVMe PRP list page encoder (2026-05-22) —
   TASK-005 continuation.**
   `crates/omni-driver-nvme/src/transfer_model.rs` extended with the
