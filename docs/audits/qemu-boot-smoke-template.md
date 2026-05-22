@@ -88,6 +88,29 @@ readability) into the section below.
 
 ---
 
+## EXPECTED_LINES contract by feature (TASK-013 / P10.4)
+
+The smoke script extends its `EXPECTED_LINES` banner sequence
+based on the `--feature` flag. The CI matrix runs three jobs:
+
+| Feature | EXPECTED_LINES extension | CI job | Block merge? |
+|---|---|---|---|
+| *(none)* | K5 baseline only (5 lines from `kernel_entry` + `kmain`). | `qemu-boot-smoke / smoke` | Yes (P10.4 critical-path gate). |
+| `mb11-userprobe` | K5 baseline + `[user] hello` + `[user] exit=0` (Ring 3 process spawned by `kmain` exits cleanly via `TaskExit(0)`). | `qemu-boot-smoke / qemu-smoke-mb11` | Yes. |
+| `mb12-userprobe` | K5 baseline + `[mb12] channel 1 pre-created` + `[user] hello` + `ping` + 2× `[user] exit=0` (MB12 IPC cross-process). | `qemu-boot-smoke / qemu-smoke-mb12 [KNOWN-ISSUE]` | **No** (`continue-on-error: true` until the MB14+ follow-up closes the "user task stops before emitting ping / exit" regression noted in the `proxmox_deploy` memory). |
+
+Invocation pattern:
+
+```sh
+scripts/qemu-boot-smoke.sh --release                              # baseline
+scripts/qemu-boot-smoke.sh --release --feature mb11-userprobe     # MB11
+scripts/qemu-boot-smoke.sh --release --feature mb12-userprobe     # MB12 (KNOWN ISSUE)
+```
+
+When the MB12 known-issue is fixed in a future PR, the `continue-on-error: true` flag in `.github/workflows/qemu-boot-smoke.yml` and the `[KNOWN-ISSUE]` suffix in the job name MUST be removed in the SAME PR.
+
+---
+
 *This file is part of the K5 audit trail mandated by `OIP-Kernel-003`
 § 3 (last row of the K1–K5 table). Each successful smoke run on `main`
 produces a new audit file named

@@ -93,6 +93,61 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Changed
 
+- **CI — TASK-013 add `qemu-smoke-mb11` + `qemu-smoke-mb12`
+  jobs to `.github/workflows/qemu-boot-smoke.yml` (P10.4).**
+  Extends the existing QEMU smoke matrix to cover the two
+  userprobe features `mb11-userprobe` (MB11 Ring-3 process
+  exit) and `mb12-userprobe` (MB12 IPC cross-process trace).
+  - **`scripts/qemu-boot-smoke.sh`** — new `--feature <name>`
+    argument (accepts `mb11-userprobe`, `mb12-userprobe`, or
+    empty; rejects any other value with exit 2). The script
+    passes the feature through to `cargo build --features
+    <name>` and extends `EXPECTED_LINES` with the
+    feature-specific user-probe trace per the planning doc
+    TASK-013 acceptance criteria. Both long-form
+    (`--feature mb11-userprobe`) and `--feature=mb11-userprobe`
+    are accepted.
+  - **`.github/workflows/qemu-boot-smoke.yml`** — two new
+    jobs `qemu-smoke-mb11` + `qemu-smoke-mb12` mirroring the
+    baseline `smoke` job structure (KVM + QEMU + OVMF +
+    nightly toolchain for the disk-image builder + stable
+    1.85 for the kernel build). Both run on every PR
+    touching kernel/runner code, every push to `main`, every
+    daily 07:00 UTC cron, and on manual dispatch — same
+    triggers as the baseline. Each uploads its own
+    `boot-images-mbXX` artifact bundle.
+  - **`qemu-smoke-mb12` known-issue handling**: per the
+    `proxmox_deploy` memory entry (2026-05-22), the MB12
+    boot reaches `[mb12] handing off to user tasks` but the
+    VM stops without emitting `ping` / `[user] exit=0`
+    (root-cause TBD, tracked for MB14+ follow-up). The job
+    is therefore annotated `[KNOWN-ISSUE]` in its `name:`
+    and carries `continue-on-error: true` so the CI matrix
+    reports the regression state WITHOUT blocking merges.
+    When the underlying issue is closed by the MB14+
+    follow-up, the `continue-on-error` flag AND the
+    `[KNOWN-ISSUE]` suffix MUST be removed in the SAME PR
+    (documented inline in the workflow comment).
+  - **`docs/audits/qemu-boot-smoke-template.md`** — extended
+    with the EXPECTED_LINES contract table (one row per
+    feature) and the invocation patterns, plus the
+    re-enablement reminder for the MB12 known-issue.
+  - **Branch protection update**: the planning doc
+    TASK-013 acceptance criteria call for "Branch protection
+    update (founder admin token) adds the two new jobs to
+    the required-checks list — TASK-001-equivalent admin
+    action." This is **founder-only** (admin token required)
+    and is deferred to the lead. Once the lead adds both
+    jobs to the branch-protection required-check list, the
+    `mb11-userprobe` job will block non-passing PRs (the
+    `mb12-userprobe` job remains `continue-on-error` until
+    the known issue is fixed, so blocking on it would be
+    counterproductive).
+  - Closes the agent-executable portion of TASK-013 of
+    `docs/planning/2026-05-21-development-plan.md`. Branch
+    protection update remains pending the founder admin
+    action (analogous to TASK-001's overdue gate).
+
 - **CI — TASK-012 remove `--test-threads=1` mitigation** for the
   `cargo test` job on `omni-kernel`. The SIGSEGV that justified
   the mitigation was actually fixed on 2026-05-20 via commits

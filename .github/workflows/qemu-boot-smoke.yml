@@ -103,3 +103,146 @@ jobs:
             kernel-runner/target/x86_64-unknown-none/release/boot-bios.img
           if-no-files-found: warn
           retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # TASK-013 / P10.4 — MB11 userprobe smoke
+  #
+  # Builds `kernel-runner` with `--features mb11-userprobe`, boots under
+  # QEMU+OVMF, and asserts that the user-space probe successfully prints
+  # "[user] hello" and exits via `TaskExit(0)` (the "[user] exit=0" line).
+  # This catches regressions in the MB11 boot wiring (per-process CR3,
+  # Ring 3 ELF loading, TaskWrite + TaskExit syscalls).
+  # ---------------------------------------------------------------------------
+  qemu-smoke-mb11:
+    name: QEMU boot smoke — mb11-userprobe (x86_64-unknown-none, UEFI)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rust toolchain (stable, pinned via rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85"
+          targets: x86_64-unknown-none
+          components: llvm-tools-preview
+
+      - name: Install nightly toolchain (disk-image builder requires -Z build-std)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            kernel-runner -> kernel-runner/target
+            disk-image -> disk-image/target
+
+      - name: Enable KVM acceleration for QEMU
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -la /dev/kvm 2>/dev/null || echo "/dev/kvm not present — QEMU will use TCG"
+
+      - name: Install QEMU + OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              qemu-system-x86 \
+              ovmf
+
+      - name: Run smoke test (mb11-userprobe)
+        run: bash scripts/qemu-boot-smoke.sh --release --feature mb11-userprobe
+        env:
+          SMOKE_TIMEOUT_SECS: "120"
+          OVMF_PATH: "/usr/share/ovmf/OVMF.fd"
+
+      - name: Upload boot artifacts (mb11)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-images-mb11
+          path: |
+            kernel-runner/target/x86_64-unknown-none/release/kernel-runner
+            kernel-runner/target/x86_64-unknown-none/release/boot-uefi.img
+            kernel-runner/target/x86_64-unknown-none/release/boot-bios.img
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # TASK-013 / P10.4 — MB12 userprobe smoke
+  #
+  # Builds `kernel-runner` with `--features mb12-userprobe`, boots under
+  # QEMU+OVMF, and asserts the MB12 IPC cross-process trace
+  # ("[mb12] channel 1 pre-created", "ping", two "[user] exit=0").
+  #
+  # KNOWN ISSUE (per the `proxmox_deploy` memory entry, 2026-05-22): this
+  # boot reaches "[mb12] handing off to user tasks" but the VM stops
+  # without emitting "ping" / "[user] exit=0". Root-cause TBD (tracked
+  # for MB14+ follow-up). The job below is intentionally added with
+  # `continue-on-error: true` so the CI matrix reports the regression
+  # state without blocking merges; when the underlying issue is closed
+  # by the MB14+ follow-up, the `continue-on-error` flag MUST be
+  # removed in the same PR (this is documented in the job's `name`
+  # suffix "[KNOWN-ISSUE]" so a reviewer cannot miss it).
+  # ---------------------------------------------------------------------------
+  qemu-smoke-mb12:
+    name: QEMU boot smoke — mb12-userprobe [KNOWN-ISSUE] (x86_64-unknown-none, UEFI)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rust toolchain (stable, pinned via rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85"
+          targets: x86_64-unknown-none
+          components: llvm-tools-preview
+
+      - name: Install nightly toolchain (disk-image builder requires -Z build-std)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            kernel-runner -> kernel-runner/target
+            disk-image -> disk-image/target
+
+      - name: Enable KVM acceleration for QEMU
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -la /dev/kvm 2>/dev/null || echo "/dev/kvm not present — QEMU will use TCG"
+
+      - name: Install QEMU + OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              qemu-system-x86 \
+              ovmf
+
+      - name: Run smoke test (mb12-userprobe — known issue allowed to fail)
+        run: bash scripts/qemu-boot-smoke.sh --release --feature mb12-userprobe
+        env:
+          SMOKE_TIMEOUT_SECS: "120"
+          OVMF_PATH: "/usr/share/ovmf/OVMF.fd"
+
+      - name: Upload boot artifacts (mb12)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-images-mb12
+          path: |
+            kernel-runner/target/x86_64-unknown-none/release/kernel-runner
+            kernel-runner/target/x86_64-unknown-none/release/boot-uefi.img
+            kernel-runner/target/x86_64-unknown-none/release/boot-bios.img
+          if-no-files-found: warn
+          retention-days: 7

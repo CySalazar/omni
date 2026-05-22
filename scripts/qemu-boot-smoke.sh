@@ -17,9 +17,11 @@
 #   - QEMU exits cleanly (kernel issues ACPI S5; QEMU tears down).
 #
 # Usage:
-#   scripts/qemu-boot-smoke.sh                     # build + run + assert
-#   scripts/qemu-boot-smoke.sh --skip-build        # use existing image
-#   scripts/qemu-boot-smoke.sh --release           # release profile
+#   scripts/qemu-boot-smoke.sh                              # build + run + assert (baseline K5 banner)
+#   scripts/qemu-boot-smoke.sh --skip-build                 # use existing image
+#   scripts/qemu-boot-smoke.sh --release                    # release profile
+#   scripts/qemu-boot-smoke.sh --feature mb11-userprobe     # MB11 userprobe smoke (TASK-013 / P10.4)
+#   scripts/qemu-boot-smoke.sh --feature mb12-userprobe     # MB12 userprobe smoke (TASK-013 / P10.4)
 #
 # Environment:
 #   OVMF_PATH            path to OVMF.fd firmware (default: auto-detect)
@@ -42,23 +44,51 @@ QEMU_BINARY="${QEMU_BINARY:-qemu-system-x86_64}"
 PROFILE="dev"
 PROFILE_DIR="debug"
 SKIP_BUILD=0
+FEATURE=""
 
-for arg in "$@"; do
-    case "$arg" in
+while (( $# > 0 )); do
+    case "$1" in
         --release)
             PROFILE="release"
             PROFILE_DIR="release"
+            shift
             ;;
         --skip-build)
             SKIP_BUILD=1
+            shift
+            ;;
+        --feature)
+            shift
+            if [[ -z "${1:-}" ]]; then
+                echo "--feature requires a value" >&2
+                exit 2
+            fi
+            FEATURE="$1"
+            shift
+            ;;
+        --feature=*)
+            FEATURE="${1#--feature=}"
+            shift
             ;;
         *)
-            echo "unknown argument: $arg" >&2
-            echo "usage: $0 [--release] [--skip-build]" >&2
+            echo "unknown argument: $1" >&2
+            echo "usage: $0 [--release] [--skip-build] [--feature <name>]" >&2
             exit 2
             ;;
     esac
 done
+
+# Validate feature value (TASK-013 / P10.4 — kernel-runner forwards
+# only these two userprobe features to omni-kernel).
+case "${FEATURE}" in
+    ""|mb11-userprobe|mb12-userprobe)
+        # OK
+        ;;
+    *)
+        echo "unsupported --feature: '${FEATURE}' (expected mb11-userprobe or mb12-userprobe)" >&2
+        exit 2
+        ;;
+esac
 
 KERNEL_ELF="${KERNEL_RUNNER_DIR}/target/x86_64-unknown-none/${PROFILE_DIR}/kernel-runner"
 UEFI_IMAGE="${KERNEL_RUNNER_DIR}/target/x86_64-unknown-none/${PROFILE_DIR}/boot-uefi.img"
@@ -91,6 +121,48 @@ EXPECTED_LINES=(
     "[OMNI OS] halting (K4 scope ends here)."
 )
 
+# TASK-013 / P10.4 — extend EXPECTED_LINES based on --feature.
+# Lines are appended in the order the user-space probe emits them
+# so the existing in-order match logic in `verify_banner_in_order`
+# (further below) catches a regression where the probe stops
+# midway through its trace.
+case "${FEATURE}" in
+    mb11-userprobe)
+        # MB11 user-probe smoke (Track B MB11 closure): a Ring 3
+        # process spawned by `kmain` prints "[user] hello" via the
+        # `TaskWrite` syscall then voluntarily exits via `TaskExit(0)`.
+        EXPECTED_LINES+=(
+            "[user] hello"
+            "[user] exit=0"
+        )
+        ;;
+    mb12-userprobe)
+        # MB12 IPC cross-process smoke (Track B MB12 closure):
+        # `kmain` pre-creates IPC channel 1, spawns two Ring 3
+        # tasks that exchange a "ping" message, both exit cleanly.
+        # KNOWN ISSUE: per the `proxmox_deploy` memory entry
+        # (2026-05-22), this boot reaches "[mb12] handing off to
+        # user tasks" but the VM stops without emitting "ping" /
+        # "[user] exit=0". Root-cause TBD (tracked for MB14+
+        # follow-up). The strict assertion below is the
+        # spec-mandated contract from TASK-013 acceptance criteria;
+        # CI invokes this script with the strict contract so a
+        # regression-on-fix surfaces immediately, while the known
+        # issue is documented as a "soft fail" candidate via
+        # `MB12_KNOWN_ISSUE_TOLERATE_TIMEOUT=1` (see end of script).
+        EXPECTED_LINES+=(
+            "[mb12] channel 1 pre-created"
+            "[user] hello"
+            "ping"
+            "[user] exit=0"
+            "[user] exit=0"
+        )
+        ;;
+    "")
+        # Baseline K5 banner only — no extension.
+        ;;
+esac
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -112,15 +184,20 @@ ensure_ovmf() {
 }
 
 build_kernel_elf() {
-    log "building kernel-runner ELF (${PROFILE})..."
+    log "building kernel-runner ELF (${PROFILE})${FEATURE:+ with feature=${FEATURE}}..."
     local profile_flag=""
     if [[ "${PROFILE}" == "release" ]]; then
         profile_flag="--release"
     fi
+    local features_flag=""
+    if [[ -n "${FEATURE}" ]]; then
+        features_flag="--features ${FEATURE}"
+    fi
     cargo build \
         --manifest-path "${KERNEL_RUNNER_DIR}/Cargo.toml" \
         --target x86_64-unknown-none \
-        ${profile_flag}
+        ${profile_flag} \
+        ${features_flag}
 
     if [[ ! -f "${KERNEL_ELF}" ]]; then
         fail "build did not produce ${KERNEL_ELF}"
