@@ -17,6 +17,65 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.4 NVMe driver image consumes BLK syscalls
+  (2026-05-22) — TASK-005 continuation.**
+  Extends `crates/omni-driver-nvme-image/src/main.rs` with a new
+  3-syscall block landing between the existing `IrqAttach (72)` and
+  the bring-up FSM. The block exercises the kernel-side BLK registry
+  that landed in P6.7.10-pre.3 end-to-end per OIP-Driver-NVMe-014 § S4
+  + § S6 step 12.
+  - **Step 7 — `IpcCreateChannel (20)`** (legacy MB12 fast-path,
+    `send_token_ptr = recv_token_ptr = 0`): allocates a fresh
+    kernel-owned channel with `BLK_CHANNEL_QUEUE_DEPTH = 1024`,
+    `BackpressurePolicy::Block`, `tee_bound = false`. The kernel
+    returns the new `ChannelId` in `rax`; `u64::MAX` surfaces as
+    `EXIT_IPC_CREATE_FAILED = 100`.
+  - **Step 8 — `BlkRegister (76)`**: records the
+    `omni.svc.blk.nvme0` → `channel_id` mapping. The kernel verifies
+    the caller owns `channel_id` (we just created it, so the
+    ownership check passes by construction); on a non-zero errno the
+    image exits with `EXIT_BLK_REGISTER_BASE + errno = 110+`.
+  - **Step 9 — `BlkLookup (78)`** (defence-in-depth): round-trips
+    the registration. `ENOENT` surfaces as
+    `EXIT_BLK_LOOKUP_NOT_FOUND = 131`; a `channel_id` mismatch
+    surfaces as `EXIT_BLK_LOOKUP_MISMATCH = 132`. Reachable only on
+    a kernel-registry regression, but treated as a hard failure
+    because the filesystem service would otherwise dispatch BLK
+    requests to the wrong driver.
+  - New syscall-number constants: `SYS_IPC_CREATE_CHANNEL = 20`,
+    `SYS_BLK_REGISTER = 76`, `SYS_BLK_LOOKUP = 78`.
+  - New BLK-channel constants: `NVME_DISK_SLOT = b"nvme0"` (byte
+    slice avoids the `PanicOnAlloc` global-allocator panic that a
+    `String` would trigger inside the `no_std + no_main` ELF),
+    `BLK_CHANNEL_QUEUE_DEPTH = 1024`,
+    `BLK_CHANNEL_BACKPRESSURE_BLOCK = 0`,
+    `BLK_CHANNEL_TEE_NOT_BOUND = 0`.
+  - New sentinel exit codes:
+    - `EXIT_IPC_CREATE_FAILED = 100`
+    - `EXIT_BLK_REGISTER_BASE = 110` (added to errno)
+    - `EXIT_BLK_LOOKUP_NOT_FOUND = 131`
+    - `EXIT_BLK_LOOKUP_MISMATCH = 132`
+  - Module documentation extended to cover the new ordering
+    (steps 7–9 + 10–11).
+  - **Workspace test count** stable at 1277 pass / 0 fail — the new
+    code is the `no_main` ELF entry path that cannot be unit-tested
+    in-crate; coverage relies on the kernel-side host tests landed in
+    P6.7.10-pre.3 (`errno_for_*` × 7 +
+    `kernel_syscall_dispatch_blk_numbers_translate_to_blk_variants`
+    × 1) plus the Proxmox boot smoke.
+  - **Build Info panel**: Active=`P6.7.10-pre.4 NVMe BLK wire`,
+    Next=`P6.7.10-pre.5 NVMe admin queue`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1277 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    bare-metal + rustdoc workspace + lint-oips (0 error / 0 warning
+    su 19 file).
+  - **No new dependency** — `omni-driver-shared` was already a
+    workspace member and provides the cap-token lookups used by the
+    existing `MmioMap`/`DmaMap`/`IrqAttach` triplet.
+
 - **Storage — P6.7.10-pre.3 kernel-side BLK registry syscalls (2026-05-22) —
   TASK-005 continuation.**
   Lands the user-space bridge for the kernel-internal `BlkChannelRegistry`
