@@ -30,7 +30,8 @@
 
 use crate::admin::{ADMIN_CQE_BYTES, ADMIN_SQE_BYTES, AdminCqe, AdminCqeFields, AdminSqe};
 use crate::controller_regs::{
-    CSTS_OFFSET, CSTS_RDY_BIT, cq_head_doorbell_offset, sq_tail_doorbell_offset,
+    CC_EN_BIT, CC_OFFSET, CSTS_OFFSET, CSTS_RDY_BIT, cq_head_doorbell_offset,
+    sq_tail_doorbell_offset,
 };
 use crate::ring::{CqRing, RingError, SqRing};
 
@@ -56,6 +57,20 @@ pub trait MmioBackend {
     /// byte offset returned by
     /// [`crate::controller_regs::sq_tail_doorbell_offset`].
     fn write_doorbell(&mut self, offset: usize, value: u32);
+
+    /// Write a 32-bit value at the given byte offset inside the
+    /// controller's MMIO region — used by the CC/AQA/ASQ/ACQ
+    /// register writes during bring-up (NVMe 1.4 § 3.1).
+    ///
+    /// Default implementation forwards to
+    /// [`Self::write_doorbell`] since both paths are semantically
+    /// identical at the bus level (32-bit `volatile_write`); the
+    /// trait keeps the two methods separate so a future host-test
+    /// recorder can distinguish doorbell traffic from register
+    /// traffic without re-implementing the doorbell side.
+    fn write_register(&mut self, offset: usize, value: u32) {
+        self.write_doorbell(offset, value);
+    }
 }
 
 /// Abstract MMIO source for status-register reads.
@@ -379,6 +394,94 @@ pub fn wait_for_csts_rdy<R: MmioReadBackend>(
         }
     }
     Err(QueueError::ControllerNotReady)
+}
+
+/// Poll `CSTS` until `CSTS.RDY` clears, up to `poll_limit`
+/// iterations.
+///
+/// Symmetric to [`wait_for_csts_rdy`]; used by OIP-014 § S6 step 4
+/// where the driver writes `CC.EN = 0` to disable the controller
+/// and must wait for `CSTS.RDY = 0` before reconfiguring the admin
+/// queue base addresses.
+///
+/// # Errors
+///
+/// - [`QueueError::ControllerNotReady`] when the poll budget is
+///   exhausted without observing `CSTS.RDY = 0`.
+pub fn wait_for_csts_not_rdy<R: MmioReadBackend>(
+    mmio: &mut R,
+    poll_limit: u32,
+) -> Result<(), QueueError> {
+    for _ in 0..poll_limit {
+        let csts = mmio.read_register(CSTS_OFFSET);
+        if (csts & CSTS_RDY_BIT) == 0 {
+            return Ok(());
+        }
+    }
+    Err(QueueError::ControllerNotReady)
+}
+
+/// Disable the NVMe controller (OIP-014 § S6 step 4 / NVMe 1.4
+/// § 3.1.5).
+///
+/// Sequence:
+/// 1. Read `CC` to capture the current configuration so the
+///    enable side can restore it without clobbering the
+///    IOSQES/IOCQES fields the manifest pinned.
+/// 2. Write `CC` with the EN bit cleared.
+/// 3. Poll `CSTS.RDY` until it clears (via
+///    [`wait_for_csts_not_rdy`]).
+///
+/// Returns the captured `CC` value so the enable-side helper can
+/// re-OR the EN bit without re-reading the register (the value
+/// may have changed mid-bring-up on hardware that supports
+/// background self-test; capturing once is the safer pattern).
+///
+/// # Errors
+///
+/// - [`QueueError::ControllerNotReady`] when `CSTS.RDY` does not
+///   clear within `poll_limit` iterations.
+pub fn disable_controller<W: MmioBackend, R: MmioReadBackend>(
+    mmio_w: &mut W,
+    mmio_r: &mut R,
+    poll_limit: u32,
+) -> Result<u32, QueueError> {
+    let cc_current = mmio_r.read_register(CC_OFFSET);
+    let cc_disabled = cc_current & !CC_EN_BIT;
+    mmio_w.write_register(CC_OFFSET, cc_disabled);
+    wait_for_csts_not_rdy(mmio_r, poll_limit)?;
+    Ok(cc_current)
+}
+
+/// Enable the NVMe controller (OIP-014 § S6 step 6 / NVMe 1.4
+/// § 3.1.5).
+///
+/// Sequence:
+/// 1. Read `CC` to capture the current configuration (the manifest
+///    template programs IOSQES + IOCQES + MPS + CSS before this
+///    helper runs).
+/// 2. Write `CC` with the EN bit set.
+/// 3. Poll `CSTS.RDY` until it sets (via [`wait_for_csts_rdy`]).
+///
+/// Returns the final `CC` value the controller is now running
+/// with. The bring-up FSM uses the value to assert that the
+/// controller did not silently clear any of the manifest-pinned
+/// fields during the enable handshake.
+///
+/// # Errors
+///
+/// - [`QueueError::ControllerNotReady`] when `CSTS.RDY` does not
+///   set within `poll_limit` iterations.
+pub fn enable_controller<W: MmioBackend, R: MmioReadBackend>(
+    mmio_w: &mut W,
+    mmio_r: &mut R,
+    poll_limit: u32,
+) -> Result<u32, QueueError> {
+    let cc_current = mmio_r.read_register(CC_OFFSET);
+    let cc_enabled = cc_current | CC_EN_BIT;
+    mmio_w.write_register(CC_OFFSET, cc_enabled);
+    wait_for_csts_rdy(mmio_r, poll_limit)?;
+    Ok(cc_enabled)
 }
 
 // =============================================================================
@@ -894,5 +997,161 @@ mod tests {
         assert_ne!(QueueError::ControllerNotReady, QueueError::SqPageTooSmall);
         assert_ne!(QueueError::ControllerNotReady, QueueError::CqPageTooSmall);
         assert_ne!(QueueError::ControllerNotReady, QueueError::DoorbellOffsetOverflow);
+    }
+
+    // -------------------------------------------------------------------
+    // CC.EN sequencer (P6.7.10-pre.15)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn write_register_default_impl_forwards_to_write_doorbell() {
+        // Default-impl tripwire: MmioBackend::write_register MUST
+        // route through write_doorbell so existing recorder impls
+        // see register writes without overriding the method.
+        let mut mmio = MockMmioBackend::default();
+        mmio.write_register(CC_OFFSET, CC_EN_BIT);
+        assert_eq!(mmio.writes.len(), 1);
+        assert_eq!(mmio.writes.first().copied().unwrap(), (CC_OFFSET, CC_EN_BIT));
+    }
+
+    #[test]
+    fn wait_for_csts_not_rdy_returns_ok_when_cleared() {
+        let mut mmio = ScriptedMmioRead::default();
+        // First read returns CSTS with RDY = 0 → success.
+        mmio.push(CSTS_OFFSET, 0);
+        assert_eq!(wait_for_csts_not_rdy(&mut mmio, 16), Ok(()));
+        assert_eq!(mmio.cursor, 1);
+    }
+
+    #[test]
+    fn wait_for_csts_not_rdy_polls_until_cleared() {
+        let mut mmio = ScriptedMmioRead::default();
+        // Three "RDY = 1" reads, then RDY = 0.
+        for _ in 0..3 {
+            mmio.push(CSTS_OFFSET, CSTS_RDY_BIT);
+        }
+        mmio.push(CSTS_OFFSET, 0);
+        assert_eq!(wait_for_csts_not_rdy(&mut mmio, 16), Ok(()));
+        assert_eq!(mmio.cursor, 4);
+    }
+
+    #[test]
+    fn wait_for_csts_not_rdy_exhausts_poll_limit() {
+        let mut mmio = ScriptedMmioRead::default();
+        for _ in 0..16 {
+            mmio.push(CSTS_OFFSET, CSTS_RDY_BIT);
+        }
+        assert_eq!(
+            wait_for_csts_not_rdy(&mut mmio, 4),
+            Err(QueueError::ControllerNotReady)
+        );
+        assert_eq!(mmio.cursor, 4);
+    }
+
+    #[test]
+    fn disable_controller_clears_cc_en_bit_and_polls_csts_clear() {
+        // Initial CC has EN | IOSQES | IOCQES bits set.
+        let cc_initial: u32 =
+            CC_EN_BIT | (6 << 16) | (4 << 20);
+        let mut reader = ScriptedMmioRead::default();
+        // Read 1: CC (returned as captured state)
+        reader.push(CC_OFFSET, cc_initial);
+        // Reads 2..=N: CSTS poll loop — RDY = 1, then RDY = 0.
+        reader.push(CSTS_OFFSET, CSTS_RDY_BIT);
+        reader.push(CSTS_OFFSET, 0);
+        let mut writer = MockMmioBackend::default();
+
+        let captured = disable_controller(&mut writer, &mut reader, 16).unwrap();
+        assert_eq!(captured, cc_initial);
+        // Writer recorded exactly one CC write with EN cleared but
+        // IOSQES/IOCQES preserved.
+        assert_eq!(writer.writes.len(), 1);
+        let (off, val) = writer.writes.first().copied().unwrap();
+        assert_eq!(off, CC_OFFSET);
+        assert_eq!(val, cc_initial & !CC_EN_BIT);
+        assert_eq!(val & CC_EN_BIT, 0, "EN bit MUST be clear");
+        // IOSQES/IOCQES survived the clear.
+        assert_eq!((val >> 16) & 0xF, 6);
+        assert_eq!((val >> 20) & 0xF, 4);
+    }
+
+    #[test]
+    fn disable_controller_surfaces_timeout_on_unresponsive_csts() {
+        let cc_initial: u32 = CC_EN_BIT;
+        let mut reader = ScriptedMmioRead::default();
+        reader.push(CC_OFFSET, cc_initial);
+        // CSTS never clears.
+        for _ in 0..32 {
+            reader.push(CSTS_OFFSET, CSTS_RDY_BIT);
+        }
+        let mut writer = MockMmioBackend::default();
+        let res = disable_controller(&mut writer, &mut reader, 4);
+        assert_eq!(res, Err(QueueError::ControllerNotReady));
+        // The CC write happened despite the timeout — the contract
+        // is "issue the write then poll", not "poll first then
+        // write".
+        assert_eq!(writer.writes.len(), 1);
+    }
+
+    #[test]
+    fn enable_controller_sets_cc_en_bit_and_polls_csts_set() {
+        // Manifest has already programmed IOSQES + IOCQES; the
+        // enable helper just ORs EN.
+        let cc_pre_enable: u32 = (6 << 16) | (4 << 20);
+        let mut reader = ScriptedMmioRead::default();
+        reader.push(CC_OFFSET, cc_pre_enable);
+        reader.push(CSTS_OFFSET, 0);
+        reader.push(CSTS_OFFSET, CSTS_RDY_BIT);
+        let mut writer = MockMmioBackend::default();
+
+        let final_cc = enable_controller(&mut writer, &mut reader, 16).unwrap();
+        assert_eq!(final_cc, cc_pre_enable | CC_EN_BIT);
+        assert_eq!(writer.writes.len(), 1);
+        let (off, val) = writer.writes.first().copied().unwrap();
+        assert_eq!(off, CC_OFFSET);
+        assert_eq!(val, cc_pre_enable | CC_EN_BIT);
+        assert_eq!(val & CC_EN_BIT, CC_EN_BIT);
+    }
+
+    #[test]
+    fn enable_controller_surfaces_timeout_on_unresponsive_csts() {
+        let mut reader = ScriptedMmioRead::default();
+        reader.push(CC_OFFSET, 0);
+        for _ in 0..32 {
+            reader.push(CSTS_OFFSET, 0); // RDY never sets
+        }
+        let mut writer = MockMmioBackend::default();
+        let res = enable_controller(&mut writer, &mut reader, 4);
+        assert_eq!(res, Err(QueueError::ControllerNotReady));
+        assert_eq!(writer.writes.len(), 1);
+    }
+
+    #[test]
+    fn enable_disable_round_trip_preserves_cc_iosqes_iocqes() {
+        // Simulate: bring-up disables controller, reprograms ASQ/ACQ
+        // base, re-enables. The IOSQES/IOCQES bits MUST survive
+        // the EN→0→EN transition.
+        let cc_initial: u32 = CC_EN_BIT | (6 << 16) | (4 << 20);
+        let mut reader = ScriptedMmioRead::default();
+        // Disable
+        reader.push(CC_OFFSET, cc_initial);
+        reader.push(CSTS_OFFSET, 0);
+        // Enable (writer's view of the disabled CC becomes the
+        // reader's next CC read).
+        let cc_post_disable: u32 = cc_initial & !CC_EN_BIT;
+        reader.push(CC_OFFSET, cc_post_disable);
+        reader.push(CSTS_OFFSET, CSTS_RDY_BIT);
+        let mut writer = MockMmioBackend::default();
+
+        disable_controller(&mut writer, &mut reader, 16).unwrap();
+        let final_cc = enable_controller(&mut writer, &mut reader, 16).unwrap();
+
+        // Final CC has EN set and the IOSQES/IOCQES bits the
+        // initial CC carried.
+        assert_eq!(final_cc & CC_EN_BIT, CC_EN_BIT);
+        assert_eq!((final_cc >> 16) & 0xF, 6);
+        assert_eq!((final_cc >> 20) & 0xF, 4);
+        // Writer recorded two CC writes (disable + enable).
+        assert_eq!(writer.writes.len(), 2);
     }
 }

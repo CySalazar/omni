@@ -17,6 +17,78 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.15 NVMe controller CC.EN enable/disable
+  sequencer (2026-05-22) — TASK-005 continuation.**
+  `crates/omni-driver-nvme/src/queue.rs` extended with the
+  controller-state-transition helpers that compose the read-side
+  `MmioReadBackend` (P6.7.10-pre.14) with the write-side
+  `MmioBackend` (pre.11) to drive OIP-Driver-NVMe-014 § S6 step 4
+  (disable) + step 6 (re-enable) of the bring-up sequence.
+  - **`MmioBackend::write_register(offset, value)`** default-impl
+    forwards to `write_doorbell` (semantically identical at the
+    bus level — both are 32-bit `volatile_write`). The two methods
+    stay separate on the trait so a future host-test recorder can
+    distinguish doorbell traffic from register traffic without
+    re-implementing the doorbell side.
+  - **`wait_for_csts_not_rdy<R: MmioReadBackend>(mmio, poll_limit)
+    -> Result<(), QueueError>`** symmetric to the existing
+    `wait_for_csts_rdy` — polls `CSTS_OFFSET` until `CSTS_RDY_BIT`
+    clears.
+  - **`disable_controller<W: MmioBackend, R: MmioReadBackend>(
+    mmio_w, mmio_r, poll_limit) -> Result<u32, QueueError>`**:
+    1. read current `CC` to capture the configuration;
+    2. write `CC & !CC_EN_BIT` (clears EN bit, preserves
+       IOSQES/IOCQES/MPS/CSS);
+    3. `wait_for_csts_not_rdy`.
+    Returns the captured `CC` so the enable-side helper can
+    restore the manifest-pinned fields without re-reading the
+    register.
+  - **`enable_controller<W, R>(...)`** symmetric to
+    `disable_controller`:
+    1. read current `CC`;
+    2. write `CC | CC_EN_BIT`;
+    3. `wait_for_csts_rdy`.
+    Returns the final `CC` value the controller is running with so
+    the bring-up FSM can assert no fields were silently cleared.
+  - **"Write then poll" contract** — both helpers issue the CC
+    write BEFORE polling, so a timeout failure leaves the writes
+    intact (the controller may complete asynchronously). The live
+    driver handles partial state through the existing IOMMU
+    teardown path.
+  - **+9 new host-side tests** under
+    `omni_driver_nvme::queue::tests::*`:
+    - 1 default-impl tripwire
+      (`write_register_default_impl_forwards_to_write_doorbell`)
+      verifies the default impl routes through `write_doorbell`
+      so existing recorder impls see register writes without
+      overriding the method.
+    - 3 `wait_for_csts_not_rdy` checks (immediate cleared,
+      multi-iteration poll, exhaustion).
+    - 2 `disable_controller` checks (success with IOSQES/IOCQES
+      preservation via bit-shift extraction; timeout with CC
+      write still recorded — "write then poll" contract).
+    - 2 `enable_controller` checks (success with `CC.EN` set +
+      `CSTS.RDY` observation; timeout).
+    - 1 round-trip integration test
+      (`enable_disable_round_trip_preserves_cc_iosqes_iocqes`) —
+      disable then enable through the same writer/reader pair,
+      asserts final CC has `EN | IOSQES(6) | IOCQES(4)` and the
+      writer recorded exactly 2 CC writes.
+  - **Workspace test count**: 1441 → 1450 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.15 CC.EN sequencer`,
+    Next=`P6.7.10-pre.16 ASQ/ACQ wire`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1450 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — composes
+    `controller_regs::{CC_OFFSET, CC_EN_BIT, CSTS_OFFSET,
+    CSTS_RDY_BIT}` already pinned by NVMe 1.4 § 3.1.5 / § 3.1.6.
+
 - **Storage — P6.7.10-pre.14 `MmioReadBackend` trait + CSTS.RDY poll
   helper (2026-05-22) — TASK-005 continuation.**
   `crates/omni-driver-nvme/src/queue.rs` extended with the read-side
