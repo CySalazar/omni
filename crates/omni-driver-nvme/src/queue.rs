@@ -30,10 +30,22 @@
 
 use crate::admin::{ADMIN_CQE_BYTES, ADMIN_SQE_BYTES, AdminCqe, AdminCqeFields, AdminSqe};
 use crate::controller_regs::{
-    CC_EN_BIT, CC_OFFSET, CSTS_OFFSET, CSTS_RDY_BIT, cq_head_doorbell_offset,
-    sq_tail_doorbell_offset,
+    ACQ_OFFSET, AQA_OFFSET, ASQ_OFFSET, CC_EN_BIT, CC_OFFSET, CSTS_OFFSET, CSTS_RDY_BIT,
+    cq_head_doorbell_offset, sq_tail_doorbell_offset,
 };
 use crate::ring::{CqRing, RingError, SqRing};
+
+/// Shift of the `ACQS` field inside the `AQA` register (NVMe 1.4
+/// § 3.1.8 — bits 27:16 hold `ACQS`, 0-based).
+pub const AQA_ACQS_SHIFT: u32 = 16;
+
+/// Mask for the 12-bit `ASQS` / `ACQS` fields inside `AQA`.
+pub const AQA_QSIZE_MASK: u32 = 0xFFF;
+
+/// Maximum admin queue depth per NVMe 1.4 § 3.1.8 (`AQA` reserves
+/// 12 bits for each of `ASQS` and `ACQS`, so the cap is 4096 since
+/// the field is 0-based).
+pub const MAX_ADMIN_QUEUE_DEPTH: u32 = 4096;
 
 // =============================================================================
 // MmioBackend — abstract doorbell sink
@@ -133,6 +145,18 @@ pub enum QueueError {
     /// timeout — the controller either failed to acknowledge the
     /// enable/disable transition or was never wired correctly.
     ControllerNotReady,
+    /// [`program_admin_queue_bases`] received a `sq_depth` or
+    /// `cq_depth` outside the legal `1..=`[`MAX_ADMIN_QUEUE_DEPTH`]
+    /// range per NVMe 1.4 § 3.1.8. The bring-up FSM normally
+    /// catches this upstream against
+    /// [`crate::queue_config::is_valid_admin_depth`]; surfacing it
+    /// here is defence-in-depth.
+    AdminDepthOutOfRange,
+    /// [`program_admin_queue_bases`] received an `asq_phys` or
+    /// `acq_phys` that is not page-aligned. NVMe 1.4 § 3.1.9
+    /// requires the admin queue base addresses to be 4 KiB-aligned
+    /// (matching `CC.MPS`).
+    QueueBaseMisaligned,
 }
 
 impl From<RingError> for QueueError {
@@ -451,6 +475,93 @@ pub fn disable_controller<W: MmioBackend, R: MmioReadBackend>(
     mmio_w.write_register(CC_OFFSET, cc_disabled);
     wait_for_csts_not_rdy(mmio_r, poll_limit)?;
     Ok(cc_current)
+}
+
+/// Program the admin queue base-address registers (OIP-014 § S6
+/// step 5 / NVMe 1.4 § 3.1.7-9).
+///
+/// Writes the three registers in the spec-mandated order:
+/// 1. `AQA` (`0x24`): `ACQS` (bits 27:16, `cq_depth - 1`) packed
+///    with `ASQS` (bits 11:0, `sq_depth - 1`). Both fields are
+///    0-based per § 3.1.8.
+/// 2. `ASQ` (`0x28..=0x2F`): 64-bit ASQ base address, split into a
+///    pair of 32-bit writes (lower at `0x28`, upper at `0x2C`).
+/// 3. `ACQ` (`0x30..=0x37`): 64-bit ACQ base address, same
+///    32-bit-pair scheme.
+///
+/// The controller MUST be disabled before this helper runs (the
+/// bring-up FSM calls [`disable_controller`] first); writing
+/// `AQA`/`ASQ`/`ACQ` while `CC.EN = 1` has implementation-defined
+/// effects per § 3.1.7.
+///
+/// # Errors
+///
+/// - [`QueueError::AdminDepthOutOfRange`] if `sq_depth` or
+///   `cq_depth` is outside `1..=MAX_ADMIN_QUEUE_DEPTH`.
+/// - [`QueueError::QueueBaseMisaligned`] if `asq_phys` or
+///   `acq_phys` is not 4 KiB-aligned.
+#[allow(
+    clippy::similar_names,
+    reason = "asq/acq pairs are intentional parallel names per NVMe 1.4 § 3.1.9"
+)]
+pub fn program_admin_queue_bases<W: MmioBackend>(
+    mmio_w: &mut W,
+    asq_phys: u64,
+    acq_phys: u64,
+    sq_depth: u32,
+    cq_depth: u32,
+) -> Result<(), QueueError> {
+    // 4 KiB page-size constant (NVMe 1.4 § 3.1.9 alignment).
+    const PAGE_SIZE: u64 = 4096;
+
+    // Depth validation per NVMe 1.4 § 3.1.8.
+    if !(1..=MAX_ADMIN_QUEUE_DEPTH).contains(&sq_depth)
+        || !(1..=MAX_ADMIN_QUEUE_DEPTH).contains(&cq_depth)
+    {
+        return Err(QueueError::AdminDepthOutOfRange);
+    }
+    // Base-address alignment per NVMe 1.4 § 3.1.9.
+    if (asq_phys & (PAGE_SIZE - 1)) != 0 || (acq_phys & (PAGE_SIZE - 1)) != 0 {
+        return Err(QueueError::QueueBaseMisaligned);
+    }
+
+    // AQA = (cq_depth - 1) << 16 | (sq_depth - 1). Subtraction is
+    // safe by the validation above.
+    let asqs_minus_one: u32 = (sq_depth - 1) & AQA_QSIZE_MASK;
+    let acqs_minus_one: u32 = (cq_depth - 1) & AQA_QSIZE_MASK;
+    let aqa: u32 = asqs_minus_one | (acqs_minus_one << AQA_ACQS_SHIFT);
+    mmio_w.write_register(AQA_OFFSET, aqa);
+
+    // ASQ / ACQ split into 32-bit pairs (NVMe 1.4 § 3.1 register
+    // layout is 32-bit aligned). Little-endian semantics: lower
+    // dword at lower offset.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "splitting a u64 into the two 32-bit halves is intentional"
+    )]
+    let asq_lo: u32 = asq_phys as u32;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "upper 32 bits of asq_phys after right-shift"
+    )]
+    let asq_hi: u32 = (asq_phys >> 32) as u32;
+    mmio_w.write_register(ASQ_OFFSET, asq_lo);
+    mmio_w.write_register(ASQ_OFFSET + 4, asq_hi);
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "splitting a u64 into the two 32-bit halves is intentional"
+    )]
+    let acq_lo: u32 = acq_phys as u32;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "upper 32 bits of acq_phys after right-shift"
+    )]
+    let acq_hi: u32 = (acq_phys >> 32) as u32;
+    mmio_w.write_register(ACQ_OFFSET, acq_lo);
+    mmio_w.write_register(ACQ_OFFSET + 4, acq_hi);
+
+    Ok(())
 }
 
 /// Enable the NVMe controller (OIP-014 § S6 step 6 / NVMe 1.4
@@ -1124,6 +1235,138 @@ mod tests {
         let res = enable_controller(&mut writer, &mut reader, 4);
         assert_eq!(res, Err(QueueError::ControllerNotReady));
         assert_eq!(writer.writes.len(), 1);
+    }
+
+    // -------------------------------------------------------------------
+    // program_admin_queue_bases (P6.7.10-pre.16)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn aqa_qsize_mask_and_acqs_shift_match_spec() {
+        assert_eq!(AQA_QSIZE_MASK, 0xFFF);
+        assert_eq!(AQA_ACQS_SHIFT, 16);
+        assert_eq!(MAX_ADMIN_QUEUE_DEPTH, 4096);
+    }
+
+    #[test]
+    #[allow(clippy::similar_names, reason = "asq/acq pairs are intentional")]
+    fn program_admin_queue_bases_writes_aqa_asq_acq_in_order() {
+        let mut writer = MockMmioBackend::default();
+        let asq_phys: u64 = 0x1000_0000;
+        let acq_phys: u64 = 0x1000_4000;
+        program_admin_queue_bases(&mut writer, asq_phys, acq_phys, 64, 128).unwrap();
+        // Five writes: AQA (1) + ASQ_lo/hi (2) + ACQ_lo/hi (2).
+        assert_eq!(writer.writes.len(), 5);
+        let offsets: Vec<usize> = writer.writes.iter().map(|&(o, _)| o).collect();
+        assert_eq!(
+            offsets,
+            vec![AQA_OFFSET, ASQ_OFFSET, ASQ_OFFSET + 4, ACQ_OFFSET, ACQ_OFFSET + 4]
+        );
+    }
+
+    #[test]
+    fn program_admin_queue_bases_encodes_aqa_with_0_based_depths() {
+        let mut writer = MockMmioBackend::default();
+        program_admin_queue_bases(&mut writer, 0x1000, 0x2000, 64, 128).unwrap();
+        // AQA = (128-1) << 16 | (64-1) = 0x7F << 16 | 0x3F = 0x007F_003F.
+        let (off, val) = writer.writes.first().copied().unwrap();
+        assert_eq!(off, AQA_OFFSET);
+        assert_eq!(val, ((128 - 1) << 16) | (64 - 1));
+        assert_eq!(val & AQA_QSIZE_MASK, 63);
+        assert_eq!((val >> AQA_ACQS_SHIFT) & AQA_QSIZE_MASK, 127);
+    }
+
+    #[test]
+    fn program_admin_queue_bases_writes_64_bit_asq_base() {
+        let mut writer = MockMmioBackend::default();
+        let asq_phys: u64 = 0xDEAD_BEEF_F000_0000;
+        program_admin_queue_bases(&mut writer, asq_phys, 0x1000, 1, 1).unwrap();
+        // writes[1] = ASQ lower 32 bits at ASQ_OFFSET.
+        let (off_lo, val_lo) = writer.writes.get(1).copied().unwrap();
+        assert_eq!(off_lo, ASQ_OFFSET);
+        #[allow(clippy::cast_possible_truncation)]
+        let expected_lo = asq_phys as u32;
+        assert_eq!(val_lo, expected_lo);
+        // writes[2] = ASQ upper 32 bits at ASQ_OFFSET + 4.
+        let (off_hi, val_hi) = writer.writes.get(2).copied().unwrap();
+        assert_eq!(off_hi, ASQ_OFFSET + 4);
+        #[allow(clippy::cast_possible_truncation)]
+        let expected_hi = (asq_phys >> 32) as u32;
+        assert_eq!(val_hi, expected_hi);
+    }
+
+    #[test]
+    fn program_admin_queue_bases_writes_64_bit_acq_base() {
+        let mut writer = MockMmioBackend::default();
+        let acq_phys: u64 = 0xCAFE_BABE_0000_F000;
+        program_admin_queue_bases(&mut writer, 0x1000, acq_phys, 1, 1).unwrap();
+        // writes[3] = ACQ lower 32 bits at ACQ_OFFSET.
+        let (off_lo, val_lo) = writer.writes.get(3).copied().unwrap();
+        assert_eq!(off_lo, ACQ_OFFSET);
+        #[allow(clippy::cast_possible_truncation)]
+        let expected_lo = acq_phys as u32;
+        assert_eq!(val_lo, expected_lo);
+        let (off_hi, val_hi) = writer.writes.get(4).copied().unwrap();
+        assert_eq!(off_hi, ACQ_OFFSET + 4);
+        #[allow(clippy::cast_possible_truncation)]
+        let expected_hi = (acq_phys >> 32) as u32;
+        assert_eq!(val_hi, expected_hi);
+    }
+
+    #[test]
+    fn program_admin_queue_bases_rejects_zero_depth() {
+        let mut writer = MockMmioBackend::default();
+        let res = program_admin_queue_bases(&mut writer, 0x1000, 0x2000, 0, 64);
+        assert_eq!(res, Err(QueueError::AdminDepthOutOfRange));
+        // No writes on validation failure.
+        assert!(writer.writes.is_empty());
+    }
+
+    #[test]
+    fn program_admin_queue_bases_rejects_oversized_depth() {
+        let mut writer = MockMmioBackend::default();
+        let res = program_admin_queue_bases(&mut writer, 0x1000, 0x2000, MAX_ADMIN_QUEUE_DEPTH + 1, 64);
+        assert_eq!(res, Err(QueueError::AdminDepthOutOfRange));
+        assert!(writer.writes.is_empty());
+    }
+
+    #[test]
+    fn program_admin_queue_bases_rejects_misaligned_asq() {
+        let mut writer = MockMmioBackend::default();
+        let res = program_admin_queue_bases(&mut writer, 0x1001, 0x2000, 64, 64);
+        assert_eq!(res, Err(QueueError::QueueBaseMisaligned));
+        assert!(writer.writes.is_empty());
+    }
+
+    #[test]
+    fn program_admin_queue_bases_rejects_misaligned_acq() {
+        let mut writer = MockMmioBackend::default();
+        let res = program_admin_queue_bases(&mut writer, 0x1000, 0x2008, 64, 64);
+        assert_eq!(res, Err(QueueError::QueueBaseMisaligned));
+        assert!(writer.writes.is_empty());
+    }
+
+    #[test]
+    fn program_admin_queue_bases_accepts_max_depth() {
+        let mut writer = MockMmioBackend::default();
+        program_admin_queue_bases(
+            &mut writer,
+            0x1000,
+            0x2000,
+            MAX_ADMIN_QUEUE_DEPTH,
+            MAX_ADMIN_QUEUE_DEPTH,
+        )
+        .unwrap();
+        let (_, val) = writer.writes.first().copied().unwrap();
+        // AQA encodes 4095 (= 0xFFF) in both halves at max depth.
+        assert_eq!(val & AQA_QSIZE_MASK, 0xFFF);
+        assert_eq!((val >> AQA_ACQS_SHIFT) & AQA_QSIZE_MASK, 0xFFF);
+    }
+
+    #[test]
+    fn admin_depth_out_of_range_in_queue_error_taxonomy() {
+        assert_ne!(QueueError::AdminDepthOutOfRange, QueueError::ControllerNotReady);
+        assert_ne!(QueueError::AdminDepthOutOfRange, QueueError::QueueBaseMisaligned);
     }
 
     #[test]

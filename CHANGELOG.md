@@ -17,6 +17,69 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.16 NVMe ASQ/ACQ admin-queue base-address
+  register programmer (2026-05-22) — TASK-005 continuation.**
+  New free function `program_admin_queue_bases<W: MmioBackend>(
+  mmio_w, asq_phys, acq_phys, sq_depth, cq_depth) ->
+  Result<(), QueueError>` in `crates/omni-driver-nvme/src/queue.rs`
+  closes OIP-Driver-NVMe-014 § S6 step 5 per NVMe 1.4 § 3.1.7-9.
+  - Writes 3 controller registers in the spec-mandated order:
+    1. `AQA` (`0x24`): `ACQS-1 << 16 | ASQS-1` (both 0-based per
+       § 3.1.8).
+    2. `ASQ` (`0x28..0x2F`): 64-bit ASQ physical base split into
+       a pair of 32-bit writes (lower at `0x28`, upper at `0x2C`).
+    3. `ACQ` (`0x30..0x37`): symmetric to ASQ.
+  - **Validation**:
+    - `sq_depth` and `cq_depth` MUST be in
+      `1..=MAX_ADMIN_QUEUE_DEPTH = 4096`.
+    - `asq_phys` and `acq_phys` MUST be 4 KiB-aligned per § 3.1.9.
+  - **New constants**:
+    - `AQA_ACQS_SHIFT: u32 = 16`
+    - `AQA_QSIZE_MASK: u32 = 0xFFF`
+    - `MAX_ADMIN_QUEUE_DEPTH: u32 = 4096`
+  - **New error variants** (`#[non_exhaustive]`):
+    - `QueueError::AdminDepthOutOfRange`
+    - `QueueError::QueueBaseMisaligned`
+  - **Fn-level `#[allow(clippy::similar_names)]`** carve-out
+    preserves the intentional `asq_*` / `acq_*` parallel naming
+    the NVMe spec uses for the symmetric SQ/CQ pair.
+  - **Precondition**: the controller MUST be disabled before this
+    helper runs (the bring-up FSM calls `disable_controller` from
+    pre.15 first); writing AQA/ASQ/ACQ while `CC.EN = 1` has
+    implementation-defined effects per § 3.1.7.
+  - **+9 new host-side tests** under
+    `omni_driver_nvme::queue::tests::*`:
+    - 1 constant tripwire (`AQA_QSIZE_MASK = 0xFFF`,
+      `AQA_ACQS_SHIFT = 16`, `MAX_ADMIN_QUEUE_DEPTH = 4096`).
+    - 1 register-order test (5 writes in exact order
+      `AQA, ASQ_lo, ASQ_hi, ACQ_lo, ACQ_hi`).
+    - 1 AQA encoding test (asserts `(128-1) << 16 | (64-1)` =
+      `0x007F_003F` with `ASQS = 63`, `ACQS = 127`).
+    - 1 ASQ 64-bit split test with
+      `asq_phys = 0xDEAD_BEEF_F000_0000` — verifies low =
+      `0xF000_0000`, high = `0xDEAD_BEEF`.
+    - 1 symmetric ACQ split test.
+    - 3 validation rejection tests (zero depth, oversized depth,
+      misaligned ASQ + ACQ → `AdminDepthOutOfRange` /
+      `QueueBaseMisaligned` without emitting any writes).
+    - 1 max-depth boundary test (`MAX_ADMIN_QUEUE_DEPTH` works and
+      encodes `ASQS = ACQS = 0xFFF`).
+    - 1 taxonomy distinctness check.
+  - **Workspace test count**: 1450 → 1461 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.16 ASQ/ACQ wire`,
+    Next=`P6.7.10-pre.17 driver-img wire`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1461 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — composes
+    `controller_regs::{AQA_OFFSET, ASQ_OFFSET, ACQ_OFFSET}` already
+    pinned by NVMe 1.4 § 3.1.7-9.
+
 - **Storage — P6.7.10-pre.15 NVMe controller CC.EN enable/disable
   sequencer (2026-05-22) — TASK-005 continuation.**
   `crates/omni-driver-nvme/src/queue.rs` extended with the
