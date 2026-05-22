@@ -17,6 +17,72 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.11 NVMe Admin SQ live-submission scaffold
+  (2026-05-22) — TASK-005 continuation.**
+  New `crates/omni-driver-nvme/src/queue.rs` module declares the seam
+  between the pure-state ring math (P6.7.10-pre.9 `SqRing`) and the
+  live admin queue's MMIO half.
+  - **`MmioBackend` trait** with a single method
+    `write_doorbell(offset: usize, value: u32)`. Lets the same code
+    path drive bare-metal `volatile_write` and a `MockMmioBackend`
+    in host tests (test impl records every `(offset, value)` pair
+    in a `Vec` for assertion).
+  - **`AdminQueuePair { sq: SqRing, dstrd: u8 }`** scaffold.
+    - `ADMIN_QID = 0` constant per NVMe 1.4 § 3.1.21.
+    - `new(sq_depth: u32, dstrd: u8) -> Result<Self, QueueError>`
+      propagates the underlying `RingError` through
+      `QueueError::Ring(_)` via a `From<RingError>` impl.
+    - `submit<M: MmioBackend>(&AdminSqe, &mut M, &mut [u8])
+      -> Result<u16, QueueError>` performs the canonical sequence:
+      1. bounds-check `sq_page.len() >=
+         capacity * ADMIN_SQE_BYTES` before claiming a slot so a
+         failure does not perturb the ring state;
+      2. eagerly compute the SQ-tail doorbell offset via
+         `controller_regs::sq_tail_doorbell_offset(0, dstrd)` so a
+         stride-arithmetic overflow surfaces before the ring
+         mutation;
+      3. claim the slot through `SqRing::submit`;
+      4. copy the 64-byte SQE into `sq_page[slot * 64..]`;
+      5. ring the doorbell with the new tail value through
+         `MmioBackend::write_doorbell`.
+    - `record_head_observed(u16)` accessor feeds the controller's
+      view of the SQ head back into the ring (called by the future
+      CQE drain when it parses a completion's `sq_head` field).
+  - **`QueueError`** taxonomy (`#[non_exhaustive]`):
+    `Ring(RingError)`, `SqPageTooSmall`, `Full`,
+    `DoorbellOffsetOverflow`.
+  - **`crates/omni-driver-nvme/src/lib.rs`** extended with
+    `pub mod queue;` declaration.
+  - **+14 new host-side tests** under
+    `omni_driver_nvme::queue::tests::*`:
+    - 4 construction checks (ADMIN_QID = 0, ring error propagation
+      on zero/oversized depth, `dstrd` + `sq` accessors).
+    - 5 submit-happy-path tests (SQE bytes copied into slot 0,
+      doorbell rung with new tail = 1, three SQEs → three slots +
+      three monotonically-increasing doorbell values, non-zero
+      dstrd produces non-zero stride offset, distinct slots end up
+      at distinct page offsets).
+    - 3 submit-error-path tests (undersized SQ page rejected
+      without perturbing ring state or emitting doorbell write,
+      `Full` after capacity-1 submits without emitting fourth
+      doorbell, `record_head_observed(1)` unblocks fourth submit
+      at slot 3).
+    - 2 `QueueError` taxonomy tests (`From<RingError>` impl,
+      4 variants pairwise-distinct discriminant).
+  - **Workspace test count**: 1405 → 1419 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.11 SQ live submit`,
+    Next=`P6.7.10-pre.12 CQ live drain`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1419 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — composes existing primitives from
+    `crate::admin` + `crate::ring` + `crate::controller_regs`.
+
 - **Storage — P6.7.10-pre.10 NVMe Create IO Queue admin encoders
   (2026-05-22) — TASK-005 continuation.**
   `crates/omni-driver-nvme/src/admin.rs` extended with the two admin

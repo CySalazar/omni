@@ -75,6 +75,7 @@ pub mod bringup;
 pub mod controller_regs;
 pub mod io;
 pub mod pci_ids;
+pub mod queue;
 pub mod queue_config;
 pub mod ring;
 pub mod transfer_model;
