@@ -41,6 +41,107 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.33 NVMe Identify Controller live
+  end-to-end round-trip from `omni-driver-nvme-image::_start`
+  (2026-05-22) — TASK-005 continuation.** The image now issues
+  the first real admin command via syscall-driven MMIO + DMA.
+  Until pre.33 the image only prepared the admin queue
+  infrastructure (`disable_controller` + `program_admin_queue_bases`
+  + `program_cc_fields` + `enable_controller` +
+  `check_controller_fatal`) and then drove a synthetic
+  `Event::Advance` FSM ladder; pre.33 closes the loop by
+  encoding an `Identify Controller` SQE, submitting it to the
+  admin SQ, polling the admin CQ for the matching CID, and
+  validating the completion status word.
+  - **Step 4.14 (new)** — `AdminQueuePair::new(64, 64, 0)`
+    constructs the alloc-free admin queue pair (the queue pair
+    owns only `SqRing` + `CqRing` + dstrd; the SQ + CQ data
+    pages live in the DMA arena and are accessed via
+    `&mut [u8]` / `&[u8]` slices over the IOVA pointers per
+    Phase-1 passthrough IOMMU). Two new constants pinned:
+    `NVME_ADMIN_DSTRD_DEFAULT = 0` (4-byte stride per the
+    NVMe 1.4 § 3.1.1 most common default), and
+    `NVME_ADMIN_QUEUE_PAGE_BYTES = 4096` (4 KiB backing page
+    matching the spec's per-page-aligned ASQ/ACQ requirement).
+  - **Step 4.15 (new)** — `encode_identify(IdentifyTarget::Controller,
+    NVME_IDENTIFY_CTRL_RESP_IOVA, 0, NVME_IDENTIFY_FIRST_CID=1)`
+    builds the SQE, then `AdminQueuePair::submit` enqueues it
+    and rings the SQ tail doorbell via the LiveMmioBackend
+    landed in pre.17. The Identify response buffer lives at
+    IOVA `0x2000` (3rd page of the DMA arena, after ASQ at
+    `0x0` and ACQ at `0x1000`); not yet parsed (a future slice
+    will use `omni_driver_nvme::identify::ControllerView` to
+    decode the 4 KiB response).
+  - **Step 4.15.b (new)** — bounded poll loop calling
+    `AdminQueuePair::drain_completion` up to
+    `NVME_IDENTIFY_POLL_LIMIT = 50_000` iterations. The loop
+    handles three transition cases distinctly: `Ok(Some(fields))`
+    with `fields.cid == NVME_IDENTIFY_FIRST_CID` → break;
+    `Ok(Some(_))` with a different CID → continue (stray
+    completion, defensively skip); `Ok(None)` → continue
+    (slot's phase tag still matches previous lap, the
+    controller has not written yet); `Err(_)` → bail with
+    `EXIT_NVME_IDENTIFY_DRAIN_FAILED = 242`.
+  - **Step 4.15.c (new)** — `fields.is_success()` (NVMe 1.4
+    § 4.6 = `SCT == 0` AND `SC == 0`) validates the
+    completion status word. Non-success bails with
+    `EXIT_NVME_IDENTIFY_FAILED = 245` — distinct from the
+    timeout sentinel so serial-log triage can distinguish
+    "controller did not respond" from "controller responded
+    but command rejected".
+  - **`IdentifyTarget` re-exported** from `omni-driver-nvme::admin`
+    (was `use omni_types::nvme::IdentifyTarget;` → now
+    `pub use ...;`). The image transitively gets `omni-types`
+    in its dependency graph via the existing `omni-driver-nvme`
+    dep but does not declare it directly in its Cargo.toml —
+    matching the "thin Ring 3 trampoline" model the image
+    Cargo.toml documents.
+  - **Five new `TaskExit` sentinel codes** in the image:
+    - `EXIT_NVME_ADMIN_PAIR_INVALID = 230` — `AdminQueuePair::new`
+      rejected the depths or dstrd (defensive against Phase-1
+      constants regression).
+    - `EXIT_NVME_IDENTIFY_SUBMIT_FAILED = 235` — submit failed
+      (SQ ring full / SQ page undersized — defensive).
+    - `EXIT_NVME_IDENTIFY_TIMEOUT = 240` — poll loop exhausted
+      `NVME_IDENTIFY_POLL_LIMIT` iterations.
+    - `EXIT_NVME_IDENTIFY_DRAIN_FAILED = 242` — drain surfaced
+      a non-timeout error (`CqPageTooSmall` /
+      `DoorbellOffsetOverflow` — defensive).
+    - `EXIT_NVME_IDENTIFY_FAILED = 245` — CQE non-success status.
+  - **+3 new host-side composition tests** under
+    `omni_driver_nvme::queue::tests::*`:
+    - `image_pre33_identify_controller_happy_path` — runs the
+      full submit + scripted success CQE + drain + is_success
+      sequence the image runs, asserts `cid == 1`, `sct == 0`,
+      `sc == 0`, `is_success() == true`.
+    - `image_pre33_identify_controller_fails_on_nonzero_status`
+      — patches the synthetic CQE bytes to set `SC = 1`
+      (Invalid Command Opcode, NVMe 1.4 § 4.6.1.1), asserts
+      `is_success() == false` and the image bail path.
+    - `image_pre33_identify_controller_drain_returns_none_on_empty_cq`
+      — zero-initialised CQ page (phase=0 vs locally-expected
+      phase=1) → `Ok(None)`, no CQ head doorbell written,
+      poll loop continues.
+  - **Workspace test count**: 1594 → **1597 pass / 0 fail**.
+  - **Build Info panel** updated:
+    Active = `P6.7.10-pre.33 Identify img wire`,
+    Next = `P6.7.10-pre.34 v0.3.0-alpha.2`,
+    Tests = `1597 workspace pass`.
+  - **Caveat (already documented in the proxmox_deploy memory
+    for pre.17)**: the desktop demo path does NOT invoke
+    `DriverLoad(73)` against the nvme image, so step 4.14 + 4.15
+    are statically validated by `cargo clippy --target
+    x86_64-unknown-none --release` and by the 3 host-side
+    composition tests, but the full end-to-end round-trip
+    against a live QEMU NVMe controller will not exercise
+    until a future slice wires `DriverLoad` into the kernel
+    boot scenario.
+  - **No new dependency** — composes existing
+    `crate::admin::{IdentifyTarget, encode_identify}` and
+    `crate::queue::AdminQueuePair`. The single 1-character
+    change (`use` → `pub use` in admin.rs) does not change
+    the dep graph.
+
 - **Storage — P6.7.10-pre.32 NVMe live-image wiring of
   `program_cc_fields` + `check_controller_fatal` (2026-05-22) —
   TASK-005 continuation.** The Ring-3 `omni-driver-nvme-image`

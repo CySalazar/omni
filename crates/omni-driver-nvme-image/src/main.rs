@@ -51,9 +51,25 @@
 //!     tripwire catches the rare case of a controller that enters
 //!     the fatal-status state mid-enable handshake but still sets
 //!     `CSTS.RDY` before crashing.
-//! 13. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
+//! 13. **P6.7.10-pre.33** — `AdminQueuePair::new` constructs the
+//!     alloc-free admin queue pair (SqRing + CqRing + dstrd). The
+//!     SQ + CQ data pages live in the DMA arena at the IOVAs the
+//!     controller was programmed with in step 4.10; the image
+//!     accesses them via `&mut [u8]` / `&[u8]` slices over the
+//!     IOVA pointers (passthrough IOMMU → user-VA == IOVA).
+//! 14. **P6.7.10-pre.33** — `encode_identify(IdentifyTarget::Controller, …)`
+//!     builds the SQE, `AdminQueuePair::submit` enqueues it and
+//!     rings the SQ tail doorbell. The image then polls
+//!     `AdminQueuePair::drain_completion` for the matching CID
+//!     with a bounded `NVME_IDENTIFY_POLL_LIMIT` budget,
+//!     validates `is_success()` on the resulting `AdminCqeFields`,
+//!     and bails with a distinct sentinel on timeout / non-success
+//!     / drain failure. This is the first real admin command the
+//!     live image issues end-to-end via syscalls (vs the synthetic
+//!     `Event::Advance` ladder the FSM walks in step 16).
+//! 15. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
 //!     `Phase::Ready` (or any terminal `Failed` state).
-//! 14. `TaskExit(0)` on success / non-zero sentinel on any failure.
+//! 16. `TaskExit(0)` on success / non-zero sentinel on any failure.
 //!
 //! ## Standalone execution
 //!
@@ -80,11 +96,12 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 
+use omni_driver_nvme::admin::{IdentifyTarget, encode_identify};
 use omni_driver_nvme::bringup::{BringUp, Event, Phase};
 use omni_driver_nvme::queue::{
-    MmioBackend, MmioReadBackend, PHASE_1_IOCQES_LOG2, PHASE_1_IOSQES_LOG2, PHASE_1_MPS_LOG2,
-    check_controller_fatal, disable_controller, enable_controller, program_admin_queue_bases,
-    program_cc_fields,
+    AdminQueuePair, MmioBackend, MmioReadBackend, PHASE_1_IOCQES_LOG2, PHASE_1_IOSQES_LOG2,
+    PHASE_1_MPS_LOG2, check_controller_fatal, disable_controller, enable_controller,
+    program_admin_queue_bases, program_cc_fields,
 };
 use omni_driver_shared::{
     ACTION_TAG_DMA_MAP, ACTION_TAG_IRQ_ATTACH, ACTION_TAG_MMIO_MAP, caps::find_token,
@@ -210,6 +227,47 @@ const NVME_ACQ_IOVA: u64 = 0x1000;
 /// realistic latency.
 const NVME_CSTS_POLL_LIMIT: u32 = 10_000;
 
+/// Admin doorbell stride (`CAP.DSTRD` field). Phase-1 pins the
+/// expected value to `0` (4-byte stride) per NVMe 1.4 § 3.1.1
+/// the most common controller default. A future slice will read
+/// `CAP.DSTRD` from BAR0 and propagate it dynamically; for
+/// `omni-driver-nvme-image` the static value matches both the
+/// QEMU virtualised NVMe and every commercial controller's
+/// default. P6.7.10-pre.33.
+const NVME_ADMIN_DSTRD_DEFAULT: u8 = 0;
+
+/// Backing-page size of the admin SQ + admin CQ in the DMA arena.
+/// 64 SQEs × 64 bytes = 4096; 64 CQEs × 16 bytes = 1024. Both
+/// queues live inside a single 4 KiB physical page so the IOVAs
+/// satisfy the NVMe 1.4 § 3.1.9 page-alignment requirement and
+/// the per-queue `&mut [u8]` accessor spans exactly one page.
+const NVME_ADMIN_QUEUE_PAGE_BYTES: usize = 4096;
+
+/// IOVA offset (inside the DMA arena) of the response page the
+/// controller writes the Identify Controller response into.
+/// Placed at offset `0x2000` so it lives in the third 4 KiB page
+/// after the ASQ (offset `0x0`) and the ACQ (offset `0x1000`).
+/// 4 KiB-aligned by construction per NVMe 1.4 § 5.15 (Identify
+/// response is exactly 4 KiB; PRP1 alone covers it; PRP2 is
+/// zero). The response itself is not yet parsed by the image —
+/// a future slice will use [`omni_driver_nvme::identify::ControllerView`]
+/// against this page. P6.7.10-pre.33.
+const NVME_IDENTIFY_CTRL_RESP_IOVA: u64 = 0x2000;
+
+/// Poll budget for the Identify Controller completion. Each
+/// iteration is a single CSTS-equivalent read of the CQ slot
+/// header; QEMU virtualised NVMe completes Identify within tens
+/// of microseconds, so `50_000` iterations is generously above
+/// any realistic admin-command latency. P6.7.10-pre.33.
+const NVME_IDENTIFY_POLL_LIMIT: u32 = 50_000;
+
+/// First CID the image hands out for the Identify Controller
+/// command. CID `0` is reserved by `omni_types::nvme` (the
+/// `RESERVED_DRIVER_OPAQUE_ID`), so the image starts at `1`
+/// — matching the `AdminSession::allocate_cid` skip-on-wrap
+/// policy that the host-side reference implementation uses.
+const NVME_IDENTIFY_FIRST_CID: u16 = 1;
+
 // =============================================================================
 // LiveMmioBackend — `MmioBackend` + `MmioReadBackend` impl for the
 // live driver (P6.7.10-pre.17)
@@ -326,6 +384,35 @@ const EXIT_NVME_ENABLE_TIMEOUT: u64 = 220;
 /// controller crashes mid-enable but still ticks the RDY bit.
 /// New in P6.7.10-pre.32.
 const EXIT_NVME_CONTROLLER_FATAL: u64 = 225;
+/// `AdminQueuePair::new` rejected the bring-up SQ/CQ depths or
+/// the doorbell stride. Reachable only if the Phase-1 admin queue
+/// constants are corrupted at compile time; defensive sentinel
+/// against a regression of [`NVME_ADMIN_SQ_DEPTH`] /
+/// [`NVME_ADMIN_CQ_DEPTH`]. New in P6.7.10-pre.33.
+const EXIT_NVME_ADMIN_PAIR_INVALID: u64 = 230;
+/// `AdminQueuePair::submit` failed to enqueue the Identify
+/// Controller SQE — either the SQ ring is full (impossible at
+/// this stage; the ring starts empty) or the SQ data page is
+/// undersized. Defensive. New in P6.7.10-pre.33.
+const EXIT_NVME_IDENTIFY_SUBMIT_FAILED: u64 = 235;
+/// The Identify Controller poll loop exhausted
+/// [`NVME_IDENTIFY_POLL_LIMIT`] iterations without observing a
+/// matching CQE. Reachable on a controller that NACKs admin
+/// commands silently, or a DMA arena mis-programming that
+/// prevents the controller from writing the CQ slot. New in
+/// P6.7.10-pre.33.
+const EXIT_NVME_IDENTIFY_TIMEOUT: u64 = 240;
+/// `AdminQueuePair::drain_completion` surfaced a non-timeout
+/// error (`CqPageTooSmall` / `DoorbellOffsetOverflow`).
+/// Defensive against a regression of the page-size or
+/// doorbell-stride constants. New in P6.7.10-pre.33.
+const EXIT_NVME_IDENTIFY_DRAIN_FAILED: u64 = 242;
+/// Identify Controller completed but the CQE reports a
+/// non-success status word (`SCT != 0` or `SC != 0`). The
+/// controller actively refused the command — either CDW10/11
+/// shape is wrong or the controller has a serious firmware
+/// issue. New in P6.7.10-pre.33.
+const EXIT_NVME_IDENTIFY_FAILED: u64 = 245;
 
 // =============================================================================
 // Raw syscall wrapper
@@ -587,10 +674,115 @@ pub extern "C" fn _start() -> ! {
         unsafe { sys_exit(EXIT_NVME_CONTROLLER_FATAL) };
     }
 
+    // Step 4.14 — P6.7.10-pre.33: construct the admin queue pair.
+    // `AdminQueuePair::new` is alloc-free — it owns only an
+    // `SqRing` + `CqRing` + the doorbell stride; the backing
+    // SQ/CQ data pages live in the DMA arena and are accessed
+    // via &mut [u8] slices below. Phase-1 dstrd is pinned to 0
+    // (4-byte stride) per `NVME_ADMIN_DSTRD_DEFAULT`; a future
+    // slice will read `CAP.DSTRD` from BAR0 and propagate it.
+    let mut admin_pair = match AdminQueuePair::new(
+        NVME_ADMIN_SQ_DEPTH,
+        NVME_ADMIN_CQ_DEPTH,
+        NVME_ADMIN_DSTRD_DEFAULT,
+    ) {
+        Ok(p) => p,
+        Err(_) => unsafe { sys_exit(EXIT_NVME_ADMIN_PAIR_INVALID) },
+    };
+
+    // Step 4.14.b — Acquire &mut [u8] views into the DMA arena
+    // pages backing the ASQ + ACQ. Phase-1 IOMMU passthrough
+    // means `iova == user_va`, so the user-space pointer for
+    // each IOVA equals the IOVA bit pattern reinterpreted as a
+    // pointer. The kernel `DmaMap (71)` syscall installed the
+    // 4 GiB arena starting at the IOVA the kernel returned in
+    // `_dma_iova` (passthrough → equals our requested
+    // `DMA_IOVA_BASE = 0x0`). The two slices are non-overlapping
+    // by construction (`NVME_ASQ_IOVA = 0x0`,
+    // `NVME_ACQ_IOVA = 0x1000`).
+    //
+    // SAFETY: the DMA arena was just installed by the
+    // `DmaMap (71)` syscall at step 3; the kernel guarantees
+    // 4 KiB-aligned, zero-initialised pages backing the IOVA
+    // range. `program_admin_queue_bases` at step 4.10 wrote
+    // these same IOVAs into `ASQ` + `ACQ` so the controller
+    // shares the views. The lifetime of the slices ends at
+    // `_start`'s `sys_exit`; no other code path holds these
+    // pointers.
+    let asq_slice: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(NVME_ASQ_IOVA as *mut u8, NVME_ADMIN_QUEUE_PAGE_BYTES)
+    };
+    let acq_slice: &[u8] = unsafe {
+        core::slice::from_raw_parts(NVME_ACQ_IOVA as *const u8, NVME_ADMIN_QUEUE_PAGE_BYTES)
+    };
+
+    // Step 4.15 — P6.7.10-pre.33: encode + submit the Identify
+    // Controller SQE (NVMe 1.4 § 5.15.1). The response is a
+    // 4 KiB structure the controller writes at
+    // `NVME_IDENTIFY_CTRL_RESP_IOVA`. PRP2 is zero (single-page
+    // response per `IDENTIFY_PRP2_ZERO`).
+    let identify_sqe = encode_identify(
+        IdentifyTarget::Controller,
+        NVME_IDENTIFY_CTRL_RESP_IOVA,
+        0,
+        NVME_IDENTIFY_FIRST_CID,
+    );
+    if admin_pair
+        .submit(&identify_sqe, &mut mmio_write, asq_slice)
+        .is_err()
+    {
+        unsafe { sys_exit(EXIT_NVME_IDENTIFY_SUBMIT_FAILED) };
+    }
+
+    // Step 4.15.b — Poll the admin CQ for the matching CID. The
+    // loop bounds polling to `NVME_IDENTIFY_POLL_LIMIT` so a
+    // misprogrammed controller cannot wedge the bring-up
+    // indefinitely. `drain_completion` returns:
+    //   - `Ok(Some(fields))` when the current slot has the
+    //     expected phase tag and is consumed — the loop matches
+    //     on `cid` to skip any stray completion (impossible in
+    //     a single-in-flight scenario but defensively coded).
+    //   - `Ok(None)` when the slot's phase tag still matches the
+    //     previous lap — the controller has not written yet.
+    //   - `Err(_)` on a CQ-page bounds or doorbell-stride bug —
+    //     reachable only on a constants regression.
+    let mut polls: u32 = 0;
+    let identify_cqe = loop {
+        if polls >= NVME_IDENTIFY_POLL_LIMIT {
+            unsafe { sys_exit(EXIT_NVME_IDENTIFY_TIMEOUT) };
+        }
+        polls = polls.saturating_add(1);
+        match admin_pair.drain_completion(&mut mmio_write, acq_slice) {
+            Ok(Some(fields)) if fields.cid == NVME_IDENTIFY_FIRST_CID => break fields,
+            Ok(Some(_)) => {
+                // Stray completion with a non-matching CID —
+                // impossible in the single-in-flight Identify
+                // scenario but defensively skip-and-keep-polling
+                // so a future multi-command pre-amble does not
+                // accidentally consume the Identify's CQE.
+                continue;
+            }
+            Ok(None) => continue,
+            Err(_) => unsafe { sys_exit(EXIT_NVME_IDENTIFY_DRAIN_FAILED) },
+        }
+    };
+
+    // Step 4.15.c — Validate the completion status word. NVMe 1.4
+    // § 4.6 success = `SCT = 0` (Generic Command Status) AND
+    // `SC = 0` (Successful Completion). Any non-zero status
+    // means the controller actively refused the command — exit
+    // with a distinct sentinel so the serial log triage can
+    // distinguish "controller did not respond" (timeout) from
+    // "controller responded but command rejected" (this case).
+    if !identify_cqe.is_success() {
+        unsafe { sys_exit(EXIT_NVME_IDENTIFY_FAILED) };
+    }
+
     // Step 5 — Drive the 13-step bring-up FSM through its remaining
     // pure-state phases. With MMIO + DMA + IRQ + BLK + Admin queue
-    // pair installed, the FSM can reach `Phase::Ready` via
-    // repeated `Event::Advance`.
+    // pair installed AND the first real admin command (Identify
+    // Controller) round-tripped successfully, the FSM can reach
+    // `Phase::Ready` via repeated `Event::Advance`.
     let mut bringup = BringUp::new();
     while !bringup.phase().is_terminal() {
         match bringup.on_event(Event::Advance) {

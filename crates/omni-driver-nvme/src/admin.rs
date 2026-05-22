@@ -31,7 +31,7 @@
 //!   but with different opcodes and `CDWx` semantics. The IO encoder
 //!   is a future sibling module.
 
-use omni_types::nvme::IdentifyTarget;
+pub use omni_types::nvme::IdentifyTarget;
 
 // =============================================================================
 // Sizes

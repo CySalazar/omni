@@ -1883,6 +1883,146 @@ mod tests {
         );
     }
 
+    // -------------------------------------------------------------------
+    // P6.7.10-pre.33 — image inline Identify Controller composition
+    //
+    // The three tests below verify the call sequence the live
+    // `omni-driver-nvme-image::_start` step 4.14 + 4.15 uses:
+    //
+    //   AdminQueuePair::new(64, 64, dstrd)
+    //   → encode_identify(IdentifyTarget::Controller, prp1, 0, cid=1)
+    //   → admin_pair.submit(&sqe, mmio, asq_slice)
+    //   → loop admin_pair.drain_completion(mmio, acq_slice)
+    //     - Ok(Some(fields)) cid==1   → break, validate is_success()
+    //     - Ok(Some(fields)) cid!=1   → continue (stray)
+    //     - Ok(None)                  → continue (phase mismatch)
+    //     - Err(_)                    → exit EXIT_NVME_IDENTIFY_DRAIN_FAILED
+    //
+    // The image binary itself has no test harness; these
+    // host-side composition tests are the canonical guarantee
+    // that the call ordering in `_start` is sound.
+    // -------------------------------------------------------------------
+
+    /// Happy path — submit Identify Controller, write a
+    /// synthetic success CQE at slot 0 (phase=1, cid=1, sct=0,
+    /// sc=0), drain. `is_success()` MUST return `true`.
+    #[test]
+    fn image_pre33_identify_controller_happy_path() {
+        // Phase-1 constants — must match the image's literals.
+        const SQ_DEPTH: u32 = 64;
+        const CQ_DEPTH: u32 = 64;
+        const DSTRD: u8 = 0;
+        const PRP1: u64 = 0x2000; // NVME_IDENTIFY_CTRL_RESP_IOVA
+        const CID: u16 = 1; // NVME_IDENTIFY_FIRST_CID
+
+        let mut pair = AdminQueuePair::new(SQ_DEPTH, CQ_DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sq_page = empty_sq_page(SQ_DEPTH);
+        let mut cq_page = empty_cq_page(CQ_DEPTH);
+
+        // Submit the Identify Controller SQE.
+        let sqe =
+            crate::admin::encode_identify(crate::admin::IdentifyTarget::Controller, PRP1, 0, CID);
+        pair.submit(&sqe, &mut mmio, &mut sq_page)
+            .expect("submit Identify Controller");
+
+        // Synthetic success CQE at slot 0: phase=1 (current
+        // lap), cid=1, sct=0, sc=0, sq_head=1 (controller
+        // observed our submit). build_cqe encodes phase + cid
+        // + sq_head; SCT/SC are zero by construction.
+        let cqe_bytes = build_cqe(true, CID, 1);
+        write_cqe_to_page(&mut cq_page, 0, &cqe_bytes);
+
+        // Drain — must return the success fields on the FIRST
+        // try (slot 0 has phase=1 matching the freshly-rotated
+        // local expected_phase).
+        let fields = pair
+            .drain_completion(&mut mmio, &cq_page)
+            .expect("drain Ok")
+            .expect("Some(fields)");
+        assert_eq!(fields.cid, CID);
+        assert!(fields.is_success(), "SCT=0 + SC=0 → success");
+        assert_eq!(fields.sct, 0);
+        assert_eq!(fields.sc, 0);
+    }
+
+    /// Failure path — synthetic CQE with phase=1, cid=1, but
+    /// SCT/SC non-zero. Drain returns the fields; `is_success()`
+    /// returns `false` so the image bails with
+    /// `EXIT_NVME_IDENTIFY_FAILED`.
+    #[test]
+    fn image_pre33_identify_controller_fails_on_nonzero_status() {
+        const SQ_DEPTH: u32 = 64;
+        const CQ_DEPTH: u32 = 64;
+        const DSTRD: u8 = 0;
+        const PRP1: u64 = 0x2000;
+        const CID: u16 = 1;
+
+        let mut pair = AdminQueuePair::new(SQ_DEPTH, CQ_DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sq_page = empty_sq_page(SQ_DEPTH);
+        let mut cq_page = empty_cq_page(CQ_DEPTH);
+
+        let sqe =
+            crate::admin::encode_identify(crate::admin::IdentifyTarget::Controller, PRP1, 0, CID);
+        pair.submit(&sqe, &mut mmio, &mut sq_page)
+            .expect("submit Identify Controller");
+
+        // Encode a non-success CQE: phase=1, cid=1, sq_head=1,
+        // then OR in SC=1 (Invalid Command Opcode, NVMe 1.4
+        // § 4.6.1.1) into CDW3 bits 17..=24. build_cqe leaves
+        // SC/SCT zero so we patch the bytes directly.
+        let mut raw = build_cqe(true, CID, 1);
+        // CDW3 lives at bytes 12..=15 (little-endian). SC bit 17
+        // = bit (17 - 16) = bit 1 of the status word in the
+        // upper half. The status word's "Status Code" field
+        // sits at bits 8:1 (per `AdminCqeFields::packed_status`
+        // layout). To set SC=1 we OR bit 1 of the status word,
+        // which is bit 17 of CDW3, which is bit 1 of byte 14.
+        raw[14] |= 1 << 1;
+        write_cqe_to_page(&mut cq_page, 0, &raw);
+
+        let fields = pair
+            .drain_completion(&mut mmio, &cq_page)
+            .expect("drain Ok")
+            .expect("Some(fields)");
+        assert_eq!(fields.cid, CID);
+        assert_eq!(fields.sct, 0, "SCT remains 0 (Generic Command Status)");
+        assert_eq!(fields.sc, 1, "SC=1 (Invalid Command Opcode)");
+        assert!(
+            !fields.is_success(),
+            "non-zero SC → is_success must be false → image bails EXIT_NVME_IDENTIFY_FAILED"
+        );
+    }
+
+    /// Phase mismatch — empty CQ page (all zero, phase bit at
+    /// slot 0 is 0; the AdminQueuePair's locally-expected phase
+    /// after construction is 1). `drain_completion` returns
+    /// `Ok(None)` so the image's poll loop continues without
+    /// consuming the slot. This is the canonical "controller
+    /// has not written yet" path the polling budget covers.
+    #[test]
+    fn image_pre33_identify_controller_drain_returns_none_on_empty_cq() {
+        const SQ_DEPTH: u32 = 64;
+        const CQ_DEPTH: u32 = 64;
+        const DSTRD: u8 = 0;
+
+        let mut pair = AdminQueuePair::new(SQ_DEPTH, CQ_DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let cq_page = empty_cq_page(CQ_DEPTH);
+
+        // No submit — just drain a zero-initialised CQ page.
+        // The current slot's phase bit is 0; expected_phase is
+        // 1 (freshly constructed CqRing); the ring returns None
+        // without advancing head and without writing to mmio.
+        let res = pair.drain_completion(&mut mmio, &cq_page);
+        assert!(matches!(res, Ok(None)));
+        assert!(
+            mmio.writes.is_empty(),
+            "no CQ head doorbell write on phase-mismatch path"
+        );
+    }
+
     /// Defensive composition test: `program_cc_fields` writes ONLY
     /// to `CC_OFFSET`. Verifying this prevents a future refactor
     /// from accidentally touching `AQA`/`ASQ`/`ACQ` (which would
