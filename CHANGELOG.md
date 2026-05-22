@@ -15,6 +15,82 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ## [Unreleased]
 
+### Added
+
+- **Governance — TASK-008 OIP-Key-Custody-017 Draft (production
+  key custody + `DRIVER_CAP_ISSUER_SEED` replacement policy).**
+  New `oips/oip-key-custody-017.md` (Standards Track, status
+  Draft) specifies the production custody model for the
+  kernel-side Ed25519 signing key that mints
+  `omni-capability::CapabilityToken`s at `DriverLoad` time
+  (`OIP-Driver-Framework-013` § S5.3 step 8). Closes a stated
+  security gap: the current
+  `crates/omni-kernel/src/driver_cap_issuer.rs:56`
+  `DRIVER_CAP_ISSUER_SEED` is a fixed `0xCAFEBABE`-patterned
+  compile-time constant that anyone with the kernel binary can
+  recover via `objdump --section=.rodata`, then use to forge
+  deposit tokens that bypass the `Ed25519CapabilityProvider`
+  check at `MmioMap (70)` / `DmaMap (71)` / `IrqAttach (72)`
+  syscall time.
+  - **Steady-state production schema** specified per TEE family:
+    - Intel TDX: HKDF-SHA-256 over
+      `TDREPORT.measurement || TDREPORT.te_tcb_svn || "OMNI-PROTO-v0.2"`
+      with a constant salt domain separator.
+    - AMD SEV-SNP: `SNP_DERIVE_KEY` (AMD64 APM Vol 2 § 15.36.4)
+      with `GUEST_POLICY | TCB_VERSION | MEASUREMENT` bound,
+      then HKDF post-processing for shape standardisation.
+    - ARM CCA: deferred to a follow-up OIP (Phase 2+).
+    - Dev / test fallback: HKDF over a public constant string;
+      requires explicit `dev-key-custody` feature flag; release
+      builds without the flag fail to compile.
+  - **Bootstrap procedure**: TEE-attested derivation on every
+    boot via `omni_tee::detect_family()` + `derive_app_key(...)`;
+    no persistence to disk in cleartext; result loaded into
+    `OnceLock<OmniSigningKey>`; raw seed zeroized immediately
+    after lock initialisation.
+  - **Rotation policy**: 90-day max key lifetime (aligned with
+    OIP-013 § S5.4 driver issuer rotation cadence), enforced at
+    kernel build time via a `build.rs` quarter-suffix check;
+    suspected compromise → 24h emergency rotation; confirmed
+    compromise → 4h rotation + mesh broadcast + bug-bounty
+    payout per OIP-Bounty-002.
+  - **Phase-1 transitional policy**: explicit grandfather clause
+    for `OIP-Driver-NVMe-014` / `OIP-Driver-Net-015` /
+    `OIP-Driver-TEE-016` (already Active via founder fast-path
+    2026-05-20, pre-dating OIP-017); future driver OIPs filed
+    AFTER OIP-017 reaches Active MUST cite the steady-state
+    model. `KNOWN_ISSUERS` table remains empty until the
+    transitional period ends (every `DriverLoad` returns
+    `EACCES` currently, which is the desired forcing function
+    that funding closure must precede driver shipping).
+  - **5-step migration plan** (M1 feature-gate dev seed; M2
+    wire platform-detect; M3 implement TDX derivation; M4
+    implement SEV-SNP derivation; M5 boot wire-up). The
+    implementation OIP follow-up is scheduled "within 180
+    calendar days of this OIP reaching `Active`, OR after
+    OIP-016 § S5.2 / § S5.3 real backends ship, whichever is
+    later"; if neither has shipped within 180 days, this OIP
+    transitions to `Withdrawn` and a successor OIP is filed.
+  - **10 acceptance test cases (TC1-TC10)** documented:
+    derivation determinism, measurement-binding, TCB-version
+    binding, dev-fallback reproducibility + non-collision with
+    TEE-derived seeds, `OnceLock` single-shot, dev-build banner
+    visibility, release-build `compile_error!`, rotation cadence
+    enforcement, KNOWN_ISSUERS empty-during-transitional check.
+    Tests live in the implementation OIP follow-up; this OIP
+    carries the spec.
+  - **`oips/README.md` index** updated with row 017 (Standards
+    Track, Draft, 2026-05-22).
+  - **Acceptance gates**: `python3 scripts/lint-oips.py` →
+    0 error / 0 warning across 20 file(s) (was 19, +1 for the
+    new OIP). All required sections present in canonical order
+    (Abstract, Motivation, Specification, Rationale, Backwards
+    Compatibility, Test Cases, Reference Implementation,
+    Security Considerations, Privacy Considerations, Copyright,
+    Amendment history). No code or test changes per the planning
+    doc TASK-008 acceptance criteria.
+  - Closes TASK-008 of `docs/planning/2026-05-21-development-plan.md`.
+
 ### Changed
 
 - **Tools — TASK-007 `omni-driver-pack` TOML manifest support
