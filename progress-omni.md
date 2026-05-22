@@ -1036,9 +1036,18 @@ LOC sorgente Rust del workspace:
    `AWAITING_CRYPTO_REVIEW` ancora attivo. Tamarin v0.4 chiude P3.1
    spec/proof, ma il review di un cryptographer esterno resta
    bloccato da P4 funding.
-8. **`OMNI-PROTO-v0.2` documentation (P7.3).** `docs/protocol/handshake.md`
-   § 3.2 negozia ancora `OMNI-PROTO-v0.1`. Il codice è già v0.2
-   (`omni-types::version::PROTOCOL_VERSION_V0_2`). Edit-only, 1 PR.
+8. ~~**`OMNI-PROTO-v0.2` documentation (P7.3).**~~ **CLOSED 2026-05-22 (TASK-015):**
+   `docs/protocol/handshake.md` was already updated to `OMNI-PROTO-v0.2` in a
+   prior pass (the §3.1 / §3.2 wire layout uses the v0.2 domain separator and
+   §4.1 declares v0.1 removed); TASK-015 only had to flip 3 dangling
+   "(Last Call until 2026-05-26 → expected Active 2026-05-26)" references at
+   lines 38, 142-143, 260 to reflect the actual Active date 2026-05-22 set by
+   TASK-002 (§5.3 ¶1 founder ballot — see
+   `docs/audits/oip-editors-report-2026-Q2.md`). `docs/03-mesh-protocol.md`
+   line 44 cross-reference was already correct (v0.2). The residual
+   `bincode 2.0` encoding section at `docs/03-mesh-protocol.md:197` and the
+   `crates/omni-mesh/src/lib.rs:51` `TODO(TASK-022)` marker are TASK-022 scope
+   (encoding swap + tests + doc patch in same PR).
 9. **TEE backend reali (P5.2/P5.3).** TDX + SEV-SNP scaffold presenti
    ma `MockTeeBackend` è l'unico operativo. Richiede hardware
    (P4.1 funding).

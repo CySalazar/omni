@@ -1323,14 +1323,18 @@ Each of P6.1–P6.8 + P6.MB1–P6.MB14 will be expanded into its own task list w
 
 ## P7.3 — `OMNI-PROTO-v0.2` documentation update
 
-- **Status:** `[ ]` — **READY** (P7.2 M1-M5 ✅; non più blocked-on)
+- **Status:** `[x]` — **CLOSED 2026-05-22 (TASK-015)** — `docs/protocol/handshake.md` was already updated to v0.2 in a prior pass; the residual gap was 3 dangling "(Last Call until 2026-05-26 → expected Active 2026-05-26)" references that needed flipping to the actual Active date 2026-05-22 set by TASK-002 (§5.3 ¶1 founder ballot, recorded in `docs/audits/oip-editors-report-2026-Q2.md`). Closed by the same commit that lands the TASK-015 acceptance.
 - **Priority:** P7 / Low (1 PR edit-only, sblocca check verde `oip-lint` collaterale)
-- **Effort:** 1 day
-- **Dependencies:** P7.2.M5 ✅
-- **Rationale:** `docs/protocol/handshake.md` § 3.2 currently negotiates only `OMNI-PROTO-v0.1`. After P7.2.M5, the handshake spec must reflect the v0.2 cutover (`serde_format = "postcard-1.0"` discriminant; v0.1 negotiation removed). Il codice è già `omni_types::version::PROTOCOL_VERSION_V0_2`; solo doc-update.
+- **Effort:** ~30 min (closed)
+- **Dependencies:** P7.2.M5 ✅, TASK-002 ✅
+- **Rationale:** `docs/protocol/handshake.md` § 3.2 (originally claimed to negotiate v0.1) was already updated to v0.2 before this slice; what remained was synchronising the OIP-Serde-004 Active-date references throughout the doc + the cross-reference list at the bottom.
 - **Acceptance:**
-  - [ ] `docs/protocol/handshake.md` § 3.2 menziona solo `OMNI-PROTO-v0.2`.
-  - [ ] PR con label `area:docs` + `priority:P3` aperta e mergiata (admin fast-track, no codice).
+  - [x] `docs/protocol/handshake.md` § 3.2 menziona solo `OMNI-PROTO-v0.2` (already done in prior pass; verified by `git grep -n 'OMNI-PROTO-v0\.1' docs/protocol/handshake.md` showing only legacy/removed references).
+  - [x] OIP-Serde-004 Active-date references aligned to 2026-05-22 (lines 38, 142-143, 260).
+  - [x] Cross-reference to `docs/audits/oip-editors-report-2026-Q2.md` added in the References section.
+  - [x] `progress-omni.md` § 4.2 #8 marked CLOSED with cross-reference.
+  - [x] `CHANGELOG.md` row added under [Unreleased].
+  - [N/A] PR label workflow — slice landed direct on `main` via founder-bypass branch protection (matches the pattern of every other 2026-05-22 slice; the `area:docs` + `priority:P3` label workflow was an artefact of the original P7.3 framing as a separate PR).
 
 ---
 

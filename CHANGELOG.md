@@ -15,6 +15,30 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ## [Unreleased]
 
+### Changed
+
+- **Docs — TASK-015 `OMNI-PROTO-v0.2` doc sync to OIP-Serde-004
+  Active date (2026-05-22).** `docs/protocol/handshake.md` was
+  already at `OMNI-PROTO-v0.2` from a prior pass; this slice
+  flips the 3 dangling OIP-Serde-004 status references at lines
+  38 (§2.2 `serde_format` row), 142-143 (§4.1 protocol-version
+  pin: v0.1 removal date), and 260 (§ References bullet for the
+  OIP) from the placeholder "(Last Call until 2026-05-26 →
+  expected Active 2026-05-26)" to "(Active since 2026-05-22 by
+  `OIP-Process-001` §5.3 ¶1 founder ballot)" — the actual
+  closure date set by TASK-002 (same-day editorial closure via
+  founder ballot, recorded in
+  `docs/audits/oip-editors-report-2026-Q2.md`). A new bullet
+  added under the § References section links the editorial
+  report directly. `docs/03-mesh-protocol.md` line 44
+  cross-reference was already correct (v0.2) and required no
+  edit; the residual `bincode 2.0` paragraph at line 197 + the
+  `crates/omni-mesh/src/lib.rs:51` `TODO(TASK-022)` marker
+  remain TASK-022 scope (encoding swap + tests + doc patch in
+  same PR). `progress-omni.md` § 4.2 #8 marked CLOSED with
+  cross-reference; `todo.md` P7.3 checkbox flipped to `[x]`.
+  No code change.
+
 ### Added
 
 - **Storage — P6.7.10-pre.32 NVMe live-image wiring of

@@ -35,7 +35,7 @@ a bug in the implementation. The handshake is implemented in two layers:
 | `AEAD(k, nonce, aad, m)` | ChaCha20-Poly1305 (RFC 8439). |
 | `||` | Byte concatenation. |
 | `proto_version` | The 16-byte protocol version string. Current: `"OMNI-PROTO-v0.2"` padded to 16 bytes with `\x00`. `"OMNI-PROTO-v0.1"` is removed; see §4.1. |
-| `serde_format` | Wire-encoding discriminant `"postcard-1.0"` per `OIP-Serde-004` § S2 (Last Call until 2026-05-26 → expected Active 2026-05-26). `OMNI-PROTO-v0.2` implies `postcard-1.0`; `OMNI-PROTO-v0.1` implied `bincode-2`. |
+| `serde_format` | Wire-encoding discriminant `"postcard-1.0"` per `OIP-Serde-004` § S2 (Active since 2026-05-22 by `OIP-Process-001` §5.3 ¶1 founder ballot — see [`docs/audits/oip-editors-report-2026-Q2.md`](../audits/oip-editors-report-2026-Q2.md)). `OMNI-PROTO-v0.2` implies `postcard-1.0`; `OMNI-PROTO-v0.1` implied `bincode-2`. |
 
 ---
 
@@ -140,7 +140,9 @@ The implementation negotiates `OMNI-PROTO-v0.2` only. No silent downgrade is
 permitted; downgrade requires an explicit "version-renegotiation" frame *before*
 `m1`, which itself is bound into a new `proto_version` field. `OMNI-PROTO-v0.1`
 is removed from the negotiation menu as of `OIP-Serde-004` reaching `Active`
-(2026-05-26); peers announcing only v0.1 MUST be rejected (no silent downgrade).
+(2026-05-22 by `OIP-Process-001` §5.3 ¶1 founder ballot — see
+[`docs/audits/oip-editors-report-2026-Q2.md`](../audits/oip-editors-report-2026-Q2.md));
+peers announcing only v0.1 MUST be rejected (no silent downgrade).
 No legacy support window exists.
 
 ### 4.2. Ephemeral-key sanity
@@ -255,4 +257,5 @@ The cryptographer's deliverable should explicitly opine on:
 - RFC 7748 (X25519), RFC 8032 (Ed25519), RFC 8439 (ChaCha20-Poly1305), RFC 5869 (HKDF)
 - Intel TDX Module Specification 1.5; AMD SEV-SNP ABI 1.55
 - `omni_types::version::PROTOCOL_VERSION_V0_2` — canonical Rust constant; see `crates/omni-types/src/version.rs`.
-- `/oips/oip-serde-004.md` — `bincode → postcard` migration; bumps protocol version to v0.2 (Last Call until 2026-05-26 → expected Active 2026-05-26).
+- `/oips/oip-serde-004.md` — `bincode → postcard` migration; bumps protocol version to v0.2 (Active since 2026-05-22 by `OIP-Process-001` §5.3 ¶1 founder ballot; activation phase §7 dormant until Phase 4+ mesh telemetry exists).
+- `/docs/audits/oip-editors-report-2026-Q2.md` — editorial tally for the OIP-Serde-004 + OIP-Bounty-002 `Last Call → Active` closure on 2026-05-22.
