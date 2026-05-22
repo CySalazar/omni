@@ -17,6 +17,67 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.26 NVMe Active NSID list parser
+  (2026-05-22) — TASK-005 continuation.**
+  `crates/omni-driver-nvme/src/identify.rs` extended with the
+  third Identify-family parser closing the bring-up FSM's
+  NSID-discovery path per NVMe 1.4 § 5.15.2 Figure 246.
+  - **`ActiveNsListView<'a>`** zero-copy view over a 4 KiB
+    response page:
+    - `iter_nsids() -> ActiveNsListIter<'a>` — lazy forward-only
+      iterator yielding NSIDs in the order the controller wrote
+      them, stopping at the first sentinel NSID = 0 entry or
+      after `MAX_ACTIVE_NSIDS` = 1024 entries.
+    - `first_active_nsid() -> Option<u32>` — convenience
+      accessor the bring-up FSM uses to seed the subsequent
+      `Identify(Namespace)` call.
+  - **`MAX_ACTIVE_NSIDS = 1024`** anchor constant
+    (= `IDENTIFY_RESPONSE_BYTES / 4`) per Figure 246.
+  - **`ActiveNsListIter`** derives `Clone` so a future bring-up
+    implementation can peek at the first NSID and then iterate
+    the full list without re-parsing the page.
+  - **Sentinel clamps `next_index`** to `MAX_ACTIVE_NSIDS` so
+    subsequent `.next()` calls return `None` without re-reading
+    bytes past the terminator — defensive parsing per OIP-014
+    § S6 step 9.
+  - **+10 new host-side tests** under
+    `omni_driver_nvme::identify::tests::*`:
+    - 1 `MAX_ACTIVE_NSIDS = 1024` tripwire.
+    - 1 undersized-page rejection returns
+      `IdentifyError::PageTooSmall`.
+    - 1 empty-list happy path (zero page → `first_active_nsid()`
+      = `None`, `iter_nsids().count()` = 0).
+    - 1 single-entry list (`[1]` → yields `1` then stops).
+    - 1 multi-entry list (`[1, 2, 3, 7, 42]` → yields all in
+      order).
+    - 1 sentinel-truncation test (`[4, 5, 0, 99, 100]` → yields
+      only `[4, 5]` even though bytes for 99 + 100 exist past
+      the sentinel).
+    - 1 full-page no-terminator test (1024 non-zero entries →
+      iter yields exactly 1024 without overflowing).
+    - 1 `first_active_nsid` peek.
+    - 1 OIP-014 § S6 step 9 default (single-namespace `[1]` →
+      first NSID = 1).
+    - 1 `ActiveNsListIter::clone()` lookahead test (verifies
+      clone is independent of the original iterator state).
+  - **`MAX_ACTIVE_NSIDS`** carries an explicit
+    `#[allow(clippy::integer_division)]` carve-out documenting
+    the compile-time `4096 / 4 = 1024` is exact and has no
+    runtime cost.
+  - **Workspace test count**: 1531 → 1541 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.26 NSID list parse`,
+    Next=`P6.7.10-pre.27 v0.3.0-alpha.2`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1541 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — pure-state byte decoder consuming
+    only the existing `read_le_u32` helper from pre.25.
+
 - **Storage — P6.7.10-pre.25 NVMe Identify response parsers
   (2026-05-22) — TASK-005 continuation.**
   New `crates/omni-driver-nvme/src/identify.rs` module declares

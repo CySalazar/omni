@@ -210,6 +210,99 @@ impl<'a> IdentifyNamespace<'a> {
 }
 
 // =============================================================================
+// ActiveNsListView
+// =============================================================================
+
+/// Maximum number of NSIDs the controller may report in a single
+/// `Identify Active Namespace List` response page (NVMe 1.4
+/// § 5.15.2 Figure 246: 4096 bytes / 4 bytes per NSID = 1024).
+#[allow(
+    clippy::integer_division,
+    reason = "compile-time division 4096/4 = 1024 is exact and has no runtime cost"
+)]
+pub const MAX_ACTIVE_NSIDS: usize = IDENTIFY_RESPONSE_BYTES / 4;
+
+/// Zero-copy view of the 4 KiB `Identify(ActiveNsList)` response.
+///
+/// The page is a packed array of up-to-1024 little-endian 32-bit
+/// NSIDs in ascending order, terminated by a sentinel NSID = 0
+/// entry per NVMe 1.4 § 5.15.2 Figure 246. The driver iterates
+/// until it sees the terminator (or until the page is exhausted at
+/// `MAX_ACTIVE_NSIDS` entries).
+#[derive(Debug, Clone, Copy)]
+pub struct ActiveNsListView<'a> {
+    page: &'a [u8],
+}
+
+impl<'a> ActiveNsListView<'a> {
+    /// Construct the view over a 4 KiB response page.
+    ///
+    /// # Errors
+    ///
+    /// - [`IdentifyError::PageTooSmall`] if `page.len() <
+    ///   IDENTIFY_RESPONSE_BYTES`.
+    pub fn new(page: &'a [u8]) -> Result<Self, IdentifyError> {
+        if page.len() < IDENTIFY_RESPONSE_BYTES {
+            return Err(IdentifyError::PageTooSmall);
+        }
+        Ok(Self { page })
+    }
+
+    /// Iterate over the active NSIDs the controller reported.
+    ///
+    /// The iterator yields NSIDs in the order they appear in the
+    /// page and stops at the first NSID = 0 entry (the sentinel
+    /// terminator per Figure 246). If the page is full (no
+    /// terminator within [`MAX_ACTIVE_NSIDS`] entries), the
+    /// iterator yields every non-zero NSID and then stops.
+    #[must_use]
+    pub fn iter_nsids(&self) -> ActiveNsListIter<'a> {
+        ActiveNsListIter {
+            page: self.page,
+            next_index: 0,
+        }
+    }
+
+    /// Returns the first active NSID, or `None` if the controller
+    /// reported zero namespaces. The Phase-1 bring-up FSM uses
+    /// this to seed the subsequent `Identify(Namespace)` call.
+    #[must_use]
+    pub fn first_active_nsid(&self) -> Option<u32> {
+        self.iter_nsids().next()
+    }
+}
+
+/// Forward-only iterator over the NSIDs in an
+/// [`ActiveNsListView`]. Stops at the first zero (sentinel) entry
+/// or after [`MAX_ACTIVE_NSIDS`] entries — whichever comes first.
+#[derive(Debug, Clone)]
+pub struct ActiveNsListIter<'a> {
+    page: &'a [u8],
+    next_index: usize,
+}
+
+impl Iterator for ActiveNsListIter<'_> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        if self.next_index >= MAX_ACTIVE_NSIDS {
+            return None;
+        }
+        let off = self.next_index * 4;
+        let nsid = read_le_u32(self.page, off);
+        if nsid == 0 {
+            // Sentinel: clamp the index so subsequent calls also
+            // return None without re-reading bytes past the
+            // terminator.
+            self.next_index = MAX_ACTIVE_NSIDS;
+            return None;
+        }
+        self.next_index += 1;
+        Some(nsid)
+    }
+}
+
+// =============================================================================
 // Internal byte helpers
 // =============================================================================
 
@@ -411,5 +504,128 @@ mod tests {
         assert_ne!(page_too_small, unsupported_9);
         assert_ne!(unsupported_9, unsupported_10);
         assert_eq!(unsupported_9, IdentifyError::UnsupportedLbads { observed: 9 });
+    }
+
+    // -------------------------------------------------------------------
+    // ActiveNsListView (P6.7.10-pre.26)
+    // -------------------------------------------------------------------
+
+    /// Write `nsids` followed by a zero terminator into the first
+    /// `4 * (nsids.len() + 1)` bytes of a fresh 4 KiB page.
+    fn page_with_nsids(nsids: &[u32]) -> alloc::vec::Vec<u8> {
+        let mut page = zero_page();
+        for (i, &nsid) in nsids.iter().enumerate() {
+            let bytes = nsid.to_le_bytes();
+            let off = i * 4;
+            page[off..off + 4].copy_from_slice(&bytes);
+        }
+        // The zero terminator at index `nsids.len()` is implicit
+        // (zero_page is all zeros).
+        page
+    }
+
+    #[test]
+    fn max_active_nsids_matches_spec() {
+        // 4 KiB / 4 bytes per entry = 1024 NSIDs per response page
+        // per NVMe 1.4 § 5.15.2 Figure 246.
+        assert_eq!(MAX_ACTIVE_NSIDS, 1024);
+    }
+
+    #[test]
+    fn active_ns_list_view_rejects_undersized_page() {
+        let small = vec![0u8; IDENTIFY_RESPONSE_BYTES - 1];
+        let res = ActiveNsListView::new(&small);
+        assert!(matches!(res, Err(IdentifyError::PageTooSmall)));
+    }
+
+    #[test]
+    fn active_ns_list_view_empty_list_yields_no_nsids() {
+        let page = zero_page();
+        let view = ActiveNsListView::new(&page).unwrap();
+        assert_eq!(view.first_active_nsid(), None);
+        assert_eq!(view.iter_nsids().count(), 0);
+    }
+
+    #[test]
+    fn active_ns_list_view_single_entry_terminated_by_zero() {
+        let page = page_with_nsids(&[1]);
+        let view = ActiveNsListView::new(&page).unwrap();
+        assert_eq!(view.first_active_nsid(), Some(1));
+        let nsids: alloc::vec::Vec<u32> = view.iter_nsids().collect();
+        assert_eq!(nsids, vec![1]);
+    }
+
+    #[test]
+    fn active_ns_list_view_multiple_entries_in_order() {
+        let page = page_with_nsids(&[1, 2, 3, 7, 42]);
+        let view = ActiveNsListView::new(&page).unwrap();
+        let nsids: alloc::vec::Vec<u32> = view.iter_nsids().collect();
+        assert_eq!(nsids, vec![1, 2, 3, 7, 42]);
+        assert_eq!(view.first_active_nsid(), Some(1));
+    }
+
+    #[test]
+    fn active_ns_list_view_stops_at_first_zero_sentinel() {
+        // [4, 5, 0, 99, 100] — the zero terminator stops iteration
+        // BEFORE the 99 + 100 entries (which the controller MUST
+        // NOT write per Figure 246, but defensive parsing is the
+        // safer choice).
+        let page = page_with_nsids(&[4, 5, 0, 99, 100]);
+        let view = ActiveNsListView::new(&page).unwrap();
+        let nsids: alloc::vec::Vec<u32> = view.iter_nsids().collect();
+        assert_eq!(nsids, vec![4, 5]);
+    }
+
+    #[test]
+    fn active_ns_list_view_full_page_no_terminator_yields_max_nsids() {
+        // Fill all 1024 slots with non-zero values — the iterator
+        // yields every entry and then stops at MAX_ACTIVE_NSIDS
+        // without overflowing the page.
+        let mut page = zero_page();
+        for i in 0..MAX_ACTIVE_NSIDS {
+            // `i` is bounded by `MAX_ACTIVE_NSIDS = 1024` which
+            // fits trivially in `u32`; the `try_from` conversion
+            // is infallible here.
+            let nsid: u32 = u32::try_from(i).expect("MAX_ACTIVE_NSIDS fits u32") + 1;
+            let off = i * 4;
+            page[off..off + 4].copy_from_slice(&nsid.to_le_bytes());
+        }
+        let view = ActiveNsListView::new(&page).unwrap();
+        let count = view.iter_nsids().count();
+        assert_eq!(count, MAX_ACTIVE_NSIDS);
+    }
+
+    #[test]
+    fn active_ns_list_view_first_active_nsid_skips_no_terminator_search() {
+        // Sanity check: first_active_nsid returns the first NSID
+        // without scanning past it.
+        let page = page_with_nsids(&[7, 8, 9]);
+        let view = ActiveNsListView::new(&page).unwrap();
+        assert_eq!(view.first_active_nsid(), Some(7));
+    }
+
+    #[test]
+    fn active_ns_list_view_first_nsid_is_one_per_oip_014_default() {
+        // OIP-014 § S6 step 9: the Phase-1 driver picks the first
+        // NSID returned (which the spec recommends be NSID=1 for
+        // the canonical single-namespace controller).
+        let page = page_with_nsids(&[1]);
+        let view = ActiveNsListView::new(&page).unwrap();
+        assert_eq!(view.first_active_nsid(), Some(1));
+    }
+
+    #[test]
+    fn active_ns_list_iter_is_clonable_for_lookahead() {
+        // ActiveNsListIter derives Clone so a future bring-up
+        // implementation can peek at the first NSID then iterate
+        // the full list without re-parsing the page.
+        let page = page_with_nsids(&[10, 20, 30]);
+        let view = ActiveNsListView::new(&page).unwrap();
+        let mut iter1 = view.iter_nsids();
+        let iter2 = iter1.clone();
+        assert_eq!(iter1.next(), Some(10));
+        // iter2 is independent — still yields 10 first.
+        let collected: alloc::vec::Vec<u32> = iter2.collect();
+        assert_eq!(collected, vec![10, 20, 30]);
     }
 }
