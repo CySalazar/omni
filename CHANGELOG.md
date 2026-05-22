@@ -93,6 +93,23 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Changed
 
+- **CI — TASK-012 remove `--test-threads=1` mitigation** for the
+  `cargo test` job on `omni-kernel`. The SIGSEGV that justified
+  the mitigation was actually fixed on 2026-05-20 via commits
+  `a754eb3` + `a82e90b` + `ba36fe1` (the misattribution was to
+  `TestArena`; the real root cause was three Ring 0 instructions
+  in host test paths — `wrmsr` in `init_gs_base`, CMOS port I/O
+  in `rtc_seconds`, `mov cr3 + context_switch` FFI in
+  `yield_current` — which now carry `#[cfg(not(test))]` guards).
+  Verified across 5 stress runs of
+  `cargo test --workspace --all-features` parallel default
+  (1597 pass / 0 fail each run, 0 SIGSEGV); the CI mitigation
+  was a 2-day defensive carryover, now removed. The 10-line
+  block comment in `.github/workflows/ci.yml` is replaced with
+  a 9-line block citing the verification evidence and the
+  one-line tactical rollback path if any regression surfaces.
+  Closes TASK-012 of `docs/planning/2026-05-21-development-plan.md`.
+
 - **Docs / Mesh — TASK-022 `omni-mesh` wire encoding doc-patch
   + `TODO(TASK-022)` marker removal (OIP-Serde-004 § S2
   alignment).** OIP-Serde-004 reached `Active` on 2026-05-22
