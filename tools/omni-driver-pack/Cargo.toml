@@ -60,6 +60,15 @@ omni-kernel     = { path = "../../crates/omni-kernel",     version = "0.2.0" }
 serde      = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+# toml — TOML manifest parsing (OIP-Driver-Framework-013 § R4 canonical
+# developer-side source format). Both serde-driven; the TOML and JSON
+# paths share the same `PackManifestJson` struct. 0.8 is the current
+# stable major; transitively pinned via `serde 1.0`. License:
+# MIT OR Apache-2.0 (verified 2026-05 on crates.io), AGPL-3.0-compatible
+# under `deny.toml`'s allow-list. Pinned to 0.8 line per planning doc
+# TASK-007 acceptance criteria.
+toml = "0.8"
+
 # thiserror — typed error enum. std-default features (includes std::error::Error).
 thiserror = "2.0"
 

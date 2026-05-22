@@ -121,6 +121,79 @@ impl PackManifestJson {
         })
     }
 
+    /// Deserialize a [`PackManifestJson`] from raw TOML bytes.
+    ///
+    /// This is the canonical developer-side source format per OIP-013
+    /// § R4 — TOML wins over JSON on native comments, strict schema
+    /// (no number-type ambiguity), and a well-audited reference crate
+    /// (`toml = "0.8"`).
+    ///
+    /// The struct shape is the same one the JSON parser populates;
+    /// only the wire format differs. The fields use the same serde
+    /// attributes (`#[derive(Deserialize)]`) so any divergence between
+    /// the two formats is a serde-decoded shape mismatch (caught at
+    /// `from_toml` time, not at signing time).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PackError::ManifestParse`] if the bytes are not valid
+    /// TOML or the schema does not match (missing field, wrong type,
+    /// non-canonical enum variant tag, etc.).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use omni_driver_pack::manifest::PackManifestJson;
+    ///
+    /// let toml_src = br#"
+    ///     [meta]
+    ///     name = "test"
+    ///     version = "0.1.0"
+    ///     omni_issuer_pubkey = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    ///     [capabilities]
+    ///     mmio_regions = []
+    ///     dma_windows = []
+    ///     irq_lines = []
+    ///     pci_devices = []
+    ///     [matchers]
+    ///     pci_vendor_device = []
+    ///     acpi_hid = []
+    /// "#;
+    /// let manifest = PackManifestJson::from_toml(toml_src, "test.toml").unwrap();
+    /// assert_eq!(manifest.meta.name, "test");
+    /// ```
+    pub fn from_toml(toml_bytes: &[u8], path: &str) -> Result<Self, PackError> {
+        let toml_str =
+            core::str::from_utf8(toml_bytes).map_err(|e| PackError::ManifestParseToml {
+                path: path.to_string(),
+                msg: format!("UTF-8 decode failure: {e}"),
+            })?;
+        toml::from_str::<Self>(toml_str).map_err(|e| PackError::ManifestParseToml {
+            path: path.to_string(),
+            msg: e.to_string(),
+        })
+    }
+
+    /// Auto-dispatch from a file path: parse as TOML if the extension
+    /// is `.toml`, else as JSON. The default (no extension / unknown
+    /// extension) is JSON for backwards compatibility with the
+    /// pre-TOML test fixtures and the CI smoke `test-manifest.json`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`PackError::ManifestParse`] (JSON path) or
+    /// [`PackError::ManifestParseToml`] (TOML path).
+    pub fn from_path_bytes(bytes: &[u8], path: &str) -> Result<Self, PackError> {
+        let is_toml = std::path::Path::new(path)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("toml"));
+        if is_toml {
+            Self::from_toml(bytes, path)
+        } else {
+            Self::from_json(bytes, path)
+        }
+    }
+
     /// Decode `meta.omni_issuer_pubkey` from its 64-char hex representation
     /// to a 32-byte array.
     ///

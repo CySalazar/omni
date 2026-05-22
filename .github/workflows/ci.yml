@@ -279,7 +279,10 @@ jobs:
             > /tmp/test.seed
           chmod 0400 /tmp/test.seed
 
-          # Run the tool; exit 0 is the acceptance criterion. The
+          # Run the tool against BOTH the JSON and the TOML fixture
+          # (TASK-007 follow-through: OIP-Driver-Framework-013 § R4
+          # makes TOML the canonical developer-side source format;
+          # JSON is supported for backwards compatibility). The
           # binary lives under tools/omni-driver-pack/target/ because
           # that crate is NOT part of the workspace (excluded via the
           # root Cargo.toml [workspace.exclude] list) and the cargo
@@ -289,13 +292,35 @@ jobs:
             --manifest     tools/omni-driver-pack/tests/fixtures/test-manifest.json \
             --image        /tmp/test-driver.elf \
             --signing-key  /tmp/test.seed \
-            --output       /tmp/test-driver.opack \
+            --output       /tmp/test-driver-json.opack \
             --allow-loose-permissions
 
-          # Assert the blob starts with the OMNIPACK magic.
-          MAGIC=$(head -c 8 /tmp/test-driver.opack | od -A n -t x1 | tr -d ' \n')
-          if [ "$MAGIC" != "4f4d4e495041434b" ]; then
-            echo "ERROR: blob magic mismatch (got $MAGIC, expected 4f4d4e495041434b)"
+          ./tools/omni-driver-pack/target/release/omni-driver-pack \
+            --manifest     tools/omni-driver-pack/tests/fixtures/test-manifest.toml \
+            --image        /tmp/test-driver.elf \
+            --signing-key  /tmp/test.seed \
+            --output       /tmp/test-driver-toml.opack \
+            --allow-loose-permissions
+
+          # Assert both blobs start with the OMNIPACK magic.
+          for f in /tmp/test-driver-json.opack /tmp/test-driver-toml.opack; do
+            MAGIC=$(head -c 8 "$f" | od -A n -t x1 | tr -d ' \n')
+            if [ "$MAGIC" != "4f4d4e495041434b" ]; then
+              echo "ERROR: blob magic mismatch in $f (got $MAGIC, expected 4f4d4e495041434b)"
+              exit 1
+            fi
+          done
+
+          # Assert the JSON and TOML blobs are byte-identical when
+          # produced from equivalent fixtures with the same signing
+          # key. Ed25519 is deterministic (RFC 8032 § 5.1.6) and
+          # the postcard manifest payload is canonical, so the
+          # blobs MUST match byte-for-byte. Any divergence here
+          # would indicate the TOML and JSON parsers populated the
+          # `PackManifestJson` struct differently — a serde-shape
+          # regression.
+          if ! cmp -s /tmp/test-driver-json.opack /tmp/test-driver-toml.opack; then
+            echo "ERROR: JSON and TOML fixtures produced non-identical .opack blobs"
             exit 1
           fi
-          echo "Smoke test passed: blob starts with OMNIPACK magic."
+          echo "Smoke test passed: JSON + TOML blobs share the OMNIPACK magic and are byte-identical."

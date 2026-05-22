@@ -20,7 +20,10 @@ use omni_driver_pack::error::PackError;
 /// All four positional flags are required; absence of any one is
 /// reported as [`PackError::MissingArg`] with exit code 1.
 pub(super) struct Args {
-    /// Path to the JSON driver manifest (`--manifest`).
+    /// Path to the driver manifest (`--manifest`). Format is
+    /// auto-detected from the file extension: `.toml` → TOML
+    /// (OIP-Driver-Framework-013 § R4 canonical format); any
+    /// other extension → JSON (backwards-compatible).
     pub(super) manifest: PathBuf,
     /// Path to the Ring 3 ELF image (`--image`).
     pub(super) image: PathBuf,
@@ -115,15 +118,18 @@ fn help_text() -> String {
             "omni-driver-pack {version}\n",
             "\n",
             "OMNI OS driver-pack v1 producer (OIP-013 § S5.5).\n",
-            "Converts a JSON driver manifest + Ring 3 ELF image into a signed\n",
-            "omni-pack v1 (.opack) blob for ingestion by DriverLoad (syscall 73).\n",
+            "Converts a TOML / JSON driver manifest + Ring 3 ELF image into a\n",
+            "signed omni-pack v1 (.opack) blob for ingestion by DriverLoad\n",
+            "(syscall 73). TOML is the canonical developer-side format per\n",
+            "OIP-013 § R4; JSON is supported for backwards compatibility.\n",
             "\n",
             "USAGE:\n",
             "  omni-driver-pack --manifest <path> --image <path> \\\n",
             "                   --signing-key <path> --output <path> [OPTIONS]\n",
             "\n",
             "REQUIRED FLAGS:\n",
-            "  --manifest <path>      JSON driver manifest file\n",
+            "  --manifest <path>      Driver manifest (.toml or .json — format\n",
+            "                         auto-detected from extension)\n",
             "  --image <path>         Ring 3 ELF image file\n",
             "  --signing-key <path>   64-char hex Ed25519 seed file (32 raw bytes)\n",
             "  --output <path>        Output .opack file path\n",

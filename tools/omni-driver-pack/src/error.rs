@@ -63,6 +63,19 @@ pub enum PackError {
         source: serde_json::Error,
     },
 
+    /// The TOML manifest could not be deserialized. Carries the
+    /// `toml` crate's error message as a `String` (not as the
+    /// concrete `toml::de::Error` type) so the error enum stays
+    /// non-`#[non_exhaustive]`-safe across `toml` crate minor
+    /// version bumps. New in TASK-007 follow-through.
+    #[error("manifest parse error in {path}: {msg}")]
+    ManifestParseToml {
+        /// Path to the manifest file.
+        path: String,
+        /// Underlying `toml` crate error message.
+        msg: String,
+    },
+
     /// The manifest's `omni_issuer_pubkey` field was not exactly 64 hex chars.
     #[error(
         "invalid omni_issuer_pubkey in manifest: expected 64 hex chars, \
@@ -197,6 +210,7 @@ impl PackError {
             | Self::Io { .. }
             | Self::OutputPath { .. } => 1,
             Self::ManifestParse { .. }
+            | Self::ManifestParseToml { .. }
             | Self::InvalidIssuerKeyLen { .. }
             | Self::IssuerKeyHexDecode { .. } => 2,
             Self::SigningKeyBadLength { .. }

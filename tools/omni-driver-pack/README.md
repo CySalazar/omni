@@ -1,10 +1,14 @@
 # omni-driver-pack
 
-**OMNI OS driver-pack v1 producer** — converts a JSON driver manifest plus a
-Ring 3 ELF image into a signed `omni-pack v1` (`.opack`) binary blob that the
-kernel's `DriverLoad (syscall 73)` handler can ingest.
+**OMNI OS driver-pack v1 producer** — converts a TOML or JSON driver manifest
+plus a Ring 3 ELF image into a signed `omni-pack v1` (`.opack`) binary blob
+that the kernel's `DriverLoad (syscall 73)` handler can ingest.
 
-Specified by **OIP-Driver-Framework-013 § S5.5**.
+Specified by **OIP-Driver-Framework-013 § S5.5** (binary blob layout) +
+**§ R4** (TOML as canonical developer-side source format; JSON supported for
+backwards compatibility with pre-TASK-007 fixtures). The tool auto-detects
+the format from the `--manifest` file extension: `.toml` → TOML, anything
+else → JSON.
 
 ---
 
@@ -28,7 +32,7 @@ cargo build --release --manifest-path tools/omni-driver-pack/Cargo.toml
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--manifest <path>` | yes | JSON driver manifest file |
+| `--manifest <path>` | yes | Driver manifest file (`.toml` or `.json` — format auto-detected from extension) |
 | `--image <path>` | yes | Ring 3 ELF image |
 | `--signing-key <path>` | yes | 64-char hex Ed25519 seed file (32 raw bytes) |
 | `--output <path>` | yes | Output `.opack` path |

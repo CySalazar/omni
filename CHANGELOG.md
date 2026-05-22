@@ -17,6 +17,100 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Changed
 
+- **Tools — TASK-007 `omni-driver-pack` TOML manifest support
+  (OIP-Driver-Framework-013 § R4 alignment).** The
+  `tools/omni-driver-pack/` CLI already produced byte-exact
+  omni-pack v1 blobs matching OIP-013 § S5.5 (CI green on
+  build + test + smoke since W1.2 fixed the binary path), but
+  it only accepted JSON manifests. OIP-013 § R4 explicitly
+  chose TOML as the canonical developer-side source format
+  (native comments, strict schema, no number-type ambiguity);
+  the JSON-only state was a documented divergence flagged in
+  the 2026-05-21 development plan TASK-007 acceptance criteria.
+  This slice closes the divergence:
+  - **`tools/omni-driver-pack/Cargo.toml`** — adds `toml = "0.8"`
+    dep (pinned to the major line; license MIT OR Apache-2.0,
+    AGPL-3.0-compatible per `deny.toml` allow-list).
+  - **`tools/omni-driver-pack/src/manifest.rs`** — adds
+    `PackManifestJson::from_toml(bytes, path)` (parallel to
+    the existing `from_json`) and
+    `PackManifestJson::from_path_bytes(bytes, path)` which
+    auto-dispatches on file extension: `.toml` → TOML,
+    anything else → JSON. The struct shape is shared between
+    both formats (single `#[derive(Deserialize)]`); any
+    divergence between the two paths is a serde-shape
+    mismatch surfaced at parse time.
+  - **`tools/omni-driver-pack/src/error.rs`** — new
+    `PackError::ManifestParseToml { path, msg }` variant
+    (code 2 — same exit class as `ManifestParse`); the `toml`
+    crate error is captured as `String` so the enum's
+    type-level stability survives `toml` minor version bumps.
+  - **`tools/omni-driver-pack/src/main.rs`** — switches the
+    pipeline's step 1 from `from_json` to `from_path_bytes`
+    so the existing `--manifest <path>` flag transparently
+    routes both formats.
+  - **`tools/omni-driver-pack/src/args.rs`** — help text and
+    flag docstring updated to mention the new auto-detect
+    behaviour.
+  - **`tools/omni-driver-pack/README.md`** — documentation
+    rewritten to reflect both formats; the canonical (TOML)
+    path is called out as primary, JSON as backwards-compat.
+  - **New fixture `tools/omni-driver-pack/tests/fixtures/test-manifest.toml`**
+    — mirrors `test-manifest.json` semantically; same
+    `omni_issuer_pubkey`, same capability shape, same
+    matchers. Any divergence between the two fixtures is
+    caught by the new `json_and_toml_fixtures_produce_byte_identical_postcard_payloads`
+    integration test (see below).
+  - **New test suite `tools/omni-driver-pack/tests/manifest_format.rs`**
+    — 8 integration tests covering: TOML fixture round-trips
+    cleanly; JSON + TOML produce byte-identical .opack blobs
+    when fed equivalent content (Ed25519 determinism per
+    RFC 8032 § 5.1.6 + postcard canonical encoding makes this
+    a hard byte-equality); `from_path_bytes` extension
+    dispatch (`.toml` → TOML, `.TOML` → TOML case-insensitive,
+    `.json` → JSON, unknown extension → JSON fallback, no
+    extension → JSON fallback); error-path coverage
+    (malformed TOML, non-UTF-8 input, invalid UTF-8 byte
+    sequence) all surface the path context in the error
+    message; JSON path still works unchanged after the
+    refactor.
+  - **`.github/workflows/ci.yml`** — `omni-driver-pack-build`
+    smoke step now runs the tool against BOTH the JSON and
+    the TOML fixture, asserts both blobs start with the
+    `OMNIPACK` magic, and verifies the two blobs are
+    byte-identical (`cmp -s`). Any future TOML/JSON serde
+    drift fails the CI smoke immediately.
+  - **Tool test count**: 5 → **34 pass / 0 fail** (`cargo
+    test --manifest-path tools/omni-driver-pack/Cargo.toml`)
+    — the existing 5 doc-tests are joined by the 8 new
+    `manifest_format.rs` tests plus the existing
+    `header_layout.rs` + `e2e_round_trip.rs` suites which
+    pick up the new toml dependency transitively.
+  - **Acceptance gates**: `cargo fmt --check` clean on both
+    workspace and tool. `cargo clippy --workspace
+    --all-targets --all-features -- -D warnings` clean.
+    `cargo clippy --manifest-path tools/omni-driver-pack/Cargo.toml
+    --all-targets -- -D warnings` clean. `python3
+    scripts/lint-oips.py` → 0 error / 0 warning. **No new
+    dependency outside the tool's manifest** — `toml = "0.8"`
+    is declared in `tools/omni-driver-pack/Cargo.toml` only;
+    the workspace `Cargo.lock` does not change (the tool's
+    target dir is workspace-excluded per `.gitignore` and the
+    new `/tools/omni-driver-pack/target/` entry from W1.3).
+  - **TASK-007 closure**: the planning doc TASK-007 of
+    `docs/planning/2026-05-21-development-plan.md` is now
+    fully aligned with OIP-013 § S5.5 (blob layout — already
+    matched pre-TASK-007) and § R4 (TOML input — closed by
+    this slice). The placeholder TOML files at
+    `crates/*/manifest.toml` (currently containing developer
+    placeholder strings like `"<filled-by-omni-driver-pack>"`)
+    are NOT consumed by this slice — they remain schema
+    documentation. Driver image production will use
+    schema-clean TOML inputs analogous to the new
+    `test-manifest.toml` fixture once the driver-image
+    manifests are filled in (future TASK-005 sub-slice will
+    handle the NVMe-specific filled manifest).
+
 - **Docs — TASK-015 `OMNI-PROTO-v0.2` doc sync to OIP-Serde-004
   Active date (2026-05-22).** `docs/protocol/handshake.md` was
   already at `OMNI-PROTO-v0.2` from a prior pass; this slice

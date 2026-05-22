@@ -3,7 +3,11 @@
 //! Orchestrates the driver-pack pipeline:
 //!
 //! 1. Parse CLI arguments ([`args::Args::parse`]).
-//! 2. Read and deserialize the JSON manifest.
+//! 2. Read and deserialize the driver manifest. The format is
+//!    auto-detected from the file extension: `.toml` → TOML
+//!    (OIP-Driver-Framework-013 § R4 canonical developer-side
+//!    source format); anything else → JSON (backwards-compatible
+//!    with pre-TASK-007 fixtures).
 //! 3. Read the Ed25519 signing seed from the key file.
 //! 4. Derive the verifying key; assert it matches `omni_issuer_pubkey` in the
 //!    manifest (OIP-013 § S5.4).
@@ -77,13 +81,18 @@ fn main() {
 /// human-readable message and maps to a specific exit code via
 /// [`PackError::exit_code`].
 fn run(args: &Args) -> Result<(), PackError> {
-    // ── Step 1: read and parse the JSON manifest ──────────────────────────────
+    // ── Step 1: read and parse the manifest (TOML or JSON) ────────────────────
+    // OIP-Driver-Framework-013 § R4 chose TOML as the canonical
+    // developer-side source format. The tool also accepts JSON for
+    // backwards compatibility with the pre-TASK-007 test fixtures
+    // and the CI smoke. Dispatch is by file extension via
+    // `PackManifestJson::from_path_bytes`.
     let manifest_path = args.manifest.to_string_lossy().into_owned();
     let manifest_bytes = std::fs::read(&args.manifest).map_err(|source| PackError::Io {
         path: manifest_path.clone(),
         source,
     })?;
-    let manifest = PackManifestJson::from_json(&manifest_bytes, &manifest_path)?;
+    let manifest = PackManifestJson::from_path_bytes(&manifest_bytes, &manifest_path)?;
 
     // ── Step 2: decode the issuer pubkey declared in the manifest ─────────────
     let manifest_issuer_pubkey: [u8; 32] = manifest.decode_issuer_pubkey()?;
