@@ -578,8 +578,7 @@ mod tests {
         let sq_snapshot: Vec<u8> = s.sq_page().to_vec();
         let cq_capacity: u16 = s.queue_pair().cq().capacity();
         let sq_capacity: u16 = s.queue_pair().sq().capacity();
-        let mut scratch_cq: Vec<u8> =
-            vec![0u8; (cq_capacity as usize) * ADMIN_CQE_BYTES];
+        let mut scratch_cq: Vec<u8> = vec![0u8; (cq_capacity as usize) * ADMIN_CQE_BYTES];
         {
             let mut fake = FakeController::new(
                 sq_capacity,
@@ -687,18 +686,14 @@ mod tests {
     // run_identify_* (P6.7.10-pre.18)
     // -------------------------------------------------------------------
 
-    fn round_trip_session_through_fake(
-        s: &mut AdminSession,
-        emits: u16,
-    ) {
+    fn round_trip_session_through_fake(s: &mut AdminSession, emits: u16) {
         // Drive the FakeController against the session's SQ snapshot
         // + a scratch CQ, then copy the scratch CQ back into the
         // session via copy_from_slice. `emits` is the new SQ tail
         // value the fake should respond to.
         let sq_snapshot: Vec<u8> = s.sq_page().to_vec();
         let cq_capacity: u16 = s.queue_pair().cq().capacity();
-        let mut scratch_cq: Vec<u8> =
-            vec![0u8; (cq_capacity as usize) * ADMIN_CQE_BYTES];
+        let mut scratch_cq: Vec<u8> = vec![0u8; (cq_capacity as usize) * ADMIN_CQE_BYTES];
         {
             let mut fake = FakeController::new(
                 s.queue_pair().sq().capacity(),
@@ -749,7 +744,9 @@ mod tests {
     fn run_identify_namespace_submits_correct_nsid_and_round_trips() {
         let mut s = AdminSession::new(8, 8, 0).expect("ctor");
         let mut bootstrap = BootstrapFake::default();
-        let cid = s.submit_identify_namespace(7, 0x2000, &mut bootstrap).unwrap();
+        let cid = s
+            .submit_identify_namespace(7, 0x2000, &mut bootstrap)
+            .unwrap();
         // Verify the encoded SQE carries NSID = 7.
         let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
         let mut tmp = [0u8; 4];
@@ -757,7 +754,10 @@ mod tests {
         assert_eq!(u32::from_le_bytes(tmp), 7);
         round_trip_session_through_fake(&mut s, 1);
         let mut nop = NopMmio;
-        let fields = s.poll_completion_for_cid(cid, 16, &mut nop).unwrap().unwrap();
+        let fields = s
+            .poll_completion_for_cid(cid, 16, &mut nop)
+            .unwrap()
+            .unwrap();
         assert!(fields.is_success());
     }
 
@@ -774,7 +774,10 @@ mod tests {
         assert_eq!(cns, crate::admin::CNS_ACTIVE_NSID_LIST);
         round_trip_session_through_fake(&mut s, 1);
         let mut nop = NopMmio;
-        let fields = s.poll_completion_for_cid(cid, 16, &mut nop).unwrap().unwrap();
+        let fields = s
+            .poll_completion_for_cid(cid, 16, &mut nop)
+            .unwrap()
+            .unwrap();
         assert!(fields.is_success());
     }
 
@@ -834,16 +837,23 @@ mod tests {
     fn submit_create_io_cq_sets_ien_and_pc_bits() {
         let mut s = AdminSession::new(8, 8, 0).expect("ctor");
         let mut mmio = BootstrapFake::default();
-        s.submit_create_io_cq(1, 64, 0x10_0000, 5, &mut mmio).unwrap();
+        s.submit_create_io_cq(1, 64, 0x10_0000, 5, &mut mmio)
+            .unwrap();
         // Read CDW11 from bytes 44..=47.
         let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
         let mut cdw11_buf = [0u8; 4];
         cdw11_buf.copy_from_slice(sqe.get(44..48).unwrap());
         let cdw11 = u32::from_le_bytes(cdw11_buf);
         // PC bit set.
-        assert_eq!(cdw11 & crate::admin::CIOQ_CDW11_PC_BIT, crate::admin::CIOQ_CDW11_PC_BIT);
+        assert_eq!(
+            cdw11 & crate::admin::CIOQ_CDW11_PC_BIT,
+            crate::admin::CIOQ_CDW11_PC_BIT
+        );
         // IEN bit set.
-        assert_eq!(cdw11 & crate::admin::CIOCQ_CDW11_IEN_BIT, crate::admin::CIOCQ_CDW11_IEN_BIT);
+        assert_eq!(
+            cdw11 & crate::admin::CIOCQ_CDW11_IEN_BIT,
+            crate::admin::CIOCQ_CDW11_IEN_BIT
+        );
         // IV = 5 in bits 31:16.
         assert_eq!(cdw11 >> crate::admin::CIOCQ_CDW11_IV_SHIFT, 5);
     }
@@ -866,7 +876,10 @@ mod tests {
         cdw11_buf.copy_from_slice(sqe.get(44..48).unwrap());
         let cdw11 = u32::from_le_bytes(cdw11_buf);
         // PC bit set.
-        assert_eq!(cdw11 & crate::admin::CIOQ_CDW11_PC_BIT, crate::admin::CIOQ_CDW11_PC_BIT);
+        assert_eq!(
+            cdw11 & crate::admin::CIOQ_CDW11_PC_BIT,
+            crate::admin::CIOQ_CDW11_PC_BIT
+        );
         // QPRIO = MEDIUM = 0b10 in bits 2:1.
         let qprio = (cdw11 >> crate::admin::CIOSQ_CDW11_QPRIO_SHIFT) & 0b11;
         assert_eq!(qprio, crate::admin::CIOSQ_QPRIO_MEDIUM);
@@ -910,7 +923,10 @@ mod tests {
             .unwrap();
         round_trip_session_through_fake(&mut s, 1);
         let mut nop = NopMmio;
-        let fields = s.poll_completion_for_cid(cid, 16, &mut nop).unwrap().unwrap();
+        let fields = s
+            .poll_completion_for_cid(cid, 16, &mut nop)
+            .unwrap()
+            .unwrap();
         assert!(fields.is_success());
     }
 
@@ -921,13 +937,7 @@ mod tests {
     /// Build a synthetic CQE at the given CQ slot for the supplied
     /// CID + phase. Used by the e2e test to step through CQEs one
     /// at a time across multiple lap-aware slots.
-    fn write_synthetic_cqe(
-        page: &mut [u8],
-        slot: usize,
-        cid: u16,
-        phase: bool,
-        sq_head: u16,
-    ) {
+    fn write_synthetic_cqe(page: &mut [u8], slot: usize, cid: u16, phase: bool, sq_head: u16) {
         let start = slot * ADMIN_CQE_BYTES;
         let end = start + ADMIN_CQE_BYTES;
         let dest = page.get_mut(start..end).expect("slot in range");
@@ -998,9 +1008,7 @@ mod tests {
         assert!(f2.is_success());
 
         // Step 3: Identify Namespace — CID = 3, SQ tail = 3.
-        let cid3 = s
-            .submit_identify_namespace(1, 0x3000, &mut mmio)
-            .unwrap();
+        let cid3 = s.submit_identify_namespace(1, 0x3000, &mut mmio).unwrap();
         assert_eq!(cid3, 3);
         write_synthetic_cqe(s.cq_page_mut(), 2, cid3, true, 3);
         let f3 = s
@@ -1033,7 +1041,14 @@ mod tests {
         // CQE). CQ also wraps to slot 0 with phase=false (after
         // 4 completions consumed → expected_phase flipped).
         let cid5 = s
-            .submit_create_io_sq(1, 64, 0x20_0000, 1, crate::admin::CIOSQ_QPRIO_MEDIUM, &mut mmio)
+            .submit_create_io_sq(
+                1,
+                64,
+                0x20_0000,
+                1,
+                crate::admin::CIOSQ_QPRIO_MEDIUM,
+                &mut mmio,
+            )
             .unwrap();
         assert_eq!(cid5, 5);
         // CQ wrapped → write at slot 0 with phase=false.
@@ -1070,8 +1085,7 @@ mod tests {
         // Fake controller emits completions for both.
         let sq_snapshot: Vec<u8> = s.sq_page().to_vec();
         let cq_capacity: u16 = s.queue_pair().cq().capacity();
-        let mut scratch_cq: Vec<u8> =
-            vec![0u8; (cq_capacity as usize) * ADMIN_CQE_BYTES];
+        let mut scratch_cq: Vec<u8> = vec![0u8; (cq_capacity as usize) * ADMIN_CQE_BYTES];
         {
             let mut fake = FakeController::new(4, cq_capacity, 0, &sq_snapshot, &mut scratch_cq);
             fake.emit_completion_for_latest_sqe(1); // cid_a

@@ -102,11 +102,7 @@ impl CreateIoQueuesConfig {
     /// come from a `DmaMap` allocation that this layer cannot
     /// observe).
     #[must_use]
-    pub const fn phase_1_default(
-        cq_prp1: u64,
-        sq_prp1: u64,
-        cq_irq_vector: u16,
-    ) -> Self {
+    pub const fn phase_1_default(cq_prp1: u64, sq_prp1: u64, cq_irq_vector: u16) -> Self {
         Self {
             cq_qid: 1,
             cq_qsize: 1024,
@@ -283,8 +279,7 @@ mod tests {
     fn emit_synthetic_completion(s: &mut AdminSession, sq_tail: u16) {
         let sq_snapshot: Vec<u8> = s.sq_page().to_vec();
         let cq_capacity: u16 = s.queue_pair().cq().capacity();
-        let mut scratch: Vec<u8> =
-            vec![0u8; (cq_capacity as usize) * ADMIN_CQE_BYTES];
+        let mut scratch: Vec<u8> = vec![0u8; (cq_capacity as usize) * ADMIN_CQE_BYTES];
 
         // Extract CID from the latest SQE.
         let consumed_slot = if sq_tail == 0 {
@@ -501,7 +496,9 @@ mod tests {
     fn emit_synthetic_completion_fills_cq_with_expected_bytes() {
         let mut session = AdminSession::new(8, 8, 0).expect("ctor");
         let mut mmio = BootstrapFake::default();
-        let cid = session.submit_identify_controller(0x1000, &mut mmio).unwrap();
+        let cid = session
+            .submit_identify_controller(0x1000, &mut mmio)
+            .unwrap();
         emit_synthetic_completion(&mut session, 1);
         // The fixture writes a CQE at slot 0 with the just-issued
         // CID. The session can drain it.

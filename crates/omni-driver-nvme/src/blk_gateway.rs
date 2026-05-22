@@ -86,10 +86,7 @@ pub fn encode_blk_request(
             buf_iova: _,
         } => Some(encode_write(nsid, lba, count, prp1, prp2, cid)),
         BlkRequest::Flush => Some(encode_flush(nsid, cid)),
-        BlkRequest::Discard {
-            lba,
-            count,
-        } => {
+        BlkRequest::Discard { lba, count } => {
             // Phase-1 Discard requires a Dataset Management Range
             // Descriptor buffer the gateway does not own. The
             // caller composes it with `encode_discard` directly,
@@ -176,10 +173,7 @@ mod tests {
             buf_iova: 0x1_0000,
         };
         let sqe = encode_blk_request(req, 0x42, 1, 0x1_0000, 0x2_0000).expect("read encoded");
-        assert_eq!(
-            sqe.as_bytes().first().copied().expect("opc"),
-            OPC_NVM_READ
-        );
+        assert_eq!(sqe.as_bytes().first().copied().expect("opc"), OPC_NVM_READ);
         // CID at bytes 2..=3.
         let cid_bytes = sqe.as_bytes().get(2..4).unwrap();
         assert_eq!(cid_bytes, &[0x42, 0x00]);
@@ -193,20 +187,14 @@ mod tests {
             buf_iova: 0x3_0000,
         };
         let sqe = encode_blk_request(req, 1, 1, 0x3_0000, 0).expect("write encoded");
-        assert_eq!(
-            sqe.as_bytes().first().copied().expect("opc"),
-            OPC_NVM_WRITE
-        );
+        assert_eq!(sqe.as_bytes().first().copied().expect("opc"), OPC_NVM_WRITE);
     }
 
     #[test]
     fn encode_blk_request_flush_dispatches_to_nvm_flush() {
         let req = BlkRequest::Flush;
         let sqe = encode_blk_request(req, 1, 1, 0, 0).expect("flush encoded");
-        assert_eq!(
-            sqe.as_bytes().first().copied().expect("opc"),
-            OPC_NVM_FLUSH
-        );
+        assert_eq!(sqe.as_bytes().first().copied().expect("opc"), OPC_NVM_FLUSH);
     }
 
     #[test]

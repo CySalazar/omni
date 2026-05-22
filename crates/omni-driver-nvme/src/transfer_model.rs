@@ -498,7 +498,9 @@ mod tests {
 
     fn read_prp_entry(buf: &[u8], i: usize) -> u64 {
         let off = i * PRP_ENTRY_BYTES;
-        let slice = buf.get(off..off + PRP_ENTRY_BYTES).expect("entry in bounds");
+        let slice = buf
+            .get(off..off + PRP_ENTRY_BYTES)
+            .expect("entry in bounds");
         let mut tmp = [0u8; 8];
         tmp.copy_from_slice(slice);
         u64::from_le_bytes(tmp)
@@ -547,8 +549,14 @@ mod tests {
         // page 0).
         write_prp_list_entries(buf_iova, 3, &mut page).expect("write");
         assert_eq!(read_prp_entry(&page, 0), buf_iova + PRP_PAGE_SIZE as u64);
-        assert_eq!(read_prp_entry(&page, 1), buf_iova + 2 * PRP_PAGE_SIZE as u64);
-        assert_eq!(read_prp_entry(&page, 2), buf_iova + 3 * PRP_PAGE_SIZE as u64);
+        assert_eq!(
+            read_prp_entry(&page, 1),
+            buf_iova + 2 * PRP_PAGE_SIZE as u64
+        );
+        assert_eq!(
+            read_prp_entry(&page, 2),
+            buf_iova + 3 * PRP_PAGE_SIZE as u64
+        );
         // Untouched tail stays zero (page was zero-initialised).
         let untouched = page.get(24..).expect("tail in bounds");
         for &b in untouched {
@@ -584,8 +592,7 @@ mod tests {
     #[test]
     fn write_prp_list_entries_rejects_too_many_entries() {
         let mut page = [0u8; PRP_PAGE_SIZE];
-        let res =
-            write_prp_list_entries(0x1000, PRP_ENTRIES_PER_LIST_PAGE + 1, &mut page);
+        let res = write_prp_list_entries(0x1000, PRP_ENTRIES_PER_LIST_PAGE + 1, &mut page);
         assert_eq!(res, Err(PrpError::TooManyEntries));
     }
 
@@ -640,8 +647,7 @@ mod tests {
     #[test]
     fn derive_prp_pair_single_block_returns_single_page_layout() {
         let buf: u64 = 0x1_0000;
-        let (layout, prp1, prp2) =
-            derive_prp_pair_for_blocks(buf, 1, 0).expect("1 block");
+        let (layout, prp1, prp2) = derive_prp_pair_for_blocks(buf, 1, 0).expect("1 block");
         assert_eq!(layout, PrpLayout::SinglePage);
         assert_eq!(prp1, buf);
         assert_eq!(prp2, 0);
@@ -650,8 +656,7 @@ mod tests {
     #[test]
     fn derive_prp_pair_two_blocks_returns_two_pages_layout() {
         let buf: u64 = 0x2_0000;
-        let (layout, prp1, prp2) =
-            derive_prp_pair_for_blocks(buf, 2, 0).expect("2 blocks");
+        let (layout, prp1, prp2) = derive_prp_pair_for_blocks(buf, 2, 0).expect("2 blocks");
         assert_eq!(layout, PrpLayout::TwoPages);
         assert_eq!(prp1, buf);
         // PRP2 points at the second 4 KiB page directly.
@@ -662,8 +667,7 @@ mod tests {
     fn derive_prp_pair_three_blocks_returns_prp_list_layout() {
         let buf: u64 = 0x3_0000;
         let list_page: u64 = 0x10_0000;
-        let (layout, prp1, prp2) =
-            derive_prp_pair_for_blocks(buf, 3, list_page).expect("3 blocks");
+        let (layout, prp1, prp2) = derive_prp_pair_for_blocks(buf, 3, list_page).expect("3 blocks");
         // 3 blocks = 12 KiB = 3 pages → PrpList with 2 entries
         // (PRP1 covers page 0, list covers pages 1 + 2).
         match layout {
@@ -691,11 +695,7 @@ mod tests {
 
     #[test]
     fn derive_prp_pair_rejects_block_count_above_cap() {
-        let res = derive_prp_pair_for_blocks(
-            0x1_0000,
-            MAX_BLOCK_COUNT_PER_COMMAND + 1,
-            0x10_0000,
-        );
+        let res = derive_prp_pair_for_blocks(0x1_0000, MAX_BLOCK_COUNT_PER_COMMAND + 1, 0x10_0000);
         assert_eq!(res, Err(PrpDeriveError::TooManyBlocks));
     }
 
@@ -748,10 +748,7 @@ mod tests {
             derive_prp_pair_for_blocks(buf, MAX_BLOCK_COUNT_PER_COMMAND, list_page).unwrap();
         match layout {
             PrpLayout::PrpList { n_entries } => {
-                assert_eq!(
-                    n_entries,
-                    MAX_BLOCK_COUNT_PER_COMMAND as usize - 1
-                );
+                assert_eq!(n_entries, MAX_BLOCK_COUNT_PER_COMMAND as usize - 1);
             }
             _ => panic!("expected PrpList at MAX_BLOCK_COUNT_PER_COMMAND, got {layout:?}"),
         }

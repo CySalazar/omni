@@ -397,7 +397,10 @@ mod tests {
     fn max_block_count_matches_blk_module() {
         // Both modules MUST agree — a divergence would let the BLK
         // layer accept requests the NVMe driver immediately rejects.
-        assert_eq!(MAX_BLOCK_COUNT_PER_REQUEST, crate::blk::MAX_BLOCK_COUNT_PER_REQUEST);
+        assert_eq!(
+            MAX_BLOCK_COUNT_PER_REQUEST,
+            crate::blk::MAX_BLOCK_COUNT_PER_REQUEST
+        );
     }
 
     #[test]

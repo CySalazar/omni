@@ -246,18 +246,16 @@ impl IoSession {
                 count,
                 buf_iova,
             } => {
-                let (_, prp1, prp2) =
-                    derive_prp_pair_for_blocks(buf_iova, count, list_page_iova)
-                        .map_err(IoSubmitError::PrpDerive)?;
+                let (_, prp1, prp2) = derive_prp_pair_for_blocks(buf_iova, count, list_page_iova)
+                    .map_err(IoSubmitError::PrpDerive)?;
                 self.submit_blk_request(req, prp1, prp2, mmio)
                     .map_err(IoSubmitError::Queue)?
                     .ok_or(IoSubmitError::UnsupportedRequest)
             }
-            BlkRequest::Flush => {
-                self.submit_blk_request(req, 0, 0, mmio)
-                    .map_err(IoSubmitError::Queue)?
-                    .ok_or(IoSubmitError::UnsupportedRequest)
-            }
+            BlkRequest::Flush => self
+                .submit_blk_request(req, 0, 0, mmio)
+                .map_err(IoSubmitError::Queue)?
+                .ok_or(IoSubmitError::UnsupportedRequest),
             BlkRequest::Discard { .. } => Err(IoSubmitError::DiscardRequiresExplicitPrp),
             // `#[non_exhaustive]` catch-all per OIP-Serde-004.
             _ => Err(IoSubmitError::UnsupportedRequest),
@@ -318,14 +316,7 @@ mod tests {
     /// Write a synthetic CQE at slot `slot` carrying the supplied
     /// CID + phase + status. The default status (0,0) means
     /// success.
-    fn write_synthetic_cqe(
-        page: &mut [u8],
-        slot: usize,
-        cid: u16,
-        phase: bool,
-        sct: u8,
-        sc: u8,
-    ) {
+    fn write_synthetic_cqe(page: &mut [u8], slot: usize, cid: u16, phase: bool, sct: u8, sc: u8) {
         let start = slot * ADMIN_CQE_BYTES;
         let end = start + ADMIN_CQE_BYTES;
         let dest = page.get_mut(start..end).expect("slot in range");
@@ -334,9 +325,8 @@ mod tests {
         }
         // CDW3 = CID | status_word << 16 where status_word's bit 0
         // is the phase tag, bits 1..=8 are SC, bits 9..=11 are SCT.
-        let status_word: u16 = u16::from(phase)
-            | (u16::from(sc) << 1)
-            | (u16::from(sct & 0b111) << 9);
+        let status_word: u16 =
+            u16::from(phase) | (u16::from(sc) << 1) | (u16::from(sct & 0b111) << 9);
         let cdw3: u32 = u32::from(cid) | (u32::from(status_word) << 16);
         let mut chunks = dest.chunks_exact_mut(4);
         let _ = chunks.next(); // CDW0
@@ -374,7 +364,8 @@ mod tests {
         // qid=1 SQ doorbell, NOT the qid=0 admin doorbell.
         let mut s = IoSession::new(PHASE_1_IO_QID, 1, 8, 8, 0).expect("ctor");
         let mut mmio = BootstrapFake::default();
-        s.submit_blk_request(BlkRequest::Flush, 0, 0, &mut mmio).unwrap();
+        s.submit_blk_request(BlkRequest::Flush, 0, 0, &mut mmio)
+            .unwrap();
         let (off, _) = mmio.writes.first().copied().expect("doorbell written");
         let io_sq_offset = sq_tail_doorbell_offset(PHASE_1_IO_QID, 0).unwrap();
         let admin_sq_offset = sq_tail_doorbell_offset(0, 0).unwrap();
@@ -400,7 +391,8 @@ mod tests {
     fn submit_blk_request_encodes_nsid_into_sqe() {
         let mut s = IoSession::new(PHASE_1_IO_QID, 7, 8, 8, 0).expect("ctor");
         let mut mmio = BootstrapFake::default();
-        s.submit_blk_request(BlkRequest::Flush, 0, 0, &mut mmio).unwrap();
+        s.submit_blk_request(BlkRequest::Flush, 0, 0, &mut mmio)
+            .unwrap();
         // NSID at SQE bytes 4..=7 (little-endian).
         let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
         let mut tmp = [0u8; 4];
@@ -419,10 +411,7 @@ mod tests {
         };
         s.submit_blk_request(req, 0x1_0000, 0, &mut mmio).unwrap();
         let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
-        assert_eq!(
-            sqe.first().copied().unwrap(),
-            crate::io::OPC_NVM_READ
-        );
+        assert_eq!(sqe.first().copied().unwrap(), crate::io::OPC_NVM_READ);
     }
 
     // -------------------------------------------------------------------
@@ -753,7 +742,8 @@ mod tests {
             buf_iova: 0x3_0000,
         };
         // PRP-list page at 0x10_0000.
-        s.submit_blk_request_auto(req, 0x10_0000, &mut mmio).unwrap();
+        s.submit_blk_request_auto(req, 0x10_0000, &mut mmio)
+            .unwrap();
         let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
         // PRP2 = list_page_iova (PrpList layout).
         let mut prp2_buf = [0u8; 8];

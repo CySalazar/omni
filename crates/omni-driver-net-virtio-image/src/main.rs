@@ -73,9 +73,7 @@ unsafe impl GlobalAlloc for PanicOnAlloc {
     unsafe fn alloc(&self, _layout: Layout) -> *mut u8 {
         // SAFETY: any reachable allocation is a driver bug — bail loudly
         // via the panic handler which `TaskExit`s the process.
-        panic!(
-            "omni-driver-net-virtio-image: heap alloc requested but no allocator is wired"
-        );
+        panic!("omni-driver-net-virtio-image: heap alloc requested but no allocator is wired");
     }
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
         // Unreachable in practice (no `alloc` ever succeeds), but a no-op

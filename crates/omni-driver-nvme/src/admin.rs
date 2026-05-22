@@ -696,7 +696,12 @@ mod tests {
 
     #[test]
     fn encode_identify_namespace_writes_nsid() {
-        let sqe = encode_identify(IdentifyTarget::Namespace { nsid: 0xDEAD_BEEF }, 0x2000, 0, 2);
+        let sqe = encode_identify(
+            IdentifyTarget::Namespace { nsid: 0xDEAD_BEEF },
+            0x2000,
+            0,
+            2,
+        );
         // NSID at bytes 4..=7 (little-endian).
         let nsid = sqe.as_bytes().get(4..8).expect("nsid range in bounds");
         assert_eq!(nsid, &[0xEF, 0xBE, 0xAD, 0xDE]);
@@ -742,7 +747,10 @@ mod tests {
     fn encode_identify_cdw11_to_15_are_zero() {
         let sqe = encode_identify(IdentifyTarget::Controller, 0x1000, 0, 1);
         // CDW11..15 occupies bytes 44..=63 (5 dwords × 4 bytes = 20).
-        let trailing = sqe.as_bytes().get(44..64).expect("cdw11..15 range in bounds");
+        let trailing = sqe
+            .as_bytes()
+            .get(44..64)
+            .expect("cdw11..15 range in bounds");
         assert_eq!(trailing, &[0u8; 20]);
     }
 

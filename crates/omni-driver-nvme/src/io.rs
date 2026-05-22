@@ -352,10 +352,7 @@ mod tests {
     #[test]
     fn encode_read_writes_opcode() {
         let sqe = encode_read(1, 0, 1, 0x1000, 0, 0xABCD);
-        assert_eq!(
-            sqe.as_bytes().first().copied().expect("opc"),
-            OPC_NVM_READ
-        );
+        assert_eq!(sqe.as_bytes().first().copied().expect("opc"), OPC_NVM_READ);
     }
 
     #[test]
@@ -428,10 +425,7 @@ mod tests {
     #[test]
     fn encode_write_writes_opcode_01() {
         let sqe = encode_write(1, 0, 1, 0x1000, 0, 1);
-        assert_eq!(
-            sqe.as_bytes().first().copied().expect("opc"),
-            OPC_NVM_WRITE
-        );
+        assert_eq!(sqe.as_bytes().first().copied().expect("opc"), OPC_NVM_WRITE);
     }
 
     #[test]
@@ -465,10 +459,7 @@ mod tests {
     #[test]
     fn encode_flush_writes_opcode_and_nsid_only() {
         let sqe = encode_flush(0xDEAD_BEEF, 0xCAFE);
-        assert_eq!(
-            sqe.as_bytes().first().copied().expect("opc"),
-            OPC_NVM_FLUSH
-        );
+        assert_eq!(sqe.as_bytes().first().copied().expect("opc"), OPC_NVM_FLUSH);
         // CID at bytes 2..=3.
         let cid = sqe.as_bytes().get(2..4).expect("cid range");
         assert_eq!(cid, &[0xFE, 0xCA]);
@@ -513,10 +504,7 @@ mod tests {
     #[test]
     fn encode_discard_writes_cdw10_nr_zero_and_cdw11_ad_bit() {
         let sqe = encode_discard(1, 0, 1, 0x1000, 1);
-        assert_eq!(
-            read_le_u32(sqe.as_bytes(), 40),
-            DSM_CDW10_NR_SINGLE_RANGE
-        );
+        assert_eq!(read_le_u32(sqe.as_bytes(), 40), DSM_CDW10_NR_SINGLE_RANGE);
         assert_eq!(read_le_u32(sqe.as_bytes(), 44), DSM_AD_BIT);
     }
 

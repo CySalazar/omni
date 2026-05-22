@@ -503,7 +503,10 @@ mod tests {
         let unsupported_10 = IdentifyError::UnsupportedLbads { observed: 10 };
         assert_ne!(page_too_small, unsupported_9);
         assert_ne!(unsupported_9, unsupported_10);
-        assert_eq!(unsupported_9, IdentifyError::UnsupportedLbads { observed: 9 });
+        assert_eq!(
+            unsupported_9,
+            IdentifyError::UnsupportedLbads { observed: 9 }
+        );
     }
 
     // -------------------------------------------------------------------
