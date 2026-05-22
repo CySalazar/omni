@@ -17,6 +17,89 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.32 NVMe live-image wiring of
+  `program_cc_fields` + `check_controller_fatal` (2026-05-22) —
+  TASK-005 continuation.** The Ring-3 `omni-driver-nvme-image`
+  binary now invokes the two register-level primitives that
+  landed host-side in pre.30 / pre.31, closing two spec-compliance
+  gaps in the live bring-up path.
+  - **`omni-driver-nvme-image/src/main.rs` step 4.11 (new)** —
+    `program_cc_fields(&mut mmio_write, PHASE_1_MPS_LOG2,
+    PHASE_1_IOSQES_LOG2, PHASE_1_IOCQES_LOG2)` runs between
+    `program_admin_queue_bases` and `enable_controller`. The
+    controller now observes the canonical `CC` initialisation
+    fields (`MPS = 0` = 4 KiB host pages, `IOSQES = 6` = 64-byte
+    SQE, `IOCQES = 4` = 16-byte CQE, `CSS = 0` NVM command set,
+    `AMS = 0` Round-Robin) per NVMe 1.4 § 3.1.5 BEFORE the
+    `EN` transition latches them. Previously the image skipped
+    this step, which meant the controller had to fall back on
+    the post-reset defaults (defined as "implementation specific"
+    by § 3.1.5) for IOSQES/IOCQES — broken on any controller
+    that did not happen to default to 64/16.
+  - **`omni-driver-nvme-image/src/main.rs` step 4.13 (new)** —
+    `check_controller_fatal(&mut mmio_read)` reads `CSTS` once
+    immediately after `enable_controller` returns and aborts
+    the bring-up if `CSTS.CFS = 1` per NVMe 1.4 § 3.1.6. Catches
+    the corner case where a faulty controller raises both
+    `CSTS.RDY` and `CSTS.CFS` in the same register window
+    (`enable_controller`'s poll loop accepts that as success
+    because it only checks the RDY bit; CFS is sticky so any
+    subsequent admin command would block forever).
+  - **Two new `TaskExit` sentinel codes** in
+    `omni-driver-nvme-image/src/main.rs`:
+    - `EXIT_NVME_CC_FIELDS_INVALID = 215` — `program_cc_fields`
+      rejected one of `MPS` / `IOSQES` / `IOCQES`. Reachable
+      only if the Phase-1 constants are corrupted at compile
+      time (defensive against a regression of `PHASE_1_*_LOG2`).
+    - `EXIT_NVME_CONTROLLER_FATAL = 225` — controller raised
+      `CSTS.CFS` post-enable. Easy to grep on the serial log.
+  - **+3 new host-side composition tests** under
+    `omni_driver_nvme::queue::tests::*`:
+    - `image_canonical_bringup_writes_aqa_asq_acq_cc_in_image_order`
+      — drives the exact 5-step sequence the image runs
+      (`disable_controller` → `program_admin_queue_bases` →
+      `program_cc_fields` → `enable_controller` →
+      `check_controller_fatal`) against the existing
+      `MockMmioBackend` + `ScriptedMmioRead` pair, then
+      asserts the 8 recorded writes appear in the canonical
+      order (CC disable, AQA, ASQ_lo, ASQ_hi, ACQ_lo, ACQ_hi,
+      CC init, CC enable). Image binary has no test harness
+      (`no_main + no_std`) so the lib-side composition test
+      is the canonical guarantee that the call ordering in
+      `_start` is sound.
+    - `image_canonical_bringup_check_controller_fatal_returns_true_when_cfs_set_post_enable`
+      — exercises the tripwire success path: when `CSTS` has
+      both `RDY` and `CFS` set, `enable_controller` succeeds
+      (sees RDY) but `check_controller_fatal` returns `true`,
+      proving the tripwire is the only layer that catches
+      this fatal corner case.
+    - `program_cc_fields_write_targets_cc_offset_only` —
+      defensive composition tripwire ensuring a future
+      refactor of `program_cc_fields` cannot accidentally
+      touch `AQA` / `ASQ` / `ACQ` and silently clobber the
+      writes that ran immediately before.
+  - **Workspace test count**: 1591 → **1594 pass / 0 fail**
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel** (`crates/omni-kernel/src/bare_metal/demo.rs`):
+    Active = `P6.7.10-pre.32 CC+CFS img wire` (cyan),
+    Next = `P6.7.10-pre.33 v0.3.0-alpha.2`,
+    Tests = `1594 workspace pass`.
+  - **Acceptance gates**: `cargo fmt --edition 2024 --check`
+    on the 3 touched files clean. `cargo clippy --workspace
+    --all-targets --all-features -- -D warnings` clean.
+    `cargo clippy -p omni-kernel --target x86_64-unknown-none
+    --features bare-metal -- -D warnings` clean. Clippy on all
+    3 driver-image siblings (`omni-driver-nvme-image`,
+    `omni-driver-net-virtio-image`, `omni-driver-e1000e-image`)
+    clean on `x86_64-unknown-none --release`.
+    `bash scripts/check-no-blanket-allow.sh` → `ok (scanned 16
+    crate-root files)`. `RUSTDOCFLAGS=-Dwarnings cargo doc -p
+    omni-driver-nvme --no-deps` clean. `python3
+    scripts/lint-oips.py` → `0 error(s), 0 warning(s) across
+    19 file(s)`. **No new dependency** — composes existing
+    `crate::queue::{program_cc_fields, check_controller_fatal,
+    PHASE_1_MPS_LOG2, PHASE_1_IOSQES_LOG2, PHASE_1_IOCQES_LOG2}`.
+
 - **Storage — P6.7.10-pre.31 NVMe CSTS.CFS (Controller Fatal
   Status) detection (2026-05-22) — TASK-005 continuation.**
   `crates/omni-driver-nvme/src/queue.rs` extended with CSTS.CFS

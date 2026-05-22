@@ -38,9 +38,22 @@
 //!     All three calls go through the `LiveMmioBackend` newtype
 //!     which performs raw 32-bit `volatile_write` / `volatile_read`
 //!     against the BAR0 user-VA returned by `MmioMap` at step 4.
-//! 11. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
+//! 11. **P6.7.10-pre.32** — `program_cc_fields` writes the canonical
+//!     `CC` initialisation register (`MPS = 0`, `IOSQES = 6`,
+//!     `IOCQES = 4`, `CSS = 0`, `AMS = 0`, `EN = 0`) per NVMe 1.4
+//!     § 3.1.5 between `program_admin_queue_bases` and
+//!     `enable_controller`. Required so the controller observes the
+//!     command-set and queue-entry-size fields BEFORE the `EN`
+//!     transition latches them.
+//! 12. **P6.7.10-pre.32** — `check_controller_fatal` reads `CSTS`
+//!     once immediately after `enable_controller` returns and aborts
+//!     the bring-up if `CSTS.CFS = 1` per NVMe 1.4 § 3.1.6. This
+//!     tripwire catches the rare case of a controller that enters
+//!     the fatal-status state mid-enable handshake but still sets
+//!     `CSTS.RDY` before crashing.
+//! 13. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
 //!     `Phase::Ready` (or any terminal `Failed` state).
-//! 12. `TaskExit(0)` on success / non-zero sentinel on any failure.
+//! 14. `TaskExit(0)` on success / non-zero sentinel on any failure.
 //!
 //! ## Standalone execution
 //!
@@ -69,8 +82,9 @@ use core::panic::PanicInfo;
 
 use omni_driver_nvme::bringup::{BringUp, Event, Phase};
 use omni_driver_nvme::queue::{
-    MmioBackend, MmioReadBackend, disable_controller, enable_controller,
-    program_admin_queue_bases,
+    MmioBackend, MmioReadBackend, PHASE_1_IOCQES_LOG2, PHASE_1_IOSQES_LOG2, PHASE_1_MPS_LOG2,
+    check_controller_fatal, disable_controller, enable_controller, program_admin_queue_bases,
+    program_cc_fields,
 };
 use omni_driver_shared::{
     ACTION_TAG_DMA_MAP, ACTION_TAG_IRQ_ATTACH, ACTION_TAG_MMIO_MAP, caps::find_token,
@@ -293,9 +307,25 @@ const EXIT_NVME_DISABLE_TIMEOUT: u64 = 200;
 /// `program_admin_queue_bases` rejected the depths or base
 /// addresses (`AdminDepthOutOfRange` / `QueueBaseMisaligned`).
 const EXIT_NVME_ADMIN_QUEUE_INVALID: u64 = 210;
+/// `program_cc_fields` rejected one of `MPS` / `IOSQES` / `IOCQES`
+/// for being outside the 4-bit range per NVMe 1.4 § 3.1.5 — surfaces
+/// as `QueueError::AdminDepthOutOfRange`. Reachable only if the
+/// Phase-1 constants are corrupted at compile time (the image pins
+/// them to spec-mandated values) so this sentinel is defensive
+/// against a regression of [`omni_driver_nvme::queue::PHASE_1_MPS_LOG2`]
+/// / `PHASE_1_IOSQES_LOG2` / `PHASE_1_IOCQES_LOG2`. New in P6.7.10-pre.32.
+const EXIT_NVME_CC_FIELDS_INVALID: u64 = 215;
 /// `enable_controller` failed (controller did not set `CSTS.RDY`
 /// within the poll budget).
 const EXIT_NVME_ENABLE_TIMEOUT: u64 = 220;
+/// `check_controller_fatal` returned `true` immediately after
+/// `enable_controller` succeeded — the controller set `CSTS.RDY`
+/// but also raised `CSTS.CFS` (Controller Fatal Status, sticky per
+/// NVMe 1.4 § 3.1.6). The bring-up MUST abort because subsequent
+/// admin commands would never complete. Reachable when a flaky
+/// controller crashes mid-enable but still ticks the RDY bit.
+/// New in P6.7.10-pre.32.
+const EXIT_NVME_CONTROLLER_FATAL: u64 = 225;
 
 // =============================================================================
 // Raw syscall wrapper
@@ -485,8 +515,12 @@ pub extern "C" fn _start() -> ! {
     // signature of `disable_controller`/`enable_controller`
     // without aliasing — `LiveMmioBackend` holds no state beyond
     // the `mmio_va_base` field (copied by value).
-    let mut mmio_write = LiveMmioBackend { mmio_va_base: mmio_va };
-    let mut mmio_read = LiveMmioBackend { mmio_va_base: mmio_va };
+    let mut mmio_write = LiveMmioBackend {
+        mmio_va_base: mmio_va,
+    };
+    let mut mmio_read = LiveMmioBackend {
+        mmio_va_base: mmio_va,
+    };
 
     // Step 4.9 — `disable_controller`: read CC, clear EN bit, write
     // CC back, poll `CSTS.RDY = 0`. Per OIP-Driver-NVMe-014 § S6
@@ -513,10 +547,44 @@ pub extern "C" fn _start() -> ! {
         unsafe { sys_exit(EXIT_NVME_ADMIN_QUEUE_INVALID) };
     }
 
-    // Step 4.11 — `enable_controller`: set CC.EN, poll
+    // Step 4.11 — P6.7.10-pre.32: `program_cc_fields` writes the
+    // canonical CC initialisation register with `EN = 0`, packing
+    // `MPS`/`IOSQES`/`IOCQES` per NVMe 1.4 § 3.1.5. Goes between
+    // `program_admin_queue_bases` and `enable_controller` so the
+    // controller observes the queue-entry-size and command-set
+    // selections BEFORE the EN transition latches them. The
+    // Phase-1 constants are spec-mandated (`MPS = 0` = 4 KiB host
+    // pages, `IOSQES = 6` = 64-byte SQE, `IOCQES = 4` = 16-byte CQE)
+    // and the helper rejects out-of-range values; the
+    // `EXIT_NVME_CC_FIELDS_INVALID` sentinel is therefore defensive
+    // against a regression of the pinned constants.
+    if program_cc_fields(
+        &mut mmio_write,
+        PHASE_1_MPS_LOG2,
+        PHASE_1_IOSQES_LOG2,
+        PHASE_1_IOCQES_LOG2,
+    )
+    .is_err()
+    {
+        unsafe { sys_exit(EXIT_NVME_CC_FIELDS_INVALID) };
+    }
+
+    // Step 4.12 — `enable_controller`: set CC.EN, poll
     // `CSTS.RDY = 1`. OIP-Driver-NVMe-014 § S6 step 6.
     if enable_controller(&mut mmio_write, &mut mmio_read, NVME_CSTS_POLL_LIMIT).is_err() {
         unsafe { sys_exit(EXIT_NVME_ENABLE_TIMEOUT) };
+    }
+
+    // Step 4.13 — P6.7.10-pre.32: `check_controller_fatal` tripwire.
+    // Reads `CSTS` once and aborts the bring-up if `CSTS.CFS = 1`
+    // per NVMe 1.4 § 3.1.6. Catches the corner case where the
+    // controller raised both `CSTS.RDY` and `CSTS.CFS` in the same
+    // register window, which `enable_controller`'s poll loop would
+    // accept as success because it only checks the RDY bit. Sticky
+    // CFS means any subsequent admin command would block forever;
+    // bailing here surfaces the failure cleanly via the sentinel.
+    if check_controller_fatal(&mut mmio_read) {
+        unsafe { sys_exit(EXIT_NVME_CONTROLLER_FATAL) };
     }
 
     // Step 5 — Drive the 13-step bring-up FSM through its remaining

@@ -30,9 +30,9 @@
 
 use crate::admin::{ADMIN_CQE_BYTES, ADMIN_SQE_BYTES, AdminCqe, AdminCqeFields, AdminSqe};
 use crate::controller_regs::{
-    ACQ_OFFSET, AQA_OFFSET, ASQ_OFFSET, CC_AMS_SHIFT, CC_CSS_SHIFT, CC_EN_BIT,
-    CC_IOCQES_SHIFT, CC_IOSQES_SHIFT, CC_MPS_SHIFT, CC_OFFSET, CSTS_CFS_BIT, CSTS_OFFSET,
-    CSTS_RDY_BIT, cq_head_doorbell_offset, sq_tail_doorbell_offset,
+    ACQ_OFFSET, AQA_OFFSET, ASQ_OFFSET, CC_AMS_SHIFT, CC_CSS_SHIFT, CC_EN_BIT, CC_IOCQES_SHIFT,
+    CC_IOSQES_SHIFT, CC_MPS_SHIFT, CC_OFFSET, CSTS_CFS_BIT, CSTS_OFFSET, CSTS_RDY_BIT,
+    cq_head_doorbell_offset, sq_tail_doorbell_offset,
 };
 use crate::ring::{CqRing, RingError, SqRing};
 
@@ -326,7 +326,9 @@ impl AdminQueuePair {
 
         let start = (slot as usize) * ADMIN_SQE_BYTES;
         let end = start + ADMIN_SQE_BYTES;
-        let dest = sq_page.get_mut(start..end).ok_or(QueueError::SqPageTooSmall)?;
+        let dest = sq_page
+            .get_mut(start..end)
+            .ok_or(QueueError::SqPageTooSmall)?;
         dest.copy_from_slice(sqe.as_bytes());
 
         // Ring the SQ tail doorbell with the new tail value (the
@@ -739,9 +741,9 @@ pub fn enable_controller<W: MmioBackend, R: MmioReadBackend>(
 mod tests {
     use super::*;
     use crate::admin::encode_identify;
-    use omni_types::nvme::IdentifyTarget;
     use alloc::vec;
     use alloc::vec::Vec;
+    use omni_types::nvme::IdentifyTarget;
 
     /// Test-only `MmioBackend` impl that records every doorbell
     /// write for assertion.
@@ -980,9 +982,7 @@ mod tests {
         q.submit(&sqe_b, &mut mmio, &mut page).unwrap();
         // Slot 0 holds sqe_a, slot 1 holds sqe_b.
         let s0 = page.get(0..ADMIN_SQE_BYTES).unwrap();
-        let s1 = page
-            .get(ADMIN_SQE_BYTES..2 * ADMIN_SQE_BYTES)
-            .unwrap();
+        let s1 = page.get(ADMIN_SQE_BYTES..2 * ADMIN_SQE_BYTES).unwrap();
         assert_eq!(s0, sqe_a.as_bytes());
         assert_eq!(s1, sqe_b.as_bytes());
         assert_ne!(s0, s1, "two distinct SQEs must occupy distinct slots");
@@ -1250,7 +1250,10 @@ mod tests {
         assert_ne!(QueueError::ControllerNotReady, QueueError::Full);
         assert_ne!(QueueError::ControllerNotReady, QueueError::SqPageTooSmall);
         assert_ne!(QueueError::ControllerNotReady, QueueError::CqPageTooSmall);
-        assert_ne!(QueueError::ControllerNotReady, QueueError::DoorbellOffsetOverflow);
+        assert_ne!(
+            QueueError::ControllerNotReady,
+            QueueError::DoorbellOffsetOverflow
+        );
     }
 
     // -------------------------------------------------------------------
@@ -1265,7 +1268,10 @@ mod tests {
         let mut mmio = MockMmioBackend::default();
         mmio.write_register(CC_OFFSET, CC_EN_BIT);
         assert_eq!(mmio.writes.len(), 1);
-        assert_eq!(mmio.writes.first().copied().unwrap(), (CC_OFFSET, CC_EN_BIT));
+        assert_eq!(
+            mmio.writes.first().copied().unwrap(),
+            (CC_OFFSET, CC_EN_BIT)
+        );
     }
 
     #[test]
@@ -1305,8 +1311,7 @@ mod tests {
     #[test]
     fn disable_controller_clears_cc_en_bit_and_polls_csts_clear() {
         // Initial CC has EN | IOSQES | IOCQES bits set.
-        let cc_initial: u32 =
-            CC_EN_BIT | (6 << 16) | (4 << 20);
+        let cc_initial: u32 = CC_EN_BIT | (6 << 16) | (4 << 20);
         let mut reader = ScriptedMmioRead::default();
         // Read 1: CC (returned as captured state)
         reader.push(CC_OFFSET, cc_initial);
@@ -1403,7 +1408,13 @@ mod tests {
         let offsets: Vec<usize> = writer.writes.iter().map(|&(o, _)| o).collect();
         assert_eq!(
             offsets,
-            vec![AQA_OFFSET, ASQ_OFFSET, ASQ_OFFSET + 4, ACQ_OFFSET, ACQ_OFFSET + 4]
+            vec![
+                AQA_OFFSET,
+                ASQ_OFFSET,
+                ASQ_OFFSET + 4,
+                ACQ_OFFSET,
+                ACQ_OFFSET + 4
+            ]
         );
     }
 
@@ -1468,7 +1479,8 @@ mod tests {
     #[test]
     fn program_admin_queue_bases_rejects_oversized_depth() {
         let mut writer = MockMmioBackend::default();
-        let res = program_admin_queue_bases(&mut writer, 0x1000, 0x2000, MAX_ADMIN_QUEUE_DEPTH + 1, 64);
+        let res =
+            program_admin_queue_bases(&mut writer, 0x1000, 0x2000, MAX_ADMIN_QUEUE_DEPTH + 1, 64);
         assert_eq!(res, Err(QueueError::AdminDepthOutOfRange));
         assert!(writer.writes.is_empty());
     }
@@ -1508,8 +1520,14 @@ mod tests {
 
     #[test]
     fn admin_depth_out_of_range_in_queue_error_taxonomy() {
-        assert_ne!(QueueError::AdminDepthOutOfRange, QueueError::ControllerNotReady);
-        assert_ne!(QueueError::AdminDepthOutOfRange, QueueError::QueueBaseMisaligned);
+        assert_ne!(
+            QueueError::AdminDepthOutOfRange,
+            QueueError::ControllerNotReady
+        );
+        assert_ne!(
+            QueueError::AdminDepthOutOfRange,
+            QueueError::QueueBaseMisaligned
+        );
     }
 
     #[test]
@@ -1727,5 +1745,172 @@ mod tests {
         assert_eq!((final_cc >> 16) & 0xF, PHASE_1_IOSQES_LOG2);
         // IOCQES preserved.
         assert_eq!((final_cc >> 20) & 0xF, PHASE_1_IOCQES_LOG2);
+    }
+
+    // -------------------------------------------------------------------
+    // P6.7.10-pre.32 — image canonical bring-up sequence composition
+    //
+    // The three tests below verify the exact ordering the live
+    // `omni-driver-nvme-image::_start` runs at steps 4.9..=4.13:
+    //
+    //   disable_controller
+    //   → program_admin_queue_bases (AQA, ASQ_lo/hi, ACQ_lo/hi)
+    //   → program_cc_fields         (CC initialisation)
+    //   → enable_controller         (CC.EN | poll CSTS.RDY)
+    //   → check_controller_fatal    (CSTS.CFS tripwire)
+    //
+    // The image binary itself has no test harness (it is `no_main +
+    // no_std`), so the host-side test below exercises the same call
+    // sequence against the existing MockMmioBackend +
+    // ScriptedMmioRead pair to guarantee the composition is sound.
+    // -------------------------------------------------------------------
+
+    /// Image-side canonical bring-up sequence: every helper is called
+    /// in the order `_start` calls it. The writer recorder MUST hold
+    /// the writes in the exact order:
+    ///
+    /// 1. CC      (disable_controller clears EN)
+    /// 2. AQA     (program_admin_queue_bases)
+    /// 3. ASQ_lo
+    /// 4. ASQ_hi
+    /// 5. ACQ_lo
+    /// 6. ACQ_hi
+    /// 7. CC      (program_cc_fields writes initialisation fields)
+    /// 8. CC      (enable_controller ORs the EN bit on)
+    ///
+    /// — and the final CC value MUST carry EN + the initialisation
+    /// fields from the program_cc_fields step.
+    #[test]
+    fn image_canonical_bringup_writes_aqa_asq_acq_cc_in_image_order() {
+        // ScriptedMmioRead supplies the reads the helpers do:
+        // - disable_controller : 1 CC read + 1 CSTS read (RDY = 0)
+        // - enable_controller  : 1 CC read + 1 CSTS read (RDY = 1)
+        // - check_controller_fatal : 1 CSTS read (CFS = 0)
+        let mut reader = ScriptedMmioRead::default();
+        // disable_controller pre-read CC: initial value has EN set
+        // so disable has visible work to do.
+        let cc_initial: u32 = CC_EN_BIT;
+        reader.push(CC_OFFSET, cc_initial);
+        // disable_controller CSTS poll: RDY clears immediately.
+        reader.push(CSTS_OFFSET, 0);
+        // enable_controller pre-read CC: returns the value
+        // program_cc_fields just wrote (the mock writer keeps no
+        // state visible to the reader so we synthesise it here).
+        let cc_initialised: u32 =
+            (PHASE_1_IOSQES_LOG2 << CC_IOSQES_SHIFT) | (PHASE_1_IOCQES_LOG2 << CC_IOCQES_SHIFT);
+        reader.push(CC_OFFSET, cc_initialised);
+        // enable_controller CSTS poll: RDY sets immediately.
+        reader.push(CSTS_OFFSET, CSTS_RDY_BIT);
+        // check_controller_fatal: CSTS has RDY = 1, CFS = 0 → false.
+        reader.push(CSTS_OFFSET, CSTS_RDY_BIT);
+
+        let mut writer = MockMmioBackend::default();
+
+        // Step 4.9 — disable.
+        disable_controller(&mut writer, &mut reader, 16).expect("disable");
+        // Step 4.10 — admin queue bases.
+        program_admin_queue_bases(&mut writer, 0x0, 0x1000, 64, 64)
+            .expect("program_admin_queue_bases");
+        // Step 4.11 — CC fields.
+        program_cc_fields(
+            &mut writer,
+            PHASE_1_MPS_LOG2,
+            PHASE_1_IOSQES_LOG2,
+            PHASE_1_IOCQES_LOG2,
+        )
+        .expect("program_cc_fields");
+        // Step 4.12 — enable.
+        let final_cc = enable_controller(&mut writer, &mut reader, 16).expect("enable");
+        // Step 4.13 — fatal-status tripwire.
+        let fatal = check_controller_fatal(&mut reader);
+
+        // 8 writes total in the canonical order.
+        assert_eq!(writer.writes.len(), 8, "expected 8 register writes");
+        // 1. CC disable (EN cleared).
+        assert_eq!(writer.writes.first().copied(), Some((CC_OFFSET, 0)));
+        // 2. AQA = (64-1) | ((64-1) << 16).
+        assert_eq!(
+            writer.writes.get(1).copied(),
+            Some((AQA_OFFSET, 63 | (63 << 16)))
+        );
+        // 3..=6. ASQ + ACQ split into 32-bit lo/hi pairs.
+        assert_eq!(writer.writes.get(2).copied(), Some((ASQ_OFFSET, 0x0)));
+        assert_eq!(writer.writes.get(3).copied(), Some((ASQ_OFFSET + 4, 0x0)));
+        assert_eq!(writer.writes.get(4).copied(), Some((ACQ_OFFSET, 0x1000)));
+        assert_eq!(writer.writes.get(5).copied(), Some((ACQ_OFFSET + 4, 0x0)));
+        // 7. CC initialisation: EN = 0, IOSQES = 6, IOCQES = 4.
+        let cc_init_expected: u32 =
+            (PHASE_1_IOSQES_LOG2 << CC_IOSQES_SHIFT) | (PHASE_1_IOCQES_LOG2 << CC_IOCQES_SHIFT);
+        let cc_init_write = writer.writes.get(6).copied().expect("CC init write");
+        assert_eq!(cc_init_write, (CC_OFFSET, cc_init_expected));
+        assert_eq!(cc_init_write.1 & CC_EN_BIT, 0);
+        // 8. CC enable: EN | IOSQES | IOCQES.
+        let cc_enable_write = writer.writes.get(7).copied().expect("CC enable write");
+        assert_eq!(cc_enable_write.0, CC_OFFSET);
+        assert_eq!(cc_enable_write.1, cc_init_expected | CC_EN_BIT);
+
+        // enable_controller returned the final CC with EN set and
+        // initialisation fields preserved.
+        assert_eq!(final_cc, cc_init_expected | CC_EN_BIT);
+        assert_eq!((final_cc >> CC_IOSQES_SHIFT) & 0xF, PHASE_1_IOSQES_LOG2);
+        assert_eq!((final_cc >> CC_IOCQES_SHIFT) & 0xF, PHASE_1_IOCQES_LOG2);
+
+        // Tripwire reports a healthy controller.
+        assert!(!fatal, "CFS = 0 → check_controller_fatal must be false");
+    }
+
+    /// Image-side tripwire success path: when `CSTS.CFS = 1` after
+    /// `enable_controller` returns, `check_controller_fatal` MUST
+    /// return `true` so the image bails with
+    /// `EXIT_NVME_CONTROLLER_FATAL` instead of advancing the FSM
+    /// into admin commands that would hang.
+    #[test]
+    fn image_canonical_bringup_check_controller_fatal_returns_true_when_cfs_set_post_enable() {
+        let mut reader = ScriptedMmioRead::default();
+        // enable_controller: pre-read CC = 0, poll → RDY = 1.
+        reader.push(CC_OFFSET, 0);
+        reader.push(CSTS_OFFSET, CSTS_RDY_BIT);
+        // check_controller_fatal: CSTS has both RDY and CFS set.
+        // enable_controller's RDY-only check accepts this, so the
+        // tripwire is the ONLY layer that catches the fatal state.
+        reader.push(CSTS_OFFSET, CSTS_RDY_BIT | CSTS_CFS_BIT);
+
+        let mut writer = MockMmioBackend::default();
+        enable_controller(&mut writer, &mut reader, 16).expect("enable succeeds on RDY = 1");
+        assert!(
+            check_controller_fatal(&mut reader),
+            "CFS = 1 post-enable → tripwire MUST fire"
+        );
+    }
+
+    /// Defensive composition test: `program_cc_fields` writes ONLY
+    /// to `CC_OFFSET`. Verifying this prevents a future refactor
+    /// from accidentally touching `AQA`/`ASQ`/`ACQ` (which would
+    /// silently clobber `program_admin_queue_bases`'s writes that
+    /// run immediately before).
+    #[test]
+    fn program_cc_fields_write_targets_cc_offset_only() {
+        let mut writer = MockMmioBackend::default();
+        program_cc_fields(
+            &mut writer,
+            PHASE_1_MPS_LOG2,
+            PHASE_1_IOSQES_LOG2,
+            PHASE_1_IOCQES_LOG2,
+        )
+        .expect("program_cc_fields");
+        assert_eq!(writer.writes.len(), 1, "exactly one register write");
+        let (off, _val) = writer.writes.first().copied().expect("first write");
+        assert_eq!(
+            off, CC_OFFSET,
+            "program_cc_fields must target CC_OFFSET only"
+        );
+        // The write does not touch any admin-queue register window.
+        for (off, _) in &writer.writes {
+            assert_ne!(*off, AQA_OFFSET, "must not clobber AQA");
+            assert_ne!(*off, ASQ_OFFSET, "must not clobber ASQ_lo");
+            assert_ne!(*off, ASQ_OFFSET + 4, "must not clobber ASQ_hi");
+            assert_ne!(*off, ACQ_OFFSET, "must not clobber ACQ_lo");
+            assert_ne!(*off, ACQ_OFFSET + 4, "must not clobber ACQ_hi");
+        }
     }
 }
