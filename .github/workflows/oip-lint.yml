@@ -52,7 +52,7 @@ jobs:
       # ships every modern syntax feature the linter uses (PEP 604 union types,
       # PEP 585 builtin generics).
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
