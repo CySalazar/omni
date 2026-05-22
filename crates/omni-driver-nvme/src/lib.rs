@@ -71,6 +71,7 @@
 extern crate alloc;
 
 pub mod admin;
+pub mod admin_session;
 pub mod bringup;
 pub mod controller_regs;
 pub mod io;

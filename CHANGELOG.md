@@ -17,6 +17,82 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.13 NVMe `AdminSession` integration scaffold
+  (2026-05-22) — TASK-005 continuation.**
+  New `crates/omni-driver-nvme/src/admin_session.rs` module declares
+  the composition layer that wraps `AdminQueuePair` (P6.7.10-pre.11 +
+  pre.12) with the per-session bookkeeping the bring-up FSM and the
+  live driver would otherwise re-implement at every call site.
+  - **`AdminSession { queue_pair, sq_page: Vec<u8>, cq_page: Vec<u8>,
+    next_cid: u16 }`** — owns both DMA-mapped queue pages and a
+    monotone CID counter that wraps at `u16::MAX` skipping the
+    reserved `0` per `omni_types::nvme::RESERVED_DRIVER_OPAQUE_ID`.
+  - **`AdminSession::new(sq_depth, cq_depth, dstrd)`** allocates the
+    SQ data page at `sq_depth * ADMIN_SQE_BYTES` bytes and the CQ
+    data page at `cq_depth * ADMIN_CQE_BYTES` bytes, both
+    zero-initialised so the CQ phase-tag check sees the correct
+    "previous-lap-phase-0" state on the first lap.
+  - **Submit helpers**: `submit_identify_controller`,
+    `submit_identify_namespace`, `submit_identify_active_ns_list`
+    (and the generic `submit_identify(target, buf_iova, mmio)`)
+    compose `allocate_cid` + `encode_identify(target, buf_iova,
+    PRP2 = 0, cid)` + `AdminQueuePair::submit`, returning the
+    assigned CID for completion correlation.
+  - **`poll_completion_for_cid<M>(cid, poll_limit, mmio)
+    -> Result<Option<AdminCqeFields>, QueueError>`** polls the CQ
+    drain until a matching CID arrives, silently discarding sibling
+    completions for any other outstanding admin command, returning
+    `Ok(None)` after `poll_limit` iterations (soft failure — caller
+    decides retry vs. abort).
+  - **`DEFAULT_POLL_LIMIT = 1_000_000`** constant published for
+    caller convenience.
+  - **`crates/omni-driver-nvme/src/lib.rs`** extended with
+    `pub mod admin_session;` declaration.
+  - **+9 new host-side tests** under
+    `omni_driver_nvme::admin_session::tests::*`:
+    - 4 construction & CID-allocation checks (page sizing,
+      ring-error propagation on zero depth, CID starts at 1, CID
+      wraps past `u16::MAX` skipping 0).
+    - 1 full round-trip integration test
+      (`submit_identify_controller_round_trips_through_fake_controller`):
+      submit through bootstrap fake → snapshot SQ page → drive a
+      `FakeController` that writes a synthetic CQE → copy back
+      into the session's CQ page → poll for matching CID → verify
+      `sc = 0` + `sq_head` feedback into `SqRing`.
+    - 2 SQE field-layout checks via the public submit helpers
+      (Identify Namespace writes `CNS = 0x00` + NSID little-endian
+      + CID at SQE bytes 2..=3; Identify ActiveNsList writes
+      `CNS = 0x02`).
+    - 2 poll behaviour tests (returns `None` after exhausted
+      `poll_limit`; skips sibling completions until matching CID
+      arrives by submitting two CIDs and polling for the second).
+  - **`FakeController` test fixture** — lifetime-bound to a borrowed
+    SQ snapshot + a mutable scratch CQ page slice; every SQ tail
+    doorbell write triggers `emit_completion_for_latest_sqe` which
+    reads the CID from the most-recently-written SQE slot at
+    bytes 2..=3, advances the controller-side SQ head, writes a
+    synthetic CQE at the current CQ tail with phase + CID +
+    `sq_head`, then advances the CQ tail (flipping the emit-phase
+    on wrap). The fixture's `cq_page` field uses `&mut [u8]`
+    (changed from `&mut Vec<u8>` to avoid the
+    `core::mem::take(&mut [u8])` sized-type pitfall) so tests use
+    `copy_from_slice` to feed scratch buffer contents back into
+    the session.
+  - **Workspace test count**: 1426 → 1435 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.13 AdminSession`,
+    Next=`P6.7.10-pre.14 NVMe driver wire`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1435 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — `omni_types::nvme::IdentifyTarget`
+    already imported via `crate::admin`; `alloc::vec::Vec` already
+    pulled in by `crate::ring`.
+
 - **Storage — P6.7.10-pre.12 NVMe Admin CQ live drain (2026-05-22) —
   TASK-005 continuation.**
   `crates/omni-driver-nvme/src/queue.rs::AdminQueuePair` extended
