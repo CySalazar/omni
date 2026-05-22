@@ -17,6 +17,79 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.29 NVMe `IoSession::submit_blk_request_auto`
+  high-level BLK channel adapter (2026-05-22) — TASK-005
+  continuation.**
+  `crates/omni-driver-nvme/src/io_session.rs::IoSession` extended
+  with `submit_blk_request_auto<M: MmioBackend>(req: BlkRequest,
+  list_page_iova: u64, mmio: &mut M) -> Result<u16, IoSubmitError>`
+  — the highest-level entry the BLK channel server will use:
+  dispatches on the `BlkRequest` variant, derives the `(prp1,
+  prp2)` pair via `derive_prp_pair_for_blocks` (pre.28) for
+  data-transfer commands, and routes through the existing
+  `submit_blk_request`.
+  - **Per-variant behaviour**:
+    - `BlkRequest::Read` / `BlkRequest::Write` — derives
+      `(prp1, prp2)` from `(buf_iova, count, list_page_iova)`
+      per [`derive_prp_pair_for_blocks`] then submits.
+    - `BlkRequest::Flush` — sets `prp1 = prp2 = 0` (no data
+      buffer); `list_page_iova` ignored.
+    - `BlkRequest::Discard` — REJECTED with
+      `IoSubmitError::DiscardRequiresExplicitPrp`. The Dataset
+      Management command requires PRP1 to point at a
+      caller-prepared Range Descriptor buffer built via
+      `crate::discard::write_single_discard_range` (pre.27);
+      the auto-derivation path cannot synthesise that buffer.
+      The caller MUST invoke `submit_blk_request` directly with
+      the prepared IOVA.
+    - any future `#[non_exhaustive]` variant — REJECTED with
+      `IoSubmitError::UnsupportedRequest`.
+  - **`IoSubmitError` taxonomy** (`#[non_exhaustive]`) wrapping
+    the underlying error families so the BLK channel server can
+    translate each failure to the matching `BlkResponse`
+    variant without needing to know which layer it came from:
+    - `IoSubmitError::PrpDerive(PrpDeriveError)` (wraps
+      `BufferMisaligned` / `ZeroBlockCount` / `TooManyBlocks` /
+      `PrpListPageMissing` / `PrpListPageMisaligned`).
+    - `IoSubmitError::Queue(QueueError)` (wraps `Full` /
+      `SqPageTooSmall` / `DoorbellOffsetOverflow` / etc.).
+    - `IoSubmitError::DiscardRequiresExplicitPrp`.
+    - `IoSubmitError::UnsupportedRequest`.
+  - **+10 new host-side tests** under
+    `omni_driver_nvme::io_session::tests::*`:
+    - 3 layout-dispatch happy paths: `Read` 1 block →
+      SinglePage with PRP1=buf + PRP2=0 verified via SQE bytes
+      24..=31 / 32..=39; `Write` 2 blocks → TwoPages with
+      PRP2 = buf + 4096; `Read` 3 blocks → PrpList with
+      PRP2 = list_page_iova.
+    - 1 Flush behaviour (sets PRP1=PRP2=0 even with garbage
+      `list_page_iova = 0xDEAD_BEEF`).
+    - 1 Discard rejection (returns `DiscardRequiresExplicitPrp`
+      without writing any SQE or ringing the doorbell).
+    - 3 error-propagation tests (zero count →
+      `PrpDerive(ZeroBlockCount)`; misaligned buf →
+      `PrpDerive(BufferMisaligned)`; 3 blocks + missing list
+      page → `PrpDerive(PrpListPageMissing)`).
+    - 1 cross-variant CID monotone allocation (Read=1, Write=2,
+      Flush=3 in sequence).
+    - 1 taxonomy distinctness across the 4 `IoSubmitError`
+      variants.
+  - **Workspace test count**: 1565 → 1575 pass / 0 fail
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **Build Info panel**: Active=`P6.7.10-pre.29 BLK auto-submit`,
+    Next=`P6.7.10-pre.30 v0.3.0-alpha.2`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1575 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — composes existing
+    `crate::blk_gateway::encode_blk_request` (pre.22) +
+    `crate::transfer_model::derive_prp_pair_for_blocks` (pre.28)
+    + the existing `submit_blk_request` (pre.23).
+
 - **Storage — P6.7.10-pre.28 NVMe high-level PRP-pair derivation
   helper (2026-05-22) — TASK-005 continuation.**
   `crates/omni-driver-nvme/src/transfer_model.rs` extended with

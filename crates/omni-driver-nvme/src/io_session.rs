@@ -35,9 +35,43 @@ use omni_types::blk::{BlkRequest, BlkResponse};
 use crate::admin::{ADMIN_CQE_BYTES, ADMIN_SQE_BYTES};
 use crate::blk_gateway::{cqe_to_blk_response, encode_blk_request};
 use crate::queue::{AdminQueuePair, MmioBackend, QueueError};
+use crate::transfer_model::{PrpDeriveError, derive_prp_pair_for_blocks};
 
 /// Phase-1 IO queue identifier (single queue per OIP-014 § R2).
 pub const PHASE_1_IO_QID: u16 = 1;
+
+/// Errors the high-level [`IoSession::submit_blk_request_auto`]
+/// path can surface.
+///
+/// Wraps the underlying [`QueueError`] + [`PrpDeriveError`] families
+/// so the BLK channel server can translate each failure to the
+/// matching `omni_types::blk::BlkResponse` variant without needing
+/// to know which layer the error came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum IoSubmitError {
+    /// The PRP-pair derivation rejected the request shape (zero
+    /// count, misaligned IOVA, count above
+    /// [`crate::transfer_model::MAX_BLOCK_COUNT_PER_COMMAND`], or
+    /// missing/misaligned PRP-list page).
+    PrpDerive(PrpDeriveError),
+    /// The underlying queue submission failed
+    /// ([`QueueError::Full`], [`QueueError::SqPageTooSmall`],
+    /// [`QueueError::DoorbellOffsetOverflow`], etc.).
+    Queue(QueueError),
+    /// The request is `BlkRequest::Discard`. The Dataset Management
+    /// command requires PRP1 to point at a caller-prepared Range
+    /// Descriptor buffer (built via
+    /// [`crate::discard::write_single_discard_range`]); the
+    /// auto-derivation path cannot synthesise that buffer. The
+    /// caller MUST invoke [`IoSession::submit_blk_request`]
+    /// directly with the prepared IOVA.
+    DiscardRequiresExplicitPrp,
+    /// The request is an unknown `#[non_exhaustive]` future
+    /// variant the encoder does not recognise — the caller MUST
+    /// emit `BlkResponse::NotSupported` upstream.
+    UnsupportedRequest,
+}
 
 /// Per-session bookkeeping for the NVMe IO queue pair.
 ///
@@ -153,6 +187,81 @@ impl IoSession {
         };
         self.queue_pair.submit(&sqe, mmio, &mut self.sq_page)?;
         Ok(Some(cid))
+    }
+
+    /// Submit a [`BlkRequest`] with automatic PRP derivation.
+    ///
+    /// This is the high-level entry point the BLK channel server
+    /// uses: it dispatches on the request variant, derives the
+    /// `(prp1, prp2)` pair for data-transfer commands via
+    /// [`derive_prp_pair_for_blocks`] (P6.7.10-pre.28), then
+    /// routes through [`Self::submit_blk_request`].
+    ///
+    /// Per-variant behaviour:
+    /// - [`BlkRequest::Read`] / [`BlkRequest::Write`] —
+    ///   `(prp1, prp2)` derived from `(buf_iova, count,
+    ///   list_page_iova)` per [`derive_prp_pair_for_blocks`].
+    /// - [`BlkRequest::Flush`] — PRPs are unused (`prp1 = prp2 =
+    ///   0`); `list_page_iova` is ignored.
+    /// - [`BlkRequest::Discard`] — REJECTED with
+    ///   [`IoSubmitError::DiscardRequiresExplicitPrp`]. The
+    ///   Dataset Management command requires PRP1 to point at a
+    ///   caller-prepared Range Descriptor buffer (built via
+    ///   [`crate::discard::write_single_discard_range`]); the
+    ///   auto-derivation path cannot synthesise that buffer. The
+    ///   caller MUST invoke [`Self::submit_blk_request`] directly
+    ///   for Discard, passing the prepared Range Descriptor IOVA
+    ///   as `prp1`.
+    /// - any future `#[non_exhaustive]` variant — REJECTED with
+    ///   [`IoSubmitError::UnsupportedRequest`].
+    ///
+    /// # Errors
+    ///
+    /// - [`IoSubmitError::PrpDerive`] wrapping any
+    ///   [`PrpDeriveError`] [`derive_prp_pair_for_blocks`]
+    ///   surfaces (`BufferMisaligned`, `ZeroBlockCount`,
+    ///   `TooManyBlocks`, `PrpListPageMissing`,
+    ///   `PrpListPageMisaligned`).
+    /// - [`IoSubmitError::Queue`] wrapping any [`QueueError`] the
+    ///   underlying [`AdminQueuePair::submit`] surfaces.
+    /// - [`IoSubmitError::DiscardRequiresExplicitPrp`] when the
+    ///   request is `BlkRequest::Discard`.
+    /// - [`IoSubmitError::UnsupportedRequest`] when the request
+    ///   is an unknown `#[non_exhaustive]` variant the encoder
+    ///   does not recognise.
+    pub fn submit_blk_request_auto<M: MmioBackend>(
+        &mut self,
+        req: BlkRequest,
+        list_page_iova: u64,
+        mmio: &mut M,
+    ) -> Result<u16, IoSubmitError> {
+        match req {
+            BlkRequest::Read {
+                lba: _,
+                count,
+                buf_iova,
+            }
+            | BlkRequest::Write {
+                lba: _,
+                count,
+                buf_iova,
+            } => {
+                let (_, prp1, prp2) =
+                    derive_prp_pair_for_blocks(buf_iova, count, list_page_iova)
+                        .map_err(IoSubmitError::PrpDerive)?;
+                self.submit_blk_request(req, prp1, prp2, mmio)
+                    .map_err(IoSubmitError::Queue)?
+                    .ok_or(IoSubmitError::UnsupportedRequest)
+            }
+            BlkRequest::Flush => {
+                self.submit_blk_request(req, 0, 0, mmio)
+                    .map_err(IoSubmitError::Queue)?
+                    .ok_or(IoSubmitError::UnsupportedRequest)
+            }
+            BlkRequest::Discard { .. } => Err(IoSubmitError::DiscardRequiresExplicitPrp),
+            // `#[non_exhaustive]` catch-all per OIP-Serde-004.
+            _ => Err(IoSubmitError::UnsupportedRequest),
+        }
     }
 
     /// Drain the CQ for the matching `cid` and translate the
@@ -587,5 +696,197 @@ mod tests {
         assert_eq!(s.queue_pair().cq().head(), 4);
         // SQ tail advanced through all 4 submissions.
         assert_eq!(s.queue_pair().sq().tail(), 4);
+    }
+
+    // -------------------------------------------------------------------
+    // submit_blk_request_auto (P6.7.10-pre.29)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn auto_submit_read_derives_single_page_prps() {
+        let mut s = IoSession::new(PHASE_1_IO_QID, 1, 8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        let req = BlkRequest::Read {
+            lba: 0x100,
+            count: 1,
+            buf_iova: 0x1_0000,
+        };
+        let cid = s.submit_blk_request_auto(req, 0, &mut mmio).unwrap();
+        assert_eq!(cid, 1);
+        // SQE byte 0 = OPC_NVM_READ; PRP1 (bytes 24..=31) = buf_iova;
+        // PRP2 (bytes 32..=39) = 0 (single-page transfer).
+        let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
+        assert_eq!(sqe.first().copied().unwrap(), crate::io::OPC_NVM_READ);
+        let mut prp1_buf = [0u8; 8];
+        prp1_buf.copy_from_slice(sqe.get(24..32).unwrap());
+        assert_eq!(u64::from_le_bytes(prp1_buf), 0x1_0000);
+        let mut prp2_buf = [0u8; 8];
+        prp2_buf.copy_from_slice(sqe.get(32..40).unwrap());
+        assert_eq!(u64::from_le_bytes(prp2_buf), 0);
+    }
+
+    #[test]
+    fn auto_submit_write_two_blocks_derives_two_pages_prps() {
+        let mut s = IoSession::new(PHASE_1_IO_QID, 1, 8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        let req = BlkRequest::Write {
+            lba: 0x200,
+            count: 2,
+            buf_iova: 0x2_0000,
+        };
+        s.submit_blk_request_auto(req, 0, &mut mmio).unwrap();
+        let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
+        assert_eq!(sqe.first().copied().unwrap(), crate::io::OPC_NVM_WRITE);
+        // PRP1 = buf; PRP2 = buf + 4096 (TwoPages layout).
+        let mut prp2_buf = [0u8; 8];
+        prp2_buf.copy_from_slice(sqe.get(32..40).unwrap());
+        assert_eq!(u64::from_le_bytes(prp2_buf), 0x2_0000 + 4096);
+    }
+
+    #[test]
+    fn auto_submit_read_three_blocks_uses_list_page_iova() {
+        let mut s = IoSession::new(PHASE_1_IO_QID, 1, 8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        let req = BlkRequest::Read {
+            lba: 0x300,
+            count: 3,
+            buf_iova: 0x3_0000,
+        };
+        // PRP-list page at 0x10_0000.
+        s.submit_blk_request_auto(req, 0x10_0000, &mut mmio).unwrap();
+        let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
+        // PRP2 = list_page_iova (PrpList layout).
+        let mut prp2_buf = [0u8; 8];
+        prp2_buf.copy_from_slice(sqe.get(32..40).unwrap());
+        assert_eq!(u64::from_le_bytes(prp2_buf), 0x10_0000);
+    }
+
+    #[test]
+    fn auto_submit_flush_uses_zero_prps_and_ignores_list_page_iova() {
+        let mut s = IoSession::new(PHASE_1_IO_QID, 1, 8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        // Garbage list_page_iova — Flush must ignore it.
+        s.submit_blk_request_auto(BlkRequest::Flush, 0xDEAD_BEEF, &mut mmio)
+            .unwrap();
+        let sqe = s.sq_page().get(0..ADMIN_SQE_BYTES).unwrap();
+        assert_eq!(sqe.first().copied().unwrap(), crate::io::OPC_NVM_FLUSH);
+        let mut prp1_buf = [0u8; 8];
+        prp1_buf.copy_from_slice(sqe.get(24..32).unwrap());
+        assert_eq!(u64::from_le_bytes(prp1_buf), 0);
+        let mut prp2_buf = [0u8; 8];
+        prp2_buf.copy_from_slice(sqe.get(32..40).unwrap());
+        assert_eq!(u64::from_le_bytes(prp2_buf), 0);
+    }
+
+    #[test]
+    fn auto_submit_discard_rejects_with_explicit_prp_required() {
+        let mut s = IoSession::new(PHASE_1_IO_QID, 1, 8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        let request = BlkRequest::Discard {
+            lba: 0x100,
+            count: 4,
+        };
+        let outcome = s.submit_blk_request_auto(request, 0x10_0000, &mut mmio);
+        assert_eq!(outcome, Err(IoSubmitError::DiscardRequiresExplicitPrp));
+        // No SQE written, no doorbell rung.
+        assert!(mmio.writes.is_empty());
+    }
+
+    #[test]
+    fn auto_submit_propagates_prp_derive_error_for_zero_count() {
+        let mut s = IoSession::new(PHASE_1_IO_QID, 1, 8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        let request = BlkRequest::Read {
+            lba: 0,
+            count: 0,
+            buf_iova: 0x1_0000,
+        };
+        let outcome = s.submit_blk_request_auto(request, 0, &mut mmio);
+        assert_eq!(
+            outcome,
+            Err(IoSubmitError::PrpDerive(PrpDeriveError::ZeroBlockCount))
+        );
+        assert!(mmio.writes.is_empty());
+    }
+
+    #[test]
+    fn auto_submit_propagates_prp_derive_error_for_misaligned_buf() {
+        let mut s = IoSession::new(PHASE_1_IO_QID, 1, 8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        let request = BlkRequest::Write {
+            lba: 0,
+            count: 1,
+            buf_iova: 0x1_0001, // not 4 KiB-aligned
+        };
+        let outcome = s.submit_blk_request_auto(request, 0, &mut mmio);
+        assert_eq!(
+            outcome,
+            Err(IoSubmitError::PrpDerive(PrpDeriveError::BufferMisaligned))
+        );
+    }
+
+    #[test]
+    fn auto_submit_propagates_prp_derive_error_for_missing_list_page() {
+        let mut s = IoSession::new(PHASE_1_IO_QID, 1, 8, 8, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        // 3 blocks but list_page_iova = 0 → PrpListPageMissing.
+        let request = BlkRequest::Read {
+            lba: 0,
+            count: 3,
+            buf_iova: 0x1_0000,
+        };
+        let outcome = s.submit_blk_request_auto(request, 0, &mut mmio);
+        assert_eq!(
+            outcome,
+            Err(IoSubmitError::PrpDerive(PrpDeriveError::PrpListPageMissing))
+        );
+    }
+
+    #[test]
+    fn auto_submit_advances_cid_monotonically_across_variants() {
+        let mut s = IoSession::new(PHASE_1_IO_QID, 1, 16, 16, 0).expect("ctor");
+        let mut mmio = BootstrapFake::default();
+        // Read → CID=1
+        let c1 = s
+            .submit_blk_request_auto(
+                BlkRequest::Read {
+                    lba: 0,
+                    count: 1,
+                    buf_iova: 0x1_0000,
+                },
+                0,
+                &mut mmio,
+            )
+            .unwrap();
+        // Write → CID=2
+        let c2 = s
+            .submit_blk_request_auto(
+                BlkRequest::Write {
+                    lba: 0,
+                    count: 1,
+                    buf_iova: 0x2_0000,
+                },
+                0,
+                &mut mmio,
+            )
+            .unwrap();
+        // Flush → CID=3
+        let c3 = s
+            .submit_blk_request_auto(BlkRequest::Flush, 0, &mut mmio)
+            .unwrap();
+        assert_eq!((c1, c2, c3), (1, 2, 3));
+    }
+
+    #[test]
+    fn io_submit_error_taxonomy_is_distinguishable() {
+        let a = IoSubmitError::DiscardRequiresExplicitPrp;
+        let b = IoSubmitError::UnsupportedRequest;
+        let c = IoSubmitError::PrpDerive(PrpDeriveError::ZeroBlockCount);
+        let d = IoSubmitError::Queue(QueueError::Full);
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(c, d);
+        assert_ne!(a, d);
+        assert_eq!(a, IoSubmitError::DiscardRequiresExplicitPrp);
     }
 }
