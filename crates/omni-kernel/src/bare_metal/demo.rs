@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "P6.7.10-pre.16 ASQ/ACQ wire",
+        "P6.7.10-pre.17 NVMe live wire",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1048,7 +1048,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "P6.7.10-pre.17 driver-img wire",
+        "P6.7.10-pre.18 Identify Ctrl",
         graphics::WHITE,
     );
     row(

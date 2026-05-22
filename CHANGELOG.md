@@ -17,6 +17,75 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.17 NVMe driver image LiveMmioBackend +
+  disable/program/enable controller sequence (2026-05-22) —
+  TASK-005 continuation.**
+  `crates/omni-driver-nvme-image/src/main.rs` extended with the
+  live wiring that closes OIP-Driver-NVMe-014 § S6 step 4 + step 5
+  + step 6 against real hardware.
+  - **`LiveMmioBackend { mmio_va_base: u64 }`** newtype implements
+    both `MmioBackend` (`volatile_write` 32-bit at
+    `mmio_va_base + offset`) and `MmioReadBackend`
+    (`volatile_read` 32-bit), so the helpers landed in
+    P6.7.10-pre.11..16 drive the live NVMe controller without
+    intermediate state.
+  - **`#[derive(Clone, Copy)]`** — the driver creates two
+    independent instances (one for the read backend, one for the
+    write backend) to satisfy the two-mutable-reference signature
+    of `disable_controller`/`enable_controller` without aliasing.
+    No state held beyond `mmio_va_base`, so the duplication is
+    zero-cost.
+  - **`_start` captures `mmio_va`** returned by `MmioMap (70)`
+    (previously discarded as `_mmio_va`) and composes a 3-step
+    sequence after the existing BlkLookup defence-in-depth:
+    1. `disable_controller(&mut mmio_write, &mut mmio_read,
+       NVME_CSTS_POLL_LIMIT)` clears `CC.EN` and polls
+       `CSTS.RDY = 0`.
+    2. `program_admin_queue_bases(&mut mmio_write,
+       NVME_ASQ_IOVA = 0x0, NVME_ACQ_IOVA = 0x1000,
+       NVME_ADMIN_SQ_DEPTH = 64, NVME_ADMIN_CQ_DEPTH = 64)` writes
+       AQA + ASQ + ACQ per NVMe 1.4 § 3.1.7-9.
+    3. `enable_controller(&mut mmio_write, &mut mmio_read,
+       NVME_CSTS_POLL_LIMIT)` sets `CC.EN` and polls
+       `CSTS.RDY = 1`.
+  - **New constants**:
+    - `NVME_ADMIN_SQ_DEPTH: u32 = 64`
+    - `NVME_ADMIN_CQ_DEPTH: u32 = 64`
+    - `NVME_ASQ_IOVA: u64 = 0x0`
+    - `NVME_ACQ_IOVA: u64 = 0x1000`
+    - `NVME_CSTS_POLL_LIMIT: u32 = 10_000`
+  - **New sentinel exit codes**:
+    - `EXIT_NVME_DISABLE_TIMEOUT = 200`
+    - `EXIT_NVME_ADMIN_QUEUE_INVALID = 210`
+    - `EXIT_NVME_ENABLE_TIMEOUT = 220`
+  - **Module documentation** extended with step 10 covering the
+    disable → program → enable sequence and updated step
+    numbering 11/12 for the FSM advance + TaskExit.
+  - **Workspace test count** stable at 1461 pass / 0 fail — the
+    new code is the `no_main` ELF entry path that cannot be
+    unit-tested in-crate; coverage relies on the kernel-side host
+    tests landed in pre.11..16 (50+ tests across
+    `omni_driver_nvme::queue::tests::*`) plus the Proxmox boot
+    smoke. The NVMe image is built but not currently invoked by
+    the desktop demo path, so the live wiring is statically
+    validated but not exercised end-to-end yet — the kernel-runner
+    main scenario adds the `DriverLoad(73)` invocation in a
+    follow-up sub-slice.
+  - **Build Info panel**: Active=`P6.7.10-pre.17 NVMe live wire`,
+    Next=`P6.7.10-pre.18 Identify Ctrl`,
+    Phase=`1 - Microkernel POC  (~99.97%)`,
+    Tests=`1461 workspace pass`.
+  - **Acceptance gates** all clean: workspace clippy + bare-metal +
+    mb12-userprobe + kernel-runner + 3 driver-image siblings clippy +
+    fmt + check-no-blanket-allow (16 crate-root files) + rustdoc
+    `omni-driver-nvme` + rustdoc workspace + lint-oips
+    (0 error / 0 warning su 19 file).
+  - **No new dependency** — `omni-driver-nvme` was already a
+    path-dep of the image; the new imports
+    (`disable_controller`, `enable_controller`,
+    `program_admin_queue_bases`, `MmioBackend`,
+    `MmioReadBackend`) all live under `omni_driver_nvme::queue`.
+
 - **Storage — P6.7.10-pre.16 NVMe ASQ/ACQ admin-queue base-address
   register programmer (2026-05-22) — TASK-005 continuation.**
   New free function `program_admin_queue_bases<W: MmioBackend>(

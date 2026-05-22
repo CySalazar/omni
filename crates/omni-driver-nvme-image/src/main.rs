@@ -31,9 +31,16 @@
 //!    registration as a defence-in-depth check; mismatch aborts the
 //!    driver before any FSM advance so the filesystem service is
 //!    guaranteed to find the right channel id at boot.
-//! 10. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
+//! 10. **P6.7.10-pre.17** — `disable_controller` (clears `CC.EN`,
+//!     polls `CSTS.RDY = 0`); `program_admin_queue_bases` writes
+//!     `AQA` + `ASQ` + `ACQ` per NVMe 1.4 § 3.1.7-9;
+//!     `enable_controller` (sets `CC.EN`, polls `CSTS.RDY = 1`).
+//!     All three calls go through the `LiveMmioBackend` newtype
+//!     which performs raw 32-bit `volatile_write` / `volatile_read`
+//!     against the BAR0 user-VA returned by `MmioMap` at step 4.
+//! 11. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
 //!     `Phase::Ready` (or any terminal `Failed` state).
-//! 11. `TaskExit(0)` on success / non-zero sentinel on any failure.
+//! 12. `TaskExit(0)` on success / non-zero sentinel on any failure.
 //!
 //! ## Standalone execution
 //!
@@ -61,6 +68,10 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 
 use omni_driver_nvme::bringup::{BringUp, Event, Phase};
+use omni_driver_nvme::queue::{
+    MmioBackend, MmioReadBackend, disable_controller, enable_controller,
+    program_admin_queue_bases,
+};
 use omni_driver_shared::{
     ACTION_TAG_DMA_MAP, ACTION_TAG_IRQ_ATTACH, ACTION_TAG_MMIO_MAP, caps::find_token,
 };
@@ -158,6 +169,83 @@ const BLK_CHANNEL_BACKPRESSURE_BLOCK: u64 = 0;
 const BLK_CHANNEL_TEE_NOT_BOUND: u64 = 0;
 
 // =============================================================================
+// NVMe admin queue constants (P6.7.10-pre.17, OIP-Driver-NVMe-014 § S6)
+// =============================================================================
+
+/// Admin Submission Queue depth (OIP-NVMe-014 § S1 default
+/// `admin_sq_depth = 64`).
+const NVME_ADMIN_SQ_DEPTH: u32 = 64;
+
+/// Admin Completion Queue depth (OIP-NVMe-014 § S1 default
+/// `admin_cq_depth = 64`).
+const NVME_ADMIN_CQ_DEPTH: u32 = 64;
+
+/// IOVA offset (inside the 4 GiB DMA arena) of the Admin Submission
+/// Queue data page. Page-aligned to 4 KiB per NVMe 1.4 § 3.1.9.
+const NVME_ASQ_IOVA: u64 = 0x0;
+
+/// IOVA offset of the Admin Completion Queue data page. Placed
+/// 4 KiB past `NVME_ASQ_IOVA` so the two queues live in adjacent
+/// 4 KiB regions of the DMA arena.
+const NVME_ACQ_IOVA: u64 = 0x1000;
+
+/// Poll budget for the `CSTS.RDY` enable/disable transitions. NVMe
+/// 1.4 § 3.1.6 says the controller MUST respond within `CAP.TO`
+/// 500 ms units; QEMU virtualised NVMe responds within
+/// microseconds, so `10_000` iterations is generously above any
+/// realistic latency.
+const NVME_CSTS_POLL_LIMIT: u32 = 10_000;
+
+// =============================================================================
+// LiveMmioBackend — `MmioBackend` + `MmioReadBackend` impl for the
+// live driver (P6.7.10-pre.17)
+// =============================================================================
+
+/// Thin newtype wrapping the BAR0 user-VA the kernel returned from
+/// `MmioMap`. Implements [`MmioBackend`] (volatile_write) and
+/// [`MmioReadBackend`] (volatile_read) so the helpers landed in
+/// P6.7.10-pre.11..16 drive the live controller without any
+/// shared mutable state.
+///
+/// The struct is `Copy` so the driver can create two independent
+/// instances (one passed as the read backend, one as the write
+/// backend) to satisfy the two-mutable-reference signature of
+/// `disable_controller`/`enable_controller`. No state is held, so
+/// the duplication is zero-cost.
+#[derive(Clone, Copy)]
+struct LiveMmioBackend {
+    mmio_va_base: u64,
+}
+
+impl MmioBackend for LiveMmioBackend {
+    #[inline]
+    fn write_doorbell(&mut self, offset: usize, value: u32) {
+        // SAFETY: `mmio_va_base + offset` is inside the BAR0 region
+        // the kernel mapped via MmioMap; the controller register
+        // file is at least `CONTROLLER_REGISTER_REGION_BYTES` long,
+        // and OIP-014 § S2.2 step 2 marked the region uncached so
+        // the volatile_write reaches the hardware directly.
+        unsafe {
+            let ptr = (self.mmio_va_base as usize + offset) as *mut u32;
+            ptr.write_volatile(value);
+        }
+    }
+}
+
+impl MmioReadBackend for LiveMmioBackend {
+    #[inline]
+    fn read_register(&mut self, offset: usize) -> u32 {
+        // SAFETY: same as `write_doorbell` — region is uncached and
+        // owned by the kernel mapping; 32-bit aligned reads are
+        // mandated by NVMe 1.4 § 3.0.
+        unsafe {
+            let ptr = (self.mmio_va_base as usize + offset) as *const u32;
+            ptr.read_volatile()
+        }
+    }
+}
+
+// =============================================================================
 // TaskExit sentinel codes (mirror the virtio-net image)
 // =============================================================================
 
@@ -199,6 +287,15 @@ const EXIT_BLK_LOOKUP_NOT_FOUND: u64 = 131;
 /// the filesystem service would otherwise dispatch BLK requests to
 /// the wrong driver.
 const EXIT_BLK_LOOKUP_MISMATCH: u64 = 132;
+/// `disable_controller` failed (controller did not clear `CSTS.RDY`
+/// within the poll budget; see `omni_driver_nvme::queue::QueueError`).
+const EXIT_NVME_DISABLE_TIMEOUT: u64 = 200;
+/// `program_admin_queue_bases` rejected the depths or base
+/// addresses (`AdminDepthOutOfRange` / `QueueBaseMisaligned`).
+const EXIT_NVME_ADMIN_QUEUE_INVALID: u64 = 210;
+/// `enable_controller` failed (controller did not set `CSTS.RDY`
+/// within the poll budget).
+const EXIT_NVME_ENABLE_TIMEOUT: u64 = 220;
 
 // =============================================================================
 // Raw syscall wrapper
@@ -271,7 +368,7 @@ pub extern "C" fn _start() -> ! {
     };
 
     // Step 2 — `MmioMap (70)`: install the NVMe CSR window (16 KiB).
-    let (_mmio_va, mmio_errno) = unsafe {
+    let (mmio_va, mmio_errno) = unsafe {
         syscall5(
             SYS_MMIO_MAP,
             NVME_BAR0_PHYS_BASE,
@@ -382,9 +479,50 @@ pub extern "C" fn _start() -> ! {
         unsafe { sys_exit(EXIT_BLK_LOOKUP_MISMATCH) };
     }
 
+    // Step 4.8 — P6.7.10-pre.17: construct the live MMIO backend
+    // pair against the BAR0 user-VA the kernel returned at step 2.
+    // Two zero-sized clones satisfy the two-mutable-reference
+    // signature of `disable_controller`/`enable_controller`
+    // without aliasing — `LiveMmioBackend` holds no state beyond
+    // the `mmio_va_base` field (copied by value).
+    let mut mmio_write = LiveMmioBackend { mmio_va_base: mmio_va };
+    let mut mmio_read = LiveMmioBackend { mmio_va_base: mmio_va };
+
+    // Step 4.9 — `disable_controller`: read CC, clear EN bit, write
+    // CC back, poll `CSTS.RDY = 0`. Per OIP-Driver-NVMe-014 § S6
+    // step 4 the driver MUST disable the controller before
+    // programming AQA / ASQ / ACQ.
+    if disable_controller(&mut mmio_write, &mut mmio_read, NVME_CSTS_POLL_LIMIT).is_err() {
+        unsafe { sys_exit(EXIT_NVME_DISABLE_TIMEOUT) };
+    }
+
+    // Step 4.10 — `program_admin_queue_bases`: write AQA + ASQ +
+    // ACQ per NVMe 1.4 § 3.1.7-9. The ASQ + ACQ data pages live
+    // at the head of the DMA arena (4 KiB-aligned by construction
+    // because the DMA arena base is at IOVA 0 and the pages are
+    // 4 KiB-multiple offsets).
+    if program_admin_queue_bases(
+        &mut mmio_write,
+        NVME_ASQ_IOVA,
+        NVME_ACQ_IOVA,
+        NVME_ADMIN_SQ_DEPTH,
+        NVME_ADMIN_CQ_DEPTH,
+    )
+    .is_err()
+    {
+        unsafe { sys_exit(EXIT_NVME_ADMIN_QUEUE_INVALID) };
+    }
+
+    // Step 4.11 — `enable_controller`: set CC.EN, poll
+    // `CSTS.RDY = 1`. OIP-Driver-NVMe-014 § S6 step 6.
+    if enable_controller(&mut mmio_write, &mut mmio_read, NVME_CSTS_POLL_LIMIT).is_err() {
+        unsafe { sys_exit(EXIT_NVME_ENABLE_TIMEOUT) };
+    }
+
     // Step 5 — Drive the 13-step bring-up FSM through its remaining
-    // pure-state phases. With MMIO + DMA + IRQ + BLK installed, the
-    // FSM can reach `Phase::Ready` via repeated `Event::Advance`.
+    // pure-state phases. With MMIO + DMA + IRQ + BLK + Admin queue
+    // pair installed, the FSM can reach `Phase::Ready` via
+    // repeated `Event::Advance`.
     let mut bringup = BringUp::new();
     while !bringup.phase().is_terminal() {
         match bringup.on_event(Event::Advance) {
