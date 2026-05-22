@@ -17,6 +17,73 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.1 BLK service-channel ABI types (2026-05-22) — TASK-005 START.**
+  Lands the foundational wire types for the generic BLK channel
+  (`omni.svc.blk.<diskN>`) per OIP-Driver-NVMe-014 § M3 / § S4. First
+  sub-slice of TASK-005 (NVMe live bring-up). Pure-types, host-testable,
+  no MMIO.
+  - **`crates/omni-types/src/blk.rs`** new module declares the canonical
+    `BlkRequest` and `BlkResponse` enums every storage driver
+    (NVMe today, SATA / virtio-blk tomorrow) MUST present. Both are
+    `#[non_exhaustive]` per OIP-014 § S7 so backward-compatible variant
+    additions land via PR without breaking source-level consumers.
+    - `BlkRequest::Read { lba, count, buf_iova }` → NVMe `0x02 NVM Read`.
+    - `BlkRequest::Write { lba, count, buf_iova }` → NVMe `0x01 NVM Write`.
+    - `BlkRequest::Flush` → NVMe `0x00 NVM Flush`.
+    - `BlkRequest::Discard { lba, count }` → NVMe `0x09 Dataset Management`
+      with Attribute = 0x04 (Deallocate); capability-gated by the
+      driver's `discard_enabled` manifest flag.
+    - `BlkResponse::{Ok, NotSupported, DeviceError(u16), OutOfRange,
+      InvalidArgument}` mirrors § M3 exactly.
+  - **Public constants**: `NON_NVME_DEVICE_ERROR = 0xFFFF` (sentinel for
+    non-NVMe `BlkResponse::DeviceError`), `MAX_BLOCK_COUNT_PER_REQUEST =
+    2048` (PRP-page capacity ceiling), `BLOCK_SIZE_BYTES = 4096`
+    (`LBADS = 12` per OIP-014 § M4 / § S6 step 10),
+    `CHANNEL_NAME_PREFIX = "omni.svc.blk."` (capability-gate prefix
+    consumed by the future kernel BLK registry).
+  - **Wire contract**: all encoding goes through
+    `omni_types::wire::encode_canonical` / `decode_canonical` — the
+    single workspace audit point per OIP-Serde-004. No direct
+    `postcard::*` calls.
+  - **+24 host-side tests** under `omni_types::blk::tests::*`: 4
+    `BlkRequest` round-trips (Read / Write / Flush / Discard) + 6
+    `BlkResponse` round-trips (Ok / NotSupported / DeviceError NVMe
+    status / DeviceError non-NVMe sentinel / OutOfRange /
+    InvalidArgument) + 4 wire-invariant tests (determinism per side,
+    trailing-bytes rejection, truncated-input rejection, empty-input
+    rejection) + 4 constants-tripwire tests (sentinel value, max
+    block count, block size, channel-name prefix) + 4 discriminator
+    / encoding-shape tests (variant discriminants distinguishable,
+    Flush / Ok encode to a single byte, cross-variant no-state-sharing)
+    + 2 integration tests.
+  - **Build Info panel** (`crates/omni-kernel/src/bare_metal/demo.rs::
+    render_buildinfo`): Active=`P6.7.10-pre.1 BLK types` (cyan),
+    Next=`P6.7.10-pre.2 BLK registry`, Phase=`1 - Microkernel POC
+    (~99.97%)`, Tests=`1237 workspace pass`.
+  - **Acceptance gates**: `cargo fmt --all -- --check` clean.
+    `cargo clippy --workspace --all-targets --all-features -- -D
+    warnings` clean. `cargo clippy -p omni-kernel --target
+    x86_64-unknown-none --features bare-metal -- -D warnings` clean.
+    `cargo clippy -p omni-kernel --target x86_64-unknown-none
+    --features bare-metal,mb12-userprobe -- -D warnings` clean. `cargo
+    clippy --manifest-path kernel-runner/Cargo.toml --target
+    x86_64-unknown-none -- -D warnings` clean. Clippy 3 driver-image
+    siblings (`x86_64-unknown-none --release`) clean. `bash scripts/
+    check-no-blanket-allow.sh` → `ok (scanned 16 crate-root files)`.
+    `RUSTDOCFLAGS=-Dwarnings cargo doc -p omni-kernel --features
+    bare-metal --target x86_64-unknown-none --no-deps` clean.
+    `RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps
+    --all-features` clean. `python3 scripts/lint-oips.py` → `0
+    error(s), 0 warning(s) across 19 file(s)`.
+    Workspace test count 1213 → **1237 pass / 0 fail**
+    (`cargo test --workspace --all-features -- --test-threads=1`).
+  - **No new dependency**. `serde` + `postcard` are already foundational
+    workspace pins.
+  - **Next slice — P6.7.10-pre.2**: kernel-side BLK channel registry at
+    `crates/omni-kernel/src/services/blk.rs` (new, `#[cfg(feature =
+    "bare-metal")]`), consuming the `CHANNEL_NAME_PREFIX` published in
+    this slice.
+
 - **IOMMU — P6.7.9-pre.11 live per-device DTE/Context-Entry install + `GCMD.TE` / `CTRL.IommuEn` flip (2026-05-22) — TASK-010 CLOSED.**
   Closes the sixth and final TASK-010 milestone — Phase-1 DMA isolation is now
   gated by live IOMMU translation through per-domain page tables.
