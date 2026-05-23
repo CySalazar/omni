@@ -2198,6 +2198,171 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // P6.7.10-pre.36 — IO queue creation composition tests
+    // -------------------------------------------------------------------
+
+    /// Happy path — five sequential admin commands on the same
+    /// `AdminQueuePair`: Identify Controller (CID 1), ActiveNsList
+    /// (CID 2), Namespace (CID 3), Create IO CQ (CID 4), Create IO
+    /// SQ (CID 5). Validates that the queue pair state advances
+    /// correctly through all five submit+drain cycles.
+    #[test]
+    fn image_pre36_create_io_queues_happy_path() {
+        const SQ_DEPTH: u32 = 64;
+        const CQ_DEPTH: u32 = 64;
+        const DSTRD: u8 = 0;
+        const IO_CQ_PRP1: u64 = 0x5000;
+        const IO_SQ_PRP1: u64 = 0x6000;
+        const CREATE_CQ_CID: u16 = 4;
+        const CREATE_SQ_CID: u16 = 5;
+
+        let mut pair = AdminQueuePair::new(SQ_DEPTH, CQ_DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sq_page = empty_sq_page(SQ_DEPTH);
+        let mut cq_page = empty_cq_page(CQ_DEPTH);
+
+        // Consume slots 0–2 with the three Identify commands (pre.33–35).
+        for (cid, slot) in [(1u16, 0usize), (2, 1), (3, 2)] {
+            let sqe = crate::admin::encode_identify(
+                crate::admin::IdentifyTarget::Controller,
+                0x2000,
+                0,
+                cid,
+            );
+            pair.submit(&sqe, &mut mmio, &mut sq_page)
+                .expect("submit identify");
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "slot + 1 <= 3 fits u16"
+            )]
+            let sq_head = (slot + 1) as u16;
+            write_cqe_to_page(&mut cq_page, slot, &build_cqe(true, cid, sq_head));
+            let fields = pair
+                .drain_completion(&mut mmio, &cq_page)
+                .expect("drain Ok")
+                .expect("Some(fields)");
+            assert_eq!(fields.cid, cid);
+            assert!(fields.is_success());
+        }
+
+        // Command 4 — Create I/O Completion Queue.
+        let cq_sqe = crate::admin::encode_create_io_cq(
+            1,
+            64,
+            IO_CQ_PRP1,
+            0,
+            true,
+            true,
+            CREATE_CQ_CID,
+        );
+        pair.submit(&cq_sqe, &mut mmio, &mut sq_page)
+            .expect("submit Create IO CQ");
+        write_cqe_to_page(&mut cq_page, 3, &build_cqe(true, CREATE_CQ_CID, 4));
+        let cq_fields = pair
+            .drain_completion(&mut mmio, &cq_page)
+            .expect("drain Create IO CQ Ok")
+            .expect("Some(cq_fields)");
+        assert_eq!(cq_fields.cid, CREATE_CQ_CID);
+        assert!(cq_fields.is_success());
+
+        // Command 5 — Create I/O Submission Queue.
+        let sq_sqe = crate::admin::encode_create_io_sq(
+            1,
+            64,
+            IO_SQ_PRP1,
+            1,
+            crate::admin::CIOSQ_QPRIO_MEDIUM,
+            true,
+            CREATE_SQ_CID,
+        );
+        pair.submit(&sq_sqe, &mut mmio, &mut sq_page)
+            .expect("submit Create IO SQ");
+        write_cqe_to_page(&mut cq_page, 4, &build_cqe(true, CREATE_SQ_CID, 5));
+        let sq_fields = pair
+            .drain_completion(&mut mmio, &cq_page)
+            .expect("drain Create IO SQ Ok")
+            .expect("Some(sq_fields)");
+        assert_eq!(sq_fields.cid, CREATE_SQ_CID);
+        assert!(sq_fields.is_success());
+    }
+
+    /// Failure path — Create IO CQ submitted, synthetic CQE with
+    /// SC=1. The image bails with `EXIT_NVME_CREATE_IO_CQ_FAILED`.
+    #[test]
+    fn image_pre36_create_io_cq_fails_on_nonzero_status() {
+        const SQ_DEPTH: u32 = 64;
+        const CQ_DEPTH: u32 = 64;
+        const DSTRD: u8 = 0;
+        const CQ_CID: u16 = 4;
+
+        let mut pair = AdminQueuePair::new(SQ_DEPTH, CQ_DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sq_page = empty_sq_page(SQ_DEPTH);
+        let mut cq_page = empty_cq_page(CQ_DEPTH);
+
+        let sqe = crate::admin::encode_create_io_cq(1, 64, 0x5000, 0, true, true, CQ_CID);
+        pair.submit(&sqe, &mut mmio, &mut sq_page)
+            .expect("submit Create IO CQ");
+
+        let mut raw = build_cqe(true, CQ_CID, 1);
+        raw[14] |= 1 << 1; // SC=1
+        write_cqe_to_page(&mut cq_page, 0, &raw);
+
+        let fields = pair
+            .drain_completion(&mut mmio, &cq_page)
+            .expect("drain Ok")
+            .expect("Some(fields)");
+        assert_eq!(fields.cid, CQ_CID);
+        assert_eq!(fields.sc, 1);
+        assert!(
+            !fields.is_success(),
+            "non-zero SC → image bails EXIT_NVME_CREATE_IO_CQ_FAILED"
+        );
+    }
+
+    /// Failure path — Create IO SQ submitted, synthetic CQE with
+    /// SC=1. The image bails with `EXIT_NVME_CREATE_IO_SQ_FAILED`.
+    #[test]
+    fn image_pre36_create_io_sq_fails_on_nonzero_status() {
+        const SQ_DEPTH: u32 = 64;
+        const CQ_DEPTH: u32 = 64;
+        const DSTRD: u8 = 0;
+        const SQ_CID: u16 = 5;
+
+        let mut pair = AdminQueuePair::new(SQ_DEPTH, CQ_DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sq_page = empty_sq_page(SQ_DEPTH);
+        let mut cq_page = empty_cq_page(CQ_DEPTH);
+
+        let sqe = crate::admin::encode_create_io_sq(
+            1,
+            64,
+            0x6000,
+            1,
+            crate::admin::CIOSQ_QPRIO_MEDIUM,
+            true,
+            SQ_CID,
+        );
+        pair.submit(&sqe, &mut mmio, &mut sq_page)
+            .expect("submit Create IO SQ");
+
+        let mut raw = build_cqe(true, SQ_CID, 1);
+        raw[14] |= 1 << 1; // SC=1
+        write_cqe_to_page(&mut cq_page, 0, &raw);
+
+        let fields = pair
+            .drain_completion(&mut mmio, &cq_page)
+            .expect("drain Ok")
+            .expect("Some(fields)");
+        assert_eq!(fields.cid, SQ_CID);
+        assert_eq!(fields.sc, 1);
+        assert!(
+            !fields.is_success(),
+            "non-zero SC → image bails EXIT_NVME_CREATE_IO_SQ_FAILED"
+        );
+    }
+
+    // -------------------------------------------------------------------
     // P6.7.10-pre.35 — Identify(Namespace) composition tests
     // -------------------------------------------------------------------
 

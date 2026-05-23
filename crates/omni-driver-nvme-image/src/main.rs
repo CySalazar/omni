@@ -83,9 +83,15 @@
 //!     the driver aborts with `EXIT_NVME_NS_UNSUPPORTED_LBADS`
 //!     when `LBADS != 12` (sector size not 4 KiB) per OIP-014
 //!     § S6 step 10.
-//! 17. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
+//! 17. **P6.7.10-pre.36** — `encode_create_io_cq` + `encode_create_io_sq`
+//!     submit the fourth and fifth admin commands to create the
+//!     IO queue pair (QID 1, depth 64) per NVMe 1.4 §§ 5.3–5.4.
+//!     The IO CQ at `NVME_IO_CQ_IOVA` must be created before the
+//!     IO SQ at `NVME_IO_SQ_IOVA` because § 5.4 requires the CQ
+//!     to already exist when the SQ references it.
+//! 18. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
 //!     `Phase::Ready` (or any terminal `Failed` state).
-//! 18. `TaskExit(0)` on success / non-zero sentinel on any failure.
+//! 19. `TaskExit(0)` on success / non-zero sentinel on any failure.
 //!
 //! ## Standalone execution
 //!
@@ -112,7 +118,10 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 
-use omni_driver_nvme::admin::{IdentifyTarget, encode_identify};
+use omni_driver_nvme::admin::{
+    CIOSQ_QPRIO_MEDIUM, IdentifyTarget, encode_create_io_cq, encode_create_io_sq,
+    encode_identify,
+};
 use omni_driver_nvme::bringup::{BringUp, Event, Phase};
 use omni_driver_nvme::identify::{ActiveNsListView, IdentifyNamespace};
 use omni_driver_nvme::queue::{
@@ -345,6 +354,50 @@ const NVME_IDENTIFY_NS_POLL_LIMIT: u32 = 50_000;
 const NVME_IDENTIFY_NS_RESP_BYTES: usize = 4096;
 
 // =============================================================================
+// IO queue creation constants (P6.7.10-pre.36, OIP-Driver-NVMe-014 § R2)
+// =============================================================================
+
+/// IOVA offset (inside the DMA arena) of the IO Completion Queue data
+/// page. Placed at offset `0x5000` so it lives in the sixth 4 KiB
+/// page after the ASQ (`0x0`), ACQ (`0x1000`), Identify Controller
+/// response (`0x2000`), Active Namespace List response (`0x3000`),
+/// and Identify Namespace response (`0x4000`). New in P6.7.10-pre.36.
+const NVME_IO_CQ_IOVA: u64 = 0x5000;
+
+/// IOVA offset of the IO Submission Queue data page. Placed at
+/// `0x6000` (seventh 4 KiB page). New in P6.7.10-pre.36.
+const NVME_IO_SQ_IOVA: u64 = 0x6000;
+
+/// IO queue depth for both the IO CQ and IO SQ. Phase-1 pins this
+/// to 64 entries per OIP-Driver-NVMe-014 § R2 (matches the admin
+/// queue depth for simplicity; production drivers may use up to
+/// 65535). New in P6.7.10-pre.36.
+const NVME_IO_QUEUE_DEPTH: u16 = 64;
+
+/// IO CQ/SQ Queue Identifier — Phase-1 creates exactly one IO queue
+/// pair with QID 1 per OIP-014 § R5. New in P6.7.10-pre.36.
+const NVME_IO_QID: u16 = 1;
+
+/// MSI-X interrupt vector the IO CQ completions signal on. Phase-1
+/// uses vector 0 (shared with the admin CQ); a future multi-queue
+/// slice will assign distinct vectors per IO CQ. New in P6.7.10-pre.36.
+const NVME_IO_CQ_IRQ_VECTOR: u16 = 0;
+
+/// CID for the `Create I/O Completion Queue` admin command —
+/// `NVME_IDENTIFY_NS_CID + 1 = 4`. Fourth admin command in the
+/// serial bring-up sequence. New in P6.7.10-pre.36.
+const NVME_CREATE_IO_CQ_CID: u16 = 4;
+
+/// CID for the `Create I/O Submission Queue` admin command —
+/// `NVME_CREATE_IO_CQ_CID + 1 = 5`. Fifth admin command. New in
+/// P6.7.10-pre.36.
+const NVME_CREATE_IO_SQ_CID: u16 = 5;
+
+/// Poll budget for the IO queue creation completions. Same rationale
+/// as [`NVME_IDENTIFY_POLL_LIMIT`]. New in P6.7.10-pre.36.
+const NVME_CREATE_IO_POLL_LIMIT: u32 = 50_000;
+
+// =============================================================================
 // LiveMmioBackend — `MmioBackend` + `MmioReadBackend` impl for the
 // live driver (P6.7.10-pre.17)
 // =============================================================================
@@ -560,6 +613,30 @@ const EXIT_NVME_NS_PARSE_FAILED: u64 = 278;
 /// namespace whose sector size differs from the kernel page
 /// size. New in P6.7.10-pre.35.
 const EXIT_NVME_NS_UNSUPPORTED_LBADS: u64 = 280;
+/// `AdminQueuePair::submit` failed to enqueue the `Create I/O
+/// Completion Queue` SQE. New in P6.7.10-pre.36.
+const EXIT_NVME_CREATE_IO_CQ_SUBMIT_FAILED: u64 = 290;
+/// The `Create I/O Completion Queue` poll loop exhausted
+/// [`NVME_CREATE_IO_POLL_LIMIT`]. New in P6.7.10-pre.36.
+const EXIT_NVME_CREATE_IO_CQ_TIMEOUT: u64 = 292;
+/// `drain_completion` surfaced a non-timeout error while
+/// polling the `Create I/O CQ` completion. New in P6.7.10-pre.36.
+const EXIT_NVME_CREATE_IO_CQ_DRAIN_FAILED: u64 = 294;
+/// `Create I/O Completion Queue` completed but the CQE reports a
+/// non-success status word. New in P6.7.10-pre.36.
+const EXIT_NVME_CREATE_IO_CQ_FAILED: u64 = 296;
+/// `AdminQueuePair::submit` failed to enqueue the `Create I/O
+/// Submission Queue` SQE. New in P6.7.10-pre.36.
+const EXIT_NVME_CREATE_IO_SQ_SUBMIT_FAILED: u64 = 300;
+/// The `Create I/O Submission Queue` poll loop exhausted
+/// [`NVME_CREATE_IO_POLL_LIMIT`]. New in P6.7.10-pre.36.
+const EXIT_NVME_CREATE_IO_SQ_TIMEOUT: u64 = 302;
+/// `drain_completion` surfaced a non-timeout error while
+/// polling the `Create I/O SQ` completion. New in P6.7.10-pre.36.
+const EXIT_NVME_CREATE_IO_SQ_DRAIN_FAILED: u64 = 304;
+/// `Create I/O Submission Queue` completed but the CQE reports a
+/// non-success status word. New in P6.7.10-pre.36.
+const EXIT_NVME_CREATE_IO_SQ_FAILED: u64 = 306;
 
 // =============================================================================
 // Raw syscall wrapper
@@ -1085,12 +1162,98 @@ pub extern "C" fn _start() -> ! {
         unsafe { sys_exit(EXIT_NVME_NS_UNSUPPORTED_LBADS) };
     }
 
+    // Step 4.18 — P6.7.10-pre.36: Create I/O Completion Queue.
+    // Per NVMe 1.4 § 5.3 the IO CQ MUST be created before the
+    // matching IO SQ. Phase-1 creates exactly one IO queue pair
+    // (QID 1) per OIP-014 § R2. The CQ data page lives at
+    // `NVME_IO_CQ_IOVA` (offset `0x5000`) in the DMA arena;
+    // `physically_contiguous = true` because Phase-1 uses PRP
+    // mode (single 4 KiB page per queue).
+    let create_cq_sqe = encode_create_io_cq(
+        NVME_IO_QID,
+        NVME_IO_QUEUE_DEPTH,
+        NVME_IO_CQ_IOVA,
+        NVME_IO_CQ_IRQ_VECTOR,
+        true,
+        true,
+        NVME_CREATE_IO_CQ_CID,
+    );
+    if admin_pair
+        .submit(&create_cq_sqe, &mut mmio_write, asq_slice)
+        .is_err()
+    {
+        unsafe { sys_exit(EXIT_NVME_CREATE_IO_CQ_SUBMIT_FAILED) };
+    }
+
+    // Step 4.18.b — Poll for the Create IO CQ completion. The CQE
+    // lands on CQ slot 3 (slots 0–2 consumed by the three Identify
+    // completions above).
+    let mut cq_create_polls: u32 = 0;
+    let cq_create_cqe = loop {
+        if cq_create_polls >= NVME_CREATE_IO_POLL_LIMIT {
+            unsafe { sys_exit(EXIT_NVME_CREATE_IO_CQ_TIMEOUT) };
+        }
+        cq_create_polls = cq_create_polls.saturating_add(1);
+        match admin_pair.drain_completion(&mut mmio_write, acq_slice) {
+            Ok(Some(fields)) if fields.cid == NVME_CREATE_IO_CQ_CID => break fields,
+            Ok(Some(_)) => continue,
+            Ok(None) => continue,
+            Err(_) => unsafe { sys_exit(EXIT_NVME_CREATE_IO_CQ_DRAIN_FAILED) },
+        }
+    };
+
+    // Step 4.18.c — Validate the completion status word.
+    if !cq_create_cqe.is_success() {
+        unsafe { sys_exit(EXIT_NVME_CREATE_IO_CQ_FAILED) };
+    }
+
+    // Step 4.19 — P6.7.10-pre.36: Create I/O Submission Queue.
+    // Per NVMe 1.4 § 5.4 the IO SQ references the IO CQ created
+    // in step 4.18 via `cq_id = NVME_IO_QID`. Queue priority is
+    // `MEDIUM` (matches the Phase-1 default in
+    // `CreateIoQueuesConfig::phase_1_default`).
+    let create_sq_sqe = encode_create_io_sq(
+        NVME_IO_QID,
+        NVME_IO_QUEUE_DEPTH,
+        NVME_IO_SQ_IOVA,
+        NVME_IO_QID,
+        CIOSQ_QPRIO_MEDIUM,
+        true,
+        NVME_CREATE_IO_SQ_CID,
+    );
+    if admin_pair
+        .submit(&create_sq_sqe, &mut mmio_write, asq_slice)
+        .is_err()
+    {
+        unsafe { sys_exit(EXIT_NVME_CREATE_IO_SQ_SUBMIT_FAILED) };
+    }
+
+    // Step 4.19.b — Poll for the Create IO SQ completion. The CQE
+    // lands on CQ slot 4.
+    let mut sq_create_polls: u32 = 0;
+    let sq_create_cqe = loop {
+        if sq_create_polls >= NVME_CREATE_IO_POLL_LIMIT {
+            unsafe { sys_exit(EXIT_NVME_CREATE_IO_SQ_TIMEOUT) };
+        }
+        sq_create_polls = sq_create_polls.saturating_add(1);
+        match admin_pair.drain_completion(&mut mmio_write, acq_slice) {
+            Ok(Some(fields)) if fields.cid == NVME_CREATE_IO_SQ_CID => break fields,
+            Ok(Some(_)) => continue,
+            Ok(None) => continue,
+            Err(_) => unsafe { sys_exit(EXIT_NVME_CREATE_IO_SQ_DRAIN_FAILED) },
+        }
+    };
+
+    // Step 4.19.c — Validate the completion status word.
+    if !sq_create_cqe.is_success() {
+        unsafe { sys_exit(EXIT_NVME_CREATE_IO_SQ_FAILED) };
+    }
+
     // Step 5 — Drive the 13-step bring-up FSM through its remaining
     // pure-state phases. With MMIO + DMA + IRQ + BLK + Admin queue
-    // pair installed AND all three mandatory Identify admin commands
-    // (Controller + ActiveNsList + Namespace) round-tripped
-    // successfully, the FSM can reach `Phase::Ready` via repeated
-    // `Event::Advance`.
+    // pair installed, all three mandatory Identify admin commands
+    // round-tripped, AND the IO CQ+SQ pair created, the FSM can
+    // reach `Phase::Ready` via repeated `Event::Advance`.
     let mut bringup = BringUp::new();
     while !bringup.phase().is_terminal() {
         match bringup.on_event(Event::Advance) {
