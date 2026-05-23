@@ -107,6 +107,12 @@
 //!     `Phase::Ready` (or any terminal `Failed` state).
 //! 23. `TaskExit(0)` on success / non-zero sentinel on any failure.
 //!
+//! **P6.7.10-pre.41** also inserts CAP register validation (step 4.8.b)
+//! between the MMIO backend construction (step 10) and the controller
+//! disable (step 10): reads `DSTRD`, `MQES`, `MPSMIN` from the
+//! 64-bit CAP register and aborts if any field is incompatible with
+//! Phase-1 constants.
+//!
 //! ## Standalone execution
 //!
 //! When this binary is executed without going through `DriverLoad` (a
@@ -138,6 +144,7 @@ use omni_driver_nvme::admin::{
 };
 use omni_driver_nvme::bringup::{BringUp, Event, Phase};
 use omni_driver_nvme::identify::{ActiveNsListView, IdentifyNamespace};
+use omni_driver_nvme::controller_regs::{CAP_OFFSET, cap_dstrd, cap_mqes, cap_mpsmin};
 use omni_driver_nvme::discard::write_single_discard_range;
 use omni_driver_nvme::io::{encode_discard, encode_flush, encode_read, encode_write};
 use omni_driver_nvme::queue::{
@@ -768,6 +775,15 @@ const EXIT_NVME_IO_DISCARD_DRAIN_FAILED: u64 = 356;
 /// NVM Discard completed but the CQE reports a non-success status
 /// word. New in P6.7.10-pre.40.
 const EXIT_NVME_IO_DISCARD_FAILED: u64 = 358;
+/// `CAP.DSTRD` read from the controller is not the Phase-1
+/// expected value (0). New in P6.7.10-pre.41.
+const EXIT_NVME_CAP_DSTRD_MISMATCH: u64 = 360;
+/// `CAP.MQES` is too small — the controller cannot support the
+/// Phase-1 admin queue depth (64). New in P6.7.10-pre.41.
+const EXIT_NVME_CAP_MQES_TOO_SMALL: u64 = 362;
+/// `CAP.MPSMIN` > 0 — the controller does not support 4 KiB host
+/// pages required by the OMNI OS kernel. New in P6.7.10-pre.41.
+const EXIT_NVME_CAP_MPSMIN_UNSUPPORTED: u64 = 364;
 
 // =============================================================================
 // Raw syscall wrapper
@@ -963,6 +979,33 @@ pub extern "C" fn _start() -> ! {
     let mut mmio_read = LiveMmioBackend {
         mmio_va_base: mmio_va,
     };
+
+    // Step 4.8.b — P6.7.10-pre.41: read the CAP register (64-bit,
+    // NVMe 1.4 § 3.1.1) and validate that the controller's
+    // capabilities are compatible with Phase-1 hard-coded
+    // parameters. Two 32-bit reads compose the 64-bit value.
+    let cap_lo = mmio_read.read_register(CAP_OFFSET) as u64;
+    let cap_hi = mmio_read.read_register(CAP_OFFSET + 4) as u64;
+    let cap = cap_lo | (cap_hi << 32);
+
+    // Validate DSTRD: Phase-1 hard-codes DSTRD = 0 (4-byte stride).
+    if cap_dstrd(cap) != NVME_ADMIN_DSTRD_DEFAULT {
+        unsafe { sys_exit(EXIT_NVME_CAP_DSTRD_MISMATCH) };
+    }
+
+    // Validate MQES: the controller must support at least 64 entries
+    // (the Phase-1 admin queue depth). MQES is zero-based, so
+    // MQES >= 63 means the controller supports >= 64 entries.
+    if cap_mqes(cap) < (NVME_ADMIN_SQ_DEPTH - 1) as u16 {
+        unsafe { sys_exit(EXIT_NVME_CAP_MQES_TOO_SMALL) };
+    }
+
+    // Validate MPSMIN: Phase-1 requires 4 KiB host pages (MPS = 0,
+    // i.e. MPSMIN must be <= 0). If the controller's minimum page
+    // size is larger than 4 KiB, the bring-up cannot proceed.
+    if cap_mpsmin(cap) > 0 {
+        unsafe { sys_exit(EXIT_NVME_CAP_MPSMIN_UNSUPPORTED) };
+    }
 
     // Step 4.9 — `disable_controller`: read CC, clear EN bit, write
     // CC back, poll `CSTS.RDY = 0`. Per OIP-Driver-NVMe-014 § S6

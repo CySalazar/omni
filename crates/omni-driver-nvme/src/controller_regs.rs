@@ -205,6 +205,60 @@ pub const fn cq_head_doorbell_offset(qid: u16, dstrd: u8) -> Option<usize> {
     off.checked_add(DOORBELL_ARRAY_OFFSET)
 }
 
+// =============================================================================
+// CAP (Controller Capabilities) field extractors — NVMe 1.4 § 3.1.1
+// =============================================================================
+
+/// Extract `CAP.MQES` (Maximum Queue Entries Supported, bits 15:0).
+///
+/// The value is **zero-based**: `MQES = 0` means the controller
+/// supports a minimum of 2 entries (one producer + one consumer).
+/// OMNI OS Phase-1 interprets `MQES + 1` as the maximum queue depth
+/// the controller can handle.
+#[must_use]
+pub const fn cap_mqes(cap: u64) -> u16 {
+    (cap & 0xFFFF) as u16
+}
+
+/// Extract `CAP.CQR` (Contiguous Queues Required, bit 16).
+///
+/// When `true` the controller requires physically contiguous queue
+/// pages. Phase-1 always passes `physically_contiguous = true` in
+/// `Create IO CQ/SQ` per OIP-014 § R2.
+#[must_use]
+pub const fn cap_cqr(cap: u64) -> bool {
+    (cap >> 16) & 1 != 0
+}
+
+/// Extract `CAP.DSTRD` (Doorbell Stride, bits 35:32).
+///
+/// The doorbell stride is `4 << DSTRD` bytes. Phase-1 hard-codes
+/// `DSTRD = 0` (4-byte stride); any controller reporting a non-zero
+/// value must be rejected until the driver is extended.
+#[must_use]
+pub const fn cap_dstrd(cap: u64) -> u8 {
+    ((cap >> 32) & 0x0F) as u8
+}
+
+/// Extract `CAP.MPSMIN` (Memory Page Size Minimum, bits 51:48).
+///
+/// The minimum host page size the controller supports is
+/// `2^(12 + MPSMIN)` bytes. Phase-1 requires `MPSMIN <= 0` (i.e.
+/// the controller must support 4 KiB pages).
+#[must_use]
+pub const fn cap_mpsmin(cap: u64) -> u8 {
+    ((cap >> 48) & 0x0F) as u8
+}
+
+/// Extract `CAP.MPSMAX` (Memory Page Size Maximum, bits 55:52).
+///
+/// The maximum host page size the controller supports is
+/// `2^(12 + MPSMAX)` bytes. Phase-1 does not constrain this.
+#[must_use]
+pub const fn cap_mpsmax(cap: u64) -> u8 {
+    ((cap >> 52) & 0x0F) as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +329,70 @@ mod tests {
     fn csts_bit_encodings_match_spec() {
         assert_eq!(CSTS_RDY_BIT, 0x01);
         assert_eq!(CSTS_CFS_BIT, 0x02);
+    }
+
+    // -------------------------------------------------------------------
+    // CAP field extractors (P6.7.10-pre.41)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn cap_mqes_extracts_bits_15_0() {
+        // MQES = 0x00FF → controller supports up to 256 entries.
+        let cap: u64 = 0x00FF;
+        assert_eq!(cap_mqes(cap), 0x00FF);
+        // Full 16-bit range.
+        let cap_max: u64 = 0xFFFF;
+        assert_eq!(cap_mqes(cap_max), 0xFFFF);
+    }
+
+    #[test]
+    fn cap_cqr_extracts_bit_16() {
+        let cap_cqr_set: u64 = 1 << 16;
+        assert!(cap_cqr(cap_cqr_set));
+        let cap_cqr_clear: u64 = 0;
+        assert!(!cap_cqr(cap_cqr_clear));
+    }
+
+    #[test]
+    fn cap_dstrd_extracts_bits_35_32() {
+        // DSTRD = 0 → 4-byte stride (most common).
+        let cap_dstrd_0: u64 = 0;
+        assert_eq!(cap_dstrd(cap_dstrd_0), 0);
+        // DSTRD = 3 → 32-byte stride.
+        let cap_dstrd_3: u64 = 3_u64 << 32;
+        assert_eq!(cap_dstrd(cap_dstrd_3), 3);
+        // DSTRD = 15 → max 4-bit field.
+        let cap_dstrd_15: u64 = 0x0F_u64 << 32;
+        assert_eq!(cap_dstrd(cap_dstrd_15), 15);
+    }
+
+    #[test]
+    fn cap_mpsmin_extracts_bits_51_48() {
+        // MPSMIN = 0 → minimum page size 2^12 = 4 KiB.
+        assert_eq!(cap_mpsmin(0), 0);
+        // MPSMIN = 1 → minimum page size 2^13 = 8 KiB.
+        let cap_mpsmin_1: u64 = 1_u64 << 48;
+        assert_eq!(cap_mpsmin(cap_mpsmin_1), 1);
+    }
+
+    #[test]
+    fn cap_mpsmax_extracts_bits_55_52() {
+        // MPSMAX = 0 → max page size 4 KiB (degenerate single-size).
+        assert_eq!(cap_mpsmax(0), 0);
+        // MPSMAX = 5 → max page size 2^17 = 128 KiB.
+        let cap_mpsmax_5: u64 = 5_u64 << 52;
+        assert_eq!(cap_mpsmax(cap_mpsmax_5), 5);
+    }
+
+    #[test]
+    fn cap_fields_independent_of_each_other() {
+        // Composite CAP: MQES=0x003F, CQR=1, DSTRD=2, MPSMIN=0, MPSMAX=4.
+        let cap: u64 = 0x003F | (1 << 16) | (2_u64 << 32) | (4_u64 << 52);
+        assert_eq!(cap_mqes(cap), 0x003F);
+        assert!(cap_cqr(cap));
+        assert_eq!(cap_dstrd(cap), 2);
+        assert_eq!(cap_mpsmin(cap), 0);
+        assert_eq!(cap_mpsmax(cap), 4);
     }
 
     #[test]
