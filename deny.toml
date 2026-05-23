@@ -58,7 +58,6 @@ confidence-threshold = 0.93
 # approval (post-Stichting) or BDFL approval (during the 5-year window).
 allow = [
   "AGPL-3.0",
-  "AGPL-3.0-only",
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
   "MIT",
@@ -105,27 +104,13 @@ external-default-features  = "allow"
 
 # Crates we refuse outright. Each entry MUST have a written reason.
 deny = [
-  { name = "openssl-sys",
-    reason = "Force rustls + ring; OpenSSL has historically been the worst supply-chain actor in our space and adds a C-toolchain attack surface incompatible with the OMNI OS threat model." },
-
-  { name = "openssl",
-    reason = "Same as openssl-sys." },
-
-  { name = "native-tls",
-    reason = "Pulls platform-specific TLS stacks (SChannel / SecureTransport / OpenSSL). OMNI OS uses rustls everywhere for deterministic, audited behavior." },
-
-  { name = "md5",
-    reason = "Cryptographically broken. If MD5 is needed for a non-security checksum (e.g., legacy interop), justify in PR and use the `md-5` crate (RustCrypto, audited) with a #[cfg] gate." },
-
-  { name = "sha1",
-    reason = "Cryptographically weak for security purposes. Same exception path as md5 if non-security use is required." },
-
-  { name = "rand",
-    wrappers = ["fastbloom", "proptest", "quinn-proto"],
-    reason = "Use `rand_core` + an explicit, auditable RNG (OsRng for OS entropy, ChaCha20Rng for deterministic) in first-party OMNI code. Top-level `rand` re-exports too much surface and changes defaults across versions. Carve-outs (transitives only; never first-party):\n  - `fastbloom` — bloom-filter perf path inside quinn-proto; no security boundary.\n  - `quinn-proto` — QUIC transport; its `rand` use is for connection-ID + retry-token entropy, audited upstream.\n  - `proptest` — dev/test only (property-based and adversarial test suites).\nRationale: replacing any of these would mean forking widely-vetted crates. Re-evaluate at every quinn-proto / proptest bump." },
-
-  { name = "time",
-    reason = "Historic CVE-2020-26235 lineage and ergonomic footguns. Use `chrono` (with `clock` feature audited) or `jiff` once it lands stable." },
+  { name = "openssl-sys", reason = "Force rustls + ring; OpenSSL adds a C-toolchain attack surface incompatible with OMNI OS." },
+  { name = "openssl", reason = "Same as openssl-sys." },
+  { name = "native-tls", reason = "Pulls platform-specific TLS stacks. OMNI OS uses rustls everywhere." },
+  { name = "md5", reason = "Cryptographically broken. Use md-5 (RustCrypto) with cfg gate if non-security checksum needed." },
+  { name = "sha1", reason = "Cryptographically weak. Same exception path as md5." },
+  { name = "rand", wrappers = ["fastbloom", "proptest", "quinn-proto"], reason = "Use rand_core + explicit RNG. Carve-outs: fastbloom/quinn-proto/proptest (transitives only)." },
+  { name = "time", reason = "Historic CVE-2020-26235 lineage. Use chrono or jiff." },
 ]
 
 # Skip duplicates of these crates (transitive dupes we tolerate while
