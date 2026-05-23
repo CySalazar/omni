@@ -1371,9 +1371,10 @@ pub extern "C" fn _start() -> ! {
         Ok(v) => v,
         Err(_) => unsafe { sys_exit(EXIT_NVME_NS_PARSE_FAILED) },
     };
-    if ns_view.validated_byte_size().is_err() {
-        unsafe { sys_exit(EXIT_NVME_NS_UNSUPPORTED_LBADS) };
-    }
+    let _namespace_byte_size = match ns_view.validated_byte_size() {
+        Ok(size) => size,
+        Err(_) => unsafe { sys_exit(EXIT_NVME_NS_UNSUPPORTED_LBADS) },
+    };
 
     // Step 4.18 — P6.7.10-pre.36: Create I/O Completion Queue.
     // Per NVMe 1.4 § 5.3 the IO CQ MUST be created before the

@@ -948,6 +948,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "omni-fs"
+version = "0.2.0"
+dependencies = [
+ "omni-types",
+]
+
+[[package]]
 name = "omni-hal"
 version = "0.2.0"
 dependencies = [
