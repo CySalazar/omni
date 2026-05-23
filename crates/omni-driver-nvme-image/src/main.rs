@@ -67,9 +67,17 @@
 //!     / drain failure. This is the first real admin command the
 //!     live image issues end-to-end via syscalls (vs the synthetic
 //!     `Event::Advance` ladder the FSM walks in step 16).
-//! 15. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
+//! 15. **P6.7.10-pre.34** — `encode_identify(IdentifyTarget::ActiveNsList, …)`
+//!     submits the second admin command. The 4 KiB response page
+//!     at `NVME_IDENTIFY_NS_LIST_RESP_IOVA` is parsed alloc-free
+//!     via [`ActiveNsListView::new`] + `first_active_nsid()`.
+//!     An empty list (controller reports zero active namespaces)
+//!     is treated as a hard failure (`EXIT_NVME_NS_LIST_EMPTY`)
+//!     because the subsequent `Identify(Namespace)` step has no
+//!     NSID to seed.
+//! 16. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
 //!     `Phase::Ready` (or any terminal `Failed` state).
-//! 16. `TaskExit(0)` on success / non-zero sentinel on any failure.
+//! 17. `TaskExit(0)` on success / non-zero sentinel on any failure.
 //!
 //! ## Standalone execution
 //!
@@ -98,6 +106,7 @@ use core::panic::PanicInfo;
 
 use omni_driver_nvme::admin::{IdentifyTarget, encode_identify};
 use omni_driver_nvme::bringup::{BringUp, Event, Phase};
+use omni_driver_nvme::identify::ActiveNsListView;
 use omni_driver_nvme::queue::{
     AdminQueuePair, MmioBackend, MmioReadBackend, PHASE_1_IOCQES_LOG2, PHASE_1_IOSQES_LOG2,
     PHASE_1_MPS_LOG2, check_controller_fatal, disable_controller, enable_controller,
@@ -268,6 +277,39 @@ const NVME_IDENTIFY_POLL_LIMIT: u32 = 50_000;
 /// policy that the host-side reference implementation uses.
 const NVME_IDENTIFY_FIRST_CID: u16 = 1;
 
+/// IOVA offset (inside the DMA arena) of the response page the
+/// controller writes the `Identify(ActiveNsList)` response into.
+/// Placed at offset `0x3000` so it lives in the fourth 4 KiB page
+/// after the ASQ (`0x0`), the ACQ (`0x1000`), and the Identify
+/// Controller response (`0x2000`). 4 KiB-aligned by construction
+/// per NVMe 1.4 § 5.15 (Active Namespace ID list response is
+/// exactly 4 KiB; PRP1 alone covers it; PRP2 is zero). The page
+/// is parsed by [`ActiveNsListView::new`] in
+/// step 4.16.d. P6.7.10-pre.34.
+const NVME_IDENTIFY_NS_LIST_RESP_IOVA: u64 = 0x3000;
+
+/// CID the image hands out for the Identify(ActiveNsList)
+/// command — `NVME_IDENTIFY_FIRST_CID + 1`. The Phase-1 bring-up
+/// issues admin commands strictly serially, so the CID counter
+/// is a simple `+1` for each new command; reusing `submit_identify`
+/// (the alloc-bound host-side helper) is not possible here because
+/// the image runs under `PanicOnAlloc`.
+const NVME_IDENTIFY_NS_LIST_CID: u16 = 2;
+
+/// Poll budget for the Identify(ActiveNsList) completion. Same
+/// rationale as [`NVME_IDENTIFY_POLL_LIMIT`]: QEMU virtualised
+/// NVMe completes admin commands within tens of microseconds,
+/// `50_000` iterations is well above any realistic latency.
+/// New in P6.7.10-pre.34.
+const NVME_IDENTIFY_NS_LIST_POLL_LIMIT: u32 = 50_000;
+
+/// Backing-page size of the `Identify(ActiveNsList)` response —
+/// exactly 4 KiB per NVMe 1.4 § 5.15.2 Figure 246. Matches
+/// `omni_driver_nvme::identify::IDENTIFY_RESPONSE_BYTES`; pinned
+/// locally so the slice construction is alloc-free.
+/// New in P6.7.10-pre.34.
+const NVME_IDENTIFY_NS_LIST_RESP_BYTES: usize = 4096;
+
 // =============================================================================
 // LiveMmioBackend — `MmioBackend` + `MmioReadBackend` impl for the
 // live driver (P6.7.10-pre.17)
@@ -413,6 +455,46 @@ const EXIT_NVME_IDENTIFY_DRAIN_FAILED: u64 = 242;
 /// shape is wrong or the controller has a serious firmware
 /// issue. New in P6.7.10-pre.33.
 const EXIT_NVME_IDENTIFY_FAILED: u64 = 245;
+/// `AdminQueuePair::submit` failed to enqueue the
+/// Identify(ActiveNsList) SQE on the second admin slot. Mirrors
+/// `EXIT_NVME_IDENTIFY_SUBMIT_FAILED` semantically; distinct
+/// sentinel so serial-log triage can tell which command in the
+/// bring-up handshake regressed. New in P6.7.10-pre.34.
+const EXIT_NVME_NS_LIST_SUBMIT_FAILED: u64 = 250;
+/// The Identify(ActiveNsList) poll loop exhausted
+/// [`NVME_IDENTIFY_NS_LIST_POLL_LIMIT`] iterations without
+/// observing a matching CQE. Same root-cause space as
+/// `EXIT_NVME_IDENTIFY_TIMEOUT`: silent NACK or DMA-arena
+/// mis-programming, scoped to the second admin command.
+/// New in P6.7.10-pre.34.
+const EXIT_NVME_NS_LIST_TIMEOUT: u64 = 252;
+/// `AdminQueuePair::drain_completion` surfaced a non-timeout
+/// error while polling the Identify(ActiveNsList) completion.
+/// Defensive against a regression of the page-size or
+/// doorbell-stride constants. New in P6.7.10-pre.34.
+const EXIT_NVME_NS_LIST_DRAIN_FAILED: u64 = 254;
+/// Identify(ActiveNsList) completed but the CQE reports a
+/// non-success status word. The controller actively refused the
+/// command — either CDW10/11 shape is wrong (CNS = 0x02 must be
+/// honoured by any 1.4-compliant controller) or the controller
+/// has a serious firmware issue. New in P6.7.10-pre.34.
+const EXIT_NVME_NS_LIST_FAILED: u64 = 256;
+/// [`ActiveNsListView::new`] returned `IdentifyError::PageTooSmall`.
+/// Reachable only if the local slice constructor mis-computes the
+/// response-page length; the IOVA region the image hands to the
+/// controller is sized exactly [`NVME_IDENTIFY_NS_LIST_RESP_BYTES`]
+/// (4 KiB) by construction, so this sentinel is purely defensive
+/// against a regression of the constant. New in P6.7.10-pre.34.
+const EXIT_NVME_NS_LIST_PARSE_FAILED: u64 = 258;
+/// The Active Namespace List parse succeeded but
+/// [`ActiveNsListView::first_active_nsid`] returned `None`:
+/// the controller reports zero active namespaces, which makes
+/// the subsequent `Identify(Namespace)` step impossible. NVMe
+/// 1.4 § 5.15.2 permits a controller to expose zero namespaces
+/// only as a transient post-format state; reaching this branch
+/// during bring-up is a hard failure — the kernel BLK gateway
+/// has no namespace to publish. New in P6.7.10-pre.34.
+const EXIT_NVME_NS_LIST_EMPTY: u64 = 260;
 
 // =============================================================================
 // Raw syscall wrapper
@@ -778,11 +860,99 @@ pub extern "C" fn _start() -> ! {
         unsafe { sys_exit(EXIT_NVME_IDENTIFY_FAILED) };
     }
 
+    // Step 4.16 — P6.7.10-pre.34: encode + submit the
+    // Identify(ActiveNsList) SQE (NVMe 1.4 § 5.15.2). The response
+    // is a 4 KiB page laid out as 1024 little-endian 32-bit NSIDs
+    // (ascending, NSID = 0 sentinel terminator). PRP2 is zero
+    // (single-page response). This is the second real admin
+    // command the live image issues end-to-end: the first
+    // (Identify Controller) already validated the queue-pair
+    // plumbing in pre.33, so any failure surfaced below is
+    // squarely a controller-side or DMA-arena regression scoped to
+    // the ActiveNsList command.
+    let ns_list_sqe = encode_identify(
+        IdentifyTarget::ActiveNsList,
+        NVME_IDENTIFY_NS_LIST_RESP_IOVA,
+        0,
+        NVME_IDENTIFY_NS_LIST_CID,
+    );
+    if admin_pair
+        .submit(&ns_list_sqe, &mut mmio_write, asq_slice)
+        .is_err()
+    {
+        unsafe { sys_exit(EXIT_NVME_NS_LIST_SUBMIT_FAILED) };
+    }
+
+    // Step 4.16.b — Poll the admin CQ for the matching CID. Same
+    // structure as step 4.15.b: bounded budget, skip strays,
+    // continue on `Ok(None)`, exit on `Err(_)`. The CQ slot used
+    // by this completion is slot 1 (slot 0 is consumed by the
+    // Identify Controller completion above; `drain_completion`
+    // advanced `expected_head` internally). The phase tag at
+    // slot 1 is still 1 (we are on lap 1 and CQ_DEPTH = 64), so a
+    // synthetic empty page would land on the `Ok(None)` path.
+    let mut ns_list_polls: u32 = 0;
+    let ns_list_cqe = loop {
+        if ns_list_polls >= NVME_IDENTIFY_NS_LIST_POLL_LIMIT {
+            unsafe { sys_exit(EXIT_NVME_NS_LIST_TIMEOUT) };
+        }
+        ns_list_polls = ns_list_polls.saturating_add(1);
+        match admin_pair.drain_completion(&mut mmio_write, acq_slice) {
+            Ok(Some(fields)) if fields.cid == NVME_IDENTIFY_NS_LIST_CID => break fields,
+            Ok(Some(_)) => {
+                // Stray completion with a non-matching CID — same
+                // defensive skip-and-keep-polling as step 4.15.b.
+                continue;
+            }
+            Ok(None) => continue,
+            Err(_) => unsafe { sys_exit(EXIT_NVME_NS_LIST_DRAIN_FAILED) },
+        }
+    };
+
+    // Step 4.16.c — Validate the completion status word. Same
+    // semantics as step 4.15.c, with a distinct sentinel so triage
+    // can localise which command in the handshake regressed.
+    if !ns_list_cqe.is_success() {
+        unsafe { sys_exit(EXIT_NVME_NS_LIST_FAILED) };
+    }
+
+    // Step 4.16.d — Parse the 4 KiB response page via
+    // [`ActiveNsListView`]. The view is alloc-free and reads the
+    // page lazily on `first_active_nsid()`, so the
+    // `PanicOnAlloc` global allocator stays untouched. The IOVA
+    // region was zero-initialised by the kernel `DmaMap (71)`
+    // syscall at step 3; the controller has just DMA-written the
+    // NSID array into it. Phase-1 passthrough IOMMU means
+    // `user_va == iova`, so the slice constructor reads exactly
+    // the bytes the controller wrote.
+    //
+    // SAFETY: the DMA arena was installed by `DmaMap (71)` at
+    // step 3 with `DMA_LEN_4_GIB`, which covers the IOVA range
+    // `[NVME_IDENTIFY_NS_LIST_RESP_IOVA, NVME_IDENTIFY_NS_LIST_RESP_IOVA + 4096)`.
+    // The controller acknowledged the submission via the
+    // matching CQE above, so the DMA write has completed.
+    // The slice lifetime ends at `_start`'s `sys_exit`; no other
+    // code path holds these bytes.
+    let ns_list_slice: &[u8] = unsafe {
+        core::slice::from_raw_parts(
+            NVME_IDENTIFY_NS_LIST_RESP_IOVA as *const u8,
+            NVME_IDENTIFY_NS_LIST_RESP_BYTES,
+        )
+    };
+    let ns_list_view = match ActiveNsListView::new(ns_list_slice) {
+        Ok(v) => v,
+        Err(_) => unsafe { sys_exit(EXIT_NVME_NS_LIST_PARSE_FAILED) },
+    };
+    if ns_list_view.first_active_nsid().is_none() {
+        unsafe { sys_exit(EXIT_NVME_NS_LIST_EMPTY) };
+    }
+
     // Step 5 — Drive the 13-step bring-up FSM through its remaining
     // pure-state phases. With MMIO + DMA + IRQ + BLK + Admin queue
-    // pair installed AND the first real admin command (Identify
-    // Controller) round-tripped successfully, the FSM can reach
-    // `Phase::Ready` via repeated `Event::Advance`.
+    // pair installed AND the first two real admin commands
+    // (Identify Controller + Identify(ActiveNsList)) round-tripped
+    // successfully, the FSM can reach `Phase::Ready` via repeated
+    // `Event::Advance`.
     let mut bringup = BringUp::new();
     while !bringup.phase().is_terminal() {
         match bringup.on_event(Event::Advance) {

@@ -2023,6 +2023,180 @@ mod tests {
         );
     }
 
+    // -------------------------------------------------------------------
+    // P6.7.10-pre.34 — image inline Identify(ActiveNsList) composition
+    //
+    // The three tests below verify the call sequence the live
+    // `omni-driver-nvme-image::_start` step 4.16.a..d uses on
+    // top of pre.33's queue-pair plumbing:
+    //
+    //   encode_identify(IdentifyTarget::ActiveNsList, prp1, 0, cid=2)
+    //   → admin_pair.submit(&sqe, mmio, asq_slice)
+    //   → loop admin_pair.drain_completion(mmio, acq_slice)
+    //     - Ok(Some(fields)) cid==2   → break, validate is_success()
+    //     - Ok(Some(fields)) cid!=2   → continue (stray)
+    //     - Ok(None)                  → continue (phase mismatch)
+    //     - Err(_)                    → exit EXIT_NVME_NS_LIST_DRAIN_FAILED
+    //   → ActiveNsListView::new(ns_list_slice)
+    //   → first_active_nsid() must be Some(_); None → exit EXIT_NVME_NS_LIST_EMPTY
+    //
+    // The image binary itself has no test harness; these
+    // host-side composition tests are the canonical guarantee
+    // that the call ordering in `_start` step 4.16 is sound on
+    // top of the slot-1 CQE the queue pair lands the completion in
+    // (step 4.15.b's `drain_completion` advanced the local
+    // `expected_head` to 1, so the second admin command lands at
+    // CQ slot 1 with phase=1 on lap 1).
+    // -------------------------------------------------------------------
+
+    /// Happy path — submit Identify Controller then
+    /// Identify(ActiveNsList), write synthetic success CQEs at
+    /// slots 0 and 1, drain both. `is_success()` MUST return
+    /// `true` on the second drain.
+    #[test]
+    fn image_pre34_identify_ns_list_happy_path() {
+        const SQ_DEPTH: u32 = 64;
+        const CQ_DEPTH: u32 = 64;
+        const DSTRD: u8 = 0;
+        const CTRL_PRP1: u64 = 0x2000; // NVME_IDENTIFY_CTRL_RESP_IOVA
+        const NSLIST_PRP1: u64 = 0x3000; // NVME_IDENTIFY_NS_LIST_RESP_IOVA
+        const CTRL_CID: u16 = 1; // NVME_IDENTIFY_FIRST_CID
+        const NSLIST_CID: u16 = 2; // NVME_IDENTIFY_NS_LIST_CID
+
+        let mut pair = AdminQueuePair::new(SQ_DEPTH, CQ_DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sq_page = empty_sq_page(SQ_DEPTH);
+        let mut cq_page = empty_cq_page(CQ_DEPTH);
+
+        // First command — Identify Controller (pre.33 happy path).
+        let ctrl_sqe = crate::admin::encode_identify(
+            crate::admin::IdentifyTarget::Controller,
+            CTRL_PRP1,
+            0,
+            CTRL_CID,
+        );
+        pair.submit(&ctrl_sqe, &mut mmio, &mut sq_page)
+            .expect("submit Identify Controller");
+        write_cqe_to_page(&mut cq_page, 0, &build_cqe(true, CTRL_CID, 1));
+        let ctrl_fields = pair
+            .drain_completion(&mut mmio, &cq_page)
+            .expect("drain ctrl Ok")
+            .expect("Some(ctrl_fields)");
+        assert_eq!(ctrl_fields.cid, CTRL_CID);
+        assert!(ctrl_fields.is_success());
+
+        // Second command — Identify(ActiveNsList).
+        let nslist_sqe = crate::admin::encode_identify(
+            crate::admin::IdentifyTarget::ActiveNsList,
+            NSLIST_PRP1,
+            0,
+            NSLIST_CID,
+        );
+        pair.submit(&nslist_sqe, &mut mmio, &mut sq_page)
+            .expect("submit Identify ActiveNsList");
+
+        // Synthetic success CQE at slot 1 (slot 0 is already
+        // consumed; the local `expected_head` advanced to 1
+        // during the previous drain). Phase tag at slot 1 on
+        // lap 1 is still 1.
+        write_cqe_to_page(&mut cq_page, 1, &build_cqe(true, NSLIST_CID, 2));
+        let nslist_fields = pair
+            .drain_completion(&mut mmio, &cq_page)
+            .expect("drain nslist Ok")
+            .expect("Some(nslist_fields)");
+        assert_eq!(nslist_fields.cid, NSLIST_CID);
+        assert!(
+            nslist_fields.is_success(),
+            "SCT=0 + SC=0 on ActiveNsList CQE → success"
+        );
+        assert_eq!(nslist_fields.sct, 0);
+        assert_eq!(nslist_fields.sc, 0);
+    }
+
+    /// Failure path — Identify(ActiveNsList) submitted, synthetic
+    /// CQE with phase=1, cid=2, but SCT=0 / SC=1 (Invalid Command
+    /// Opcode). Drain returns the fields; `is_success()` returns
+    /// `false` so the image bails with `EXIT_NVME_NS_LIST_FAILED`.
+    #[test]
+    fn image_pre34_identify_ns_list_fails_on_nonzero_status() {
+        const SQ_DEPTH: u32 = 64;
+        const CQ_DEPTH: u32 = 64;
+        const DSTRD: u8 = 0;
+        const NSLIST_PRP1: u64 = 0x3000;
+        const NSLIST_CID: u16 = 2;
+
+        let mut pair = AdminQueuePair::new(SQ_DEPTH, CQ_DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sq_page = empty_sq_page(SQ_DEPTH);
+        let mut cq_page = empty_cq_page(CQ_DEPTH);
+
+        let sqe = crate::admin::encode_identify(
+            crate::admin::IdentifyTarget::ActiveNsList,
+            NSLIST_PRP1,
+            0,
+            NSLIST_CID,
+        );
+        pair.submit(&sqe, &mut mmio, &mut sq_page)
+            .expect("submit Identify ActiveNsList");
+
+        // Synthesize CQE with SC = 1 (Invalid Command Opcode). The
+        // image will reach slot 0 on this drain because there was
+        // no prior submit consuming slot 0 — `expected_head` is
+        // still 0.
+        let mut raw = build_cqe(true, NSLIST_CID, 1);
+        raw[14] |= 1 << 1; // bit 17 of CDW3 = SC bit 1
+        write_cqe_to_page(&mut cq_page, 0, &raw);
+
+        let fields = pair
+            .drain_completion(&mut mmio, &cq_page)
+            .expect("drain Ok")
+            .expect("Some(fields)");
+        assert_eq!(fields.cid, NSLIST_CID);
+        assert_eq!(fields.sct, 0);
+        assert_eq!(fields.sc, 1, "SC=1 (Invalid Command Opcode)");
+        assert!(
+            !fields.is_success(),
+            "non-zero SC → is_success false → image bails EXIT_NVME_NS_LIST_FAILED"
+        );
+    }
+
+    /// Parse path — `ActiveNsListView::new` over a synthesized
+    /// 4 KiB response page returns the first NSID via
+    /// `first_active_nsid()`. An all-zero page (controller
+    /// reports zero active namespaces) returns `None`, which the
+    /// image maps to `EXIT_NVME_NS_LIST_EMPTY`.
+    #[test]
+    fn image_pre34_active_ns_list_view_first_nsid_and_empty() {
+        use crate::identify::ActiveNsListView;
+
+        // Synthesized response with NSID 1 + NSID 2 + sentinel.
+        let mut page = vec![0u8; 4096];
+        page.get_mut(0..4)
+            .expect("page has at least 4 bytes")
+            .copy_from_slice(&1u32.to_le_bytes());
+        page.get_mut(4..8)
+            .expect("page has at least 8 bytes")
+            .copy_from_slice(&2u32.to_le_bytes());
+        // bytes 8..12 stay zero → sentinel terminator.
+        let view = ActiveNsListView::new(&page).expect("parse 4 KiB page");
+        assert_eq!(
+            view.first_active_nsid(),
+            Some(1),
+            "first_active_nsid must return NSID 1 (skipping the zero terminator after NSID 2)"
+        );
+
+        // All-zero page → first NSID is the sentinel → None.
+        // This is the EXIT_NVME_NS_LIST_EMPTY trigger in the
+        // live image.
+        let empty = vec![0u8; 4096];
+        let empty_view = ActiveNsListView::new(&empty).expect("parse 4 KiB empty page");
+        assert_eq!(
+            empty_view.first_active_nsid(),
+            None,
+            "empty list → image must bail with EXIT_NVME_NS_LIST_EMPTY"
+        );
+    }
+
     /// Defensive composition test: `program_cc_fields` writes ONLY
     /// to `CC_OFFSET`. Verifying this prevents a future refactor
     /// from accidentally touching `AQA`/`ASQ`/`ACQ` (which would

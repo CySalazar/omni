@@ -330,6 +330,89 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Storage — P6.7.10-pre.34 NVMe Identify(ActiveNsList) live
+  end-to-end round-trip from `omni-driver-nvme-image::_start`
+  (2026-05-23) — TASK-005 continuation.** The image now issues
+  the second real admin command directly after the Identify
+  Controller round-trip landed in pre.33. With the queue-pair
+  plumbing already proven, this slice extends the live bring-up
+  with the NVMe 1.4 § 5.15.2 Active Namespace ID list query
+  (CNS = 0x02) and parses the 4 KiB response alloc-free via
+  `omni_driver_nvme::identify::ActiveNsListView`. The first
+  active NSID returned by the controller is the seed the
+  subsequent `Identify(Namespace)` slice (pre.35) needs to read
+  LBADS / NSZE per OIP-Driver-NVMe-014 § S6 step 10.
+  - **Step 4.16 (new)** — `encode_identify(IdentifyTarget::ActiveNsList,
+    NVME_IDENTIFY_NS_LIST_RESP_IOVA = 0x3000, 0,
+    NVME_IDENTIFY_NS_LIST_CID = 2)` builds the SQE, then
+    `AdminQueuePair::submit` enqueues it on the same admin SQ
+    used by pre.33. The response IOVA lives in the 4th page of
+    the DMA arena (after ASQ `0x0`, ACQ `0x1000`, Identify
+    Controller response `0x2000`).
+  - **Step 4.16.b (new)** — bounded poll loop calling
+    `AdminQueuePair::drain_completion` up to
+    `NVME_IDENTIFY_NS_LIST_POLL_LIMIT = 50_000` iterations. The
+    transition cases mirror step 4.15.b. The completion lands on
+    CQ slot 1 because `drain_completion` advanced
+    `expected_head` to 1 during the pre.33 completion; the
+    phase tag at slot 1 on lap 1 is still 1.
+  - **Step 4.16.c (new)** — `fields.is_success()` validates the
+    completion status word. Non-success bails with
+    `EXIT_NVME_NS_LIST_FAILED = 256` — distinct from the
+    timeout sentinel.
+  - **Step 4.16.d (new)** — `ActiveNsListView::new(ns_list_slice)`
+    parses the response page alloc-free. The view lazily iterates
+    LE-encoded 32-bit NSIDs and stops at the sentinel NSID = 0
+    per NVMe 1.4 § 5.15.2 Figure 246. The image then queries
+    `first_active_nsid()`: `None` means the controller reports
+    zero active namespaces and the bring-up bails with
+    `EXIT_NVME_NS_LIST_EMPTY = 260` because the subsequent
+    `Identify(Namespace)` step has no NSID to seed.
+  - **Five new `TaskExit` sentinel codes** in the image:
+    - `EXIT_NVME_NS_LIST_SUBMIT_FAILED = 250` — submit failed
+      (SQ ring full / SQ page undersized — defensive).
+    - `EXIT_NVME_NS_LIST_TIMEOUT = 252` — poll loop exhausted
+      `NVME_IDENTIFY_NS_LIST_POLL_LIMIT` iterations.
+    - `EXIT_NVME_NS_LIST_DRAIN_FAILED = 254` — drain surfaced
+      a non-timeout error (defensive against constants
+      regression).
+    - `EXIT_NVME_NS_LIST_FAILED = 256` — CQE non-success status.
+    - `EXIT_NVME_NS_LIST_PARSE_FAILED = 258` — defensive against
+      `ActiveNsListView::new` returning `PageTooSmall`
+      (unreachable given the local constant pins
+      `NVME_IDENTIFY_NS_LIST_RESP_BYTES = 4096`).
+    - `EXIT_NVME_NS_LIST_EMPTY = 260` — controller reports zero
+      active namespaces.
+  - **+3 new host-side composition tests** under
+    `omni_driver_nvme::queue::tests::*`:
+    - `image_pre34_identify_ns_list_happy_path` — submits
+      Identify Controller + Identify(ActiveNsList) sequentially,
+      scripts success CQEs at slots 0 and 1, drains both,
+      asserts `cid == 2`, `sct == 0`, `sc == 0`,
+      `is_success() == true` on the second drain.
+    - `image_pre34_identify_ns_list_fails_on_nonzero_status` —
+      patches the ActiveNsList CQE to set `SC = 1` (Invalid
+      Command Opcode), asserts `is_success() == false` and the
+      image bail path through `EXIT_NVME_NS_LIST_FAILED`.
+    - `image_pre34_active_ns_list_view_first_nsid_and_empty`
+      — synthesizes a 4 KiB response page with NSIDs 1 + 2 +
+      sentinel terminator, asserts `first_active_nsid() ==
+      Some(1)`; runs the same parse on an all-zero page,
+      asserts `first_active_nsid() == None` (which triggers
+      `EXIT_NVME_NS_LIST_EMPTY` in the live image).
+  - **Workspace test count**: 1597 → **1600 pass / 0 fail**.
+  - **Build Info panel** updated:
+    Active = `P6.7.10-pre.34 NsList img wire`,
+    Next = `P6.7.10-pre.35 IdentifyNs wire`,
+    Tests = `1600 workspace pass`.
+  - All gates clean: `cargo fmt --all -- --check`,
+    `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+    `cargo build --workspace --all-features`,
+    `cargo test --workspace --all-features` (1600 pass / 0 fail),
+    `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --all-features`,
+    `bash scripts/check-no-blanket-allow.sh` (ok, scanned 16 crate-root files),
+    cross-build `cargo build --manifest-path crates/omni-driver-nvme-image/Cargo.toml --target x86_64-unknown-none --release`.
+
 - **Storage — P6.7.10-pre.33 NVMe Identify Controller live
   end-to-end round-trip from `omni-driver-nvme-image::_start`
   (2026-05-22) — TASK-005 continuation.** The image now issues
