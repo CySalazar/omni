@@ -116,3 +116,56 @@ fn check_key_file_permissions(path: &Path, allow_loose_permissions: bool) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_temp_key(name: &str, hex: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("omni-dp-test-{name}"));
+        std::fs::write(&path, hex).unwrap();
+        path
+    }
+
+    #[test]
+    fn read_signing_seed_valid_hex() {
+        let hex = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+        let path = write_temp_key("valid", hex);
+        let seed = read_signing_seed(&path, true).unwrap();
+        assert_eq!(seed[0], 0x9D);
+        assert_eq!(seed[31], 0x60);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_signing_seed_strips_trailing_newline() {
+        let hex = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60\n";
+        let path = write_temp_key("newline", hex);
+        let seed = read_signing_seed(&path, true).unwrap();
+        assert_eq!(seed[0], 0x9D);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_signing_seed_rejects_short_hex() {
+        let path = write_temp_key("short", "abcdef");
+        let err = read_signing_seed(&path, true).unwrap_err();
+        assert!(matches!(err, PackError::SigningKeyBadLength { .. }));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_signing_seed_rejects_invalid_hex_char() {
+        let hex = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7fXX";
+        let path = write_temp_key("badhex", hex);
+        let err = read_signing_seed(&path, true).unwrap_err();
+        assert!(matches!(err, PackError::SigningKeyHexDecode { .. }));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_signing_seed_rejects_missing_file() {
+        let err = read_signing_seed(Path::new("/tmp/nonexistent-omni-dp-seed-test"), true).unwrap_err();
+        assert!(matches!(err, PackError::Io { .. }));
+    }
+}
