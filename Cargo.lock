@@ -898,7 +898,7 @@ dependencies = [
  "blake3",
  "chacha20poly1305",
  "ed25519-dalek",
- "getrandom 0.2.17",
+ "getrandom 0.4.2",
  "hex",
  "hkdf",
  "omni-types",
@@ -1073,7 +1073,7 @@ dependencies = [
 name = "omni-types"
 version = "0.2.0"
 dependencies = [
- "getrandom 0.2.17",
+ "getrandom 0.4.2",
  "hex",
  "postcard",
  "proptest",

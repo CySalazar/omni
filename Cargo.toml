@@ -210,7 +210,7 @@ argon2             = { version = "0.5", default-features = false, features = ["a
 # `getrandom` v0.2 is the platform CSPRNG bridge; `rand_core` is the trait
 # surface implemented by all RustCrypto crates that need entropy.
 rand_core          = { version = "0.6", default-features = false, features = ["getrandom"] }
-getrandom          = { version = "0.2", default-features = false }
+getrandom          = { version = "0.4", default-features = false }
 
 # --- Constant-time + zeroization helpers ---
 # `subtle` provides `ConstantTimeEq` for AEAD tag check / signature verify.
