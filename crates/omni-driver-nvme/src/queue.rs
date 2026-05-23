@@ -2198,6 +2198,107 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // P6.7.10-pre.37 — IO read wire composition tests
+    // -------------------------------------------------------------------
+
+    /// Happy path — IO queue pair (qid=1) submits NVM Read (LBA 0,
+    /// 1 sector) and drains a success CQE. Validates that
+    /// `new_for_qid` + `submit` + `drain_completion` work on a
+    /// non-admin queue pair.
+    #[test]
+    fn image_pre37_io_read_happy_path() {
+        const DEPTH: u32 = 64;
+        const IO_QID: u16 = 1;
+        const DSTRD: u8 = 0;
+        const IO_READ_CID: u16 = 1;
+        const DATA_PRP1: u64 = 0x7000;
+
+        let mut io_pair =
+            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sub_page = empty_sq_page(DEPTH);
+        let mut comp_page = empty_cq_page(DEPTH);
+
+        let read_sqe = crate::io::encode_read(1, 0, 1, DATA_PRP1, 0, IO_READ_CID);
+        io_pair
+            .submit(&read_sqe, &mut mmio, &mut sub_page)
+            .expect("submit NVM Read");
+
+        write_cqe_to_page(&mut comp_page, 0, &build_cqe(true, IO_READ_CID, 1));
+        let fields = io_pair
+            .drain_completion(&mut mmio, &comp_page)
+            .expect("drain IO CQ Ok")
+            .expect("Some(fields)");
+        assert_eq!(fields.cid, IO_READ_CID);
+        assert!(fields.is_success(), "NVM Read LBA 0 → success");
+    }
+
+    /// Failure path — NVM Read submitted, synthetic CQE with SC=1.
+    /// The image bails with `EXIT_NVME_IO_READ_FAILED`.
+    #[test]
+    fn image_pre37_io_read_fails_on_nonzero_status() {
+        const DEPTH: u32 = 64;
+        const IO_QID: u16 = 1;
+        const DSTRD: u8 = 0;
+        const IO_READ_CID: u16 = 1;
+
+        let mut io_pair =
+            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sub_page = empty_sq_page(DEPTH);
+        let mut comp_page = empty_cq_page(DEPTH);
+
+        let sqe = crate::io::encode_read(1, 0, 1, 0x7000, 0, IO_READ_CID);
+        io_pair
+            .submit(&sqe, &mut mmio, &mut sub_page)
+            .expect("submit NVM Read");
+
+        let mut raw = build_cqe(true, IO_READ_CID, 1);
+        raw[14] |= 1 << 1; // SC=1
+        write_cqe_to_page(&mut comp_page, 0, &raw);
+
+        let fields = io_pair
+            .drain_completion(&mut mmio, &comp_page)
+            .expect("drain Ok")
+            .expect("Some(fields)");
+        assert_eq!(fields.cid, IO_READ_CID);
+        assert_eq!(fields.sc, 1);
+        assert!(
+            !fields.is_success(),
+            "non-zero SC → image bails EXIT_NVME_IO_READ_FAILED"
+        );
+    }
+
+    /// IO queue pair doorbell offset: qid=1 routes the SQ tail
+    /// doorbell to offset `0x1008` (not admin qid=0 at `0x1000`).
+    #[test]
+    fn image_pre37_io_pair_uses_qid_1_doorbell_offset() {
+        const IO_SQ_DEPTH: u32 = 64;
+        const IO_CQ_DEPTH: u32 = 64;
+        const IO_QID: u16 = 1;
+        const DSTRD: u8 = 0;
+
+        let mut io_pair =
+            AdminQueuePair::new_for_qid(IO_QID, IO_SQ_DEPTH, IO_CQ_DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut io_sq_page = empty_sq_page(IO_SQ_DEPTH);
+
+        let sqe = crate::io::encode_read(1, 0, 1, 0x7000, 0, 1);
+        io_pair
+            .submit(&sqe, &mut mmio, &mut io_sq_page)
+            .expect("submit");
+
+        // SQ tail doorbell for qid=1, dstrd=0 → offset
+        // 0x1000 + (2*1 + 0) * (4 << 0) = 0x1000 + 8 = 0x1008.
+        assert!(!mmio.writes.is_empty(), "at least one doorbell write");
+        let last = mmio.writes.last().expect("has writes");
+        assert_eq!(
+            last.0, 0x1008,
+            "SQ tail doorbell for qid=1 at offset 0x1008"
+        );
+    }
+
+    // -------------------------------------------------------------------
     // P6.7.10-pre.36 — IO queue creation composition tests
     // -------------------------------------------------------------------
 

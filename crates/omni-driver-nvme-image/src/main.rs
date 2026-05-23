@@ -89,9 +89,14 @@
 //!     The IO CQ at `NVME_IO_CQ_IOVA` must be created before the
 //!     IO SQ at `NVME_IO_SQ_IOVA` because § 5.4 requires the CQ
 //!     to already exist when the SQ references it.
-//! 18. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
+//! 18. **P6.7.10-pre.37** — `encode_read(first_nsid, lba=0, 1, …)`
+//!     submits the first NVM Read through the IO queue pair. The
+//!     4 KiB data buffer at `NVME_IO_READ_DATA_IOVA` receives one
+//!     sector from LBA 0. This is the first IO command (non-admin)
+//!     the live image issues end-to-end.
+//! 19. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
 //!     `Phase::Ready` (or any terminal `Failed` state).
-//! 19. `TaskExit(0)` on success / non-zero sentinel on any failure.
+//! 20. `TaskExit(0)` on success / non-zero sentinel on any failure.
 //!
 //! ## Standalone execution
 //!
@@ -124,6 +129,7 @@ use omni_driver_nvme::admin::{
 };
 use omni_driver_nvme::bringup::{BringUp, Event, Phase};
 use omni_driver_nvme::identify::{ActiveNsListView, IdentifyNamespace};
+use omni_driver_nvme::io::encode_read;
 use omni_driver_nvme::queue::{
     AdminQueuePair, MmioBackend, MmioReadBackend, PHASE_1_IOCQES_LOG2, PHASE_1_IOSQES_LOG2,
     PHASE_1_MPS_LOG2, check_controller_fatal, disable_controller, enable_controller,
@@ -398,6 +404,29 @@ const NVME_CREATE_IO_SQ_CID: u16 = 5;
 const NVME_CREATE_IO_POLL_LIMIT: u32 = 50_000;
 
 // =============================================================================
+// IO read constants (P6.7.10-pre.37, OIP-Driver-NVMe-014 § S6 step 11)
+// =============================================================================
+
+/// IOVA offset (inside the DMA arena) of the data buffer the
+/// controller writes the NVM Read response into. Placed at `0x7000`
+/// (eighth 4 KiB page). New in P6.7.10-pre.37.
+const NVME_IO_READ_DATA_IOVA: u64 = 0x7000;
+
+/// IO read data page size — exactly 4 KiB (one sector at LBADS=12).
+/// New in P6.7.10-pre.37.
+const NVME_IO_READ_DATA_BYTES: usize = 4096;
+
+/// First CID the IO queue pair uses for IO commands. CID 0 is
+/// reserved by `omni_types::nvme::RESERVED_DRIVER_OPAQUE_ID`, so
+/// the IO path starts at 1 — independent of the admin queue CID
+/// counter. New in P6.7.10-pre.37.
+const NVME_IO_READ_CID: u16 = 1;
+
+/// Poll budget for the IO read completion. Same rationale as
+/// [`NVME_IDENTIFY_POLL_LIMIT`]. New in P6.7.10-pre.37.
+const NVME_IO_READ_POLL_LIMIT: u32 = 50_000;
+
+// =============================================================================
 // LiveMmioBackend — `MmioBackend` + `MmioReadBackend` impl for the
 // live driver (P6.7.10-pre.17)
 // =============================================================================
@@ -637,6 +666,21 @@ const EXIT_NVME_CREATE_IO_SQ_DRAIN_FAILED: u64 = 304;
 /// `Create I/O Submission Queue` completed but the CQE reports a
 /// non-success status word. New in P6.7.10-pre.36.
 const EXIT_NVME_CREATE_IO_SQ_FAILED: u64 = 306;
+/// `AdminQueuePair::new_for_qid` rejected the IO queue pair
+/// parameters. Defensive. New in P6.7.10-pre.37.
+const EXIT_NVME_IO_PAIR_INVALID: u64 = 310;
+/// `AdminQueuePair::submit` failed to enqueue the NVM Read SQE
+/// on the IO SQ. New in P6.7.10-pre.37.
+const EXIT_NVME_IO_READ_SUBMIT_FAILED: u64 = 320;
+/// The NVM Read poll loop exhausted [`NVME_IO_READ_POLL_LIMIT`].
+/// New in P6.7.10-pre.37.
+const EXIT_NVME_IO_READ_TIMEOUT: u64 = 322;
+/// `drain_completion` surfaced a non-timeout error while polling
+/// the NVM Read completion on the IO CQ. New in P6.7.10-pre.37.
+const EXIT_NVME_IO_READ_DRAIN_FAILED: u64 = 324;
+/// NVM Read completed but the CQE reports a non-success status
+/// word. New in P6.7.10-pre.37.
+const EXIT_NVME_IO_READ_FAILED: u64 = 326;
 
 // =============================================================================
 // Raw syscall wrapper
@@ -1249,11 +1293,87 @@ pub extern "C" fn _start() -> ! {
         unsafe { sys_exit(EXIT_NVME_CREATE_IO_SQ_FAILED) };
     }
 
+    // Step 4.20 — P6.7.10-pre.37: construct the IO queue pair and
+    // issue the first NVM Read (LBA 0, 1 sector = 4 KiB) through
+    // it. This is the first IO command the live image issues
+    // end-to-end, validating the full data path:
+    // `DriverLoad → MmioMap → DmaMap → IrqAttach → admin disable →
+    //  admin bases → CC fields → admin enable → Identify Controller →
+    //  Identify ActiveNsList → Identify Namespace → Create IO CQ →
+    //  Create IO SQ → NVM Read LBA 0`.
+    //
+    // The IO queue pair (qid = 1) lives at IO SQ IOVA `0x6000` +
+    // IO CQ IOVA `0x5000` in the DMA arena. The read data buffer
+    // lives at IOVA `0x7000`.
+    let mut io_pair = match AdminQueuePair::new_for_qid(
+        NVME_IO_QID,
+        u32::from(NVME_IO_QUEUE_DEPTH),
+        u32::from(NVME_IO_QUEUE_DEPTH),
+        NVME_ADMIN_DSTRD_DEFAULT,
+    ) {
+        Ok(p) => p,
+        Err(_) => unsafe { sys_exit(EXIT_NVME_IO_PAIR_INVALID) },
+    };
+
+    // Step 4.20.b — Acquire &mut [u8] views into the IO SQ + CQ
+    // data pages. Same passthrough IOMMU `iova == user_va` as the
+    // admin pair at step 4.14.b.
+    //
+    // SAFETY: the IO CQ and IO SQ data pages were just installed
+    // by the controller via the `Create IO CQ` / `Create IO SQ`
+    // admin commands at steps 4.18–4.19. The controller
+    // acknowledges their existence via the matching CQEs. Phase-1
+    // IOMMU passthrough means `user_va == iova`. The slices are
+    // non-overlapping (`IO_CQ_IOVA = 0x5000`, `IO_SQ_IOVA = 0x6000`).
+    let io_sq_slice: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(NVME_IO_SQ_IOVA as *mut u8, NVME_IO_READ_DATA_BYTES)
+    };
+    let io_cq_slice: &[u8] = unsafe {
+        core::slice::from_raw_parts(NVME_IO_CQ_IOVA as *const u8, NVME_IO_READ_DATA_BYTES)
+    };
+
+    // Step 4.20.c — Encode + submit NVM Read (LBA 0, 1 sector).
+    // PRP1 points to the read data buffer at `NVME_IO_READ_DATA_IOVA`;
+    // PRP2 is zero (single-sector read fits in one PRP).
+    let read_sqe = encode_read(
+        first_nsid,
+        0,
+        1,
+        NVME_IO_READ_DATA_IOVA,
+        0,
+        NVME_IO_READ_CID,
+    );
+    if io_pair
+        .submit(&read_sqe, &mut mmio_write, io_sq_slice)
+        .is_err()
+    {
+        unsafe { sys_exit(EXIT_NVME_IO_READ_SUBMIT_FAILED) };
+    }
+
+    // Step 4.20.d — Poll the IO CQ for the matching CID.
+    let mut io_read_polls: u32 = 0;
+    let io_read_cqe = loop {
+        if io_read_polls >= NVME_IO_READ_POLL_LIMIT {
+            unsafe { sys_exit(EXIT_NVME_IO_READ_TIMEOUT) };
+        }
+        io_read_polls = io_read_polls.saturating_add(1);
+        match io_pair.drain_completion(&mut mmio_write, io_cq_slice) {
+            Ok(Some(fields)) if fields.cid == NVME_IO_READ_CID => break fields,
+            Ok(Some(_)) => continue,
+            Ok(None) => continue,
+            Err(_) => unsafe { sys_exit(EXIT_NVME_IO_READ_DRAIN_FAILED) },
+        }
+    };
+
+    // Step 4.20.e — Validate the completion status word.
+    if !io_read_cqe.is_success() {
+        unsafe { sys_exit(EXIT_NVME_IO_READ_FAILED) };
+    }
+
     // Step 5 — Drive the 13-step bring-up FSM through its remaining
-    // pure-state phases. With MMIO + DMA + IRQ + BLK + Admin queue
-    // pair installed, all three mandatory Identify admin commands
-    // round-tripped, AND the IO CQ+SQ pair created, the FSM can
-    // reach `Phase::Ready` via repeated `Event::Advance`.
+    // pure-state phases. With the full NVMe data path validated
+    // (admin + IO queue pairs + first NVM Read at LBA 0), the FSM
+    // can reach `Phase::Ready` via repeated `Event::Advance`.
     let mut bringup = BringUp::new();
     while !bringup.phase().is_terminal() {
         match bringup.on_event(Event::Advance) {
