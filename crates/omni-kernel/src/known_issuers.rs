@@ -90,4 +90,15 @@ mod tests {
         assert!(lookup_issuer(&[0u8; VERIFYING_KEY_LEN]).is_none());
         assert!(lookup_issuer(&[0xFFu8; VERIFYING_KEY_LEN]).is_none());
     }
+
+    #[test]
+    fn known_issuer_struct_holds_id_and_key() {
+        let issuer = KnownIssuer {
+            id: "test-issuer",
+            verifying_key: [0xAB; VERIFYING_KEY_LEN],
+        };
+        assert_eq!(issuer.id, "test-issuer");
+        assert_eq!(issuer.verifying_key[0], 0xAB);
+        assert_eq!(issuer.verifying_key.len(), 32);
+    }
 }
