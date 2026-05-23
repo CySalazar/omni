@@ -28,6 +28,19 @@
 //! The kernel-side decoder lives in
 //! [`omni_kernel::driver_manifest::decode_omni_pack`].
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::missing_panics_doc,
+        clippy::missing_errors_doc,
+        clippy::tests_outside_test_module
+    )
+)]
+
 /// Typed error enum and exit-code mapping.
 pub mod error;
 /// Signing-key file reader and Unix permission checker.

@@ -323,3 +323,139 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     }
     s
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_encode_empty() {
+        assert_eq!(hex_encode(&[]), "");
+    }
+
+    #[test]
+    fn hex_encode_single_byte() {
+        assert_eq!(hex_encode(&[0x00]), "00");
+        assert_eq!(hex_encode(&[0xFF]), "ff");
+        assert_eq!(hex_encode(&[0xAB]), "ab");
+    }
+
+    #[test]
+    fn hex_encode_multiple_bytes() {
+        assert_eq!(hex_encode(&[0xDE, 0xAD, 0xBE, 0xEF]), "deadbeef");
+    }
+
+    #[test]
+    fn decode_hex32_valid_lowercase() {
+        let hex = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+        let result = decode_hex32(hex, HexContext::ManifestIssuer).unwrap();
+        assert_eq!(result[0], 0x9D);
+        assert_eq!(result[31], 0x60);
+    }
+
+    #[test]
+    fn decode_hex32_valid_uppercase() {
+        let hex = "9D61B19DEFFD5A60BA844AF492EC2CC44449C5697B326919703BAC031CAE7F60";
+        let result = decode_hex32(hex, HexContext::ManifestIssuer).unwrap();
+        assert_eq!(result[0], 0x9D);
+    }
+
+    #[test]
+    fn decode_hex32_rejects_short_string() {
+        let hex = "9d61b19d";
+        let err = decode_hex32(hex, HexContext::ManifestIssuer).unwrap_err();
+        assert!(matches!(err, PackError::InvalidIssuerKeyLen { len: 8, .. }));
+    }
+
+    #[test]
+    fn decode_hex32_rejects_invalid_char() {
+        let hex = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7fXX";
+        let err = decode_hex32(hex, HexContext::ManifestIssuer).unwrap_err();
+        assert!(matches!(err, PackError::IssuerKeyHexDecode { .. }));
+    }
+
+    #[test]
+    fn from_json_parses_minimal_manifest() {
+        let json = br#"{
+            "meta": {
+                "name": "test-driver",
+                "version": "0.1.0",
+                "omni_issuer_pubkey": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+            },
+            "capabilities": {
+                "mmio_regions": [],
+                "dma_windows": [],
+                "irq_lines": [],
+                "pci_devices": []
+            },
+            "matchers": {
+                "pci_vendor_device": [],
+                "acpi_hid": []
+            }
+        }"#;
+        let m = PackManifestJson::from_json(json, "test.json").unwrap();
+        assert_eq!(m.meta.name, "test-driver");
+        assert_eq!(m.meta.version, "0.1.0");
+    }
+
+    #[test]
+    fn from_json_rejects_missing_field() {
+        let json = br#"{"meta": {"name": "x"}}"#;
+        let err = PackManifestJson::from_json(json, "bad.json");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn from_toml_parses_minimal_manifest() {
+        let toml_src = br#"
+            [meta]
+            name = "test-driver"
+            version = "0.1.0"
+            omni_issuer_pubkey = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+            [capabilities]
+            mmio_regions = []
+            dma_windows = []
+            irq_lines = []
+            pci_devices = []
+            [matchers]
+            pci_vendor_device = []
+            acpi_hid = []
+        "#;
+        let m = PackManifestJson::from_toml(toml_src, "test.toml").unwrap();
+        assert_eq!(m.meta.name, "test-driver");
+    }
+
+    #[test]
+    fn from_path_bytes_dispatches_on_extension() {
+        let json = br#"{
+            "meta": {"name": "json-driver", "version": "0.1.0",
+                "omni_issuer_pubkey": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"},
+            "capabilities": {"mmio_regions": [], "dma_windows": [], "irq_lines": [], "pci_devices": []},
+            "matchers": {"pci_vendor_device": [], "acpi_hid": []}
+        }"#;
+        let m = PackManifestJson::from_path_bytes(json, "driver.json").unwrap();
+        assert_eq!(m.meta.name, "json-driver");
+    }
+
+    #[test]
+    fn decode_issuer_pubkey_returns_32_bytes() {
+        let json = br#"{
+            "meta": {"name": "t", "version": "0.1.0",
+                "omni_issuer_pubkey": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"},
+            "capabilities": {"mmio_regions": [], "dma_windows": [], "irq_lines": [], "pci_devices": []},
+            "matchers": {"pci_vendor_device": [], "acpi_hid": []}
+        }"#;
+        let m = PackManifestJson::from_json(json, "t.json").unwrap();
+        let pk = m.decode_issuer_pubkey().unwrap();
+        assert_eq!(pk.len(), 32);
+        assert_eq!(pk[0], 0x9D);
+    }
+
+    #[test]
+    fn hex_encode_round_trips_with_decode_hex32() {
+        let original = [0xCA; 32];
+        let hex = hex_encode(&original);
+        let decoded = decode_hex32(&hex, HexContext::ManifestIssuer).unwrap();
+        assert_eq!(decoded, original);
+    }
+}
