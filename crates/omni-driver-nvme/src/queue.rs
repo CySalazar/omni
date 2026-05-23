@@ -2198,6 +2198,134 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // P6.7.10-pre.40 — IO discard wire composition tests
+    // -------------------------------------------------------------------
+
+    /// Happy path — IO queue pair submits NVM Dataset Management
+    /// (Discard) and drains a success CQE.
+    #[test]
+    fn image_pre40_io_discard_happy_path() {
+        const DEPTH: u32 = 64;
+        const IO_QID: u16 = 1;
+        const DSTRD: u8 = 0;
+        const IO_DISCARD_CID: u16 = 4;
+        const RANGE_PRP1: u64 = 0x8000;
+
+        let mut io_pair =
+            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sub_page = empty_sq_page(DEPTH);
+        let mut comp_page = empty_cq_page(DEPTH);
+
+        let sqe = crate::io::encode_discard(1, 0, 1, RANGE_PRP1, IO_DISCARD_CID);
+        io_pair
+            .submit(&sqe, &mut mmio, &mut sub_page)
+            .expect("submit NVM Discard");
+
+        write_cqe_to_page(&mut comp_page, 0, &build_cqe(true, IO_DISCARD_CID, 1));
+        let fields = io_pair
+            .drain_completion(&mut mmio, &comp_page)
+            .expect("drain IO CQ Ok")
+            .expect("Some(fields)");
+        assert_eq!(fields.cid, IO_DISCARD_CID);
+        assert!(fields.is_success(), "NVM Discard → success");
+    }
+
+    /// Failure path — NVM Discard submitted, synthetic CQE with SC=1.
+    #[test]
+    fn image_pre40_io_discard_fails_on_nonzero_status() {
+        const DEPTH: u32 = 64;
+        const IO_QID: u16 = 1;
+        const DSTRD: u8 = 0;
+        const IO_DISCARD_CID: u16 = 4;
+
+        let mut io_pair =
+            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sub_page = empty_sq_page(DEPTH);
+        let mut comp_page = empty_cq_page(DEPTH);
+
+        let sqe = crate::io::encode_discard(1, 0, 1, 0x8000, IO_DISCARD_CID);
+        io_pair
+            .submit(&sqe, &mut mmio, &mut sub_page)
+            .expect("submit NVM Discard");
+
+        let mut raw = build_cqe(true, IO_DISCARD_CID, 1);
+        raw[14] |= 1 << 1; // SC=1
+        write_cqe_to_page(&mut comp_page, 0, &raw);
+
+        let fields = io_pair
+            .drain_completion(&mut mmio, &comp_page)
+            .expect("drain Ok")
+            .expect("Some(fields)");
+        assert_eq!(fields.cid, IO_DISCARD_CID);
+        assert_eq!(fields.sc, 1);
+        assert!(!fields.is_success());
+    }
+
+    /// Full IO quartet: Read → Write → Flush → Discard on a single
+    /// IO queue pair. Validates all four BLK request types.
+    #[test]
+    fn image_pre40_io_read_write_flush_discard_sequential() {
+        const DEPTH: u32 = 64;
+        const IO_QID: u16 = 1;
+        const DSTRD: u8 = 0;
+
+        let mut io_pair =
+            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sub_page = empty_sq_page(DEPTH);
+        let mut comp_page = empty_cq_page(DEPTH);
+
+        // Read (CID 1).
+        let r = crate::io::encode_read(1, 0, 1, 0x7000, 0, 1);
+        io_pair.submit(&r, &mut mmio, &mut sub_page).expect("r");
+        write_cqe_to_page(&mut comp_page, 0, &build_cqe(true, 1, 1));
+        assert!(
+            io_pair
+                .drain_completion(&mut mmio, &comp_page)
+                .unwrap()
+                .unwrap()
+                .is_success()
+        );
+
+        // Write (CID 2).
+        let w = crate::io::encode_write(1, 0, 1, 0x7000, 0, 2);
+        io_pair.submit(&w, &mut mmio, &mut sub_page).expect("w");
+        write_cqe_to_page(&mut comp_page, 1, &build_cqe(true, 2, 2));
+        assert!(
+            io_pair
+                .drain_completion(&mut mmio, &comp_page)
+                .unwrap()
+                .unwrap()
+                .is_success()
+        );
+
+        // Flush (CID 3).
+        let f = crate::io::encode_flush(1, 3);
+        io_pair.submit(&f, &mut mmio, &mut sub_page).expect("f");
+        write_cqe_to_page(&mut comp_page, 2, &build_cqe(true, 3, 3));
+        assert!(
+            io_pair
+                .drain_completion(&mut mmio, &comp_page)
+                .unwrap()
+                .unwrap()
+                .is_success()
+        );
+
+        // Discard (CID 4).
+        let d = crate::io::encode_discard(1, 0, 1, 0x8000, 4);
+        io_pair.submit(&d, &mut mmio, &mut sub_page).expect("d");
+        write_cqe_to_page(&mut comp_page, 3, &build_cqe(true, 4, 4));
+        let discard = io_pair
+            .drain_completion(&mut mmio, &comp_page)
+            .unwrap()
+            .unwrap();
+        assert_eq!(discard.cid, 4);
+        assert!(discard.is_success());
+    }
+
+    // -------------------------------------------------------------------
     // P6.7.10-pre.39 — IO flush wire composition tests
     // -------------------------------------------------------------------
 

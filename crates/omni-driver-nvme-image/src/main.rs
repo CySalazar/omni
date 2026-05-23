@@ -98,11 +98,14 @@
 //!     writes the data buffer back to LBA 0, validating the NVM
 //!     Write path through the IO queue pair.
 //! 20. **P6.7.10-pre.39** — `encode_flush(first_nsid, …)` commits
-//!     the volatile write cache. Third and final IO command in the
-//!     Phase-1 bring-up smoke.
-//! 21. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
+//!     the volatile write cache.
+//! 21. **P6.7.10-pre.40** — `write_single_discard_range` + `encode_discard`
+//!     submits a Dataset Management (Deallocate) command for LBA 0.
+//!     Fourth and final IO command type, completing the full BLK
+//!     request set.
+//! 22. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
 //!     `Phase::Ready` (or any terminal `Failed` state).
-//! 22. `TaskExit(0)` on success / non-zero sentinel on any failure.
+//! 23. `TaskExit(0)` on success / non-zero sentinel on any failure.
 //!
 //! ## Standalone execution
 //!
@@ -135,7 +138,8 @@ use omni_driver_nvme::admin::{
 };
 use omni_driver_nvme::bringup::{BringUp, Event, Phase};
 use omni_driver_nvme::identify::{ActiveNsListView, IdentifyNamespace};
-use omni_driver_nvme::io::{encode_flush, encode_read, encode_write};
+use omni_driver_nvme::discard::write_single_discard_range;
+use omni_driver_nvme::io::{encode_discard, encode_flush, encode_read, encode_write};
 use omni_driver_nvme::queue::{
     AdminQueuePair, MmioBackend, MmioReadBackend, PHASE_1_IOCQES_LOG2, PHASE_1_IOSQES_LOG2,
     PHASE_1_MPS_LOG2, check_controller_fatal, disable_controller, enable_controller,
@@ -455,6 +459,22 @@ const NVME_IO_FLUSH_CID: u16 = 3;
 const NVME_IO_FLUSH_POLL_LIMIT: u32 = 50_000;
 
 // =============================================================================
+// IO discard constants (P6.7.10-pre.40)
+// =============================================================================
+
+/// IOVA offset (inside the DMA arena) of the 16-byte Range
+/// Descriptor buffer the NVM Dataset Management command reads.
+/// Placed at `0x8000` (ninth 4 KiB page). New in P6.7.10-pre.40.
+const NVME_IO_DISCARD_RANGE_IOVA: u64 = 0x8000;
+
+/// CID for the NVM Dataset Management (Discard) command. Fourth IO
+/// command in the serial bring-up sequence. New in P6.7.10-pre.40.
+const NVME_IO_DISCARD_CID: u16 = 4;
+
+/// Poll budget for the IO discard completion. New in P6.7.10-pre.40.
+const NVME_IO_DISCARD_POLL_LIMIT: u32 = 50_000;
+
+// =============================================================================
 // LiveMmioBackend — `MmioBackend` + `MmioReadBackend` impl for the
 // live driver (P6.7.10-pre.17)
 // =============================================================================
@@ -733,6 +753,21 @@ const EXIT_NVME_IO_FLUSH_DRAIN_FAILED: u64 = 344;
 /// NVM Flush completed but the CQE reports a non-success status
 /// word. New in P6.7.10-pre.39.
 const EXIT_NVME_IO_FLUSH_FAILED: u64 = 346;
+/// `write_single_discard_range` failed to fill the Range
+/// Descriptor buffer. New in P6.7.10-pre.40.
+const EXIT_NVME_IO_DISCARD_RANGE_FAILED: u64 = 350;
+/// `AdminQueuePair::submit` failed to enqueue the NVM Dataset
+/// Management SQE. New in P6.7.10-pre.40.
+const EXIT_NVME_IO_DISCARD_SUBMIT_FAILED: u64 = 352;
+/// The NVM Discard poll loop exhausted
+/// [`NVME_IO_DISCARD_POLL_LIMIT`]. New in P6.7.10-pre.40.
+const EXIT_NVME_IO_DISCARD_TIMEOUT: u64 = 354;
+/// `drain_completion` surfaced a non-timeout error while polling
+/// the NVM Discard completion. New in P6.7.10-pre.40.
+const EXIT_NVME_IO_DISCARD_DRAIN_FAILED: u64 = 356;
+/// NVM Discard completed but the CQE reports a non-success status
+/// word. New in P6.7.10-pre.40.
+const EXIT_NVME_IO_DISCARD_FAILED: u64 = 358;
 
 // =============================================================================
 // Raw syscall wrapper
@@ -1498,10 +1533,60 @@ pub extern "C" fn _start() -> ! {
         unsafe { sys_exit(EXIT_NVME_IO_FLUSH_FAILED) };
     }
 
+    // Step 4.23 — P6.7.10-pre.40: NVM Dataset Management (Discard)
+    // LBA 0, 1 sector. The Discard command requires a 16-byte Range
+    // Descriptor buffer in the DMA arena at `NVME_IO_DISCARD_RANGE_IOVA`.
+    // The helper `write_single_discard_range` fills the buffer; the
+    // encoder `encode_discard` references it via PRP1. This is the
+    // fourth and final IO command type in the Phase-1 bring-up smoke,
+    // completing the full BLK request set (Read + Write + Flush + Discard).
+    //
+    // SAFETY: same passthrough IOMMU as all other DMA arena slices.
+    let discard_range_slice: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(NVME_IO_DISCARD_RANGE_IOVA as *mut u8, 4096)
+    };
+    if write_single_discard_range(discard_range_slice, 0, 1).is_err() {
+        unsafe { sys_exit(EXIT_NVME_IO_DISCARD_RANGE_FAILED) };
+    }
+
+    let discard_sqe = encode_discard(
+        first_nsid,
+        0,
+        1,
+        NVME_IO_DISCARD_RANGE_IOVA,
+        NVME_IO_DISCARD_CID,
+    );
+    if io_pair
+        .submit(&discard_sqe, &mut mmio_write, io_sq_slice)
+        .is_err()
+    {
+        unsafe { sys_exit(EXIT_NVME_IO_DISCARD_SUBMIT_FAILED) };
+    }
+
+    // Step 4.23.b — Poll the IO CQ for the matching CID.
+    let mut io_discard_polls: u32 = 0;
+    let io_discard_cqe = loop {
+        if io_discard_polls >= NVME_IO_DISCARD_POLL_LIMIT {
+            unsafe { sys_exit(EXIT_NVME_IO_DISCARD_TIMEOUT) };
+        }
+        io_discard_polls = io_discard_polls.saturating_add(1);
+        match io_pair.drain_completion(&mut mmio_write, io_cq_slice) {
+            Ok(Some(fields)) if fields.cid == NVME_IO_DISCARD_CID => break fields,
+            Ok(Some(_)) => continue,
+            Ok(None) => continue,
+            Err(_) => unsafe { sys_exit(EXIT_NVME_IO_DISCARD_DRAIN_FAILED) },
+        }
+    };
+
+    // Step 4.23.c — Validate the completion status word.
+    if !io_discard_cqe.is_success() {
+        unsafe { sys_exit(EXIT_NVME_IO_DISCARD_FAILED) };
+    }
+
     // Step 5 — Drive the 13-step bring-up FSM through its remaining
     // pure-state phases. With the full NVMe data path validated
-    // (admin queues + IO queues + Read + Write + Flush), the FSM
-    // can reach `Phase::Ready` via repeated `Event::Advance`.
+    // (admin queues + IO queues + Read + Write + Flush + Discard),
+    // the FSM can reach `Phase::Ready` via repeated `Event::Advance`.
     let mut bringup = BringUp::new();
     while !bringup.phase().is_terminal() {
         match bringup.on_event(Event::Advance) {
