@@ -2198,6 +2198,124 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // P6.7.10-pre.39 — IO flush wire composition tests
+    // -------------------------------------------------------------------
+
+    /// Happy path — IO queue pair submits NVM Flush and drains a
+    /// success CQE.
+    #[test]
+    fn image_pre39_io_flush_happy_path() {
+        const DEPTH: u32 = 64;
+        const IO_QID: u16 = 1;
+        const DSTRD: u8 = 0;
+        const IO_FLUSH_CID: u16 = 3;
+
+        let mut io_pair =
+            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sub_page = empty_sq_page(DEPTH);
+        let mut comp_page = empty_cq_page(DEPTH);
+
+        let flush_sqe = crate::io::encode_flush(1, IO_FLUSH_CID);
+        io_pair
+            .submit(&flush_sqe, &mut mmio, &mut sub_page)
+            .expect("submit NVM Flush");
+
+        write_cqe_to_page(&mut comp_page, 0, &build_cqe(true, IO_FLUSH_CID, 1));
+        let fields = io_pair
+            .drain_completion(&mut mmio, &comp_page)
+            .expect("drain IO CQ Ok")
+            .expect("Some(fields)");
+        assert_eq!(fields.cid, IO_FLUSH_CID);
+        assert!(fields.is_success(), "NVM Flush → success");
+    }
+
+    /// Failure path — NVM Flush submitted, synthetic CQE with SC=1.
+    #[test]
+    fn image_pre39_io_flush_fails_on_nonzero_status() {
+        const DEPTH: u32 = 64;
+        const IO_QID: u16 = 1;
+        const DSTRD: u8 = 0;
+        const IO_FLUSH_CID: u16 = 3;
+
+        let mut io_pair =
+            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sub_page = empty_sq_page(DEPTH);
+        let mut comp_page = empty_cq_page(DEPTH);
+
+        let sqe = crate::io::encode_flush(1, IO_FLUSH_CID);
+        io_pair
+            .submit(&sqe, &mut mmio, &mut sub_page)
+            .expect("submit NVM Flush");
+
+        let mut raw = build_cqe(true, IO_FLUSH_CID, 1);
+        raw[14] |= 1 << 1; // SC=1
+        write_cqe_to_page(&mut comp_page, 0, &raw);
+
+        let fields = io_pair
+            .drain_completion(&mut mmio, &comp_page)
+            .expect("drain Ok")
+            .expect("Some(fields)");
+        assert_eq!(fields.cid, IO_FLUSH_CID);
+        assert_eq!(fields.sc, 1);
+        assert!(
+            !fields.is_success(),
+            "non-zero SC → image bails EXIT_NVME_IO_FLUSH_FAILED"
+        );
+    }
+
+    /// Sequential IO triad: Read → Write → Flush on the same IO
+    /// queue pair. Validates the full Phase-1 IO command sequence.
+    #[test]
+    fn image_pre39_io_read_write_flush_sequential() {
+        const DEPTH: u32 = 64;
+        const IO_QID: u16 = 1;
+        const DSTRD: u8 = 0;
+
+        let mut io_pair =
+            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sub_page = empty_sq_page(DEPTH);
+        let mut comp_page = empty_cq_page(DEPTH);
+
+        // IO 1 — Read.
+        let r = crate::io::encode_read(1, 0, 1, 0x7000, 0, 1);
+        io_pair.submit(&r, &mut mmio, &mut sub_page).expect("r");
+        write_cqe_to_page(&mut comp_page, 0, &build_cqe(true, 1, 1));
+        assert!(
+            io_pair
+                .drain_completion(&mut mmio, &comp_page)
+                .unwrap()
+                .unwrap()
+                .is_success()
+        );
+
+        // IO 2 — Write.
+        let w = crate::io::encode_write(1, 0, 1, 0x7000, 0, 2);
+        io_pair.submit(&w, &mut mmio, &mut sub_page).expect("w");
+        write_cqe_to_page(&mut comp_page, 1, &build_cqe(true, 2, 2));
+        assert!(
+            io_pair
+                .drain_completion(&mut mmio, &comp_page)
+                .unwrap()
+                .unwrap()
+                .is_success()
+        );
+
+        // IO 3 — Flush.
+        let f = crate::io::encode_flush(1, 3);
+        io_pair.submit(&f, &mut mmio, &mut sub_page).expect("f");
+        write_cqe_to_page(&mut comp_page, 2, &build_cqe(true, 3, 3));
+        let flush = io_pair
+            .drain_completion(&mut mmio, &comp_page)
+            .unwrap()
+            .unwrap();
+        assert_eq!(flush.cid, 3);
+        assert!(flush.is_success());
+    }
+
+    // -------------------------------------------------------------------
     // P6.7.10-pre.38 — IO write wire composition tests
     // -------------------------------------------------------------------
 

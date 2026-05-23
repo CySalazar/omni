@@ -97,9 +97,12 @@
 //! 19. **P6.7.10-pre.38** — `encode_write(first_nsid, lba=0, 1, …)`
 //!     writes the data buffer back to LBA 0, validating the NVM
 //!     Write path through the IO queue pair.
-//! 20. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
+//! 20. **P6.7.10-pre.39** — `encode_flush(first_nsid, …)` commits
+//!     the volatile write cache. Third and final IO command in the
+//!     Phase-1 bring-up smoke.
+//! 21. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
 //!     `Phase::Ready` (or any terminal `Failed` state).
-//! 21. `TaskExit(0)` on success / non-zero sentinel on any failure.
+//! 22. `TaskExit(0)` on success / non-zero sentinel on any failure.
 //!
 //! ## Standalone execution
 //!
@@ -132,7 +135,7 @@ use omni_driver_nvme::admin::{
 };
 use omni_driver_nvme::bringup::{BringUp, Event, Phase};
 use omni_driver_nvme::identify::{ActiveNsListView, IdentifyNamespace};
-use omni_driver_nvme::io::{encode_read, encode_write};
+use omni_driver_nvme::io::{encode_flush, encode_read, encode_write};
 use omni_driver_nvme::queue::{
     AdminQueuePair, MmioBackend, MmioReadBackend, PHASE_1_IOCQES_LOG2, PHASE_1_IOSQES_LOG2,
     PHASE_1_MPS_LOG2, check_controller_fatal, disable_controller, enable_controller,
@@ -441,6 +444,17 @@ const NVME_IO_WRITE_CID: u16 = 2;
 const NVME_IO_WRITE_POLL_LIMIT: u32 = 50_000;
 
 // =============================================================================
+// IO flush constants (P6.7.10-pre.39)
+// =============================================================================
+
+/// CID for the NVM Flush command. Third IO command. New in
+/// P6.7.10-pre.39.
+const NVME_IO_FLUSH_CID: u16 = 3;
+
+/// Poll budget for the IO flush completion. New in P6.7.10-pre.39.
+const NVME_IO_FLUSH_POLL_LIMIT: u32 = 50_000;
+
+// =============================================================================
 // LiveMmioBackend — `MmioBackend` + `MmioReadBackend` impl for the
 // live driver (P6.7.10-pre.17)
 // =============================================================================
@@ -707,6 +721,18 @@ const EXIT_NVME_IO_WRITE_DRAIN_FAILED: u64 = 334;
 /// NVM Write completed but the CQE reports a non-success status
 /// word. New in P6.7.10-pre.38.
 const EXIT_NVME_IO_WRITE_FAILED: u64 = 336;
+/// `AdminQueuePair::submit` failed to enqueue the NVM Flush SQE.
+/// New in P6.7.10-pre.39.
+const EXIT_NVME_IO_FLUSH_SUBMIT_FAILED: u64 = 340;
+/// The NVM Flush poll loop exhausted
+/// [`NVME_IO_FLUSH_POLL_LIMIT`]. New in P6.7.10-pre.39.
+const EXIT_NVME_IO_FLUSH_TIMEOUT: u64 = 342;
+/// `drain_completion` surfaced a non-timeout error while polling
+/// the NVM Flush completion on the IO CQ. New in P6.7.10-pre.39.
+const EXIT_NVME_IO_FLUSH_DRAIN_FAILED: u64 = 344;
+/// NVM Flush completed but the CQE reports a non-success status
+/// word. New in P6.7.10-pre.39.
+const EXIT_NVME_IO_FLUSH_FAILED: u64 = 346;
 
 // =============================================================================
 // Raw syscall wrapper
@@ -1438,10 +1464,44 @@ pub extern "C" fn _start() -> ! {
         unsafe { sys_exit(EXIT_NVME_IO_WRITE_FAILED) };
     }
 
+    // Step 4.22 — P6.7.10-pre.39: NVM Flush. Commits the volatile
+    // write cache for `first_nsid`. Flush carries no PRPs; the
+    // controller acknowledges it via a completion CQE. This is the
+    // third and final IO command in the Phase-1 bring-up smoke,
+    // completing the Read + Write + Flush triad that validates the
+    // full NVMe data path.
+    let flush_sqe = encode_flush(first_nsid, NVME_IO_FLUSH_CID);
+    if io_pair
+        .submit(&flush_sqe, &mut mmio_write, io_sq_slice)
+        .is_err()
+    {
+        unsafe { sys_exit(EXIT_NVME_IO_FLUSH_SUBMIT_FAILED) };
+    }
+
+    // Step 4.22.b — Poll the IO CQ for the matching CID.
+    let mut io_flush_polls: u32 = 0;
+    let io_flush_cqe = loop {
+        if io_flush_polls >= NVME_IO_FLUSH_POLL_LIMIT {
+            unsafe { sys_exit(EXIT_NVME_IO_FLUSH_TIMEOUT) };
+        }
+        io_flush_polls = io_flush_polls.saturating_add(1);
+        match io_pair.drain_completion(&mut mmio_write, io_cq_slice) {
+            Ok(Some(fields)) if fields.cid == NVME_IO_FLUSH_CID => break fields,
+            Ok(Some(_)) => continue,
+            Ok(None) => continue,
+            Err(_) => unsafe { sys_exit(EXIT_NVME_IO_FLUSH_DRAIN_FAILED) },
+        }
+    };
+
+    // Step 4.22.c — Validate the completion status word.
+    if !io_flush_cqe.is_success() {
+        unsafe { sys_exit(EXIT_NVME_IO_FLUSH_FAILED) };
+    }
+
     // Step 5 — Drive the 13-step bring-up FSM through its remaining
     // pure-state phases. With the full NVMe data path validated
-    // (admin + IO queue pairs + NVM Read + NVM Write at LBA 0),
-    // the FSM can reach `Phase::Ready` via repeated `Event::Advance`.
+    // (admin queues + IO queues + Read + Write + Flush), the FSM
+    // can reach `Phase::Ready` via repeated `Event::Advance`.
     let mut bringup = BringUp::new();
     while !bringup.phase().is_terminal() {
         match bringup.on_event(Event::Advance) {
