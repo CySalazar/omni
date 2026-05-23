@@ -144,7 +144,9 @@ use omni_driver_nvme::admin::{
 };
 use omni_driver_nvme::bringup::{BringUp, Event, Phase};
 use omni_driver_nvme::identify::{ActiveNsListView, IdentifyNamespace};
-use omni_driver_nvme::controller_regs::{CAP_OFFSET, cap_dstrd, cap_mqes, cap_mpsmin};
+use omni_driver_nvme::controller_regs::{
+    CAP_OFFSET, VS_OFFSET, cap_dstrd, cap_mqes, cap_mpsmin, vs_major,
+};
 use omni_driver_nvme::discard::write_single_discard_range;
 use omni_driver_nvme::io::{encode_discard, encode_flush, encode_read, encode_write};
 use omni_driver_nvme::queue::{
@@ -784,6 +786,9 @@ const EXIT_NVME_CAP_MQES_TOO_SMALL: u64 = 362;
 /// `CAP.MPSMIN` > 0 — the controller does not support 4 KiB host
 /// pages required by the OMNI OS kernel. New in P6.7.10-pre.41.
 const EXIT_NVME_CAP_MPSMIN_UNSUPPORTED: u64 = 364;
+/// `VS` register reports major version 0 — the controller does
+/// not identify as NVMe 1.0+. New in P6.7.10-pre.41.
+const EXIT_NVME_VS_UNSUPPORTED: u64 = 366;
 
 // =============================================================================
 // Raw syscall wrapper
@@ -1005,6 +1010,13 @@ pub extern "C" fn _start() -> ! {
     // size is larger than 4 KiB, the bring-up cannot proceed.
     if cap_mpsmin(cap) > 0 {
         unsafe { sys_exit(EXIT_NVME_CAP_MPSMIN_UNSUPPORTED) };
+    }
+
+    // Step 4.8.c — Read the VS register (32-bit, NVMe 1.4 § 3.1.2)
+    // and verify the controller reports NVMe 1.0+.
+    let vs = mmio_read.read_register(VS_OFFSET);
+    if vs_major(vs) < 1 {
+        unsafe { sys_exit(EXIT_NVME_VS_UNSUPPORTED) };
     }
 
     // Step 4.9 — `disable_controller`: read CC, clear EN bit, write

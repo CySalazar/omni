@@ -259,6 +259,27 @@ pub const fn cap_mpsmax(cap: u64) -> u8 {
     ((cap >> 52) & 0x0F) as u8
 }
 
+// =============================================================================
+// VS (Version) field extractors — NVMe 1.4 § 3.1.2
+// =============================================================================
+
+/// Extract the major version from the 32-bit VS register value.
+///
+/// NVMe 1.4 § 3.1.2: bits 31:16 encode the major version. A
+/// compliant NVMe 1.0+ controller MUST report `major >= 1`.
+#[must_use]
+pub const fn vs_major(vs: u32) -> u16 {
+    (vs >> 16) as u16
+}
+
+/// Extract the minor version from the 32-bit VS register value.
+///
+/// NVMe 1.4 § 3.1.2: bits 15:8 encode the minor version.
+#[must_use]
+pub const fn vs_minor(vs: u32) -> u8 {
+    ((vs >> 8) & 0xFF) as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,6 +403,28 @@ mod tests {
         // MPSMAX = 5 → max page size 2^17 = 128 KiB.
         let cap_mpsmax_5: u64 = 5_u64 << 52;
         assert_eq!(cap_mpsmax(cap_mpsmax_5), 5);
+    }
+
+    // -------------------------------------------------------------------
+    // VS field extractors (P6.7.10-pre.41)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn vs_major_extracts_bits_31_16() {
+        // NVMe 1.4 reports VS = 0x0001_0400.
+        let vs_1_4: u32 = 0x0001_0400;
+        assert_eq!(vs_major(vs_1_4), 1);
+        // NVMe 2.0 reports VS = 0x0002_0000.
+        let vs_2_0: u32 = 0x0002_0000;
+        assert_eq!(vs_major(vs_2_0), 2);
+    }
+
+    #[test]
+    fn vs_minor_extracts_bits_15_8() {
+        let vs_1_4: u32 = 0x0001_0400;
+        assert_eq!(vs_minor(vs_1_4), 4);
+        let vs_1_0: u32 = 0x0001_0000;
+        assert_eq!(vs_minor(vs_1_0), 0);
     }
 
     #[test]
