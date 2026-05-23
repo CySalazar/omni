@@ -633,4 +633,54 @@ mod tests {
             CapabilityVerdict::Denied
         );
     }
+
+    #[test]
+    fn ed25519_verify_full_half_open_window_boundary() {
+        // TimeWindow is half-open [not_before, not_after).
+        let (token, node, _key, _now) = fresh_ipc_token(7);
+        let provider = Ed25519CapabilityProvider::with_node_id(*node.as_bytes());
+        // At `not_before = 100` — inclusive, token valid.
+        assert_eq!(
+            provider.verify_signed_token(&token, 100),
+            CapabilityVerdict::Authorised
+        );
+        // One tick before `not_before` — invalid.
+        assert_eq!(
+            provider.verify_signed_token(&token, 99),
+            CapabilityVerdict::Denied
+        );
+        // Last valid tick: `not_after - 1 = 199`.
+        assert_eq!(
+            provider.verify_signed_token(&token, 199),
+            CapabilityVerdict::Authorised
+        );
+        // At `not_after = 200` — exclusive, expired.
+        assert_eq!(
+            provider.verify_signed_token(&token, 200),
+            CapabilityVerdict::Denied
+        );
+    }
+
+    #[test]
+    fn stub_provider_authorises_any_subject() {
+        let token_a = KernelCapabilityToken {
+            subject: KernelPrincipal::from_bytes([0x00; 32]),
+            action: KernelAction::IpcSend,
+            resource: KernelResource::IpcChannel(1),
+        };
+        let token_b = KernelCapabilityToken {
+            subject: KernelPrincipal::from_bytes([0xFF; 32]),
+            action: KernelAction::IpcSend,
+            resource: KernelResource::IpcChannel(1),
+        };
+        let stub = StubCapabilityProvider;
+        assert_eq!(
+            stub.verify(&token_a, KernelAction::IpcSend, KernelResource::IpcChannel(1)),
+            CapabilityVerdict::Authorised
+        );
+        assert_eq!(
+            stub.verify(&token_b, KernelAction::IpcSend, KernelResource::IpcChannel(1)),
+            CapabilityVerdict::Authorised
+        );
+    }
 }
