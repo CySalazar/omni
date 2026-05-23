@@ -2198,6 +2198,115 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // P6.7.10-pre.38 — IO write wire composition tests
+    // -------------------------------------------------------------------
+
+    /// Happy path — IO queue pair submits NVM Write (LBA 0,
+    /// 1 sector) and drains a success CQE.
+    #[test]
+    fn image_pre38_io_write_happy_path() {
+        const DEPTH: u32 = 64;
+        const IO_QID: u16 = 1;
+        const DSTRD: u8 = 0;
+        const IO_WRITE_CID: u16 = 2;
+        const DATA_PRP1: u64 = 0x7000;
+
+        let mut io_pair =
+            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sub_page = empty_sq_page(DEPTH);
+        let mut comp_page = empty_cq_page(DEPTH);
+
+        let write_sqe = crate::io::encode_write(1, 0, 1, DATA_PRP1, 0, IO_WRITE_CID);
+        io_pair
+            .submit(&write_sqe, &mut mmio, &mut sub_page)
+            .expect("submit NVM Write");
+
+        write_cqe_to_page(&mut comp_page, 0, &build_cqe(true, IO_WRITE_CID, 1));
+        let fields = io_pair
+            .drain_completion(&mut mmio, &comp_page)
+            .expect("drain IO CQ Ok")
+            .expect("Some(fields)");
+        assert_eq!(fields.cid, IO_WRITE_CID);
+        assert!(fields.is_success(), "NVM Write LBA 0 → success");
+    }
+
+    /// Failure path — NVM Write submitted, synthetic CQE with SC=1.
+    #[test]
+    fn image_pre38_io_write_fails_on_nonzero_status() {
+        const DEPTH: u32 = 64;
+        const IO_QID: u16 = 1;
+        const DSTRD: u8 = 0;
+        const IO_WRITE_CID: u16 = 2;
+
+        let mut io_pair =
+            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sub_page = empty_sq_page(DEPTH);
+        let mut comp_page = empty_cq_page(DEPTH);
+
+        let sqe = crate::io::encode_write(1, 0, 1, 0x7000, 0, IO_WRITE_CID);
+        io_pair
+            .submit(&sqe, &mut mmio, &mut sub_page)
+            .expect("submit NVM Write");
+
+        let mut raw = build_cqe(true, IO_WRITE_CID, 1);
+        raw[14] |= 1 << 1; // SC=1
+        write_cqe_to_page(&mut comp_page, 0, &raw);
+
+        let fields = io_pair
+            .drain_completion(&mut mmio, &comp_page)
+            .expect("drain Ok")
+            .expect("Some(fields)");
+        assert_eq!(fields.cid, IO_WRITE_CID);
+        assert_eq!(fields.sc, 1);
+        assert!(
+            !fields.is_success(),
+            "non-zero SC → image bails EXIT_NVME_IO_WRITE_FAILED"
+        );
+    }
+
+    /// Sequential IO: Read CID=1 then Write CID=2 on the same IO
+    /// queue pair. Validates the CID counter independence.
+    #[test]
+    fn image_pre38_io_read_then_write_sequential() {
+        const DEPTH: u32 = 64;
+        const IO_QID: u16 = 1;
+        const DSTRD: u8 = 0;
+
+        let mut io_pair =
+            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sub_page = empty_sq_page(DEPTH);
+        let mut comp_page = empty_cq_page(DEPTH);
+
+        // IO command 1 — NVM Read.
+        let read_sqe = crate::io::encode_read(1, 0, 1, 0x7000, 0, 1);
+        io_pair
+            .submit(&read_sqe, &mut mmio, &mut sub_page)
+            .expect("submit Read");
+        write_cqe_to_page(&mut comp_page, 0, &build_cqe(true, 1, 1));
+        let r = io_pair
+            .drain_completion(&mut mmio, &comp_page)
+            .expect("drain")
+            .expect("Some");
+        assert!(r.is_success());
+
+        // IO command 2 — NVM Write.
+        let write_sqe = crate::io::encode_write(1, 0, 1, 0x7000, 0, 2);
+        io_pair
+            .submit(&write_sqe, &mut mmio, &mut sub_page)
+            .expect("submit Write");
+        write_cqe_to_page(&mut comp_page, 1, &build_cqe(true, 2, 2));
+        let w = io_pair
+            .drain_completion(&mut mmio, &comp_page)
+            .expect("drain")
+            .expect("Some");
+        assert_eq!(w.cid, 2);
+        assert!(w.is_success());
+    }
+
+    // -------------------------------------------------------------------
     // P6.7.10-pre.37 — IO read wire composition tests
     // -------------------------------------------------------------------
 
