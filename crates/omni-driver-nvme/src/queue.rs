@@ -2197,6 +2197,170 @@ mod tests {
         );
     }
 
+    // -------------------------------------------------------------------
+    // P6.7.10-pre.35 — Identify(Namespace) composition tests
+    // -------------------------------------------------------------------
+
+    /// Happy path — three sequential admin commands on the same
+    /// `AdminQueuePair`: Identify Controller (slot 0, CID 1),
+    /// Identify ActiveNsList (slot 1, CID 2), Identify Namespace
+    /// (slot 2, CID 3). Validates queue-pair state advances
+    /// correctly through three drains.
+    #[test]
+    fn image_pre35_identify_namespace_happy_path() {
+        const SQ_DEPTH: u32 = 64;
+        const CQ_DEPTH: u32 = 64;
+        const DSTRD: u8 = 0;
+        const CTRL_PRP1: u64 = 0x2000;
+        const NSLIST_PRP1: u64 = 0x3000;
+        const NS_PRP1: u64 = 0x4000;
+        const CTRL_CID: u16 = 1;
+        const NSLIST_CID: u16 = 2;
+        const NS_CID: u16 = 3;
+        const FIRST_NSID: u32 = 1;
+
+        let mut pair = AdminQueuePair::new(SQ_DEPTH, CQ_DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sq_page = empty_sq_page(SQ_DEPTH);
+        let mut cq_page = empty_cq_page(CQ_DEPTH);
+
+        // Command 1 — Identify Controller.
+        let ctrl_sqe = crate::admin::encode_identify(
+            crate::admin::IdentifyTarget::Controller,
+            CTRL_PRP1,
+            0,
+            CTRL_CID,
+        );
+        pair.submit(&ctrl_sqe, &mut mmio, &mut sq_page)
+            .expect("submit Identify Controller");
+        write_cqe_to_page(&mut cq_page, 0, &build_cqe(true, CTRL_CID, 1));
+        let ctrl_fields = pair
+            .drain_completion(&mut mmio, &cq_page)
+            .expect("drain ctrl Ok")
+            .expect("Some(ctrl_fields)");
+        assert_eq!(ctrl_fields.cid, CTRL_CID);
+        assert!(ctrl_fields.is_success());
+
+        // Command 2 — Identify(ActiveNsList).
+        let nslist_sqe = crate::admin::encode_identify(
+            crate::admin::IdentifyTarget::ActiveNsList,
+            NSLIST_PRP1,
+            0,
+            NSLIST_CID,
+        );
+        pair.submit(&nslist_sqe, &mut mmio, &mut sq_page)
+            .expect("submit Identify ActiveNsList");
+        write_cqe_to_page(&mut cq_page, 1, &build_cqe(true, NSLIST_CID, 2));
+        let nslist_fields = pair
+            .drain_completion(&mut mmio, &cq_page)
+            .expect("drain nslist Ok")
+            .expect("Some(nslist_fields)");
+        assert_eq!(nslist_fields.cid, NSLIST_CID);
+        assert!(nslist_fields.is_success());
+
+        // Command 3 — Identify(Namespace { nsid: 1 }).
+        let ns_sqe = crate::admin::encode_identify(
+            crate::admin::IdentifyTarget::Namespace { nsid: FIRST_NSID },
+            NS_PRP1,
+            0,
+            NS_CID,
+        );
+        pair.submit(&ns_sqe, &mut mmio, &mut sq_page)
+            .expect("submit Identify Namespace");
+        write_cqe_to_page(&mut cq_page, 2, &build_cqe(true, NS_CID, 3));
+        let ns_fields = pair
+            .drain_completion(&mut mmio, &cq_page)
+            .expect("drain ns Ok")
+            .expect("Some(ns_fields)");
+        assert_eq!(ns_fields.cid, NS_CID);
+        assert!(
+            ns_fields.is_success(),
+            "SCT=0 + SC=0 on Identify Namespace CQE → success"
+        );
+    }
+
+    /// Failure path — Identify(Namespace) submitted, synthetic CQE
+    /// with SC=1 (Invalid Command Opcode). The image bails with
+    /// `EXIT_NVME_NS_FAILED`.
+    #[test]
+    fn image_pre35_identify_namespace_fails_on_nonzero_status() {
+        const SQ_DEPTH: u32 = 64;
+        const CQ_DEPTH: u32 = 64;
+        const DSTRD: u8 = 0;
+        const NS_PRP1: u64 = 0x4000;
+        const NS_CID: u16 = 3;
+
+        let mut pair = AdminQueuePair::new(SQ_DEPTH, CQ_DEPTH, DSTRD).expect("ctor");
+        let mut mmio = MockMmioBackend::default();
+        let mut sq_page = empty_sq_page(SQ_DEPTH);
+        let mut cq_page = empty_cq_page(CQ_DEPTH);
+
+        let sqe = crate::admin::encode_identify(
+            crate::admin::IdentifyTarget::Namespace { nsid: 1 },
+            NS_PRP1,
+            0,
+            NS_CID,
+        );
+        pair.submit(&sqe, &mut mmio, &mut sq_page)
+            .expect("submit Identify Namespace");
+
+        let mut raw = build_cqe(true, NS_CID, 1);
+        raw[14] |= 1 << 1; // SC bit 1 → SC=1 Invalid Opcode
+        write_cqe_to_page(&mut cq_page, 0, &raw);
+
+        let fields = pair
+            .drain_completion(&mut mmio, &cq_page)
+            .expect("drain Ok")
+            .expect("Some(fields)");
+        assert_eq!(fields.cid, NS_CID);
+        assert_eq!(fields.sc, 1, "SC=1 (Invalid Command Opcode)");
+        assert!(
+            !fields.is_success(),
+            "non-zero SC → is_success false → image bails EXIT_NVME_NS_FAILED"
+        );
+    }
+
+    /// Parse path — `IdentifyNamespace::new` over a synthesized
+    /// 4 KiB response page validates `LBADS = 12` via
+    /// `validated_byte_size()`. Tests both the happy path (4 KiB
+    /// sectors) and the rejection path (512-byte sectors, LBADS=9).
+    #[test]
+    fn image_pre35_identify_namespace_view_validated_byte_size() {
+        use crate::identify::{IdentifyError, IdentifyNamespace, PHASE_1_REQUIRED_LBADS};
+
+        let mut page = vec![0u8; 4096];
+        // NSZE = 1024 sectors at offset 0.
+        let nsze: u64 = 1024;
+        page.get_mut(0..8)
+            .expect("page has at least 8 bytes")
+            .copy_from_slice(&nsze.to_le_bytes());
+        // FLBAS = 0 → active format index = 0.
+        *page
+            .get_mut(IdentifyNamespace::FLBAS_OFFSET)
+            .expect("FLBAS offset in bounds") = 0;
+        // LBAF0 LBADS = 12 (4 KiB sectors) at LBAF_BASE_OFFSET + 2.
+        *page
+            .get_mut(IdentifyNamespace::LBAF_BASE_OFFSET + 2)
+            .expect("LBAF0 LBADS offset in bounds") = PHASE_1_REQUIRED_LBADS;
+        let view = IdentifyNamespace::new(&page).expect("parse 4 KiB page");
+        assert_eq!(
+            view.validated_byte_size(),
+            Ok(1024 * 4096),
+            "LBADS=12 → 1024 sectors × 4096 B = 4 MiB"
+        );
+
+        // Rejection: LBADS = 9 (512-byte sectors).
+        *page
+            .get_mut(IdentifyNamespace::LBAF_BASE_OFFSET + 2)
+            .expect("LBAF0 LBADS offset in bounds") = 9;
+        let view_512 = IdentifyNamespace::new(&page).expect("parse 4 KiB page (512B)");
+        assert_eq!(
+            view_512.validated_byte_size(),
+            Err(IdentifyError::UnsupportedLbads { observed: 9 }),
+            "LBADS=9 → UnsupportedLbads → image bails EXIT_NVME_NS_UNSUPPORTED_LBADS"
+        );
+    }
+
     /// Defensive composition test: `program_cc_fields` writes ONLY
     /// to `CC_OFFSET`. Verifying this prevents a future refactor
     /// from accidentally touching `AQA`/`ASQ`/`ACQ` (which would

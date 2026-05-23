@@ -75,9 +75,17 @@
 //!     is treated as a hard failure (`EXIT_NVME_NS_LIST_EMPTY`)
 //!     because the subsequent `Identify(Namespace)` step has no
 //!     NSID to seed.
-//! 16. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
+//! 16. **P6.7.10-pre.35** — `encode_identify(IdentifyTarget::Namespace { nsid }, …)`
+//!     submits the third admin command for the first active NSID
+//!     discovered in step 15. The 4 KiB response page at
+//!     `NVME_IDENTIFY_NS_RESP_IOVA` is parsed via
+//!     [`IdentifyNamespace::new`] + [`IdentifyNamespace::validated_byte_size`];
+//!     the driver aborts with `EXIT_NVME_NS_UNSUPPORTED_LBADS`
+//!     when `LBADS != 12` (sector size not 4 KiB) per OIP-014
+//!     § S6 step 10.
+//! 17. Drive the [`omni_driver_nvme::bringup::BringUp`] 13-step FSM until
 //!     `Phase::Ready` (or any terminal `Failed` state).
-//! 17. `TaskExit(0)` on success / non-zero sentinel on any failure.
+//! 18. `TaskExit(0)` on success / non-zero sentinel on any failure.
 //!
 //! ## Standalone execution
 //!
@@ -106,7 +114,7 @@ use core::panic::PanicInfo;
 
 use omni_driver_nvme::admin::{IdentifyTarget, encode_identify};
 use omni_driver_nvme::bringup::{BringUp, Event, Phase};
-use omni_driver_nvme::identify::ActiveNsListView;
+use omni_driver_nvme::identify::{ActiveNsListView, IdentifyNamespace};
 use omni_driver_nvme::queue::{
     AdminQueuePair, MmioBackend, MmioReadBackend, PHASE_1_IOCQES_LOG2, PHASE_1_IOSQES_LOG2,
     PHASE_1_MPS_LOG2, check_controller_fatal, disable_controller, enable_controller,
@@ -310,6 +318,32 @@ const NVME_IDENTIFY_NS_LIST_POLL_LIMIT: u32 = 50_000;
 /// New in P6.7.10-pre.34.
 const NVME_IDENTIFY_NS_LIST_RESP_BYTES: usize = 4096;
 
+/// IOVA offset (inside the DMA arena) of the response page the
+/// controller writes the `Identify(Namespace)` response into.
+/// Placed at offset `0x4000` so it lives in the fifth 4 KiB page
+/// after the ASQ (`0x0`), ACQ (`0x1000`), Identify Controller
+/// response (`0x2000`), and Active Namespace List response
+/// (`0x3000`). 4 KiB-aligned by construction per NVMe 1.4 § 5.15
+/// (Identify response is exactly 4 KiB; PRP1 alone covers it;
+/// PRP2 is zero). New in P6.7.10-pre.35.
+const NVME_IDENTIFY_NS_RESP_IOVA: u64 = 0x4000;
+
+/// CID the image hands out for the `Identify(Namespace)` command
+/// — `NVME_IDENTIFY_NS_LIST_CID + 1 = 3`. Third admin command in
+/// the serial bring-up sequence. New in P6.7.10-pre.35.
+const NVME_IDENTIFY_NS_CID: u16 = 3;
+
+/// Poll budget for the `Identify(Namespace)` completion. Same
+/// rationale as [`NVME_IDENTIFY_POLL_LIMIT`]: QEMU virtualised
+/// NVMe completes admin commands within tens of microseconds.
+/// New in P6.7.10-pre.35.
+const NVME_IDENTIFY_NS_POLL_LIMIT: u32 = 50_000;
+
+/// Backing-page size of the `Identify(Namespace)` response —
+/// exactly 4 KiB per NVMe 1.4 § 5.15.2 Figure 245. New in
+/// P6.7.10-pre.35.
+const NVME_IDENTIFY_NS_RESP_BYTES: usize = 4096;
+
 // =============================================================================
 // LiveMmioBackend — `MmioBackend` + `MmioReadBackend` impl for the
 // live driver (P6.7.10-pre.17)
@@ -495,6 +529,37 @@ const EXIT_NVME_NS_LIST_PARSE_FAILED: u64 = 258;
 /// during bring-up is a hard failure — the kernel BLK gateway
 /// has no namespace to publish. New in P6.7.10-pre.34.
 const EXIT_NVME_NS_LIST_EMPTY: u64 = 260;
+/// `AdminQueuePair::submit` failed to enqueue the
+/// `Identify(Namespace)` SQE on the third admin slot. Mirrors
+/// `EXIT_NVME_IDENTIFY_SUBMIT_FAILED` semantically; distinct
+/// sentinel so serial-log triage can localise which command in
+/// the bring-up handshake regressed. New in P6.7.10-pre.35.
+const EXIT_NVME_NS_SUBMIT_FAILED: u64 = 270;
+/// The `Identify(Namespace)` poll loop exhausted
+/// [`NVME_IDENTIFY_NS_POLL_LIMIT`] iterations without observing
+/// a matching CQE. Same root-cause space as
+/// `EXIT_NVME_IDENTIFY_TIMEOUT`. New in P6.7.10-pre.35.
+const EXIT_NVME_NS_TIMEOUT: u64 = 272;
+/// `AdminQueuePair::drain_completion` surfaced a non-timeout
+/// error while polling the `Identify(Namespace)` completion.
+/// New in P6.7.10-pre.35.
+const EXIT_NVME_NS_DRAIN_FAILED: u64 = 274;
+/// `Identify(Namespace)` completed but the CQE reports a
+/// non-success status word. The controller actively refused the
+/// command. New in P6.7.10-pre.35.
+const EXIT_NVME_NS_FAILED: u64 = 276;
+/// [`IdentifyNamespace::new`] returned
+/// `IdentifyError::PageTooSmall`. Purely defensive against a
+/// regression of the response-page length constant. New in
+/// P6.7.10-pre.35.
+const EXIT_NVME_NS_PARSE_FAILED: u64 = 278;
+/// [`IdentifyNamespace::validated_byte_size`] returned
+/// `IdentifyError::UnsupportedLbads` — the controller's active
+/// LBA format does not use 4 KiB sectors (`LBADS != 12`). Per
+/// OIP-014 § S6 step 10 the Phase-1 driver rejects any
+/// namespace whose sector size differs from the kernel page
+/// size. New in P6.7.10-pre.35.
+const EXIT_NVME_NS_UNSUPPORTED_LBADS: u64 = 280;
 
 // =============================================================================
 // Raw syscall wrapper
@@ -943,14 +1008,87 @@ pub extern "C" fn _start() -> ! {
         Ok(v) => v,
         Err(_) => unsafe { sys_exit(EXIT_NVME_NS_LIST_PARSE_FAILED) },
     };
-    if ns_list_view.first_active_nsid().is_none() {
-        unsafe { sys_exit(EXIT_NVME_NS_LIST_EMPTY) };
+    let first_nsid = match ns_list_view.first_active_nsid() {
+        Some(nsid) => nsid,
+        None => unsafe { sys_exit(EXIT_NVME_NS_LIST_EMPTY) },
+    };
+
+    // Step 4.17 — P6.7.10-pre.35: encode + submit the
+    // Identify(Namespace) SQE (NVMe 1.4 § 5.15.2 Figure 245)
+    // for the first active NSID discovered in step 4.16.d. The
+    // 4 KiB response page at `NVME_IDENTIFY_NS_RESP_IOVA` is
+    // parsed via `IdentifyNamespace::new` + `validated_byte_size()`
+    // to extract the namespace capacity and validate that the
+    // active LBA format uses 4 KiB sectors (`LBADS = 12`) per
+    // OIP-014 § S6 step 10.
+    let ns_sqe = encode_identify(
+        IdentifyTarget::Namespace { nsid: first_nsid },
+        NVME_IDENTIFY_NS_RESP_IOVA,
+        0,
+        NVME_IDENTIFY_NS_CID,
+    );
+    if admin_pair
+        .submit(&ns_sqe, &mut mmio_write, asq_slice)
+        .is_err()
+    {
+        unsafe { sys_exit(EXIT_NVME_NS_SUBMIT_FAILED) };
+    }
+
+    // Step 4.17.b — Poll the admin CQ for the matching CID. Same
+    // structure as steps 4.15.b and 4.16.b: bounded budget, skip
+    // strays, continue on `Ok(None)`, exit on `Err(_)`. The CQ
+    // slot used by this completion is slot 2 (slots 0 and 1 were
+    // consumed by the Identify Controller and ActiveNsList
+    // completions above).
+    let mut ns_polls: u32 = 0;
+    let ns_cqe = loop {
+        if ns_polls >= NVME_IDENTIFY_NS_POLL_LIMIT {
+            unsafe { sys_exit(EXIT_NVME_NS_TIMEOUT) };
+        }
+        ns_polls = ns_polls.saturating_add(1);
+        match admin_pair.drain_completion(&mut mmio_write, acq_slice) {
+            Ok(Some(fields)) if fields.cid == NVME_IDENTIFY_NS_CID => break fields,
+            Ok(Some(_)) => continue,
+            Ok(None) => continue,
+            Err(_) => unsafe { sys_exit(EXIT_NVME_NS_DRAIN_FAILED) },
+        }
+    };
+
+    // Step 4.17.c — Validate the completion status word.
+    if !ns_cqe.is_success() {
+        unsafe { sys_exit(EXIT_NVME_NS_FAILED) };
+    }
+
+    // Step 4.17.d — Parse the 4 KiB response page via
+    // `IdentifyNamespace::new` and validate that the active LBA
+    // format uses 4 KiB sectors per OIP-014 § S6 step 10. The
+    // `validated_byte_size()` call returns the namespace's total
+    // byte capacity on success, or `UnsupportedLbads` when the
+    // sector size is not 4 KiB — a hard bring-up failure because
+    // the kernel BLK gateway cannot translate 512-byte-sector
+    // requests to the OMNI OS 4 KiB page model.
+    //
+    // SAFETY: same as step 4.16.d — the DMA arena was installed
+    // by `DmaMap (71)` at step 3 and covers the IOVA range
+    // `[NVME_IDENTIFY_NS_RESP_IOVA, NVME_IDENTIFY_NS_RESP_IOVA + 4096)`.
+    let ns_resp_slice: &[u8] = unsafe {
+        core::slice::from_raw_parts(
+            NVME_IDENTIFY_NS_RESP_IOVA as *const u8,
+            NVME_IDENTIFY_NS_RESP_BYTES,
+        )
+    };
+    let ns_view = match IdentifyNamespace::new(ns_resp_slice) {
+        Ok(v) => v,
+        Err(_) => unsafe { sys_exit(EXIT_NVME_NS_PARSE_FAILED) },
+    };
+    if ns_view.validated_byte_size().is_err() {
+        unsafe { sys_exit(EXIT_NVME_NS_UNSUPPORTED_LBADS) };
     }
 
     // Step 5 — Drive the 13-step bring-up FSM through its remaining
     // pure-state phases. With MMIO + DMA + IRQ + BLK + Admin queue
-    // pair installed AND the first two real admin commands
-    // (Identify Controller + Identify(ActiveNsList)) round-tripped
+    // pair installed AND all three mandatory Identify admin commands
+    // (Controller + ActiveNsList + Namespace) round-tripped
     // successfully, the FSM can reach `Phase::Ready` via repeated
     // `Event::Advance`.
     let mut bringup = BringUp::new();
