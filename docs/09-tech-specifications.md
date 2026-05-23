@@ -41,8 +41,8 @@ These are intended dependencies. Final selections will be confirmed during Phase
 | `ed25519-dalek` | 2.1.x | Ed25519 signatures (`verify_strict` to reject malleable forms) | yes |
 | `x25519-dalek` | 2.0.x | X25519 ECDH key exchange | yes |
 | `chacha20poly1305` | 0.10.x | AEAD (RFC 8439) | yes (`alloc`) |
-| `sha2` | 0.10.x | SHA-256 / SHA-512 family | yes |
-| `sha3` | 0.10.x | SHA3-256 / Keccak family | yes |
+| `sha2` | 0.11.x | SHA-256 / SHA-512 family | yes |
+| `sha3` | 0.12.x | SHA3-256 / Keccak family (bumped 2026-05-23) | yes |
 | `blake3` | 1.5.x | BLAKE3 (default protocol-level hash; fastest, hardware-friendly) | yes |
 | `hkdf` | 0.12.x | HKDF-SHA-256 for protocol session keys | yes |
 | `argon2` | 0.5.x | Argon2id for memory-hard user-secret hashing | yes (`alloc`) |
