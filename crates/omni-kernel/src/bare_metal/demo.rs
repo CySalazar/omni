@@ -1048,7 +1048,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "P6.7.10-pre.42 consolidation",
+        "TASK-004 virtio-net live",
         graphics::WHITE,
     );
     row(
