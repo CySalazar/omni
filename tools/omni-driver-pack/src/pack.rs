@@ -196,3 +196,92 @@ pub fn build_opack(input: PackInput<'_>) -> Result<Vec<u8>, PackError> {
     );
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omni_kernel::driver_manifest::DriverCapabilities;
+    use omni_kernel::driver_manifest::DriverMatchers;
+
+    fn test_seed() -> [u8; SIGNING_KEY_LEN] {
+        [0x42; SIGNING_KEY_LEN]
+    }
+
+    fn test_pubkey() -> [u8; VERIFYING_KEY_LEN] {
+        let key = OmniSigningKey::from_bytes(test_seed());
+        key.verifying_key().as_bytes()
+    }
+
+    fn minimal_input(image: &[u8]) -> PackInput<'_> {
+        PackInput {
+            name: "test".to_string(),
+            version: "0.1.0".to_string(),
+            issuer_pubkey: test_pubkey(),
+            capabilities: DriverCapabilities::default(),
+            matchers: DriverMatchers::default(),
+            image_bytes: image,
+            signing_seed: test_seed(),
+        }
+    }
+
+    #[test]
+    fn build_opack_starts_with_magic() {
+        let blob = build_opack(minimal_input(b"ELF")).unwrap();
+        assert!(blob.starts_with(b"OMNIPACK"));
+    }
+
+    #[test]
+    fn build_opack_version_field_is_one() {
+        let blob = build_opack(minimal_input(b"ELF")).unwrap();
+        let version = u32::from_le_bytes(blob[8..12].try_into().unwrap());
+        assert_eq!(version, 1);
+    }
+
+    #[test]
+    fn build_opack_flags_field_is_zero() {
+        let blob = build_opack(minimal_input(b"ELF")).unwrap();
+        let flags = u32::from_le_bytes(blob[12..16].try_into().unwrap());
+        assert_eq!(flags, 0);
+    }
+
+    #[test]
+    fn build_opack_manifest_offset_is_0x40() {
+        let blob = build_opack(minimal_input(b"ELF")).unwrap();
+        let offset = u64::from_le_bytes(blob[16..24].try_into().unwrap());
+        assert_eq!(offset, 0x40);
+    }
+
+    #[test]
+    fn build_opack_signature_is_64_bytes() {
+        let blob = build_opack(minimal_input(b"ELF")).unwrap();
+        let sig_len = u64::from_le_bytes(blob[40..48].try_into().unwrap());
+        assert_eq!(sig_len, 64);
+    }
+
+    #[test]
+    fn build_opack_image_bytes_survive_round_trip() {
+        let image = b"this-is-the-ring3-elf-payload";
+        let blob = build_opack(minimal_input(image)).unwrap();
+        let img_offset: usize =
+            u64::from_le_bytes(blob[48..56].try_into().unwrap())
+                .try_into()
+                .unwrap();
+        let img_len: usize =
+            u64::from_le_bytes(blob[56..64].try_into().unwrap())
+                .try_into()
+                .unwrap();
+        assert_eq!(&blob[img_offset..img_offset + img_len], image);
+    }
+
+    #[test]
+    fn build_opack_empty_image_succeeds() {
+        let blob = build_opack(minimal_input(b"")).unwrap();
+        let img_len = u64::from_le_bytes(blob[56..64].try_into().unwrap());
+        assert_eq!(img_len, 0);
+    }
+
+    #[test]
+    fn build_opack_header_len_matches_constant() {
+        assert_eq!(OMNI_PACK_HEADER_LEN, 64);
+    }
+}
