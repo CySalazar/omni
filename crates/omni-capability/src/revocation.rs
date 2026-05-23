@@ -291,4 +291,26 @@ mod tests {
             assert!(r.contains(c));
         }
     }
+
+    #[test]
+    fn len_and_is_empty_consistency() {
+        let mut r = RevocationList::new();
+        assert!(r.is_empty());
+        assert_eq!(r.len(), 0);
+        r.revoke(id(1));
+        assert!(!r.is_empty());
+        assert_eq!(r.len(), 1);
+        r.revoke(id(2));
+        assert_eq!(r.len(), 2);
+    }
+
+    #[test]
+    fn with_expected_capacity_does_not_affect_semantics() {
+        let r0 = RevocationList::new();
+        let r1024 = RevocationList::with_expected_capacity(1024);
+        assert!(r0.is_empty());
+        assert!(r1024.is_empty());
+        assert!(!r0.contains(&id(1)));
+        assert!(!r1024.contains(&id(1)));
+    }
 }
