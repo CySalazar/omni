@@ -2198,6 +2198,34 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // P6.7.10-pre.42 — Identify Controller response parse
+    // -------------------------------------------------------------------
+
+    /// Parse the Identify Controller response page and extract `NN`.
+    #[test]
+    fn image_pre42_identify_controller_nn_parse() {
+        use crate::identify::IdentifyController;
+
+        let mut page = vec![0u8; 4096];
+        let nn: u32 = 1;
+        page.get_mut(IdentifyController::NN_OFFSET..IdentifyController::NN_OFFSET + 4)
+            .expect("NN offset in bounds")
+            .copy_from_slice(&nn.to_le_bytes());
+        let view = IdentifyController::new(&page).expect("parse");
+        assert_eq!(view.nn(), 1, "NN=1 → controller exposes one namespace");
+    }
+
+    /// An all-zero page has NN=0, which the image rejects.
+    #[test]
+    fn image_pre42_identify_controller_nn_zero_rejects() {
+        use crate::identify::IdentifyController;
+
+        let page = vec![0u8; 4096];
+        let view = IdentifyController::new(&page).expect("parse");
+        assert_eq!(view.nn(), 0, "all-zero page → NN=0");
+    }
+
+    // -------------------------------------------------------------------
     // P6.7.10-pre.40 — IO discard wire composition tests
     // -------------------------------------------------------------------
 

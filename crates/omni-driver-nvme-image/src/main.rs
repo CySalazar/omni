@@ -143,7 +143,7 @@ use omni_driver_nvme::admin::{
     encode_identify,
 };
 use omni_driver_nvme::bringup::{BringUp, Event, Phase};
-use omni_driver_nvme::identify::{ActiveNsListView, IdentifyNamespace};
+use omni_driver_nvme::identify::{ActiveNsListView, IdentifyController, IdentifyNamespace};
 use omni_driver_nvme::controller_regs::{
     CAP_OFFSET, VS_OFFSET, cap_dstrd, cap_mqes, cap_mpsmin, vs_major,
 };
@@ -789,6 +789,12 @@ const EXIT_NVME_CAP_MPSMIN_UNSUPPORTED: u64 = 364;
 /// `VS` register reports major version 0 — the controller does
 /// not identify as NVMe 1.0+. New in P6.7.10-pre.41.
 const EXIT_NVME_VS_UNSUPPORTED: u64 = 366;
+/// `IdentifyController::new` rejected the response page (too small).
+/// Defensive. New in P6.7.10-pre.42.
+const EXIT_NVME_IDENTIFY_CTRL_PARSE_FAILED: u64 = 368;
+/// `IdentifyController::nn()` returned 0 — the controller reports
+/// zero namespaces. New in P6.7.10-pre.42.
+const EXIT_NVME_IDENTIFY_CTRL_NN_ZERO: u64 = 370;
 
 // =============================================================================
 // Raw syscall wrapper
@@ -1186,6 +1192,27 @@ pub extern "C" fn _start() -> ! {
     // "controller responded but command rejected" (this case).
     if !identify_cqe.is_success() {
         unsafe { sys_exit(EXIT_NVME_IDENTIFY_FAILED) };
+    }
+
+    // Step 4.15.d — P6.7.10-pre.42: parse the Identify Controller
+    // response page and validate `NN > 0` (the controller exposes
+    // at least one namespace). The `nn()` accessor reads the 32-bit
+    // LE field at offset 516 per NVMe 1.4 § 5.15.2 Figure 247.
+    //
+    // SAFETY: the DMA arena at `NVME_IDENTIFY_CTRL_RESP_IOVA` was
+    // written by the controller via the matching CQE above.
+    let ctrl_resp_slice: &[u8] = unsafe {
+        core::slice::from_raw_parts(
+            NVME_IDENTIFY_CTRL_RESP_IOVA as *const u8,
+            4096,
+        )
+    };
+    let ctrl_view = match IdentifyController::new(ctrl_resp_slice) {
+        Ok(v) => v,
+        Err(_) => unsafe { sys_exit(EXIT_NVME_IDENTIFY_CTRL_PARSE_FAILED) },
+    };
+    if ctrl_view.nn() == 0 {
+        unsafe { sys_exit(EXIT_NVME_IDENTIFY_CTRL_NN_ZERO) };
     }
 
     // Step 4.16 — P6.7.10-pre.34: encode + submit the
