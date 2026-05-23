@@ -2211,8 +2211,7 @@ mod tests {
         const IO_DISCARD_CID: u16 = 4;
         const RANGE_PRP1: u64 = 0x8000;
 
-        let mut io_pair =
-            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut io_pair = AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
         let mut mmio = MockMmioBackend::default();
         let mut sub_page = empty_sq_page(DEPTH);
         let mut comp_page = empty_cq_page(DEPTH);
@@ -2239,8 +2238,7 @@ mod tests {
         const DSTRD: u8 = 0;
         const IO_DISCARD_CID: u16 = 4;
 
-        let mut io_pair =
-            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut io_pair = AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
         let mut mmio = MockMmioBackend::default();
         let mut sub_page = empty_sq_page(DEPTH);
         let mut comp_page = empty_cq_page(DEPTH);
@@ -2271,8 +2269,7 @@ mod tests {
         const IO_QID: u16 = 1;
         const DSTRD: u8 = 0;
 
-        let mut io_pair =
-            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut io_pair = AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
         let mut mmio = MockMmioBackend::default();
         let mut sub_page = empty_sq_page(DEPTH);
         let mut comp_page = empty_cq_page(DEPTH);
@@ -2338,8 +2335,7 @@ mod tests {
         const DSTRD: u8 = 0;
         const IO_FLUSH_CID: u16 = 3;
 
-        let mut io_pair =
-            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut io_pair = AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
         let mut mmio = MockMmioBackend::default();
         let mut sub_page = empty_sq_page(DEPTH);
         let mut comp_page = empty_cq_page(DEPTH);
@@ -2366,8 +2362,7 @@ mod tests {
         const DSTRD: u8 = 0;
         const IO_FLUSH_CID: u16 = 3;
 
-        let mut io_pair =
-            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut io_pair = AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
         let mut mmio = MockMmioBackend::default();
         let mut sub_page = empty_sq_page(DEPTH);
         let mut comp_page = empty_cq_page(DEPTH);
@@ -2401,8 +2396,7 @@ mod tests {
         const IO_QID: u16 = 1;
         const DSTRD: u8 = 0;
 
-        let mut io_pair =
-            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut io_pair = AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
         let mut mmio = MockMmioBackend::default();
         let mut sub_page = empty_sq_page(DEPTH);
         let mut comp_page = empty_cq_page(DEPTH);
@@ -2457,8 +2451,7 @@ mod tests {
         const IO_WRITE_CID: u16 = 2;
         const DATA_PRP1: u64 = 0x7000;
 
-        let mut io_pair =
-            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut io_pair = AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
         let mut mmio = MockMmioBackend::default();
         let mut sub_page = empty_sq_page(DEPTH);
         let mut comp_page = empty_cq_page(DEPTH);
@@ -2485,8 +2478,7 @@ mod tests {
         const DSTRD: u8 = 0;
         const IO_WRITE_CID: u16 = 2;
 
-        let mut io_pair =
-            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut io_pair = AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
         let mut mmio = MockMmioBackend::default();
         let mut sub_page = empty_sq_page(DEPTH);
         let mut comp_page = empty_cq_page(DEPTH);
@@ -2520,8 +2512,7 @@ mod tests {
         const IO_QID: u16 = 1;
         const DSTRD: u8 = 0;
 
-        let mut io_pair =
-            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut io_pair = AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
         let mut mmio = MockMmioBackend::default();
         let mut sub_page = empty_sq_page(DEPTH);
         let mut comp_page = empty_cq_page(DEPTH);
@@ -2568,8 +2559,7 @@ mod tests {
         const IO_READ_CID: u16 = 1;
         const DATA_PRP1: u64 = 0x7000;
 
-        let mut io_pair =
-            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut io_pair = AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
         let mut mmio = MockMmioBackend::default();
         let mut sub_page = empty_sq_page(DEPTH);
         let mut comp_page = empty_cq_page(DEPTH);
@@ -2597,8 +2587,7 @@ mod tests {
         const DSTRD: u8 = 0;
         const IO_READ_CID: u16 = 1;
 
-        let mut io_pair =
-            AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
+        let mut io_pair = AdminQueuePair::new_for_qid(IO_QID, DEPTH, DEPTH, DSTRD).expect("ctor");
         let mut mmio = MockMmioBackend::default();
         let mut sub_page = empty_sq_page(DEPTH);
         let mut comp_page = empty_cq_page(DEPTH);
@@ -2687,10 +2676,7 @@ mod tests {
             );
             pair.submit(&sqe, &mut mmio, &mut sq_page)
                 .expect("submit identify");
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "slot + 1 <= 3 fits u16"
-            )]
+            #[allow(clippy::cast_possible_truncation, reason = "slot + 1 <= 3 fits u16")]
             let sq_head = (slot + 1) as u16;
             write_cqe_to_page(&mut cq_page, slot, &build_cqe(true, cid, sq_head));
             let fields = pair
@@ -2702,15 +2688,8 @@ mod tests {
         }
 
         // Command 4 — Create I/O Completion Queue.
-        let cq_sqe = crate::admin::encode_create_io_cq(
-            1,
-            64,
-            IO_CQ_PRP1,
-            0,
-            true,
-            true,
-            CREATE_CQ_CID,
-        );
+        let cq_sqe =
+            crate::admin::encode_create_io_cq(1, 64, IO_CQ_PRP1, 0, true, true, CREATE_CQ_CID);
         pair.submit(&cq_sqe, &mut mmio, &mut sq_page)
             .expect("submit Create IO CQ");
         write_cqe_to_page(&mut cq_page, 3, &build_cqe(true, CREATE_CQ_CID, 4));

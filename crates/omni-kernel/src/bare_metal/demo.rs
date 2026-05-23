@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "P6.7.10-pre.41 CAP validation",
+        "TASK-011 omni-fs skeleton",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1056,7 +1056,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Tests    : ",
         11,
-        "1626 workspace pass",
+        "1631 workspace pass",
         graphics::WHITE,
     );
     row(6, cx_r, "Author   : ", 11, "cySalazar", graphics::WHITE);

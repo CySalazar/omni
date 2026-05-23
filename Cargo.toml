@@ -39,6 +39,10 @@ members = [
     # it is std-enabled (it runs as a host userspace service with KVM
     # ioctls, OCI image cache, subprocess management for virtio backends).
     "crates/omni-container",
+    # `omni-fs` is the filesystem service skeleton (TASK-011, OIP-FS-018).
+    # Phase-1: BLK channel registration + stub `NotImplemented` responses.
+    # Phase-2: native OmniFS host.
+    "crates/omni-fs",
     # `omni-driver-shared` is the common SDK helper crate for all first-party
     # user-space drivers (P6.7.8.10, OIP-013 § S5.3 step 8).  It is dep-free
     # (`no_std`, zero production dependencies) and provides the capability
@@ -152,6 +156,8 @@ omni-mesh           = { path = "crates/omni-mesh",           version = "0.2.0" }
 omni-tokenization   = { path = "crates/omni-tokenization",   version = "0.2.0" }
 omni-sdk            = { path = "crates/omni-sdk",            version = "0.2.0" }
 omni-agent          = { path = "crates/omni-agent",          version = "0.2.0" }
+# Filesystem service (TASK-011, OIP-FS-018): Phase-1 skeleton.
+omni-fs             = { path = "crates/omni-fs",             version = "0.2.0" }
 # Driver SDK helper (P6.7.8.10, OIP-013 § S5.3 step 8): dep-free, no_std.
 omni-driver-shared  = { path = "crates/omni-driver-shared",  version = "0.2.0" }
 

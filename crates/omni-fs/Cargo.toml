@@ -1,0 +1,27 @@
+# =============================================================================
+# omni-fs — Filesystem service skeleton for OMNI OS
+# =============================================================================
+# Phase-1 skeleton: registers the BLK channel and returns
+# `FsResponse::NotImplemented` for every request.  Phase-2 grows this
+# into the native OmniFS host per OIP-FS-018.
+# =============================================================================
+
+[package]
+name             = "omni-fs"
+description      = "Filesystem service for OMNI OS — OmniFS Phase-1 skeleton."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[dependencies]
+omni-types = { workspace = true }
+
+[lints]
+workspace = true
