@@ -1622,6 +1622,29 @@ pub fn kmain(
     }
 
     // -------------------------------------------------------------------------
+    // P6.7.9-pre.8 — DEV-ONLY driver probe auto-loader.
+    //
+    // Scans the PCI bus, spawns a hand-crafted Ring 3 probe ELF that
+    // exercises the full MmioMap (70) syscall path (capability deposit →
+    // scope verification → page-table installation). The probe is
+    // enqueued in the scheduler and dispatched on the next LAPIC timer
+    // tick during the desktop loop.
+    //
+    // SAFETY: single-CPU; SCHEDULER and FRAME_ALLOC are not aliased.
+    // -------------------------------------------------------------------------
+    #[cfg(target_arch = "x86_64")]
+    #[allow(
+        unsafe_code,
+        unreachable_code,
+        reason = "single-core static-mut deref for auto-loader; unreachable after mb12-userprobe diverges"
+    )]
+    unsafe {
+        let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+        let fa = &mut *core::ptr::addr_of_mut!(FRAME_ALLOC);
+        bare_metal::driver_loader::boot_load_driver_probe(&mut pager, fa, sched);
+    }
+
+    // -------------------------------------------------------------------------
     // Graphical desktop — blocks until the user requests power-off, then
     // draws the power-off overlay before returning.
     //

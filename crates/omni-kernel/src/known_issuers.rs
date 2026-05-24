@@ -45,12 +45,25 @@ pub struct KnownIssuer {
 
 /// Static allowlist consulted by `DriverLoad`.
 ///
-/// Currently empty: P6.7.8 will populate this when the first signed
-/// driver image is provisioned. Keep the array as `&'static [...]`
-/// (rather than a `const N: usize`) so adding entries is a one-line
-/// edit that does not cascade into call-site array-length generics.
+/// Keep the array as `&'static [...]` (rather than a `const N: usize`)
+/// so adding entries is a one-line edit that does not cascade into
+/// call-site array-length generics.
 pub static KNOWN_ISSUERS: &[KnownIssuer] = &[
-    // (intentionally empty — see module docs)
+    // DEV-ONLY issuer: the Ed25519 verifying key derived from the
+    // fixed CAFEBABE seed in `driver_cap_issuer::DRIVER_CAP_ISSUER_SEED`.
+    // This is the *issuer* identity, NOT the kernel capability signer.
+    // In Phase 1 the same seed serves double duty (issuer == kernel
+    // signer) because no external issuer has been provisioned yet.
+    // Production will replace this with the Stichting OMNI key.
+    KnownIssuer {
+        id: "dev-only-cafebabe",
+        verifying_key: [
+            0xAA, 0x73, 0x31, 0x87, 0xFE, 0xB4, 0xD4, 0x8A,
+            0x0A, 0xF5, 0x65, 0x89, 0x0E, 0x96, 0x79, 0xCA,
+            0x43, 0x28, 0xE4, 0x59, 0x85, 0xDB, 0x9A, 0xB3,
+            0x54, 0x58, 0xD3, 0xD1, 0x80, 0xB5, 0x24, 0x16,
+        ],
+    },
 ];
 
 /// Look an issuer up by Ed25519 verifying key. Returns `None` if the
@@ -74,21 +87,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn phase1_table_is_empty() {
-        // This test pins the documented Phase 1 state. When the first
-        // issuer is provisioned in P6.7.8, this test will fail and the
-        // tester will update it to assert the actual entry — that's the
-        // intended forcing function so the change is reviewed deliberately.
-        assert!(
-            KNOWN_ISSUERS.is_empty(),
-            "KNOWN_ISSUERS no longer empty — update phase1_table_is_empty test"
+    fn dev_only_issuer_is_present() {
+        assert_eq!(
+            KNOWN_ISSUERS.len(),
+            1,
+            "P6.7.9: one DEV-ONLY issuer (CAFEBABE seed)"
         );
+        assert_eq!(KNOWN_ISSUERS[0].id, "dev-only-cafebabe");
     }
 
     #[test]
     fn lookup_unknown_issuer_returns_none() {
         assert!(lookup_issuer(&[0u8; VERIFYING_KEY_LEN]).is_none());
         assert!(lookup_issuer(&[0xFFu8; VERIFYING_KEY_LEN]).is_none());
+    }
+
+    #[test]
+    fn dev_only_issuer_key_matches_cap_issuer_seed() {
+        let key = crate::driver_cap_issuer::kernel_signing_key();
+        let derived = key.verifying_key().as_bytes();
+        assert_eq!(
+            &KNOWN_ISSUERS[0].verifying_key, &derived,
+            "DEV-ONLY issuer verifying key must match the kernel signing key's public half"
+        );
+    }
+
+    #[test]
+    fn dev_only_lookup_succeeds() {
+        let key = crate::driver_cap_issuer::kernel_signing_key();
+        let derived = key.verifying_key().as_bytes();
+        let found = lookup_issuer(&derived);
+        assert!(found.is_some(), "DEV-ONLY issuer must be discoverable via lookup_issuer");
+        assert_eq!(found.unwrap().id, "dev-only-cafebabe");
     }
 
     #[test]
