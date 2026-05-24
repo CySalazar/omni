@@ -2,7 +2,7 @@
 oip: 23
 title: OmniFS On-Disk Format v1 — Superblock, Inode B+-Tree, CoW Block Allocator, AEAD Integrity
 track: Standards Track
-status: Draft
+status: Active
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-24

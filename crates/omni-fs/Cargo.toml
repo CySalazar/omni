@@ -8,7 +8,7 @@
 
 [package]
 name             = "omni-fs"
-description      = "Filesystem service for OMNI OS — OmniFS Phase-1 skeleton."
+description      = "Filesystem service for OMNI OS — OmniFS Phase-2 on-disk format."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -26,6 +26,12 @@ omni-types = { workspace = true }
 # `default-features = false` keeps this crate `no_std + alloc` compatible,
 # consistent with the workspace `no_std` policy in /docs/09-tech-specifications.md.
 serde      = { workspace = true }
+# ChaCha20-Poly1305 AEAD for per-block integrity tags (OIP-FS-Wire-023 §S4).
+# `alloc` feature required for no_std + alloc environments.
+chacha20poly1305 = { workspace = true }
+# BLAKE3 for future HKDF key derivation and FSCK content hashing (Phase 3).
+# `no_std`-compatible; workspace pin at 1.5.
+blake3 = { workspace = true }
 
 [lints]
 workspace = true
