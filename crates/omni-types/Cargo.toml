@@ -56,9 +56,11 @@ default = ["id-generation"]
 id-generation = ["id-types", "dep:getrandom"]
 id-types = ["dep:uuid"]
 # Exposes constructors for `EncryptedString`, `MaskedSSN`, `TokenizedEmail`,
-# and `AttestedHash`. Implies that the calling crate runs inside an
-# attested TEE.
-_tokenization_provider = []
+# and `AttestedHash`, plus real ChaCha20-Poly1305 encrypt/decrypt methods.
+# Pulling in `chacha20poly1305` is safe: the crate supports `no_std + alloc`
+# and is already pinned at workspace level (0.10.x, features = ["alloc"]).
+# Implies that the calling crate runs inside an attested TEE.
+_tokenization_provider = ["dep:chacha20poly1305"]
 
 # -----------------------------------------------------------------------------
 # Dependencies
@@ -93,6 +95,12 @@ uuid      = { version = "1.11", default-features = false, features = ["serde"], 
 # this dep is folded into the `id-generation` feature: the kernel
 # build path simply has no UUID generation.
 getrandom = { workspace = true, optional = true }
+# ChaCha20-Poly1305 AEAD used by the provider-gated encrypt/decrypt methods
+# on the encrypted-by-default types. Optional — only present when the
+# `_tokenization_provider` feature is active (i.e., only inside
+# `omni-tokenization`). The `no_std + alloc` configuration is inherited from
+# the workspace declaration (features = ["alloc"]).
+chacha20poly1305 = { workspace = true, optional = true }
 # Safe hex encoding helpers for raw-byte identifiers. We deliberately do NOT
 # implement `core::fmt::Display` for byte-array IDs — call sites must go
 # through `to_hex` so accidental logging is traceable.
