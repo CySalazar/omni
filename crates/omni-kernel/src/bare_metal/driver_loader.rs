@@ -41,6 +41,8 @@
     reason = "wraps ProcessControlBlock::spawn_from_elf and deposit_for_driver which are both unsafe"
 )]
 
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
 use crate::bare_metal::early_console;
 use crate::cap_deposit;
 use crate::driver_manifest::DriverCapabilities;
@@ -49,6 +51,20 @@ use crate::scheduling::PriorityClass;
 use omni_capability::Resource;
 
 use super::pci_scan;
+
+// =========================================================================
+// e1000e bring-up state (read by the Build Info panel renderer)
+// =========================================================================
+
+/// Set to `true` once the e1000e live bring-up completes successfully.
+pub static E1000E_LIVE: AtomicBool = AtomicBool::new(false);
+
+/// 6-byte MAC address read from the e1000e controller (valid only when
+/// `E1000E_LIVE` is `true`).
+pub static E1000E_MAC: [AtomicU8; 6] = [
+    AtomicU8::new(0), AtomicU8::new(0), AtomicU8::new(0),
+    AtomicU8::new(0), AtomicU8::new(0), AtomicU8::new(0),
+];
 
 // =========================================================================
 // Hand-crafted driver probe ELF
@@ -973,6 +989,14 @@ unsafe fn e1000e_live_bringup<const N: usize>(
     write_hex_u8(((rah >> 8) & 0xFF) as u8);
     early_console::write_str("\n");
 
+    // Store MAC for the Build Info panel renderer.
+    E1000E_MAC[0].store((ral & 0xFF) as u8, Ordering::Relaxed);
+    E1000E_MAC[1].store(((ral >> 8) & 0xFF) as u8, Ordering::Relaxed);
+    E1000E_MAC[2].store(((ral >> 16) & 0xFF) as u8, Ordering::Relaxed);
+    E1000E_MAC[3].store(((ral >> 24) & 0xFF) as u8, Ordering::Relaxed);
+    E1000E_MAC[4].store((rah & 0xFF) as u8, Ordering::Relaxed);
+    E1000E_MAC[5].store(((rah >> 8) & 0xFF) as u8, Ordering::Relaxed);
+
     // Step 4: PHY Init — issue MDIC read of MII_CTRL (register 0, PHY addr 1).
     let mdic_read = E1000E_MDIC_OP_READ | (1u32 << 21) | (0u32 << 16);
     unsafe { core::ptr::write_volatile(base.byte_add(E1000E_REG_MDIC) as *mut u32, mdic_read) };
@@ -1058,6 +1082,7 @@ unsafe fn e1000e_live_bringup<const N: usize>(
     early_console::write_usize(rdt as usize);
     early_console::write_str("\n");
 
+    E1000E_LIVE.store(true, Ordering::Relaxed);
     early_console::write_str("[e1000e] live bring-up complete\n");
 }
 

@@ -1059,7 +1059,53 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         "1715 workspace pass",
         graphics::WHITE,
     );
-    row(6, cx_r, "Author   : ", 11, "cySalazar", graphics::WHITE);
+
+    // e1000e live status — show MAC if bring-up succeeded.
+    use super::driver_loader::{E1000E_LIVE, E1000E_MAC};
+    use core::sync::atomic::Ordering;
+    if E1000E_LIVE.load(Ordering::Relaxed) {
+        let m = [
+            E1000E_MAC[0].load(Ordering::Relaxed),
+            E1000E_MAC[1].load(Ordering::Relaxed),
+            E1000E_MAC[2].load(Ordering::Relaxed),
+            E1000E_MAC[3].load(Ordering::Relaxed),
+            E1000E_MAC[4].load(Ordering::Relaxed),
+            E1000E_MAC[5].load(Ordering::Relaxed),
+        ];
+        // Format "e1000e LIVE  52:54:00:12:34:56" into a stack buffer.
+        let hex = b"0123456789ABCDEF";
+        let mut buf = [0u8; 32];
+        buf[0] = b'e';
+        buf[1] = b'1';
+        buf[2] = b'0';
+        buf[3] = b'0';
+        buf[4] = b'0';
+        buf[5] = b'e';
+        buf[6] = b' ';
+        buf[7] = b'L';
+        buf[8] = b'I';
+        buf[9] = b'V';
+        buf[10] = b'E';
+        buf[11] = b' ';
+        buf[12] = b' ';
+        let mut pos = 13;
+        for (i, byte) in m.iter().enumerate() {
+            buf[pos] = hex[(byte >> 4) as usize];
+            buf[pos + 1] = hex[(byte & 0xF) as usize];
+            pos += 2;
+            if i < 5 {
+                buf[pos] = b':';
+                pos += 1;
+            }
+        }
+        // SAFETY: buf is filled with ASCII hex + separators only.
+        #[allow(unsafe_code)]
+        let mac_str = unsafe { core::str::from_utf8_unchecked(&buf[..pos]) };
+        row(6, cx_r, "Network  : ", 11, mac_str, 0xFF_00_DD_00);
+    } else {
+        row(6, cx_r, "Network  : ", 11, "no e1000e", graphics::DARK_GRAY);
+    }
+    row(7, cx_r, "Author   : ", 11, "cySalazar", graphics::WHITE);
 }
 
 /// Render the terminal input line: prompt + echo buffer + cursor indicator.
