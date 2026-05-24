@@ -884,6 +884,7 @@ dependencies = [
  "omni-capability",
  "omni-tee",
  "omni-types",
+ "parking_lot",
  "proptest",
  "serde",
  "thiserror 2.0.18",
