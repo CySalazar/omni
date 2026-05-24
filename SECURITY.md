@@ -229,7 +229,7 @@ Until OIP-Bounty-002 reaches `Active` and the Activation Date is met, the progra
 
 - It does **not** authorize you to test third-party deployments of OMNI OS
   without the operator's permission. Each deployment is a separate authorization.
-- It does **not** modify the AGPL-3.0 license terms. The license still applies.
+- It does **not** modify the Apache-2.0 license terms. The license still applies.
 - It does **not** create an attorney-client relationship between you and
   the project.
 
@@ -245,7 +245,7 @@ Until OIP-Bounty-002 reaches `Active` and the Activation Date is met, the progra
 
 ## 10. Cross-references
 
-- [`LICENSE`](LICENSE) — AGPL-3.0-only governs the codebase.
+- [`LICENSE`](LICENSE) — Apache-2.0 governs the codebase.
 - [`COMMERCIAL-LICENSE.md`](COMMERCIAL-LICENSE.md) — dual-license terms.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — general contribution flow.
 - [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) — community behavior policy.

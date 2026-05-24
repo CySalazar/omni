@@ -72,7 +72,7 @@ zero security benefit.
 |---|---|---|
 | **`bootloader` crate (rust-osdev)** | Pure Rust, well-documented for `redox`/`Theseus`-style kernels, v0.11+ uses `bootloader_api` with a clean hand-off ABI. License Apache/MIT. | Less battle-tested than Limine; smaller ecosystem. |
 | **Limine** | C-based, mature, used by many hobby kernels; rich protocol (framebuffer, SMP, ACPI). License BSD-2. | Adds a non-Rust dependency. Cross-language complicates reproducible builds. |
-| **GRUB2 + Multiboot2** | Ubiquitous, well-known. | C, GPL-3 (incompatible with project's AGPL-3.0+commercial dual-licensing for any code we would patch upstream). License conflict is the blocker. |
+| **GRUB2 + Multiboot2** | Ubiquitous, well-known. | C, GPL-3 (incompatible with project's Apache-2.0 licensing for any code we would patch upstream). License conflict is the blocker. |
 | **Custom UEFI loader (`uefi-rs`)** | Maximum control, pure Rust. | Significant additional engineering scope; we would be re-implementing what `bootloader` already provides. |
 
 **Decision: `bootloader` crate v0.11+.** The pure-Rust path eliminates

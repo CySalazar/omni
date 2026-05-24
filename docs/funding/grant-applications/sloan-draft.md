@@ -138,7 +138,7 @@ to attach CV under NDA)*.
 
 Stichting OMNI commits to:
 
-- Open-source release of all grant outputs under AGPL-3.0 (code) and
+- Open-source release of all grant outputs under Apache-2.0 (code) and
   CC-BY-SA 4.0 (documentation).
 - Annual audited financial report covering Sloan funds.
 - Acknowledgement of Sloan support in all relevant public materials.
@@ -146,7 +146,7 @@ Stichting OMNI commits to:
 
 ## 11. Open science commitments
 
-- Code: AGPL-3.0, public Git repository, all commits cryptographically signed.
+- Code: Apache-2.0, public Git repository, all commits cryptographically signed.
 - Specifications: CC-BY-SA 4.0, versioned in repo, immutable history.
 - Audit reports: public release within 90 days of receipt, redacted as
   required by responsible disclosure.
@@ -168,7 +168,7 @@ good. Most for-profit AI investors do not meet this bar.
 |---|---|
 | TEE vendor compromise reveals attestation chain flaw | TEE diversity: project supports multiple vendors and can deny-list compromised generations via OIP. |
 | MoE distribution proves infeasible in real network conditions | Roadmap has explicit "stop condition" trigger; pipeline parallelism is the fallback for dense models on personal clusters. |
-| External audit identifies Critical findings requiring redesign | Roadmap accommodates one full phase of delay; AGPL ensures community can fork and remediate if Foundation cannot. |
+| External audit identifies Critical findings requiring redesign | Roadmap accommodates one full phase of delay; Apache-2.0 ensures community can fork and remediate if Foundation cannot. |
 | Founder bus factor | 2-engineer hire post-Phase-0 partially mitigates; BDFL veto sunsets at year 5; all decisions logged. |
 
 ## 14. Outcomes and reporting

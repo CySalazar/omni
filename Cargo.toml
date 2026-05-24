@@ -130,7 +130,7 @@ rust-version = "1.85"
 # for the pseudonym lives in the project identity policy (see governance
 # doc and project memory).
 authors = ["cySalazar <cySalazar@cySalazar.com>"]
-license = "AGPL-3.0-only"
+license = "Apache-2.0"
 repository = "https://github.com/CySalazar/omni"
 homepage = "https://omni-os.org"
 documentation = "https://docs.omni-os.org"

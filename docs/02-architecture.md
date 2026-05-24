@@ -190,7 +190,7 @@ Capability properties:
 | Architecture | Custom microkernel | Minimal TCB, full control, generational stability |
 | Initial hardware | x86_64 with TDX/SEV-SNP | TEE-attestable, mainstream developer hardware |
 | Model architecture | MoE | Mesh-friendly fragmentation |
-| License | AGPL-3.0 + commercial (dual) | Mission protection + funding flexibility |
+| License | Apache-2.0 | Mission protection + funding flexibility |
 
 See [09-tech-specifications.md](./09-tech-specifications.md) for exact versions.
 
@@ -233,7 +233,7 @@ OMNI OS treats application discovery, installation, generation, and marketplace 
    │ Omni* flagship apps (OIP-Flagship-011)                        │
    │ OmniCode (Codium-in-container Phase 1, Tauri-native Phase 2)  │
    │ OmniShell · OmniMail · OmniNotes · OmniDocs · OmniPhotos …    │
-   │ Stichting-Curated tier in omni-market; AGPL-3.0; no telemetry │
+   │ Stichting-Curated tier in omni-market; Apache-2.0; no telemetry │
    └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -249,5 +249,5 @@ These will be resolved during Phase 1 implementation, captured as OIPs:
 - **IPC message format**: Cap'n Proto vs. custom binary format. Cap'n Proto is mature; custom can be more compact.
 - **Driver model**: separate processes per driver (max isolation, higher overhead) vs. driver service composition.
 - **Boot architecture**: UEFI-only vs. UEFI + legacy BIOS support. Likely UEFI-only given hardware baseline.
-- ~~**Filesystem**: native OMNI FS vs. existing options (ZFS port, ext4 via compatibility).~~ **Resolved by [`OIP-FS-018`](../oips/oip-fs-018.md) (Active, 2026-05-22, §5.3 ¶1 ballot):** native `OmniFS` is the single canonical persistent filesystem (Rust, user-space behind the BLK channel of [`OIP-Driver-NVMe-014`](../oips/oip-driver-nvme-014.md), CoW, capability-bound, AEAD-integrity, per-volume confidentiality), delivered phased v0 (Phase 2, in-memory) → v1 (Phase 3, persistent, on-disk format frozen by `OIP-FS-Wire-NNN` follow-up) → v2 (Phase 4+, mesh-replicated). Quantitative parameters frozen in OIP-FS-018 §S1.1 (4 KiB fixed block size, 64 ZiB max volume, 8 EiB max file, BLAKE3-keyed MAC 256-bit integrity, 32-byte capability fingerprint, no hard links, default-off opt-in ZSTD compression, no v1 dedup, no v1 multi-device). Foreign filesystems (ext4, NTFS) admitted only as **read-only compatibility user-space services** behind a `READONLY_COMPAT_FS` capability, scheduled no earlier than Phase 3 (`OIP-FS-Compat-Ext4-NNN`, `OIP-FS-Compat-NTFS-NNN` follow-ups). **ZFS port rejected for v0–v2** on AGPL/CDDL license incompatibility, port effort, and absence of capability binding; revisitable in v3.x.
+- ~~**Filesystem**: native OMNI FS vs. existing options (ZFS port, ext4 via compatibility).~~ **Resolved by [`OIP-FS-018`](../oips/oip-fs-018.md) (Active, 2026-05-22, §5.3 ¶1 ballot):** native `OmniFS` is the single canonical persistent filesystem (Rust, user-space behind the BLK channel of [`OIP-Driver-NVMe-014`](../oips/oip-driver-nvme-014.md), CoW, capability-bound, AEAD-integrity, per-volume confidentiality), delivered phased v0 (Phase 2, in-memory) → v1 (Phase 3, persistent, on-disk format frozen by `OIP-FS-Wire-NNN` follow-up) → v2 (Phase 4+, mesh-replicated). Quantitative parameters frozen in OIP-FS-018 §S1.1 (4 KiB fixed block size, 64 ZiB max volume, 8 EiB max file, BLAKE3-keyed MAC 256-bit integrity, 32-byte capability fingerprint, no hard links, default-off opt-in ZSTD compression, no v1 dedup, no v1 multi-device). Foreign filesystems (ext4, NTFS) admitted only as **read-only compatibility user-space services** behind a `READONLY_COMPAT_FS` capability, scheduled no earlier than Phase 3 (`OIP-FS-Compat-Ext4-NNN`, `OIP-FS-Compat-NTFS-NNN` follow-ups). **ZFS port rejected for v0–v2** on Apache-2.0/CDDL license incompatibility, port effort, and absence of capability binding; revisitable in v3.x.
 - ~~**POSIX compatibility layer**: yes/no/partial. Affects userspace porting effort vs. ideological purity.~~ **Resolved by [`OIP-Container-006`](../oips/oip-container-006.md) (2026-05-12):** no POSIX in the OMNI kernel; POSIX exists only inside guest Linux of OmniContainers (micro-VM container engine with capability-bound virtio I/O). Linux apps and Windows apps (via Wine-in-container) are first-class via this path.

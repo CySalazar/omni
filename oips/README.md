@@ -180,4 +180,4 @@ Full state machine and transition rules: `OIP-Process-001` §4 (*Lifecycle*).
 
 OIPs themselves are released into the public domain under
 [CC0-1.0](https://creativecommons.org/publicdomain/zero/1.0/) (per `OIP-Process-001` §10) so they
-can be quoted, mirrored, and cited freely. The codebase remains AGPL-3.0-only.
+can be quoted, mirrored, and cited freely. The codebase remains Apache-2.0.

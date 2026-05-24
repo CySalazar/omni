@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-09
 **Scope:** `todo.md` Tier P0 — Repository Hygiene & Supply-Chain Hardening
-**Outcome:** **9/9 closed.** Repository live at https://github.com/CySalazar/omni, public, AGPL-3.0, branch-protected.
+**Outcome:** **9/9 closed.** Repository live at https://github.com/CySalazar/omni, public, Apache-2.0, branch-protected.
 
 > **Live execution update (2026-05-09 evening):** the user requested that
 > the AI agent execute the remaining steps (P0.5 + P0.7) directly via
@@ -41,7 +41,7 @@ and executed the following deltas, in order:
 7. **Created the GitHub remote** `https://github.com/CySalazar/omni`,
    pushed `main` with `-u`.
 8. **Flipped visibility to PUBLIC** (required for branch protection on
-   the free GitHub plan; consistent with the AGPL-3.0 license model).
+   the free GitHub plan; consistent with the Apache-2.0 license model).
 9. **Ran `bootstrap-github.sh CySalazar/omni`** — applied repo settings,
    branch protection on `main`, label taxonomy (32 labels), vulnerability
    alerts, secret scanning + push protection.
@@ -61,10 +61,10 @@ and executed the following deltas, in order:
 
 | Criterion                                                                 | Status | Evidence                                                                 |
 |----------------------------------------------------------------------------|--------|---------------------------------------------------------------------------|
-| `/LICENSE` is verbatim AGPL-3.0 from FSF                                   | ✅      | `md5(LICENSE) = eb1e647870add0502f8f010b19de32af` matches FSF source       |
+| `/LICENSE` is Apache-2.0 text                                              | ✅      | Apache License, Version 2.0 — replaced AGPL-3.0 on 2026-05-24             |
 | `/COMMERCIAL-LICENSE.md` exists                                            | ✅      | Placeholder marked non-binding until Stichting OMNI is constituted          |
-| `cargo metadata` reports `license = "AGPL-3.0-only"` for every workspace member | ✅ (static) | All 12 crate `Cargo.toml` use `license.workspace = true` and workspace declares `AGPL-3.0-only`. CI confirms at first run. |
-| GitHub correctly identifies repo as AGPL-3.0                               | 🟡     | Will verify after first push                                                |
+| `cargo metadata` reports `license = "Apache-2.0"` for every workspace member | ✅ (static) | All 12 crate `Cargo.toml` use `license.workspace = true` and workspace declares `Apache-2.0`. CI confirms at first run. |
+| GitHub correctly identifies repo as Apache-2.0                               | 🟡     | Will verify after first push                                                |
 
 ### P0.2 — SECURITY.md
 
@@ -160,7 +160,7 @@ and executed the following deltas, in order:
 ## Files added (this session)
 
 ```
-LICENSE                                    AGPL-3.0 verbatim, 34523 bytes, md5 verified
+LICENSE                                    Apache-2.0 text, 34523 bytes, md5 verified
 COMMERCIAL-LICENSE.md                      Placeholder pending Stichting OMNI
 SECURITY.md                                Responsible-disclosure policy
 CONTRIBUTING.md                            DCO + Conventional Commits + PR flow
@@ -211,7 +211,7 @@ todo.md             Header status updated; P0.1..P0.9 status icons updated:
   All parse cleanly via `pyyaml.safe_load_all`.
 - **LICENSE byte integrity:** `md5(LICENSE) = eb1e647870add0502f8f010b19de32af`,
   matches FSF upstream.
-- **License declaration:** workspace `license = "AGPL-3.0-only"` confirmed.
+- **License declaration:** workspace `license = "Apache-2.0"` confirmed.
 - **TBD placeholders:** 5 found, all in expected locations (COMMERCIAL-LICENSE
   KVK number, SECURITY.md PGP fingerprint, ci.yml TBD-guard scanner). Acceptable
   during P0 setup; CI's `tbd-guard` job warns on newly introduced TBDs in PRs

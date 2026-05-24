@@ -52,7 +52,7 @@ All technical documentation lives in [`/docs`](./docs/README.md). Highlights:
 | **Architecture** | Custom microkernel, written from scratch |
 | **Initial hardware** | x86_64 with Intel TDX or AMD SEV-SNP |
 | **Model architecture** | Mixture of Experts (MoE) |
-| **License** | Dual: AGPL-3.0 + Commercial (via Stichting OMNI) |
+| **License** | Apache-2.0 ([LICENSE](LICENSE)) |
 | **Governance** | 3-layer: cryptographic protocol / federated specification / Stichting |
 
 ## Public commitments
@@ -71,7 +71,7 @@ signed commits — not in marketing copy that can be quietly walked back.
   [`docs/05-governance.md`](./docs/05-governance.md) and the first commit on `main` (`61426d5`,
   signed).
 
-- **OIPs are public domain (CC0-1.0).** The codebase is AGPL-3.0; the *protocol specifications*
+- **OIPs are public domain (CC0-1.0).** The codebase is Apache-2.0; the *protocol specifications*
   are released into the public domain so they can be quoted, mirrored, translated, and
   re-implemented without permission. Authoritative source:
   [`OIP-Process-001` §10](./oips/oip-process-001.md).
@@ -122,7 +122,7 @@ See the [roadmap](./docs/06-roadmap.md) and [`/todo.md`](./todo.md) for the full
 
 Source code is released under the [GNU Affero General Public License v3.0](./LICENSE) by default.
 
-Commercial licensing is available through Stichting OMNI for use cases incompatible with AGPL obligations. See [`COMMERCIAL-LICENSE.md`](./COMMERCIAL-LICENSE.md) and [funding policy](./docs/08-funding-policy.md).
+Commercial licensing is available through Stichting OMNI for use cases that require commercial support. See [`COMMERCIAL-LICENSE.md`](./COMMERCIAL-LICENSE.md) and [funding policy](./docs/08-funding-policy.md).
 
 ## Reporting security issues
 

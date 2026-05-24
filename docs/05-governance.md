@@ -150,7 +150,7 @@ A federated voting system requires Sybil resistance. OMNI OS achieves this via:
 
 Forks are first-class citizens. A fork that:
 
-- **Implements the same protocol** → is fully interoperable on the mesh. The Foundation does not litigate. AGPL-3.0 obligations apply (modifications must be published).
+- **Implements the same protocol** → is fully interoperable on the mesh. The Foundation does not litigate. Apache-2.0 obligations apply.
 - **Modifies the protocol** → forms a separate mesh, not interoperable with the main one, but free to exist.
 
 This policy is structural: any captured Foundation can be forked. The fork can re-join the same mesh on the same protocol terms. The Foundation has no power to prevent this.

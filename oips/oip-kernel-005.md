@@ -349,7 +349,7 @@ Patch releases of `bootloader` have, in the past, changed the on-disk layout of 
 
 - *Custom UEFI loader via `uefi-rs`.* Would give us full control of the loader but reproduces what `bootloader` already provides. Estimated engineering cost: 6–8 weeks for a passable loader, 6 months for one that matches `bootloader`'s feature set. Out of scope for v1.0.
 - *Limine.* Mature, well-documented, but a non-Rust dependency. `OIP-Kernel-003` § 2 explicitly chose `bootloader` over Limine; this OIP inherits that decision.
-- *Multiboot2 + GRUB.* License conflict (`OIP-Kernel-003` § 2): GRUB's GPL-3 is incompatible with our AGPL-3-only + commercial dual licensing for any patch we would upstream. Same blocker.
+- *Multiboot2 + GRUB.* License conflict (`OIP-Kernel-003` § 2): GRUB's GPL-3 is incompatible with our Apache-2.0 licensing for any patch we would upstream. Same blocker.
 - *Direct `_start` in `omni-kernel` (skip the runner).* Would couple the kernel to `bootloader_api` in its dependency graph regardless of feature flag, breaking the library-versus-binary separation rationale above.
 
 ---

@@ -11,8 +11,8 @@ Terms specific to OMNI OS, or used in this project with project-specific meaning
 **Agent**
 A first-class OS primitive representing an autonomous AI-driven entity with declared policy, persistent context, capability tokens, and computational budget. Distinct from a process or thread; agents may compose actions across many resources.
 
-**AGPL-3.0**
-GNU Affero General Public License v3.0. The default license for OMNI OS source code. Strong copyleft; requires modifications to be published if the modified code is offered as a network service.
+**Apache-2.0**
+Apache License, Version 2.0. The license for OMNI OS source code. Permissive; allows use, modification, and redistribution (including in proprietary products) with patent protection and attribution requirements.
 
 **AI Runtime Service**
 The privileged user-space service that exposes AI as a system primitive. Manages model lifecycle, inference scheduling, capability validation, and routing decisions.

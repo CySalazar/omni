@@ -565,7 +565,7 @@ NOT be assigned to any real OIP.
 Every OIP MUST be released into the public domain under
 [CC0-1.0](https://creativecommons.org/publicdomain/zero/1.0/) so it can be quoted, mirrored,
 translated, and cited freely without permission. This is independent of the codebase license
-(AGPL-3.0-only) — OIPs describe protocol; the protocol is documented for everyone.
+(Apache-2.0) — OIPs describe protocol; the protocol is documented for everyone.
 
 ---
 

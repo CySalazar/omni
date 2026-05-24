@@ -30,8 +30,8 @@ applications. These apps:
   `OmniMail`, `OmniNotes`).
 - Are **Stichting-Curated** tier in `omni-market` (per OIP-Market-010).
 - Serve as exemplars of capability-minimality + reproducible build +
-  AGPL-3.0 + no-telemetry.
-- Are AGPL-3.0 source open, with `omni-market` distribution.
+  Apache-2.0 + no-telemetry.
+- Are Apache-2.0 source open, with `omni-market` distribution.
 
 The first flagship is **`OmniCode`**, a VSCode-experience editor with
 Rust + Python pre-configured and OpenVSX extension marketplace integration.
@@ -51,7 +51,7 @@ software looks like on this platform". Apple has iWork; GNOME has Files
 equivalent set to:
 
 1. **Demonstrate the platform** — capability-minimality, reproducible
-   builds, AGPL alignment in practice.
+   builds, Apache-2.0 alignment in practice.
 2. **Onboard developers** with a familiar code editor (VSCode UX is
    the dominant developer mental model in 2026).
 3. **Provide reference Stichting-Curated** entries in `omni-market`
@@ -88,7 +88,7 @@ apps may not use it. This is enforced at `omni-market` submission.
 To qualify for the Omni* prefix and Stichting-Curated status, an app
 must satisfy:
 
-1. **License**: AGPL-3.0-only or compatible OSS (no permissive escape).
+1. **License**: Apache-2.0 or compatible OSS (no permissive escape).
 2. **Capability-minimality**: declared capability set is the
    minimum required, reviewed by the Foundation and demonstrated by
    reproducible build + binary analysis.
@@ -184,7 +184,7 @@ OmniCode lives in a **separate repo** outside the main OMNI OS workspace:
 ```
 omni-code/
 ├── README.md
-├── LICENSE  (AGPL-3.0)
+├── LICENSE  (Apache-2.0)
 ├── packaging/
 │   └── omni-container/
 │       └── linux-codium/    # Phase 1 container image build

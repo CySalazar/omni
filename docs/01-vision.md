@@ -54,7 +54,7 @@ To prevent scope creep and clarify identity:
 
 - **Not a Linux distribution.** OMNI OS is a custom Rust microkernel, written from scratch. Linux compatibility may exist as a userspace compatibility layer, but it is not central.
 - **Not a cryptocurrency project.** The mesh has compute credits for accounting, but no speculative token, no public blockchain, no token sale.
-- **Not a closed ecosystem.** The protocol is open, the source is open (AGPL-3.0), forks are first-class citizens.
+- **Not a closed ecosystem.** The protocol is open, the source is open (Apache-2.0), forks are first-class citizens.
 - **Not an experimental research toy.** OMNI OS is built for production use by real people.
 - **Not a fork of an existing OS.** It is a new system.
 

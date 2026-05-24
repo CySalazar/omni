@@ -22,7 +22,7 @@ version          = "0.2.0"
 edition          = "2024"
 rust-version     = "1.85"
 authors          = ["cySalazar <cySalazar@cySalazar.com>"]
-license          = "AGPL-3.0-only"
+license          = "Apache-2.0"
 repository       = "https://github.com/CySalazar/omni"
 homepage         = "https://omni-os.org"
 keywords         = ["operating-system", "driver", "omni-pack", "tooling"]
@@ -64,7 +64,7 @@ serde_json = "1.0"
 # developer-side source format). Both serde-driven; the TOML and JSON
 # paths share the same `PackManifestJson` struct. 0.8 is the current
 # stable major; transitively pinned via `serde 1.0`. License:
-# MIT OR Apache-2.0 (verified 2026-05 on crates.io), AGPL-3.0-compatible
+# MIT OR Apache-2.0 (verified 2026-05 on crates.io), Apache-2.0-compatible
 # under `deny.toml`'s allow-list. Pinned to 0.8 line per planning doc
 # TASK-007 acceptance criteria.
 toml = "0.8"

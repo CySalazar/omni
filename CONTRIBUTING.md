@@ -314,7 +314,7 @@ first interaction onward.
 ## 12. License of contributions
 
 By submitting a contribution under DCO sign-off, you agree that your
-contribution is licensed under the project's **AGPL-3.0-only** license
+contribution is licensed under the project's **Apache-2.0** license
 ([LICENSE](LICENSE)). This is the same license under which you receive
 the project, so no additional rights transfer is implied.
 

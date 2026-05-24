@@ -92,15 +92,15 @@ After significant adoption, the project becomes partially self-funding:
 
 ## Dual licensing
 
-Source code is released under AGPL-3.0 by default. Stichting OMNI may grant commercial licenses to organizations that:
+Source code is released under Apache-2.0 by default. Stichting OMNI may grant commercial licenses to organizations that:
 
-- Wish to deploy OMNI OS in contexts incompatible with AGPL obligations.
+- Wish to deploy OMNI OS in contexts that require commercial support.
 - Pay license fees to the Foundation, contributing to development.
 
 Commercial licensing is administered transparently. License fees are reported as a budget line in annual financial statements. The pricing structure is published.
 
 Commercial licensees gain:
-- Right to deploy OMNI OS in proprietary products without AGPL obligations.
+- Right to deploy OMNI OS in proprietary products with commercial support.
 - Optional commercial support contracts.
 
 Commercial licensees do NOT gain:

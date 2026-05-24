@@ -88,4 +88,4 @@ compiles cleanly for `x86_64-unknown-none` (the Phase 1 driver Ring 3 target).
 
 ## License
 
-AGPL-3.0-only — see the workspace root [`LICENSE`](../../LICENSE).
+Apache-2.0 — see the workspace root [`LICENSE`](../../LICENSE).

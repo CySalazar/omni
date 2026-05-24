@@ -32,7 +32,7 @@ Anchor (Article 3)**.
 
 **2.2.** The Foundation pursues this mission by:
 
-- (a) developing and publishing OMNI OS under the AGPL-3.0 license;
+- (a) developing and publishing OMNI OS under the Apache-2.0 license;
 - (b) operating the OMNI Improvement Proposal (OIP) process as specified in
       `OIP-Process-001`;
 - (c) operating seed nodes for the federated mesh until community-operated
@@ -61,7 +61,7 @@ and are **immutable** for the lifetime of the Foundation:
   contractual relationships with, entities listed as Excluded Sources in
   [`docs/08-funding-policy.md`](../08-funding-policy.md), as that policy stands
   at the moment the funding or contract is offered.
-- **(d) Open source.** Source code MUST remain under AGPL-3.0 (or a strictly
+- **(d) Open source.** Source code MUST remain under Apache-2.0 (or a strictly
   more permissive open-source license adopted by OIP). Closed forks operated
   by the Foundation itself are prohibited.
 
@@ -215,7 +215,7 @@ least every five years.
 ## Article 10 — Intellectual property
 
 **10.1.** All copyright in OMNI OS code held by the Foundation is licensed
-to the public under **AGPL-3.0-only**. The Foundation may grant commercial
+to the public under **Apache-2.0**. The Foundation may grant commercial
 licenses on a transparent fee basis per the Dual Licensing policy in
 [`docs/08-funding-policy.md`](../08-funding-policy.md).
 

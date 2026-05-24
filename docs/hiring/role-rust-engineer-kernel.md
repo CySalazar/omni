@@ -87,7 +87,7 @@ You will be responsible for the bare-metal Rust microkernel:
   by the smallest competent group, with the OIP process as the appeal path.
 - **Public credit**: all substantive work attributed in
   [`CONTRIBUTORS.md`](../../CONTRIBUTORS.md) and in release notes.
-- **AGPL ownership**: your contributions are AGPL-3.0; you retain copyright
+- **Apache-2.0 ownership**: your contributions are Apache-2.0; you retain copyright
   per the DCO; no CLA.
 
 ## How to apply

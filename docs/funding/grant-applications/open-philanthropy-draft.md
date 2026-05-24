@@ -107,7 +107,7 @@ The Foundation's funding model (per [`docs/08-funding-policy.md`](../../08-fundi
 targets self-sustainability by year 5 via:
 
 - Mesh fees (small percentage of compute credits, post-adoption).
-- Commercial license fees (dual-licensing, AGPL + commercial via Stichting).
+- Commercial license fees (support + certification via Stichting).
 - Recurring corporate sponsorship from aligned vendors.
 
 Open Philanthropy's grant funds the trajectory from Phase 0 closure (the
@@ -120,7 +120,7 @@ funding streams open.
 | Risk | Likelihood | Mitigation |
 |---|---|---|
 | Project becomes captured by funders | Low | Bylaws Mission Anchor (Article 3) requires unanimous board + 80% OIP supermajority + 6-month notice to modify; explicit Excluded Sources for governmental and government-aligned funding. |
-| Project fails to ship v1.0 | Medium | Roadmap stop-conditions are public; Foundation publicly closes with reasoning rather than dying silently. AGPL ensures forkability. |
+| Project fails to ship v1.0 | Medium | Roadmap stop-conditions are public; Foundation publicly closes with reasoning rather than dying silently. Apache-2.0 ensures forkability. |
 | External audit identifies non-remediable Critical issues | Low–Medium | Phase 1 audit pre-Phase-4 catches kernel issues early; Phase 4 audit pre-v1.0 catches mesh issues. Budget includes remediation allowance. |
 | Wide adoption stalls; project remains niche | Medium | Niche but real adoption (10K nodes) is still meaningful for the OSS reference design and influence on competing efforts. |
 
@@ -152,7 +152,7 @@ If accepted, OMNI OS would:
 - Acknowledge Open Philanthropy in repository README and annual transparency
   reports.
 - Submit to Open Philanthropy's standard evaluation and reporting framework.
-- Make all outputs public under AGPL-3.0 / CC-BY-SA 4.0.
+- Make all outputs public under Apache-2.0 / CC-BY-SA 4.0.
 - Comply with Open Philanthropy's conflict-of-interest and grant agreement
   templates without modification.
 

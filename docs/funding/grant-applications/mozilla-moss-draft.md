@@ -71,12 +71,12 @@ A successful OMNI OS materially strengthens the open web by:
 2. **Demonstrating** that privacy-preserving AI is operationally viable at
    model scales mainstream users actually need.
 3. **Providing an OSS reference design** that other communities can adopt or
-   fork (AGPL-3.0; no CLA; protocol forks are first-class).
+   fork (Apache-2.0; no CLA; protocol forks are first-class).
 
 ## 6. Open source and license
 
-- Code: **AGPL-3.0**, with dual commercial licensing administered by
-  Stichting OMNI for use cases incompatible with AGPL.
+- Code: **Apache-2.0**, with dual commercial licensing administered by
+  Stichting OMNI for use cases that require commercial support.
 - Documentation: **CC-BY-SA 4.0**.
 - No CLA. Contributors retain copyright; DCO sign-off is required.
 
@@ -140,7 +140,7 @@ The roadmap publishes explicit **stop conditions** (per
 - If a core architectural assumption is fundamentally broken.
 
 In any such event, the Foundation publishes a transparent status report and
-decides within 90 days whether to pivot, hibernate, or wind down. AGPL-3.0
+decides within 90 days whether to pivot, hibernate, or wind down. Apache-2.0
 guarantees forkability if the Foundation itself fails.
 
 This stance — explicit, public, time-bound stop conditions — is intentional.

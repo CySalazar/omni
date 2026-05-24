@@ -89,7 +89,7 @@ out-of-band to the cryptographer and the trustees).
 ## Process
 
 1. **Initial contact** — founder reaches out via cryptographer's published
-   contact channel. Mention OMNI OS, the AGPL-3.0 license, the privacy-first
+   contact channel. Mention OMNI OS, the Apache-2.0 license, the privacy-first
    mission, and link this template.
 2. **NDA / engagement letter** — Mode A only. Standard ICO-aligned NDA;
    nothing exotic.

@@ -18,7 +18,7 @@ Key deliverables:
 - Initial funding secured (target: 6 months runway, ~€350K).
 - Core team assembled: Lead Architect (founder) + 2 senior Rust engineers + 1 cryptographer.
 - All `/docs` finalized to v0.1.
-- Public repository live with AGPL-3.0 license + commercial license agreement template.
+- Public repository live with Apache-2.0 license.
 - OIP process documented and operational; [`OIP-Process-001`](../oips/oip-process-001.md) `Active` since 2026-05-10 (under bootstrap fiat clause; first formal vote deferred to first non-`Meta` OIP filed).
 - Foundation bylaws published.
 

@@ -6,7 +6,7 @@
 //! invariants: largest-region wins, lowest-start tie-break, and the
 //! "no Usable region of ≥ `MIN_HEAP_BYTES`" panic path.
 //!
-//! Ported from bootloader 0.9 types to bootloader_api 0.11 types
+//! Ported from bootloader 0.9 types to `bootloader_api` 0.11 types
 //! (`MemoryRegion { start, end, kind }` instead of
 //! `MemoryRegion { range: FrameRange, region_type }`).
 

@@ -40,7 +40,7 @@
 The brand pack ships **with** the OMNI OS repository — it is part of the project, not external. This guarantees:
 
 - Source-control history for every brand decision (signed commits).
-- Forks of OMNI OS automatically receive a permission-compatible brand kit (SIL OFL fonts, CC0 protocol specs, AGPL code, fair-use trademark policy per `docs/legal/bylaws-draft.md` Article 10.3).
+- Forks of OMNI OS automatically receive a permission-compatible brand kit (SIL OFL fonts, CC0 protocol specs, Apache-2.0 code, fair-use trademark policy per `docs/legal/bylaws-draft.md` Article 10.3).
 - No external CDN or external license is required to use the brand at the legitimacy level it was designed for.
 
 ## Regenerating the PDF

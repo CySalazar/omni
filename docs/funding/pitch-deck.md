@@ -141,7 +141,7 @@ and re-rooted under new stewardship.
 
 - **Anti-capture by structure.** A for-profit company would face fiduciary
   pressure to monetize user data — incompatible with the mission.
-- **AGPL-3.0 default + commercial dual-licensing** lets the Foundation fund
+- **Apache-2.0 licensing** lets the Foundation fund
   itself from organizations that need closed-source use, without selling out
   the public release.
 - **ANBI-aligned (NL).** Tax-deductible donations once status is granted.
@@ -224,7 +224,7 @@ hires close before Phase 1 starts (2 Rust engineers + 1 cryptographer).
 |---|---|
 | TEE vendor compromise | TEE diversity across mesh (Intel + AMD + Apple); attestation deny-list per OIP. |
 | Mainstream adoption slow | Project is funded for slow growth; success is measured in users, not unicorn valuation. |
-| Funding shortfall | Reserve fund mandatory; explicit stop conditions per roadmap; AGPL ensures forkability. |
+| Funding shortfall | Reserve fund mandatory; explicit stop conditions per roadmap; Apache-2.0 ensures forkability. |
 | Regulatory hostility (e.g., backdoor mandates) | Bylaws require public refusal + jurisdictional relocation if needed. |
 | Founder bus-factor | Hiring plan close-of-Phase-0; founder veto sunsets at year 5; BDFL log makes decisions auditable. |
 | MoE distribution proves infeasible | v0.1 design allows fallback to pipeline parallelism for dense models on personal cluster. |
@@ -234,7 +234,7 @@ hires close before Phase 1 starts (2 Rust engineers + 1 cryptographer).
 ## Slide 15 — Contact and next steps
 
 **Repository:** https://github.com/CySalazar/omni
-**License:** AGPL-3.0 (dual: commercial via Stichting OMNI)
+**License:** Apache-2.0
 **Docs:** in repo `/docs/`
 
 **Next steps:**

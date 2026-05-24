@@ -73,7 +73,7 @@ When asked "why should I believe this is real and not vapor", we point to these 
 1. **A 25-year horizon, publicly committed.** Sunset dates for founder authority (2031-05-09), trustee terms, and protocol guarantees are anchored in signed Git commits and (eventually) in a Dutch notarial deed.
 2. **Privacy by construction, not by policy.** PII tokenization at the OS API level, format-preserving encryption for routing metadata, zk-SNARK compliance proofs on every payload, TEE-only decryption envelopes.
 3. **Hardware-rooted trust.** Mesh participation requires attestable TEE (Intel TDX, AMD SEV-SNP, ARMv9 CCA, Apple Silicon SE). No best-effort fallback.
-4. **Forks-welcome governance.** The protocol is CC0. The codebase is AGPL-3.0. Any captured Foundation can be forked and rejoin the mesh on equal terms.
+4. **Forks-welcome governance.** The protocol is CC0. The codebase is Apache-2.0. Any captured Foundation can be forked and rejoin the mesh on equal terms.
 5. **Anti-capture funding policy.** No government money. No government-aligned entities. Annual audited financials.
 
 ### 2.4 Competitive frame
@@ -220,7 +220,7 @@ Variant for very short contexts (social bio, email signature):
 
 ### 6.4 60-second pitch
 
-> Today's operating systems were designed before modern AI. AI capabilities are bolted on as cloud services, with the user's data as the implicit currency. OMNI OS proposes a different paradigm: an operating system where AI is a first-class kernel primitive, runs locally by default, and federates compute over a peer-to-peer mesh of cryptographically-attested nodes rather than over commercial cloud APIs. Privacy is enforced by the protocol, not by policy — a non-compliant node cannot produce valid mesh traffic because the cryptography won't let it. The project is stewarded by OMNI Foundation, a Dutch foundation (Stichting OMNI, Amsterdam) under an irrevocable Mission Anchor. Founder authority sunsets in 2031. The codebase is AGPL-3.0; the protocol specifications are public domain. Forks are first-class citizens by design. The target is mainstream — 10M users on a 25-year horizon — not just security researchers.
+> Today's operating systems were designed before modern AI. AI capabilities are bolted on as cloud services, with the user's data as the implicit currency. OMNI OS proposes a different paradigm: an operating system where AI is a first-class kernel primitive, runs locally by default, and federates compute over a peer-to-peer mesh of cryptographically-attested nodes rather than over commercial cloud APIs. Privacy is enforced by the protocol, not by policy — a non-compliant node cannot produce valid mesh traffic because the cryptography won't let it. The project is stewarded by OMNI Foundation, a Dutch foundation (Stichting OMNI, Amsterdam) under an irrevocable Mission Anchor. Founder authority sunsets in 2031. The codebase is Apache-2.0; the protocol specifications are public domain. Forks are first-class citizens by design. The target is mainstream — 10M users on a 25-year horizon — not just security researchers.
 
 ### 6.5 Audience-specific message variants
 
@@ -313,7 +313,7 @@ Five recurring narratives we anchor across content.
 
 ### 10.1 The 60-word "about us" block
 
-> OMNI Foundation (Stichting OMNI, Amsterdam) builds OMNI OS — an AI-native, privacy-by-construction, peer-to-peer operating system. Privacy is enforced cryptographically at the protocol layer; mesh participation requires attestable hardware. The Foundation operates under an irrevocable Mission Anchor and accepts no funding from governments or government-aligned entities. Source code is AGPL-3.0; protocol specifications are public domain. Forks are first-class citizens.
+> OMNI Foundation (Stichting OMNI, Amsterdam) builds OMNI OS — an AI-native, privacy-by-construction, peer-to-peer operating system. Privacy is enforced cryptographically at the protocol layer; mesh participation requires attestable hardware. The Foundation operates under an irrevocable Mission Anchor and accepts no funding from governments or government-aligned entities. Source code is Apache-2.0; protocol specifications are public domain. Forks are first-class citizens.
 
 ### 10.2 The single-sentence about
 

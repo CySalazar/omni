@@ -17,7 +17,7 @@ OMNI OS uses three type families. Each does one job. Mixing roles is forbidden.
 
 ### Why all three are SIL OFL
 
-The codebase is AGPL-3.0; the protocol specs are CC0. Bundling a proprietary font would create a single non-open dependency in the brand layer that contradicts the project's posture. SIL Open Font License permits redistribution, embedding, modification, forks. Forks of OMNI OS can ship the same fonts without per-seat licensing.
+The codebase is Apache-2.0; the protocol specs are CC0. Bundling a proprietary font would create a single non-open dependency in the brand layer that contradicts the project's posture. SIL Open Font License permits redistribution, embedding, modification, forks. Forks of OMNI OS can ship the same fonts without per-seat licensing.
 
 ## Font files & licensing
 

@@ -6,29 +6,29 @@
 > [`/docs/08-funding-policy.md`](docs/08-funding-policy.md)).
 >
 > Until then, all distribution of OMNI OS is governed exclusively by the
-> [AGPL-3.0-only](LICENSE) license.
+> [Apache-2.0](LICENSE) license.
 
 ---
 
 ## 1. Why this file exists
 
-OMNI OS is dual-licensed by design:
+OMNI OS is licensed under the **Apache License, Version 2.0** ([LICENSE](LICENSE)).
+This permissive license allows any user, contributor, or downstream project
+to use, modify, and redistribute OMNI OS — including in proprietary products —
+with no copyleft obligation.
 
-1. **Open-source license — AGPL-3.0-only** ([LICENSE](LICENSE)).
-   This is the primary license. Any user, contributor, or downstream project
-   may use, modify, and redistribute OMNI OS under the AGPL terms, including
-   the network-use copyleft clause (Section 13 AGPL-3.0).
+This document describes the **commercial support and certification program**
+that Stichting OMNI will offer. Unlike a dual-license model, the commercial
+offering does not grant additional license rights (Apache-2.0 already grants
+them all). Instead, it provides:
 
-2. **Commercial license — this document.**
-   For organizations that cannot or will not comply with the AGPL's strong
-   copyleft and network-use clauses (typical reasons: proprietary integrations,
-   closed-source SaaS deployments, regulated industries with conflicting
-   compliance requirements), Stichting OMNI will offer commercial terms that
-   waive the AGPL obligations in exchange for a fee.
+- Priority security advisories and SLA-backed incident response.
+- Certified builds with reproducible attestation.
+- Trademark licensing for "OMNI OS Certified" branding.
+- Professional support and consulting.
 
-The dual-license model exists to fund the project while keeping the public
-codebase strictly free software. It does not — and will not — modify the
-AGPL-licensed codebase or restrict community use.
+The commercial program exists to fund the project sustainably while keeping
+the codebase fully open under Apache-2.0.
 
 ## 2. Licensor (when constituted)
 
@@ -42,25 +42,22 @@ Until Stichting OMNI exists, **no party is authorized to grant a commercial
 license on behalf of the project.** Inquiries received before incorporation
 will be acknowledged but not contracted.
 
-## 3. Scope of the commercial license
+## 3. Scope of the commercial program
 
-A commercial license, when offered, will grant the licensee the following
-rights for the agreed term:
+A commercial agreement, when offered, will grant the subscriber the following
+for the agreed term:
 
-- Use, modify, and distribute OMNI OS in proprietary or closed-source products.
-- Operate OMNI OS as a hosted service (SaaS) without the Section 13 AGPL
-  source-disclosure obligation toward users of that hosted service.
-- Embed OMNI OS components in proprietary firmware or appliances.
-- Receive priority security advisories (synchronized with public disclosure
+- Priority security advisories (synchronized with public disclosure
   per [`SECURITY.md`](SECURITY.md), not ahead of it).
+- SLA-backed incident response (severity-tiered, per the agreement).
+- Access to certified, reproducibly-built OMNI OS images with TEE attestation.
+- Right to use the "OMNI OS Certified" trademark on compliant deployments.
+- Professional support and consulting from the core team.
 
 It will **not** grant:
 
-- Trademark rights to "OMNI OS" or any associated marks (governed separately).
-- The right to sublicense the open-source codebase under non-AGPL terms.
-- Any waiver of contributors' copyright in their contributions
-  (contributions remain governed by the project's contribution policy and
-  the contributor's chosen license at the time of contribution).
+- Any license rights beyond what Apache-2.0 already provides (it provides all).
+- Exclusive use of any OMNI OS component or API.
 - Any indemnification beyond what Stichting OMNI's bylaws permit.
 
 ## 4. Pricing model (indicative, non-binding)
@@ -104,7 +101,7 @@ Until Stichting OMNI is operational:
   1. Legal entity name and country of registration.
   2. Intended use case (one paragraph).
   3. Approximate scale (employees, revenue, OMNI OS deployment count).
-  4. Why AGPL-3.0 obligations are not workable for the use case.
+  4. What commercial support or certification needs the use case has.
 
 Inquiries are logged and triaged in a **read-only ledger** that will be
 transferred to Stichting OMNI on incorporation, ensuring no licensee is

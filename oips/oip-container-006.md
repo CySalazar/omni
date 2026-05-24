@@ -590,7 +590,7 @@ cyDock's salvageable patterns for `omni-container` design reference
 - mTLS + auto-cert pattern (`rustls + rcgen`) for the management API.
 - CLI / Web API dual-frontend layering.
 
-License: cyDock is Apache-2.0, one-way compatible with OMNI's AGPL-3.0
+License: cyDock is Apache-2.0, one-way compatible with OMNI's Apache-2.0
 for a derivative work `cyDock-omni`.
 
 ## Copyright

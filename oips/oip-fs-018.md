@@ -37,7 +37,7 @@ mounted under a dedicated `READONLY_COMPAT_FS` capability, gated to migration
 and import workflows, and shipped no earlier than **Phase 3**.
 
 A **port of ZFS** is **rejected** for OMNI OS v0.x and v1.x for three
-non-overlapping reasons (license incompatibility with AGPL-3.0 for tight
+non-overlapping reasons (license incompatibility with Apache-2.0 for tight
 integration, port effort blowing the Phase 2 timeline, and absence of
 capability-binding primitives in ZFS metadata). The decision is revisitable
 in v2.x if `zfs-rs` or an equivalent Rust-native, capability-aware fork reaches
@@ -127,17 +127,17 @@ integrity guarantee is not acceptable.
 
 ### M4. License hygiene matters
 
-The OMNI OS codebase is **AGPL-3.0-only**. Tight integration with CDDL-licensed
+The OMNI OS codebase is **Apache-2.0**. Tight integration with CDDL-licensed
 code (the historical ZFS license) is legally fraught: CDDL §3.4 imposes
-per-file source-disclosure obligations on derivative works, and AGPL §13
-imposes whole-program source-disclosure obligations on network-deployed
-derivatives. The two licenses' obligations have been held to be incompatible
+per-file source-disclosure obligations on derivative works, which creates
+legal friction when combining with permissive-licensed codebases.
+The two licenses' obligations have been held to be incompatible
 for static linking by every major Linux distribution (Debian's position since
 2006, Fedora's since 2007). Even a user-space FS service that consumes ZFS as
 a library would land OMNI OS in a region of license uncertainty that no
 project of this scale can afford in v0.x.
 
-A native filesystem under OMNI OS's own AGPL-3.0 license has no such concerns.
+A native filesystem under OMNI OS's own Apache-2.0 license has no such concerns.
 
 ### M5. The Wine-in-container architecture removes the NTFS compatibility argument
 
@@ -284,8 +284,8 @@ prior delivery of `OmniFS v1`.
 
 The implementation **MUST** be a Rust-native parser (no FFI to e2fsprogs). The
 reference baseline is the existing `ext4-view` crate family on crates.io; a
-fork or rewrite under AGPL-3.0 is acceptable. Static linking to GPL-2.0 code
-is not (license-incompatibility with AGPL-3.0).
+fork or rewrite under Apache-2.0 is acceptable. Static linking to GPL-2.0 code
+is not (license-incompatibility with Apache-2.0).
 
 `omni-fs-compat-ext4` **MUST** support extents (post-2.6.30 ext4), 64-bit
 features, large files. It **MAY** omit support for journal replay (the driver
@@ -378,9 +378,9 @@ design ethos:
 
 | Candidate | Capability binding | Integrity by default | License compat | Port effort | Ecosystem |
 |---|---|---|---|---|---|
-| **OmniFS native** | ✅ Native (encoded in inode) | ✅ Native (per-volume AEAD) | ✅ AGPL-3.0 in-tree | 🟥 12–24 person-months (v0+v1) | 🟥 Zero on day one |
-| **ZFS port** | ❌ Orthogonal (would need a shim) | ✅ End-to-end Merkle | 🟥 CDDL vs AGPL-3.0 | 🟥🟥 24–48 person-months for a faithful port; or rely on `zfs-rs` which is not production-grade | ✅ Mature |
-| **ext4 (primary)** | ❌ POSIX permission bits only | ❌ Metadata journal only | ✅ GPL-2.0 source available, Rust rewrite under AGPL OK | 🟧 6–12 person-months for a Rust rewrite | ✅ Mature |
+| **OmniFS native** | ✅ Native (encoded in inode) | ✅ Native (per-volume AEAD) | ✅ Apache-2.0 in-tree | 🟥 12–24 person-months (v0+v1) | 🟥 Zero on day one |
+| **ZFS port** | ❌ Orthogonal (would need a shim) | ✅ End-to-end Merkle | 🟥 CDDL vs Apache-2.0 | 🟥🟥 24–48 person-months for a faithful port; or rely on `zfs-rs` which is not production-grade | ✅ Mature |
+| **ext4 (primary)** | ❌ POSIX permission bits only | ❌ Metadata journal only | ✅ GPL-2.0 source available, Rust rewrite under Apache-2.0 OK | 🟧 6–12 person-months for a Rust rewrite | ✅ Mature |
 | **NTFS (primary)** | ❌ ACLs only, no capability concept | ❌ No end-to-end integrity | 🟧 Patent uncertainty | 🟧 6–12 person-months (read-write) | ✅ Mature on Windows |
 
 **Why OmniFS native wins on direction**: the only candidate that natively
@@ -391,12 +391,12 @@ structural mismatches that cannot be patched.
 
 **Why ZFS is rejected for v0–v2** (not "rejected forever"):
 
-1. **License incompatibility with AGPL-3.0.** The OpenZFS project remains
+1. **License incompatibility with Apache-2.0.** The OpenZFS project remains
    under CDDL-1.0. Static linking is incompatible per the consensus position
    of Debian, Fedora, Red Hat, and the FSF (e.g., FSF's 2016 statement on
    ZFS-on-Linux). Dynamic linking is debated but unsettled; OMNI OS cannot
    afford to depend on the optimistic interpretation. A Rust-native port
-   (`zfs-rs` or equivalent) under AGPL-3.0 would be a multi-year project
+   (`zfs-rs` or equivalent) under Apache-2.0 would be a multi-year project
    reimplementing an FS whose semantics are not capability-aware to begin with.
 2. **Port effort blows the Phase 2 timeline.** The smallest known
    user-space ZFS implementation is `ZoF` (ZFS-on-FUSE), which is feature-
@@ -408,7 +408,7 @@ structural mismatches that cannot be patched.
    format (i.e., it would no longer be ZFS).
 
 **ZFS revisitability**: if `zfs-rs` (or equivalent) reaches production maturity
-with an AGPL-3.0-compatible license and a capability-aware extension, this
+with an Apache-2.0-compatible license and a capability-aware extension, this
 OIP **MAY** be amended in v3.x to admit ZFS as an additional first-class
 volume type alongside `OmniFS`. The decision here is not "never ZFS"; it is
 "not in v0–v2, on the present evidence".
@@ -651,8 +651,8 @@ A frequent question is whether ZFS could be admitted as an *optional* primary
 FS in the same compat-style spirit as ext4/NTFS. The answer is no, for a
 different reason than NTFS: the patent posture is not the issue; the *license
 contagion* is. Even a user-space service linking to ZFS code under CDDL would
-require the OMNI OS distribution to ship the ZFS code alongside the AGPL-3.0
-kernel and userland under joint license terms that no AGPL-3.0 project has
+require the OMNI OS distribution to ship the ZFS code alongside the Apache-2.0
+kernel and userland under joint license terms that no Apache-2.0 project has
 been able to engineer cleanly. Dynamic linking via dlopen and a deliberate
 process boundary is the canonical mitigation, but the result is a service
 that is structurally identical to the read-only compat-driver model — for a

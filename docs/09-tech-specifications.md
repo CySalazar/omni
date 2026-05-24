@@ -190,8 +190,8 @@ The mesh protocol has its own versioning negotiated at handshake; protocol versi
 
 `cargo-deny` policy enforces:
 
-- Allowed licenses: MIT, Apache-2.0, BSD-2/3, ISC, MPL-2.0, AGPL-3.0 (project itself).
-- Forbidden licenses: GPL-2/3 (incompatible with our AGPL-3.0+commercial dual-licensing), proprietary, unlicensed.
+- Allowed licenses: MIT, Apache-2.0, BSD-2/3, ISC, MPL-2.0.
+- Forbidden licenses: GPL-2/3 (copyleft incompatible with project policy), proprietary, unlicensed.
 - All dependencies must have clear, machine-readable licenses.
 
 ## `no_std` policy

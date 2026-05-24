@@ -10,7 +10,7 @@
 > **Hard rules applied while drafting:**
 > 1. No task is listed without unit tests (and E2E where behaviour is observable).
 > 2. No new dependency is proposed without a version pin checked against
->    `docs/09-tech-specifications.md` and verified AGPL-3.0-compatible against
+>    `docs/09-tech-specifications.md` and verified Apache-2.0-compatible against
 >    `deny.toml`.
 > 3. Security > Stability > Performance when two tasks compete for the same wave slot.
 > 4. This file is the only artifact this planner pass writes. `todo.md` is **not** modified
@@ -382,7 +382,7 @@ records.
       --output <out.opack>
     ```
   - Steps:
-    1. Parse TOML via `toml = "0.8"` (already vetted under AGPL-3.0-compatible MIT,
+    1. Parse TOML via `toml = "0.8"` (already vetted under Apache-2.0-compatible MIT,
        transitively pinned by `cargo-deny`; **needs verification** — see Security below).
     2. Compute BLAKE3 of the ELF via `blake3 = "1.5"` (workspace-pinned).
     3. Compose `DriverManifestV1` Rust struct.

@@ -90,7 +90,7 @@ Advisory ignores require a tracking issue and a sunset date.
 The inbound license allowlist is fixed and explicit:
 
 ```
-AGPL-3.0, AGPL-3.0-only, Apache-2.0, Apache-2.0 WITH LLVM-exception,
+Apache-2.0, Apache-2.0 WITH LLVM-exception,
 MIT, BSD-2-Clause, BSD-3-Clause, BSL-1.0, ISC,
 Unicode-DFS-2016, Unicode-3.0, Zlib, CC0-1.0, MPL-2.0
 ```

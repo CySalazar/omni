@@ -143,7 +143,7 @@ source ecosystem (Noise protocol, RustCrypto, Tamarin tutorials).
 
 All deliverables are released under:
 
-- **Code**: AGPL-3.0 (project default).
+- **Code**: Apache-2.0 (project default).
 - **Documentation and specifications**: CC-BY-SA 4.0.
 - **Cryptographer's review**: CC-BY-SA 4.0 with reviewer's attribution.
 - **Tamarin proof artifacts**: CC-BY-SA 4.0.
@@ -178,7 +178,7 @@ proofs into a single operating system with anti-capture governance.
 
 ## J. Track record
 
-- **Repository**: https://github.com/CySalazar/omni — public, AGPL-3.0,
+- **Repository**: https://github.com/CySalazar/omni — public, Apache-2.0,
   branch-protected, all commits SSH-signed and GitHub-verified.
 - **State at application time** (2026-05-10):
   - Repository hygiene complete (P0: 9/9).
@@ -212,10 +212,10 @@ proofs into a single operating system with anti-capture governance.
 
 | Criterion | How OMNI OS meets it |
 |---|---|
-| Free / open technology | AGPL-3.0; OIP process; no CLA. |
+| Free / open technology | Apache-2.0; OIP process; no CLA. |
 | Public benefit | Privacy and digital autonomy for end users; structural anti-capture. |
 | Technical merit | Microkernel + MoE-on-mesh + STARK compliance proofs — non-trivial synthesis. |
 | Feasibility | Foundational crates already implemented; OIP infrastructure live; design phase complete. |
 | Visibility | Public repo, public OIPs, public roadmap, public funding policy. |
-| Maintenance plan | Stichting OMNI commits to long-term stewardship; AGPL forkability as insurance. |
+| Maintenance plan | Stichting OMNI commits to long-term stewardship; Apache-2.0 forkability as insurance. |
 | Diversity / inclusion | Code of Conduct in place; OIP process is permissionless. |

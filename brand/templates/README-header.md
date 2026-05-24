@@ -21,7 +21,7 @@
 
 <p align="center">
   <a href="https://github.com/CySalazar/omni/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/CySalazar/omni/ci.yml?branch=main&style=flat-square&label=CI&labelColor=0F4C5C&color=7A9E7E"></a>
-  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0-0F4C5C?style=flat-square"></a>
+  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-0F4C5C?style=flat-square"></a>
   <a href="./oips/oip-process-001.md"><img alt="OIP-Process-001 Active" src="https://img.shields.io/badge/OIP--Process--001-Active-7A9E7E?style=flat-square"></a>
   <a href="./docs/05-governance.md"><img alt="BDFL sunset 2031-05-09" src="https://img.shields.io/badge/BDFL%20sunset-2031--05--09-C03221?style=flat-square"></a>
   <a href="https://omni-foundation.org"><img alt="Stewarded by OMNI Foundation" src="https://img.shields.io/badge/stewarded%20by-OMNI%20Foundation-1F2421?style=flat-square"></a>

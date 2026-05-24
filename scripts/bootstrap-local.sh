@@ -134,7 +134,7 @@ repository from a design-stage skeleton to a state ready to receive
 external contributions and pass an OSS supply-chain audit.
 
 Includes:
-  - LICENSE (AGPL-3.0-only, verbatim from FSF)
+  - LICENSE (Apache-2.0, verbatim from FSF)
   - COMMERCIAL-LICENSE.md (placeholder, pending Stichting OMNI)
   - SECURITY.md (responsible-disclosure policy)
   - CONTRIBUTING.md (DCO, Conventional Commits, branch naming, PR flow)

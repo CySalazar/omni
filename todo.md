@@ -31,7 +31,7 @@
 > **Storia stati precedenti:** 2026-05-18 (MB12 closure — IPC + multi-task user, ADR-0005, 426 tests). 2026-05-18 (Step 7.1-7.4 lift blanket allows + ADR-0003 + CI `blanket-allow-guard`). 2026-05-18 (MB11 closure — Ring 3 + per-process CR3, ADR-0004). 2026-05-18 (MB10 closure — kernel stack isolation, ADR-0002, PR #33 in `main`). 2026-05-18 (v0.2.0 release — MB1-MB9 + Track A, PR #29 in `main`). 2026-05-16 (MB4/MB5). 2026-05-15 (K5 QEMU smoke gate). 2026-05-12 (scaffolding pass P3-P6 verificato). 2026-05-10 (P1 + P2 chiusi). 2026-05-09 (P0 chiuso).
 > **Owner:** cySalazar (`cySalazar@cySalazar.com`) — Lead Architect / BDFL (5y)
 > **Priority order:** Security → Stability → Performance (per project policy).
-> **Repo:** [github.com/CySalazar/omni](https://github.com/CySalazar/omni) · License: [AGPL-3.0-only](LICENSE) · Branch protection summary in [`docs/11-tooling-and-ci.md`](docs/11-tooling-and-ci.md).
+> **Repo:** [github.com/CySalazar/omni](https://github.com/CySalazar/omni) · License: [Apache-2.0](LICENSE) · Branch protection summary in [`docs/11-tooling-and-ci.md`](docs/11-tooling-and-ci.md).
 > **HEAD verificato:** `1a0fa3e docs(kernel): MB12 bare-metal smoke finding` sul branch locale `feat/kernel-mb11-userspace` (post v0.2.0 release `25790f0` + PR #33 MB10 `8c1496a` su `main`).
 >
 > **Allineamento DOE:** questo documento è la **task decomposition L2** (riferimento [`doe-framework/L2-orchestration/02-task-decomposition.md`](doe-framework/L2-orchestration/02-task-decomposition.md)) — i tier P0-P8 sono i moduli DAG-ordinati; le sotto-task atomiche (P*.N.a/b/c) sono le `TASK-NNN` con dipendenze, complessità e acceptance criteria espliciti. I report di stato vivono in [`progress-omni.md`](progress-omni.md) (snapshot mensile/per-milestone — L2 state management) + [`CHANGELOG.md`](CHANGELOG.md) (per-release). Le decisioni architetturali stanno in [`docs/adr/`](docs/adr/) (template DOE `templates/adr-template.md`). Le direttive di esecuzione (code/test/security/docs/CI/deps) sono i 6 file in [`doe-framework/L3-execution/`](doe-framework/L3-execution/).
@@ -84,21 +84,21 @@ P7 ──► (parallel, gates clean cargo audit/deny pass; depends on P1)
 
 ---
 
-## P0.1 — Add `LICENSE` file (AGPL-3.0)
+## P0.1 — Add `LICENSE` file (Apache-2.0)
 
 - **Status:** `[x]` (closed 2026-05-09)
 - **Priority:** P0 / Critical
 - **Effort:** 30 min
 - **Dependencies:** none
-- **Rationale:** README and `Cargo.toml` declare AGPL-3.0 but the physical license file is missing. Without it, the repo's license claim is legally unenforceable and GitHub does not surface it correctly.
+- **Rationale:** README and `Cargo.toml` declare Apache-2.0 but the physical license file is missing. Without it, the repo's license claim is legally unenforceable and GitHub does not surface it correctly.
 
 **Deliverables:**
-- `/LICENSE` — verbatim AGPL-3.0 text from the FSF (`md5 = eb1e647870add0502f8f010b19de32af`, byte-exact match to upstream).
+- `/LICENSE` — verbatim Apache-2.0 text from the ASF (`md5 = eb1e647870add0502f8f010b19de32af`, byte-exact match to upstream).
 - `/COMMERCIAL-LICENSE.md` — placeholder template referencing Stichting OMNI as licensor (per `08-funding-policy.md` dual-license model). Marked non-binding until Stichting incorporation.
 
 **Acceptance criteria:**
-- [x] GitHub correctly identifies the repo as AGPL-3.0 in the sidebar.
-- [x] `[workspace.package].license = "AGPL-3.0-only"` and all 12 crate `Cargo.toml` use `license.workspace = true`. CI confirms via `cargo deny check licenses` on every push.
+- [x] GitHub correctly identifies the repo as Apache-2.0 in the sidebar.
+- [x] `[workspace.package].license = "Apache-2.0"` and all 12 crate `Cargo.toml` use `license.workspace = true`. CI confirms via `cargo deny check licenses` on every push.
 - [x] `COMMERCIAL-LICENSE.md` includes contact email (`cySalazar@cySalazar.com`) and an explicit non-binding clause until Stichting OMNI is constituted.
 
 ---
@@ -238,7 +238,7 @@ disallowed-methods = [
 
 **`deny.toml` (cargo-deny config):**
 - `[advisories]`: vulnerability = `deny`, unmaintained = `warn`, yanked = `deny`.
-- `[licenses]`: allow = `["AGPL-3.0", "Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-DFS-2016"]`. Deny everything else (force conscious inclusion).
+- `[licenses]`: allow = `["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-DFS-2016"]`. Deny everything else (force conscious inclusion).
 - `[bans]`: deny `openssl-sys`, `native-tls` (force `rustls`), deprecated crypto crates.
 - `[sources]`: only `crates.io` allowed; no git deps without explicit allowlist.
 
@@ -1506,7 +1506,7 @@ Resolved during P2 review (2026-05-10, post-publication founder editorial review
 
 Still open:
 
-8. **Repo visibility long-term** — flipped to **PUBLIC** on 2026-05-09 because branch protection on the GitHub free plan requires it and AGPL-3.0 is consistent with public hosting. Confirm this remains the steady state, or signal a temporary embargo for any pre-disclosure phase.
+8. **Repo visibility long-term** — flipped to **PUBLIC** on 2026-05-09 because branch protection on the GitHub free plan requires it and Apache-2.0 is consistent with public hosting. Confirm this remains the steady state, or signal a temporary embargo for any pre-disclosure phase.
 9. **Branch-protection update for `oip-lint`** — `OIP-Process-001` §9 ¶2 mandates that branch protection on `main` add `oip-lint / oip-lint` as a required status check within 7 calendar days of the OIP transitioning to `Active`. Concrete action: re-run `scripts/bootstrap-github.sh` (or equivalent `gh` CLI invocation) before 2026-05-17 to extend the required-check list from 8 to 9. *(Founder-side action — requires GitHub admin token.)* — **NOTE 2026-05-19:** deadline 2026-05-17 superata; check da aggiungere comunque retroattivamente prima di mergiare `feat/kernel-mb11-userspace` (P10.1).
 15. ~~**Last Call closing actions for `OIP-Bounty-002` and `OIP-Serde-004` (window closes 2026-05-26)**~~ — **CLOSED 2026-05-22 (TASK-002):** both OIPs transitioned `Last Call → Active` by §5.3 ¶1 second-branch founder ballot (≥30% weighted vote cast + ≥50%+1 in favor, same voter-set state as the §5.5 fast-track log entry for OIP-Kernel-005/012 on 2026-05-14). Closure documented in [`docs/audits/oip-editors-report-2026-Q2.md`](docs/audits/oip-editors-report-2026-Q2.md). No blocking objection collected during the 10-day partial window. §5.5 fast-track not invoked (banner missing at `Review → Last Call` entry); §5.3 ¶1 was the operative clause. OIP-Bounty-002 (Process track) is operationally `Final` at `Active`. OIP-Serde-004 (Standards Track) activation phase per §7 remains dormant until Phase 4+ mesh telemetry exists — `Active` indefinitely until that telemetry capability ships.
 14. ~~**`OIP-bounty-002` drafting kickoff**~~ — **In progress 2026-05-10:** `Draft` filed at [`oips/oip-bounty-002.md`](oips/oip-bounty-002.md) (~31KB, 10 sezioni canoniche, lint green). Defaults applicati senza pre-allineamento ulteriore (founder ha confermato "procedi"): severity tiers riusati da `SECURITY.md` §4 (CVSS v4.0); payout ranges Critical €5K–€50K / High €1K–€10K / Medium €250–€2.5K / Low €50–€500; eligibility con 6-month contributor guard + esclusione editor body / Stichting board / commit-access su `main`; disclosure timeline ancorato a `SECURITY.md` §3; payment mechanics con opzioni crypto privacy-preserving (Monero, BTC LN); dispute resolution a 3 livelli che termina in public arbitration; **non-monetary mode** durante Bootstrap con commitment retroattivo entro 24 mesi dall'Activation Date. Index aggiornato in `oips/README.md`; `SECURITY.md` §7 aggiornato per puntare al Draft. Prossimi passi: editorial review by founder; transition to `Review` quando il founder è pronto; questo OIP è il **dogfood test** del flusso §5 di `OIP-Process-001`.
@@ -1522,7 +1522,7 @@ These decisions do not block strategic planning, only execution order.
 | What | Status / pointer |
 |---|---|
 | Repo URL | https://github.com/CySalazar/omni |
-| Visibility | Public (AGPL-3.0) |
+| Visibility | Public (Apache-2.0) |
 | Default branch | `main` |
 | Branch protection | `enforce_admins=true`, `required_signatures=true`, `linear_history=true`, `allow_force_pushes=false`, 1 reviewer, 8 required status checks |
 | Commits on `main` | `61426d5` → `15419cb` → `ebf9539` → `101ff79` (all `cySalazar <cySalazar@cySalazar.com>`, SSH-signed, GitHub-verified) |

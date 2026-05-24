@@ -113,7 +113,7 @@ SLA breach consequences:
 
 | Policy | Verification mechanism |
 |---|---|
-| License whitelist (AGPL, MIT, Apache-2.0, BSD-2/3, ISC, MPL-2.0, custom open licenses with explicit allowlist) | License manifest + source scanning |
+| License whitelist (Apache-2.0, MIT, Apache-2.0, BSD-2/3, ISC, MPL-2.0, custom open licenses with explicit allowlist) | License manifest + source scanning |
 | No closed telemetry (must be opt-out or opt-in if telemetry exists) | Reproducible build + binary scan for known telemetry endpoints |
 | No surveillance vendor deps | Dep tree scanned vs Surveillance Industry Index + Stichting curated deny-list |
 | No DRM blocking Foundation audit | Manifest declares "audit-friendly"; quarantined if not |
@@ -123,7 +123,7 @@ SLA breach consequences:
 
 | Path | Commission |
 |---|---|
-| Open-source apps (AGPL + permissive whitelist) | **0%** — Foundation absorbs verification cost |
+| Open-source apps (Apache-2.0 + permissive whitelist) | **0%** — Foundation absorbs verification cost |
 | Commercial paid apps | **10%** — covers verification + audit + infrastructure |
 | Stichting-sponsored apps (translation, accessibility, security tooling) | **0%** — Foundation funded |
 | Pay-what-you-want / donation | Pass-through, **0%** Foundation; payment processing fee paid by developer |

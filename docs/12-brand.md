@@ -21,7 +21,7 @@ The three identities follow the Mozilla model: a Dutch foundation carries the le
 The brand follows **Direction C — Civic Tech / Generational**, anchored on the design languages of Mozilla, Wikimedia, GOV.UK, the Internet Archive, and the Long Now Foundation. The choice was made on 2026-05-13 and is recorded in the brand strategy.
 
 - **Palette (canonical hues):** `petrol #0F4C5C`, `cream #F4EBD0`, `brick #C03221`, `sage #7A9E7E`, `charcoal #1F2421`. Tokens: [`brand/colors/tokens.css`](../brand/colors/tokens.css), [`tokens.json`](../brand/colors/tokens.json). Full WCAG contrast matrix: [`brand/colors/palette.md`](../brand/colors/palette.md).
-- **Typography:** Source Serif 4 (display), Inter (body & UI), IBM Plex Mono (code & metadata). All three SIL OFL — coherent with AGPL-3.0 codebase and CC0 protocol specs. Tokens: [`brand/typography/type-tokens.css`](../brand/typography/type-tokens.css).
+- **Typography:** Source Serif 4 (display), Inter (body & UI), IBM Plex Mono (code & metadata). All three SIL OFL — coherent with Apache-2.0 codebase and CC0 protocol specs. Tokens: [`brand/typography/type-tokens.css`](../brand/typography/type-tokens.css).
 - **Mark:** a six-node federated ring around a central brick-red core. The core is the **Mission Anchor** (irrevocable, per [`docs/legal/bylaws-draft.md` Article 3](./legal/bylaws-draft.md)); the six petrol nodes represent federated attested peers; the dimming envelope ring signals inclusion. Construction geometry: [`brand/logos/omni-os-construction.svg`](../brand/logos/omni-os-construction.svg).
 
 ## Voice anchors
