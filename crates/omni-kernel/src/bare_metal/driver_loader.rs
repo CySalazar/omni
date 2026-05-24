@@ -315,6 +315,8 @@ pub unsafe fn boot_load_driver_probe<const N: usize>(
         write_hex_u8(nvme.device);
         early_console::write_str(" bar0=");
         write_hex_u32(nvme.bar0);
+        early_console::write_str(" bar1=");
+        write_hex_u32(nvme.bar1);
         early_console::write_str("\n");
 
         unsafe { pci_scan::enable_device_full(nvme) };
@@ -322,9 +324,13 @@ pub unsafe fn boot_load_driver_probe<const N: usize>(
 
         if !pci_scan::PciDevice::bar_is_io(nvme.bar0) {
             let bar0_phys = nvme.bar0_phys();
+            early_console::write_str("[nvme] BAR0 phys=");
+            write_hex_u32((bar0_phys >> 32) as u32);
+            write_hex_u32(bar0_phys as u32);
+            early_console::write_str("\n");
+
             if bar0_phys != 0 {
-                // SAFETY: Ring 0, single-CPU boot path, BAR0 is MMIO.
-                unsafe { nvme_live_bringup(bar0_phys) };
+                unsafe { nvme_live_bringup(bar0_phys, mapper, alloc) };
             } else {
                 early_console::write_str("[nvme] BAR0 is zero — skipping\n");
             }
@@ -623,18 +629,53 @@ const NVME_REG_CSTS: usize = 0x1C;
 
 /// Perform live NVMe controller identification via MMIO.
 ///
+/// Maps BAR0 pages into the kernel page tables (PCD+PWT uncacheable)
+/// then performs the NVMe 1.4 enable sequence.
+///
 /// # Safety
 ///
 /// Ring 0 only. `bar0_phys` must be the decoded MMIO base from BAR0.
 #[cfg(target_arch = "x86_64")]
-unsafe fn nvme_live_bringup(bar0_phys: u64) {
-    let phys_off = super::phys_offset();
-    if phys_off == 0 {
-        early_console::write_str("[nvme] phys_offset not set — aborting\n");
-        return;
+unsafe fn nvme_live_bringup<const N: usize>(
+    bar0_phys: u64,
+    mapper: &mut crate::bare_metal::paging::PageMapper,
+    alloc: &mut crate::memory::BitmapFrameAllocator<N>,
+) {
+    use crate::bare_metal::paging::{PTE_WRITABLE, PTE_NO_EXEC};
+    use crate::memory::{PhysAddr, VirtAddr};
+
+    // NVMe BAR0 is 16 KiB (4 pages). Map into a fixed kernel VA range.
+    // Pick a VA in the upper-half kernel space that's unlikely to collide.
+    const NVME_MMIO_VA_BASE: u64 = 0xFFFF_F000_0000_0000;
+    const NVME_BAR_PAGES: u64 = 4;
+    // PCD (bit 4) + PWT (bit 3) → uncacheable MMIO.
+    const PTE_PCD: u64 = 1 << 4;
+    const PTE_PWT: u64 = 1 << 3;
+    let mmio_flags = PTE_WRITABLE | PTE_NO_EXEC | PTE_PCD | PTE_PWT;
+
+    let bar_page_base = bar0_phys & !0xFFF;
+    for i in 0..NVME_BAR_PAGES {
+        let virt = VirtAddr(NVME_MMIO_VA_BASE + i * 0x1000);
+        let phys = PhysAddr(bar_page_base + i * 0x1000);
+        if !mapper.map_4k(virt, phys, mmio_flags, alloc) {
+            early_console::write_str("[nvme] failed to map BAR page ");
+            early_console::write_usize(i as usize);
+            early_console::write_str(" — aborting\n");
+            return;
+        }
+        unsafe { crate::bare_metal::arch::invlpg(virt.0) };
     }
 
-    let base = (phys_off + bar0_phys) as *const u32;
+    let mmio_offset = bar0_phys & 0xFFF;
+    let mmio_va = NVME_MMIO_VA_BASE + mmio_offset;
+    early_console::write_str("[nvme] mapped ");
+    early_console::write_usize(NVME_BAR_PAGES as usize);
+    early_console::write_str(" pages at VA=");
+    write_hex_u32((mmio_va >> 32) as u32);
+    write_hex_u32(mmio_va as u32);
+    early_console::write_str("\n");
+
+    let base = mmio_va as *const u32;
 
     // Read CAP register (64-bit, two 32-bit halves).
     let cap_lo = unsafe { core::ptr::read_volatile(base.byte_add(NVME_REG_CAP)) };
