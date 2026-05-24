@@ -2872,6 +2872,30 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                 Err(KernelError::NotYetImplemented)
             }
 
+            // OIP-Phase2-Entry-021 AI syscall surface (P2 Sprint 2).
+            // These are capability-checked relay points that forward
+            // requests to the `omni-runtime` IPC service. The kernel
+            // does not interpret inference payloads. The IPC wiring
+            // is deferred to a later sprint; the scaffold returns
+            // ENOSYS so callers can detect that the runtime channel
+            // has not yet been registered, which is distinct from
+            // EAGAIN (runtime registered but temporarily unavailable).
+            SyscallNumber::AiInvoke
+            | SyscallNumber::AiStream
+            | SyscallNumber::AiEmbed
+            | SyscallNumber::AiClassify
+            | SyscallNumber::AiTranscribe => {
+                // Log the invocation via the kernel console so bring-up
+                // smoke and integration tests can observe the routing
+                // without a full IPC wiring.
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                super::early_console::write_str(
+                    "[ai-syscall] scaffold: ENOSYS (IPC not yet wired)\n",
+                );
+                let _ = args;
+                Err(KernelError::NotYetImplemented)
+            }
+
             // All other syscalls are scaffolded but not yet implemented.
             _ => Err(KernelError::NotYetImplemented),
         }
@@ -2967,6 +2991,29 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                     Ok(SyscallReturn::err(crate::syscall::syscall_errno::EACCES))
                 }
             }
+            // OIP-Phase2-Entry-021 AI syscall surface (P2 Sprint 2).
+            // All five AI syscalls are scaffolded to ENOSYS via the
+            // rich two-register return path. The single-register
+            // `dispatch` arm above logs + returns `NotYetImplemented`;
+            // we return ENOSYS here explicitly so callers using the
+            // two-register path (the canonical path per the OIP-013
+            // dispatcher convention) get a clean
+            // `(rax=0, rdx=ENOSYS)` rather than the
+            // `(rax=SYSCALL_ERROR, rdx=0)` sentinel that
+            // `dispatch(..).map(SyscallReturn::ok)` would produce on
+            // `Err(NotYetImplemented)`.
+            SyscallNumber::AiInvoke
+            | SyscallNumber::AiStream
+            | SyscallNumber::AiEmbed
+            | SyscallNumber::AiClassify
+            | SyscallNumber::AiTranscribe => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                super::early_console::write_str(
+                    "[ai-syscall] dispatch_full scaffold: ENOSYS (IPC not yet wired)\n",
+                );
+                let _ = args;
+                Ok(SyscallReturn::err(crate::syscall::syscall_errno::ENOSYS))
+            }
             other => self.dispatch(other, args).map(SyscallReturn::ok),
         }
     }
@@ -3036,6 +3083,16 @@ extern "C" fn kernel_syscall_dispatch(
         76 => SyscallNumber::BlkRegister,
         77 => SyscallNumber::BlkUnregister,
         78 => SyscallNumber::BlkLookup,
+        // OIP-Phase2-Entry-021 AI syscall surface (P2 Sprint 2).
+        // Numeric decade `8x` reserved for AI. Translation here MUST
+        // stay in lock-step with the `SyscallNumber` discriminants —
+        // the `syscall_numbers_are_stable` test in `crate::syscall`
+        // pins both ends against drift.
+        80 => SyscallNumber::AiInvoke,
+        81 => SyscallNumber::AiStream,
+        82 => SyscallNumber::AiEmbed,
+        83 => SyscallNumber::AiClassify,
+        84 => SyscallNumber::AiTranscribe,
         _ => return SyscallReturn::ok(SYSCALL_ERROR),
     };
 

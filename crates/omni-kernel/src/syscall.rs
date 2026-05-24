@@ -156,6 +156,34 @@ pub enum SyscallNumber {
     /// IPC authority (`IpcSend` / `IpcRecv` still require the
     /// per-channel capability tokens minted at create time).
     BlkLookup = 78,
+
+    // ----- AI Runtime (Phase 2 Sprint 2, OIP-Phase2-Entry-021 § AI Surface) -----
+    // Numeric decade `8x` reserved for the AI syscall surface. These are
+    // thin kernel entry points that validate the caller's capability and
+    // forward the request via IPC to the `omni-runtime` service. The kernel
+    // does not interpret inference payloads — it is a capability-checked
+    // relay.
+    /// Invoke a loaded model for synchronous inference.
+    /// ABI: `(model_id_ptr, model_id_len, input_ptr, input_len, output_ptr, output_cap) -> output_len`.
+    /// Capability-checked: caller must hold an `AiInvoke` capability for the target model.
+    AiInvoke = 80,
+
+    /// Start a streaming inference session.
+    /// ABI: `(model_id_ptr, model_id_len, input_ptr, input_len, stream_channel_id, 0) -> session_id`.
+    /// Returns a `session_id` that the caller uses to receive streamed tokens via IPC.
+    AiStream = 81,
+
+    /// Compute an embedding vector for the given input.
+    /// ABI: `(model_id_ptr, model_id_len, input_ptr, input_len, output_ptr, output_cap) -> output_len`.
+    AiEmbed = 82,
+
+    /// Classify input into a set of categories.
+    /// ABI: `(model_id_ptr, model_id_len, input_ptr, input_len, output_ptr, output_cap) -> output_len`.
+    AiClassify = 83,
+
+    /// Transcribe audio input to text.
+    /// ABI: `(model_id_ptr, model_id_len, input_ptr, input_len, output_ptr, output_cap) -> output_len`.
+    AiTranscribe = 84,
 }
 
 // -----------------------------------------------------------------------------
@@ -227,6 +255,9 @@ pub mod syscall_errno {
     /// the BLK syscall boundary without aborting the kernel. POSIX
     /// `EIO = 5`.
     pub const EIO: u64 = 5;
+    /// AI runtime service is not available — the omni-runtime IPC channel
+    /// has not been registered. POSIX `EAGAIN = 11`.
+    pub const EAGAIN: u64 = 11;
 }
 
 // -----------------------------------------------------------------------------
@@ -294,6 +325,12 @@ mod tests {
         assert_eq!(SyscallNumber::BlkRegister as u32, 76);
         assert_eq!(SyscallNumber::BlkUnregister as u32, 77);
         assert_eq!(SyscallNumber::BlkLookup as u32, 78);
+        // OIP-Phase2-Entry-021 AI syscall surface (P2 Sprint 2).
+        assert_eq!(SyscallNumber::AiInvoke as u32, 80);
+        assert_eq!(SyscallNumber::AiStream as u32, 81);
+        assert_eq!(SyscallNumber::AiEmbed as u32, 82);
+        assert_eq!(SyscallNumber::AiClassify as u32, 83);
+        assert_eq!(SyscallNumber::AiTranscribe as u32, 84);
     }
 
     #[test]
@@ -343,5 +380,12 @@ mod tests {
         assert_eq!(syscall_errno::EINVAL, 22);
         assert_eq!(syscall_errno::ENOSPC, 28);
         assert_eq!(syscall_errno::ENOSYS, 38);
+        // AI runtime errno — matches POSIX EAGAIN = 11.
+        assert_eq!(syscall_errno::EAGAIN, 11);
+    }
+
+    #[test]
+    fn ai_syscall_errno_eagain() {
+        assert_eq!(syscall_errno::EAGAIN, 11);
     }
 }
