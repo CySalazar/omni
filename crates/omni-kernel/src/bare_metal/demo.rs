@@ -1000,7 +1000,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         "1.85 stable + x86_64-unknown-none",
         graphics::WHITE,
     );
-    row(5, cx_l, "License  : ", 11, "AGPL-3.0-only", graphics::WHITE);
+    row(5, cx_l, "License  : ", 11, "Apache-2.0", graphics::WHITE);
     row(
         6,
         cx_l,
