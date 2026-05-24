@@ -1,4 +1,4 @@
-//! DEV-ONLY driver auto-loader (P6.7.9-pre.10).
+//! DEV-ONLY driver auto-loader (P6.7.9-pre.11).
 //!
 //! Spawns a hand-crafted "driver probe" ELF at boot time that exercises
 //! the full `MmioMap (70)` / `DmaMap (71)` / `IrqAttach (72)` syscall
@@ -304,6 +304,37 @@ pub unsafe fn boot_load_driver_probe<const N: usize>(
         early_console::write_str("[virtio-net] not found on any bus\n");
     }
 
+    // ── TASK-005: NVMe live bring-up (P6.7.9-pre.11) ────────────────
+    //
+    // Find the NVMe device (class 01:08) across all scanned buses.
+    // If found, perform live controller initialization via MMIO.
+    if let Some(nvme) = scan.find_by_class(pci_scan::NVME_CLASS_CODE, pci_scan::NVME_SUBCLASS) {
+        early_console::write_str("[nvme] found on bus=");
+        write_hex_u8(nvme.bus);
+        early_console::write_str(" dev=");
+        write_hex_u8(nvme.device);
+        early_console::write_str(" bar0=");
+        write_hex_u32(nvme.bar0);
+        early_console::write_str("\n");
+
+        unsafe { pci_scan::enable_device_full(nvme) };
+        early_console::write_str("[nvme] PCI cmd: IOSE+MSE+BME enabled\n");
+
+        if !pci_scan::PciDevice::bar_is_io(nvme.bar0) {
+            let bar0_phys = nvme.bar0_phys();
+            if bar0_phys != 0 {
+                // SAFETY: Ring 0, single-CPU boot path, BAR0 is MMIO.
+                unsafe { nvme_live_bringup(bar0_phys) };
+            } else {
+                early_console::write_str("[nvme] BAR0 is zero — skipping\n");
+            }
+        } else {
+            early_console::write_str("[nvme] BAR0 is I/O port — MMIO bringup skipped\n");
+        }
+    } else {
+        early_console::write_str("[nvme] not found on any bus\n");
+    }
+
     // ── Probe ELF (smoke test for MmioMap/DmaMap/IrqAttach) ──────
     //
     // Pick any device with a non-zero BAR for the capability deposit
@@ -567,6 +598,159 @@ unsafe fn virtio_net_live_bringup(io_base: u16) {
     });
 
     early_console::write_str("[virtio-net] live bring-up complete\n");
+}
+
+// =========================================================================
+// TASK-005: NVMe live MMIO bring-up (P6.7.9-pre.11)
+// =========================================================================
+//
+// NVMe 1.4 controller registers at BAR0 offset:
+//
+//   0x00  CAP    (8 bytes, R)   — Controller Capabilities
+//   0x08  VS     (4 bytes, R)   — Version
+//   0x0C  INTMS  (4 bytes, R/W) — Interrupt Mask Set
+//   0x10  INTMC  (4 bytes, R/W) — Interrupt Mask Clear
+//   0x14  CC     (4 bytes, R/W) — Controller Configuration
+//   0x1C  CSTS   (4 bytes, R)   — Controller Status
+//   0x24  AQA    (4 bytes, R/W) — Admin Queue Attributes
+//   0x28  ASQ    (8 bytes, R/W) — Admin Submission Queue Base
+//   0x30  ACQ    (8 bytes, R/W) — Admin Completion Queue Base
+
+const NVME_REG_CAP: usize = 0x00;
+const NVME_REG_VS: usize = 0x08;
+const NVME_REG_CC: usize = 0x14;
+const NVME_REG_CSTS: usize = 0x1C;
+
+/// Perform live NVMe controller identification via MMIO.
+///
+/// # Safety
+///
+/// Ring 0 only. `bar0_phys` must be the decoded MMIO base from BAR0.
+#[cfg(target_arch = "x86_64")]
+unsafe fn nvme_live_bringup(bar0_phys: u64) {
+    let phys_off = super::phys_offset();
+    if phys_off == 0 {
+        early_console::write_str("[nvme] phys_offset not set — aborting\n");
+        return;
+    }
+
+    let base = (phys_off + bar0_phys) as *const u32;
+
+    // Read CAP register (64-bit, two 32-bit halves).
+    let cap_lo = unsafe { core::ptr::read_volatile(base.byte_add(NVME_REG_CAP)) };
+    let cap_hi = unsafe { core::ptr::read_volatile(base.byte_add(NVME_REG_CAP + 4)) };
+    early_console::write_str("[nvme] CAP=");
+    write_hex_u32(cap_hi);
+    write_hex_u32(cap_lo);
+
+    // CAP.MQES = bits 15:0 (Maximum Queue Entries Supported, 0-based).
+    let mqes = (cap_lo & 0xFFFF) + 1;
+    early_console::write_str(" MQES=");
+    early_console::write_usize(mqes as usize);
+
+    // CAP.TO = bits 31:24 (Timeout in 500ms units).
+    let timeout_500ms = (cap_lo >> 24) & 0xFF;
+    early_console::write_str(" TO=");
+    early_console::write_usize(timeout_500ms as usize);
+    early_console::write_str("\n");
+
+    // Read VS register (NVMe version).
+    let vs = unsafe { core::ptr::read_volatile(base.byte_add(NVME_REG_VS)) };
+    let major = (vs >> 16) & 0xFFFF;
+    let minor = (vs >> 8) & 0xFF;
+    let tertiary = vs & 0xFF;
+    early_console::write_str("[nvme] VS=");
+    early_console::write_usize(major as usize);
+    early_console::write_str(".");
+    early_console::write_usize(minor as usize);
+    early_console::write_str(".");
+    early_console::write_usize(tertiary as usize);
+    early_console::write_str("\n");
+
+    // Read CSTS (Controller Status).
+    let csts = unsafe { core::ptr::read_volatile(base.byte_add(NVME_REG_CSTS)) };
+    let rdy = (csts & 1) != 0;
+    let cfs = (csts & 2) != 0;
+    early_console::write_str("[nvme] CSTS=");
+    write_hex_u32(csts);
+    early_console::write_str(if rdy { " RDY=yes" } else { " RDY=no" });
+    early_console::write_str(if cfs { " CFS=FATAL\n" } else { " CFS=ok\n" });
+
+    // Read CC (Controller Configuration).
+    let cc = unsafe { core::ptr::read_volatile(base.byte_add(NVME_REG_CC)) };
+    let en = (cc & 1) != 0;
+    early_console::write_str("[nvme] CC=");
+    write_hex_u32(cc);
+    early_console::write_str(if en { " EN=yes" } else { " EN=no" });
+    early_console::write_str("\n");
+
+    // Step 1: Disable controller (clear CC.EN).
+    if en {
+        let cc_disabled = cc & !1u32;
+        unsafe { core::ptr::write_volatile(base.byte_add(NVME_REG_CC) as *mut u32, cc_disabled) };
+        early_console::write_str("[nvme] CC.EN cleared — waiting for CSTS.RDY=0...\n");
+
+        let mut polls: u32 = 0;
+        loop {
+            let s = unsafe { core::ptr::read_volatile(base.byte_add(NVME_REG_CSTS)) };
+            if (s & 1) == 0 {
+                break;
+            }
+            polls += 1;
+            if polls > 500_000 {
+                early_console::write_str("[nvme] disable timeout — aborting\n");
+                return;
+            }
+        }
+        early_console::write_str("[nvme] controller disabled  polls=");
+        early_console::write_usize(polls as usize);
+        early_console::write_str("\n");
+    } else {
+        early_console::write_str("[nvme] controller already disabled\n");
+    }
+
+    // Step 2: Program CC fields (MPS=0, IOSQES=6, IOCQES=4, CSS=0, AMS=0).
+    let cc_init: u32 = (6u32 << 16) | (4u32 << 20); // IOSQES=6 (64B), IOCQES=4 (16B)
+    unsafe { core::ptr::write_volatile(base.byte_add(NVME_REG_CC) as *mut u32, cc_init) };
+
+    // Step 3: Enable controller (set CC.EN).
+    let cc_enable = cc_init | 1;
+    unsafe { core::ptr::write_volatile(base.byte_add(NVME_REG_CC) as *mut u32, cc_enable) };
+    early_console::write_str("[nvme] CC.EN set — waiting for CSTS.RDY=1...\n");
+
+    let mut polls: u32 = 0;
+    loop {
+        let s = unsafe { core::ptr::read_volatile(base.byte_add(NVME_REG_CSTS)) };
+        if (s & 1) != 0 {
+            break;
+        }
+        if (s & 2) != 0 {
+            early_console::write_str("[nvme] CSTS.CFS — controller fatal during enable\n");
+            return;
+        }
+        polls += 1;
+        if polls > 500_000 {
+            early_console::write_str("[nvme] enable timeout — aborting\n");
+            return;
+        }
+    }
+    early_console::write_str("[nvme] controller enabled  polls=");
+    early_console::write_usize(polls as usize);
+    early_console::write_str("\n");
+
+    // Read final CSTS.
+    let csts_final = unsafe { core::ptr::read_volatile(base.byte_add(NVME_REG_CSTS)) };
+    early_console::write_str("[nvme] CSTS=");
+    write_hex_u32(csts_final);
+    let rdy = (csts_final & 1) != 0;
+    early_console::write_str(if rdy { " RDY=yes" } else { " RDY=no" });
+    early_console::write_str(if (csts_final & 2) != 0 {
+        " CFS=FATAL\n"
+    } else {
+        " CFS=ok\n"
+    });
+
+    early_console::write_str("[nvme] live bring-up complete\n");
 }
 
 // =========================================================================

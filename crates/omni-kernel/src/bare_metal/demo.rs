@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "P6.7.9-pre.10 virtio-net live bringup",
+        "P6.7.9-pre.11 NVMe live bringup",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1048,7 +1048,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "TASK-005 NVMe live bringup",
+        "TASK-004/005 CLOSED next phase",
         graphics::WHITE,
     );
     row(
