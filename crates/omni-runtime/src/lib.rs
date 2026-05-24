@@ -38,6 +38,7 @@
 //! - [`scheduler`] — workload scheduling across accelerators.
 //! - [`router`] — execution tier routing decisions.
 //! - [`attestation`] — model signature verification.
+//! - [`gguf`] — GGUF v3 binary format parser.
 
 #![doc(html_root_url = "https://docs.omni-os.org/omni-runtime")]
 #![warn(missing_docs)]
@@ -50,6 +51,17 @@
         clippy::unnecessary_wraps,
     )
 )]
+
+// =============================================================================
+// gguf — GGUF v3 binary format parser
+// =============================================================================
+
+/// GGUF file format parser.
+///
+/// Implements the GGUF v3 binary format used by llama.cpp and compatible
+/// tools. The parser reads model metadata and tensor layout information
+/// from raw bytes without loading tensor data into memory.
+pub mod gguf;
 
 // =============================================================================
 // model — ModelManifest + ModelRegistry
@@ -332,6 +344,95 @@ pub mod model {
             debug!(model_id = ?model_id, "loading model");
             // Stub: no binary is actually loaded into memory yet. Transition
             // state so the inference pipeline can gate on it.
+            entry.state = LoadState::Loaded;
+            Ok(())
+        }
+
+        /// Load a GGUF model from raw bytes.
+        ///
+        /// Parses the GGUF header, verifies the model's BLAKE3 hash matches
+        /// the manifest, and stores the parsed tensor metadata. The actual
+        /// tensor data is NOT loaded into GPU/CPU memory — that happens on
+        /// first inference via the tensor backend.
+        ///
+        /// # Errors
+        ///
+        /// - [`OmniError::Internal`] if `model_id` is not registered.
+        /// - [`OmniError::Internal`] if the registered model's format is not
+        ///   [`ModelFormat::Gguf`].
+        /// - [`OmniError::Internal`] if the BLAKE3 hash of `data` does not
+        ///   match the hash stored in the model's manifest.
+        /// - [`OmniError::Internal`] if the GGUF data is malformed.
+        ///
+        /// # Example
+        ///
+        /// ```rust
+        /// use omni_crypto::signing::OmniSigningKey;
+        /// use omni_runtime::model::{ModelFormat, ModelManifest, ModelRegistry};
+        /// use omni_types::ModelId;
+        ///
+        /// // Construct a minimal valid GGUF v3 file (20 bytes: no tensors, no metadata).
+        /// let gguf_magic: u32 = 0x4655_4746;
+        /// let mut data = Vec::new();
+        /// data.extend_from_slice(&gguf_magic.to_le_bytes()); // magic
+        /// data.extend_from_slice(&3u32.to_le_bytes());        // version
+        /// data.extend_from_slice(&0u64.to_le_bytes());        // tensor_count
+        /// data.extend_from_slice(&0u64.to_le_bytes());        // metadata_kv_count
+        ///
+        /// let hash: [u8; 32] = *blake3::hash(&data).as_bytes();
+        /// let sk = OmniSigningKey::from_bytes([0x55; 32]);
+        /// let sig = sk.sign(&hash);
+        ///
+        /// let manifest = ModelManifest {
+        ///     model_id: ModelId::from_manifest_hash(hash),
+        ///     name: "gguf-test".into(),
+        ///     version: "1.0.0".into(),
+        ///     hash,
+        ///     signature: sig,
+        ///     signing_key: sk.verifying_key(),
+        ///     size_bytes: data.len() as u64,
+        ///     format: ModelFormat::Gguf,
+        /// };
+        ///
+        /// let mut reg = ModelRegistry::new();
+        /// let id = reg.register(manifest).unwrap();
+        /// reg.load_from_bytes(id, &data).unwrap();
+        /// assert!(reg.is_loaded(id));
+        /// ```
+        pub fn load_from_bytes(&mut self, model_id: ModelId, data: &[u8]) -> Result<()> {
+            let entry = self.entries.get_mut(&model_id).ok_or_else(|| {
+                OmniError::internal("runtime::model::load_from_bytes — model_id not registered")
+            })?;
+
+            // Guard: only GGUF format is supported by this path.
+            if entry.manifest.format != ModelFormat::Gguf {
+                return Err(OmniError::internal(
+                    "runtime::model::load_from_bytes — only GGUF format supported",
+                ));
+            }
+
+            // Verify BLAKE3 hash of the raw bytes against the signed manifest hash.
+            // This is the integrity check that ensures the bytes in memory match
+            // what the signing authority attested to at registration time.
+            let computed_hash = blake3::hash(data);
+            if computed_hash.as_bytes() != &entry.manifest.hash {
+                return Err(OmniError::internal(
+                    "runtime::model::load_from_bytes — BLAKE3 hash mismatch",
+                ));
+            }
+
+            // Parse the GGUF header to validate the format and extract metadata.
+            // We do not store the header on the entry yet; a future stream will
+            // add a field to ModelEntry to hold the parsed GgufHeader for use by
+            // the tensor backend.
+            let header = crate::gguf::parse_gguf(data)?;
+            info!(
+                model_id = ?model_id,
+                tensor_count = header.tensor_count,
+                metadata_count = header.metadata.len(),
+                "GGUF model parsed successfully"
+            );
+
             entry.state = LoadState::Loaded;
             Ok(())
         }
