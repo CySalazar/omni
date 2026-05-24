@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "P6.7.9-pre.11 NVMe live bringup",
+        "P6.7.9.c e1000e live",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1048,7 +1048,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "TASK-004/005 CLOSED next phase",
+        "Phase 2 entry OIP",
         graphics::WHITE,
     );
     row(

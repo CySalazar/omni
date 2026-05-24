@@ -388,6 +388,11 @@ pub const NVME_CLASS_CODE: u8 = 0x01;
 /// NVMe sub-class code.
 pub const NVME_SUBCLASS: u8 = 0x08;
 
+/// Ethernet Network Controller class code (PCI SIG base class 0x02).
+pub const ETHERNET_CLASS_CODE: u8 = 0x02;
+/// Ethernet sub-class code (PCI SIG sub-class 0x00).
+pub const ETHERNET_SUBCLASS: u8 = 0x00;
+
 #[cfg(test)]
 mod tests {
     use super::*;

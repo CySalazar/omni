@@ -666,4 +666,95 @@ mod tests {
         };
         assert_eq!(failed.pending_step(), StepKind::ParkExit);
     }
+
+    // ---- Live transition tests (P6.7.9.c) -----------------------------------
+
+    #[test]
+    fn live_mmio_phase_advances_from_disable_interrupts_to_global_reset() {
+        let mut s = BringUp::new();
+        // Advance to DisableInterrupts (phase 2)
+        s = s.on_event(Event::Advance).unwrap(); // → MmioMap
+        s = s.on_event(Event::Advance).unwrap(); // → DisableInterrupts
+        assert_eq!(s.phase(), Phase::DisableInterrupts);
+        assert_eq!(s.pending_step(), StepKind::WriteImcMaskAll);
+        // After MMIO write completes, advance to GlobalReset
+        s = s.on_event(Event::Advance).unwrap();
+        assert_eq!(s.phase(), Phase::GlobalReset);
+        assert_eq!(s.pending_step(), StepKind::TriggerCtrlReset);
+    }
+
+    #[test]
+    fn live_read_mac_phase_returns_correct_step_kind() {
+        let mut s = BringUp::new();
+        for _ in 0..4 {
+            s = s.on_event(Event::Advance).unwrap();
+        }
+        assert_eq!(s.phase(), Phase::ReadMac);
+        assert_eq!(s.pending_step(), StepKind::ReadReceiveAddress);
+    }
+
+    #[test]
+    fn live_phy_init_retry_then_advance_preserves_phase_order() {
+        let mut s = BringUp::new();
+        // Advance to PhyInit
+        for _ in 0..5 {
+            s = s.on_event(Event::Advance).unwrap();
+        }
+        assert_eq!(s.phase(), Phase::PhyInit);
+        // Simulate a transient MDIC busy — retry once
+        s = s.on_event(Event::Retry).unwrap();
+        assert_eq!(s.phase(), Phase::PhyInit);
+        assert_eq!(s.retries(), 1);
+        // Then advance on success
+        s = s.on_event(Event::Advance).unwrap();
+        assert_eq!(s.phase(), Phase::SetupRxRing);
+        assert_eq!(s.retries(), 0);
+    }
+
+    #[test]
+    fn live_setup_rings_sequence_is_rx_then_post_then_tx() {
+        let mut s = BringUp::new();
+        for _ in 0..6 {
+            s = s.on_event(Event::Advance).unwrap();
+        }
+        assert_eq!(s.phase(), Phase::SetupRxRing);
+        assert_eq!(s.pending_step(), StepKind::AllocateRxRing);
+        s = s.on_event(Event::Advance).unwrap();
+        assert_eq!(s.phase(), Phase::PostRxBuffers);
+        assert_eq!(s.pending_step(), StepKind::PrepostRxBuffers);
+        s = s.on_event(Event::Advance).unwrap();
+        assert_eq!(s.phase(), Phase::SetupTxRing);
+        assert_eq!(s.pending_step(), StepKind::AllocateTxRing);
+    }
+
+    #[test]
+    fn live_configure_then_enable_interrupts_then_attach_irq() {
+        let mut s = BringUp::new();
+        for _ in 0..9 {
+            s = s.on_event(Event::Advance).unwrap();
+        }
+        assert_eq!(s.phase(), Phase::ConfigureRxTx);
+        assert_eq!(s.pending_step(), StepKind::WriteRctlTctl);
+        s = s.on_event(Event::Advance).unwrap();
+        assert_eq!(s.phase(), Phase::EnableInterrupts);
+        assert_eq!(s.pending_step(), StepKind::WriteImsEnabled);
+        s = s.on_event(Event::Advance).unwrap();
+        assert_eq!(s.phase(), Phase::AttachIrq);
+        assert_eq!(s.pending_step(), StepKind::AttachMsiXVector);
+    }
+
+    #[test]
+    fn live_abort_at_global_reset_reports_reset_timeout() {
+        let mut s = BringUp::new();
+        // Advance to GlobalReset
+        for _ in 0..3 {
+            s = s.on_event(Event::Advance).unwrap();
+        }
+        assert_eq!(s.phase(), Phase::GlobalReset);
+        // Simulate hardware never clearing CTRL.RST
+        let err = s.on_event(Event::Abort(BringUpError::ResetTimeout)).unwrap_err();
+        assert_eq!(err, BringUpError::ResetTimeout);
+        assert_eq!(s.phase(), Phase::Failed);
+        assert_eq!(s.pending_step(), StepKind::ParkExit);
+    }
 }
