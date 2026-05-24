@@ -200,6 +200,75 @@ substantive change.
 
 ---
 
+## 2026-05-24 — `OIP-Crypto-002` (Last Call → Active)
+
+### Summary
+
+`OIP-Crypto-002` entered `Last Call` on 2026-05-12 and was scheduled to
+transition to `Active` automatically at the end of the standard 14-day
+public-objection window per `OIP-Process-001` §5.3 ¶1 first branch
+(2026-05-26). On 2026-05-24 the interim editor body (`cySalazar`, sole
+§6.2 Bootstrap editor) closed the window early via the §5.3 ¶1 second
+branch — founder ballot satisfying the ≥30% weighted-vote-cast threshold,
+since the dominant voter holds 100% bootstrap-default weighted eligibility
+per §5.2 (matching the voter-set state recorded in prior Q2 entries).
+Because OIP-Crypto-002 is `Standards Track` and **does** affect Layer 1
+cryptographic guarantees (the compliance proof scheme is a cryptographic
+primitive per §5.3 ¶2), the 66.7% supermajority threshold applies —
+satisfied trivially with a single 100%-weight voter.
+
+| Field | Value |
+|---|---|
+| OIPs transitioned | `OIP-Crypto-002` (Standards Track, **Layer 1** — STARK-based compliance proof scheme is a cryptographic primitive per §5.3 ¶2) |
+| Window opened | 2026-05-12 (per OIP Amendment history) |
+| Window scheduled close | 2026-05-26 (14-day standard §5.3 ¶1 first branch) |
+| Window actually closed | 2026-05-24 (12 days into the window, by §5.3 ¶1 second branch) |
+| Closure clause | `OIP-Process-001` §5.3 ¶1 second branch (≥30% weight cast → window closes whichever-comes-first vs 14-day timer) |
+| Dominant voter | `cySalazar <cySalazar@cySalazar.com>` |
+| Dominant voter weighted eligibility (§5.2 bootstrap defaults) | 100% — sole §5.1-eligible device at ballot-cast time |
+| Other eligible voters at ballot-cast moment | 0 (none ≥ 10% floor) |
+| Ballot — `OIP-Crypto-002` | In favor (1/1 ballot, 100% weighted, satisfies §5.3 ¶2 **66.7% supermajority** — Standards Track AND breaking Layer 1 cryptographic guarantees: compliance proof scheme is a cryptographic primitive) |
+| Blocking objections (§5.3, §5.5 (d)) | None received on the linked GitHub Discussion thread during the 12-day partial window (2026-05-12 → 2026-05-24). |
+| Procedural-only objections | None |
+| §5.5 fast-track | **Not invoked.** The §5.5 (c) banner required at `Review → Last Call` entry was not in place; §5.5 cannot be applied retroactively per the clause's "if and only if (a)–(f)" structure. §5.3 ¶1 second branch was used instead. |
+| §5.4 BDFL veto | **Not exercised.** Although OIP-Crypto-002 is Layer 1 (compliance proof scheme), the BDFL veto in §5.4 is an optional override mechanism, not a mandatory gate; the founder, acting as both dominant voter and BDFL, cast an in-favor ballot. |
+| Activation phase (§7) | `OIP-Crypto-002` (Standards Track, Layer 1): §7 activation phase opens upon `Active`. Operationally dormant until the `omni-mesh` compliance layer ships with `sig-v1` baseline (Phase 2 entry); `stark-v0` remains opt-in feature-gated until Phase 2+ production benchmarks. |
+| Editor signing | `cySalazar` (interim sole editor per §6.2), commit-signed via SSH ED25519 key (matching every commit in the project's signed-history chain). |
+
+### Editorial rationale for early closure
+
+The §5.3 ¶1 "whichever fires first" clause is symmetric: either
+≥30% cast a ballot or 14 days elapse. Under bootstrap conditions
+the dominant voter holds 100% weight, so casting a single in-favor
+ballot collapses both clauses (the ≥30% trigger fires; the 66.7%
+supermajority threshold required for Layer 1 changes is met by the
+same 100%-weight ballot — 100% ≥ 66.7%). The 14-day window's
+operational function — *"invite external review"* — had 12 days to
+run; the partial window collected no blocking objection on the GitHub
+Discussion thread. Closing at day 12 reclaims editorial-pipeline
+schedule velocity for downstream work that is gated on OIP-Crypto-002
+being `Active` (notably `OIP-FS-Wire-NNN` per `OIP-FS-018` cross-
+reference, and the Phase 2 entry `omni-mesh` compliance layer).
+
+### Re-ratification requirement
+
+`OIP-Process-001` §5.5 (e) mandates post-deactivation re-ratification
+for OIPs activated under §5.5. Because today's closure used §5.3 ¶1
+(not §5.5), the §5.5 (e) clause does **not** apply. Future amendments
+to OIP-Crypto-002 follow the same §5 process as any other substantive
+change; the 66.7% supermajority threshold will continue to apply to
+any amendment that touches Layer 1 cryptographic guarantees.
+
+### Cross-references
+
+- `oips/oip-crypto-002.md` — Amendment history table records the
+  `2026-05-24 — Last Call → Active` transition.
+- `oips/README.md` — index row updated to `Active *(closed 2026-05-24
+  by §5.3 ¶1 ballot, 66.7% supermajority)*`.
+- `CHANGELOG.md` — entry added for 2026-05-24.
+
+---
+
 ## Trailing template (for future Q2 entries)
 
 ```markdown
