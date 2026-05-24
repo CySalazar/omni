@@ -23,10 +23,18 @@ readme.workspace       = true
 [lints]
 workspace = true
 
+[features]
+# Enable the provider-gated constructors for `EncryptedString`,
+# `MaskedSSN`, `TokenizedEmail`, and `AttestedHash`. This is the only
+# crate authorized to enable this flag — it runs inside an attested TEE.
+default = ["_tokenization_provider_types"]
+_tokenization_provider_types = ["omni-types/_tokenization_provider"]
+
 [dependencies]
 omni-types  = { workspace = true }
 omni-crypto = { workspace = true }
-omni-tee    = { workspace = true }
+# Enable `mock` so `MockTeeBackend` is available in doc-tests and tests.
+omni-tee    = { workspace = true, features = ["mock"] }
 tokio       = { workspace = true }
 serde       = { workspace = true }
 tracing     = { workspace = true }
