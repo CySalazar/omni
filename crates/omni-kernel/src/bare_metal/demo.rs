@@ -1056,7 +1056,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Tests    : ",
         11,
-        "1715 workspace pass",
+        "1769 workspace pass",
         graphics::WHITE,
     );
 
