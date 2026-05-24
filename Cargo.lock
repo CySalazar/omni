@@ -1011,6 +1011,7 @@ dependencies = [
  "mockall",
  "omni-capability",
  "omni-crypto",
+ "omni-fs",
  "omni-hal",
  "omni-tee",
  "omni-types",
