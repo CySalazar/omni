@@ -9,8 +9,8 @@
 //!
 //! ## Status
 //!
-//! Phase 2 Stream 1 — ModelRegistry, InferencePipeline, TierRouter, and
-//! stubs for WorkloadScheduler and model-manifest attestation.
+//! Phase 2 Stream 1 — `ModelRegistry`, `InferencePipeline`, `TierRouter`, and
+//! stubs for `WorkloadScheduler` and model-manifest attestation.
 //! The tensor backend is a placeholder that returns an empty output vector;
 //! callers must not interpret an empty `output` as a successful inference
 //! result until a real backend lands in a later stream.
@@ -92,7 +92,7 @@ pub mod model {
     pub enum ModelFormat {
         /// Open Neural Network Exchange (ONNX) format.
         Onnx,
-        /// SafeTensors format (Hugging Face).
+        /// `SafeTensors` format (Hugging Face).
         SafeTensors,
         /// GGUF format (llama.cpp-style quantised models).
         Gguf,
@@ -277,12 +277,11 @@ pub mod model {
             manifest
                 .signing_key
                 .verify(&manifest.hash, &manifest.signature)
-                .map_err(|e| {
+                .inspect_err(|_| {
                     warn!(
                         model_name = %manifest.name,
                         "model manifest rejected: signature verification failed"
                     );
-                    e
                 })?;
 
             let id = manifest.model_id;
@@ -860,9 +859,7 @@ pub mod router {
         /// requested model loaded before dispatching.
         #[must_use]
         pub fn route(&self, request: &InferenceRequest) -> ExecutionTier {
-            // Stub: always route to Tier 0 (local). The full policy engine
-            // evaluating model availability, consent flags, and cluster state
-            // is deferred to a later stream.
+            let _ = self;
             debug!(
                 request_id = request.request_id,
                 model_id = ?request.model_id,
@@ -930,9 +927,8 @@ pub mod scheduler {
         /// Currently never errors. Future implementations may return
         /// [`omni_types::OmniError::Internal`] on accelerator enumeration
         /// failures.
+        #[allow(clippy::unused_async)]
         pub async fn schedule(&self) -> Result<()> {
-            // Stub: no accelerators are enumerated yet. Will be wired to
-            // omni-hal's accelerator discovery path in a later stream.
             debug!("scheduler: schedule() called (stub — no-op)");
             Ok(())
         }
