@@ -115,6 +115,18 @@ impl PciDevice {
         }
     }
 
+    /// Check if BAR is an I/O space BAR (bit 0 set).
+    #[must_use]
+    pub const fn bar_is_io(bar_raw: u32) -> bool {
+        (bar_raw & 0x01) != 0
+    }
+
+    /// Decode an I/O space BAR as a port base address (mask low 2 bits).
+    #[must_use]
+    pub const fn bar_io_base(bar_raw: u32) -> u16 {
+        (bar_raw & 0xFFFF_FFFC) as u16
+    }
+
     /// Returns `true` if this device is a PCI-to-PCI bridge (Type 1).
     #[must_use]
     pub const fn is_pci_bridge(&self) -> bool {
@@ -326,15 +338,32 @@ pub unsafe fn enable_bus_master(dev: &PciDevice) {
     let cmd = unsafe { arch::pci_cfg_read32(dev.bus, dev.device, dev.function, 0x04) };
     let new_cmd = cmd | 0x0006; // MSE (bit 1) | BME (bit 2)
     if new_cmd != cmd {
-        let addr: u32 = 0x8000_0000
-            | (u32::from(dev.bus) << 16)
-            | (u32::from(dev.device) << 11)
-            | (u32::from(dev.function) << 8)
-            | 0x04u32;
-        unsafe {
-            arch::outl(0xCF8, addr);
-            arch::outl(0xCFC, new_cmd);
-        }
+        unsafe { pci_cfg_write_cmd(dev, new_cmd) };
+    }
+}
+
+/// Enable Bus Master + Memory Space + I/O Space on the given PCI device.
+///
+/// # Safety
+///
+/// Ring 0 only.  Writes to PCI command register.
+pub unsafe fn enable_device_full(dev: &PciDevice) {
+    let cmd = unsafe { arch::pci_cfg_read32(dev.bus, dev.device, dev.function, 0x04) };
+    let new_cmd = cmd | 0x0007; // IOSE (bit 0) | MSE (bit 1) | BME (bit 2)
+    if new_cmd != cmd {
+        unsafe { pci_cfg_write_cmd(dev, new_cmd) };
+    }
+}
+
+unsafe fn pci_cfg_write_cmd(dev: &PciDevice, cmd: u32) {
+    let addr: u32 = 0x8000_0000
+        | (u32::from(dev.bus) << 16)
+        | (u32::from(dev.device) << 11)
+        | (u32::from(dev.function) << 8)
+        | 0x04u32;
+    unsafe {
+        arch::outl(0xCF8, addr);
+        arch::outl(0xCFC, cmd);
     }
 }
 
@@ -518,6 +547,21 @@ mod tests {
         result.push(dev);
         assert!(result.find_by_class(NVME_CLASS_CODE, NVME_SUBCLASS).is_some());
         assert!(result.find_by_class(0x02, 0x00).is_none());
+    }
+
+    #[test]
+    fn bar_is_io_detects_io_space() {
+        assert!(PciDevice::bar_is_io(0x0000_6081));
+        assert!(PciDevice::bar_is_io(0x0000_0001));
+        assert!(!PciDevice::bar_is_io(0xFEBC_0000));
+        assert!(!PciDevice::bar_is_io(0xFEBC_0004));
+    }
+
+    #[test]
+    fn bar_io_base_masks_low_bits() {
+        assert_eq!(PciDevice::bar_io_base(0x0000_6081), 0x6080);
+        assert_eq!(PciDevice::bar_io_base(0x0000_0001), 0x0000);
+        assert_eq!(PciDevice::bar_io_base(0x0000_CF01), 0xCF00);
     }
 
     #[test]

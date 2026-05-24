@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "P6.7.9-pre.9 multi-bus PCI bridge scan",
+        "P6.7.9-pre.10 virtio-net live bringup",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1048,7 +1048,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "pre.10 TASK-004 virtio-net live",
+        "TASK-005 NVMe live bringup",
         graphics::WHITE,
     );
     row(
@@ -1056,7 +1056,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Tests    : ",
         11,
-        "1713 workspace pass",
+        "1715 workspace pass",
         graphics::WHITE,
     );
     row(6, cx_r, "Author   : ", 11, "cySalazar", graphics::WHITE);
