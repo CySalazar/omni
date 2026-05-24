@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "P6.7.9.c e1000e live",
+        "Wave 4 OIP-Crypto-002",
         graphics::LIGHT_CYAN,
     );
     row(

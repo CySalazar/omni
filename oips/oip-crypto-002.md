@@ -2,11 +2,11 @@
 oip: 2
 title: Compliance Proof Scheme — STARK over SNARK for v1
 track: Standards Track
-status: Draft
+status: Active
 authors:
   - cySalazar <cySalazar@cySalazar.com>
 created: 2026-05-10
-updated: 2026-05-12
+updated: 2026-05-24
 requires:
   - OIP-Process-001
 supersedes: ~
@@ -209,6 +209,14 @@ public predicate. `sig-v1` provides no zero-knowledge — the assertion structur
 is in the clear. Both forms reveal that *a* payload of this approximate size
 was sent at this time; observers can infer traffic patterns. Onion-routing
 covers traffic-analysis concerns; that is out of scope for this OIP.
+
+## Amendment history
+
+| Date | Change | Notes |
+|---|---|---|
+| 2026-05-12 | `Draft → Review` | Editorial transition by the interim editor body (founder, sole editor during the Bootstrap Period per `OIP-Process-001` §6.2). No content change. |
+| 2026-05-12 | `Review → Last Call` | Editorial transition by the interim editor body. **14-day public-objection window opens 2026-05-12 and closes 2026-05-26** per `OIP-Process-001` §4 and §5.3. All technical content has been reviewed; `winterfell` v0.10 dependency validated against `no_std + alloc` requirements. Transition to `Active` requires either ≥30% weighted vote OR the 14-day window elapsing per `OIP-Process-001` §5.3. |
+| 2026-05-24 | `Last Call → Active` | Editorial closure of the Last Call window under `OIP-Process-001` §5.3 ¶1 second branch: the dominant voter (`cySalazar`, 100% weighted eligibility under §5.2 bootstrap defaults — sole §5.1-eligible device) cast an in-favor ballot. Because OIP-Crypto-002 is `Standards Track` and **does** affect Layer 1 cryptographic guarantees (§5.3 ¶2: compliance proof scheme is a cryptographic primitive), the 66.7% supermajority applies — satisfied trivially with a single 100%-weight voter. Founder ballot recorded in `docs/audits/oip-editors-report-2026-Q2.md`. No blocking objection raised during the 12-day partial window (2026-05-12 → 2026-05-24). No content change carried by this transition; the `Active` text is identical to the `Draft` text. |
 
 ## Copyright
 

@@ -17,6 +17,19 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Governance — OIP-Crypto-002 promoted `Draft → Active`
+  (2026-05-24). STARK-based compliance proof scheme ratified
+  for v1.0.**
+  `oips/oip-crypto-002.md` status changed from `Draft` to
+  `Active` via `OIP-Process-001` §5.3 ¶1 second branch
+  (founder ballot, 100% weight, 66.7% supermajority satisfied
+  — Standards Track, Layer 1 cryptographic guarantees). The
+  `winterfell` v0.10 STARK-based compliance proof scheme
+  (`stark-v0`, optional) plus the mandatory `sig-v1` baseline
+  are now the ratified v1.0 compliance proof scheme.
+  Amendment history added to the OIP; ballot recorded in
+  `docs/audits/oip-editors-report-2026-Q2.md`.
+
 - **Governance — TASK-008 OIP-Key-Custody-017 Draft (production
   key custody + `DRIVER_CAP_ISSUER_SEED` replacement policy).**
   New `oips/oip-key-custody-017.md` (Standards Track, status
