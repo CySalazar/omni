@@ -9,8 +9,8 @@
 //!
 //! ## Status
 //!
-//! Phase 2 Stream 1 — ModelRegistry, InferencePipeline, TierRouter, and
-//! stubs for WorkloadScheduler and model-manifest attestation.
+//! Phase 2 Stream 1 — `ModelRegistry`, `InferencePipeline`, `TierRouter`, and
+//! stubs for `WorkloadScheduler` and model-manifest attestation.
 //! The tensor backend is a placeholder that returns an empty output vector;
 //! callers must not interpret an empty `output` as a successful inference
 //! result until a real backend lands in a later stream.
@@ -38,6 +38,7 @@
 //! - [`scheduler`] — workload scheduling across accelerators.
 //! - [`router`] — execution tier routing decisions.
 //! - [`attestation`] — model signature verification.
+//! - [`gguf`] — GGUF v3 binary format parser.
 
 #![doc(html_root_url = "https://docs.omni-os.org/omni-runtime")]
 #![warn(missing_docs)]
@@ -50,6 +51,17 @@
         clippy::unnecessary_wraps,
     )
 )]
+
+// =============================================================================
+// gguf — GGUF v3 binary format parser
+// =============================================================================
+
+/// GGUF file format parser.
+///
+/// Implements the GGUF v3 binary format used by llama.cpp and compatible
+/// tools. The parser reads model metadata and tensor layout information
+/// from raw bytes without loading tensor data into memory.
+pub mod gguf;
 
 // =============================================================================
 // model — ModelManifest + ModelRegistry
@@ -80,7 +92,7 @@ pub mod model {
     pub enum ModelFormat {
         /// Open Neural Network Exchange (ONNX) format.
         Onnx,
-        /// SafeTensors format (Hugging Face).
+        /// `SafeTensors` format (Hugging Face).
         SafeTensors,
         /// GGUF format (llama.cpp-style quantised models).
         Gguf,
@@ -265,12 +277,11 @@ pub mod model {
             manifest
                 .signing_key
                 .verify(&manifest.hash, &manifest.signature)
-                .map_err(|e| {
+                .inspect_err(|_| {
                     warn!(
                         model_name = %manifest.name,
                         "model manifest rejected: signature verification failed"
                     );
-                    e
                 })?;
 
             let id = manifest.model_id;
@@ -332,6 +343,95 @@ pub mod model {
             debug!(model_id = ?model_id, "loading model");
             // Stub: no binary is actually loaded into memory yet. Transition
             // state so the inference pipeline can gate on it.
+            entry.state = LoadState::Loaded;
+            Ok(())
+        }
+
+        /// Load a GGUF model from raw bytes.
+        ///
+        /// Parses the GGUF header, verifies the model's BLAKE3 hash matches
+        /// the manifest, and stores the parsed tensor metadata. The actual
+        /// tensor data is NOT loaded into GPU/CPU memory — that happens on
+        /// first inference via the tensor backend.
+        ///
+        /// # Errors
+        ///
+        /// - [`OmniError::Internal`] if `model_id` is not registered.
+        /// - [`OmniError::Internal`] if the registered model's format is not
+        ///   [`ModelFormat::Gguf`].
+        /// - [`OmniError::Internal`] if the BLAKE3 hash of `data` does not
+        ///   match the hash stored in the model's manifest.
+        /// - [`OmniError::Internal`] if the GGUF data is malformed.
+        ///
+        /// # Example
+        ///
+        /// ```rust
+        /// use omni_crypto::signing::OmniSigningKey;
+        /// use omni_runtime::model::{ModelFormat, ModelManifest, ModelRegistry};
+        /// use omni_types::ModelId;
+        ///
+        /// // Construct a minimal valid GGUF v3 file (20 bytes: no tensors, no metadata).
+        /// let gguf_magic: u32 = 0x4655_4746;
+        /// let mut data = Vec::new();
+        /// data.extend_from_slice(&gguf_magic.to_le_bytes()); // magic
+        /// data.extend_from_slice(&3u32.to_le_bytes());        // version
+        /// data.extend_from_slice(&0u64.to_le_bytes());        // tensor_count
+        /// data.extend_from_slice(&0u64.to_le_bytes());        // metadata_kv_count
+        ///
+        /// let hash: [u8; 32] = *blake3::hash(&data).as_bytes();
+        /// let sk = OmniSigningKey::from_bytes([0x55; 32]);
+        /// let sig = sk.sign(&hash);
+        ///
+        /// let manifest = ModelManifest {
+        ///     model_id: ModelId::from_manifest_hash(hash),
+        ///     name: "gguf-test".into(),
+        ///     version: "1.0.0".into(),
+        ///     hash,
+        ///     signature: sig,
+        ///     signing_key: sk.verifying_key(),
+        ///     size_bytes: data.len() as u64,
+        ///     format: ModelFormat::Gguf,
+        /// };
+        ///
+        /// let mut reg = ModelRegistry::new();
+        /// let id = reg.register(manifest).unwrap();
+        /// reg.load_from_bytes(id, &data).unwrap();
+        /// assert!(reg.is_loaded(id));
+        /// ```
+        pub fn load_from_bytes(&mut self, model_id: ModelId, data: &[u8]) -> Result<()> {
+            let entry = self.entries.get_mut(&model_id).ok_or_else(|| {
+                OmniError::internal("runtime::model::load_from_bytes — model_id not registered")
+            })?;
+
+            // Guard: only GGUF format is supported by this path.
+            if entry.manifest.format != ModelFormat::Gguf {
+                return Err(OmniError::internal(
+                    "runtime::model::load_from_bytes — only GGUF format supported",
+                ));
+            }
+
+            // Verify BLAKE3 hash of the raw bytes against the signed manifest hash.
+            // This is the integrity check that ensures the bytes in memory match
+            // what the signing authority attested to at registration time.
+            let computed_hash = blake3::hash(data);
+            if computed_hash.as_bytes() != &entry.manifest.hash {
+                return Err(OmniError::internal(
+                    "runtime::model::load_from_bytes — BLAKE3 hash mismatch",
+                ));
+            }
+
+            // Parse the GGUF header to validate the format and extract metadata.
+            // We do not store the header on the entry yet; a future stream will
+            // add a field to ModelEntry to hold the parsed GgufHeader for use by
+            // the tensor backend.
+            let header = crate::gguf::parse_gguf(data)?;
+            info!(
+                model_id = ?model_id,
+                tensor_count = header.tensor_count,
+                metadata_count = header.metadata.len(),
+                "GGUF model parsed successfully"
+            );
+
             entry.state = LoadState::Loaded;
             Ok(())
         }
@@ -759,9 +859,7 @@ pub mod router {
         /// requested model loaded before dispatching.
         #[must_use]
         pub fn route(&self, request: &InferenceRequest) -> ExecutionTier {
-            // Stub: always route to Tier 0 (local). The full policy engine
-            // evaluating model availability, consent flags, and cluster state
-            // is deferred to a later stream.
+            let _ = self;
             debug!(
                 request_id = request.request_id,
                 model_id = ?request.model_id,
@@ -829,9 +927,8 @@ pub mod scheduler {
         /// Currently never errors. Future implementations may return
         /// [`omni_types::OmniError::Internal`] on accelerator enumeration
         /// failures.
+        #[allow(clippy::unused_async)]
         pub async fn schedule(&self) -> Result<()> {
-            // Stub: no accelerators are enumerated yet. Will be wired to
-            // omni-hal's accelerator discovery path in a later stream.
             debug!("scheduler: schedule() called (stub — no-op)");
             Ok(())
         }
@@ -1289,6 +1386,72 @@ mod tests {
         match err {
             OmniError::Internal { .. } => {}
             _ => panic!("expected Internal error for unregistered model"),
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // E2E: GGUF build → register → load_from_bytes → verify
+    // -------------------------------------------------------------------------
+
+    fn build_minimal_gguf() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&crate::gguf::GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn e2e_gguf_register_and_load_from_bytes() {
+        let gguf_bytes = build_minimal_gguf();
+        let hash = blake3::hash(&gguf_bytes);
+        let sk = OmniSigningKey::from_bytes([0xE2; 32]);
+        let sig = sk.sign(hash.as_bytes());
+
+        let manifest = ModelManifest {
+            model_id: ModelId::from_manifest_hash(*hash.as_bytes()),
+            name: "e2e-toy-mlp".into(),
+            version: "1.0.0".into(),
+            hash: *hash.as_bytes(),
+            signature: sig,
+            signing_key: sk.verifying_key(),
+            size_bytes: gguf_bytes.len() as u64,
+            format: ModelFormat::Gguf,
+        };
+
+        let mut reg = ModelRegistry::new();
+        let id = reg.register(manifest).unwrap();
+        reg.load_from_bytes(id, &gguf_bytes).unwrap();
+        assert!(reg.is_loaded(id));
+        let attested = reg.attest(id).unwrap();
+        assert_eq!(attested.name, "e2e-toy-mlp");
+    }
+
+    #[test]
+    fn e2e_gguf_load_hash_mismatch_fails() {
+        let gguf_bytes = build_minimal_gguf();
+        let wrong_hash = [0xBB; 32];
+        let sk = OmniSigningKey::from_bytes([0xE3; 32]);
+        let sig = sk.sign(&wrong_hash);
+
+        let manifest = ModelManifest {
+            model_id: ModelId::from_manifest_hash(wrong_hash),
+            name: "bad-hash".into(),
+            version: "1.0.0".into(),
+            hash: wrong_hash,
+            signature: sig,
+            signing_key: sk.verifying_key(),
+            size_bytes: gguf_bytes.len() as u64,
+            format: ModelFormat::Gguf,
+        };
+
+        let mut reg = ModelRegistry::new();
+        let id = reg.register(manifest).unwrap();
+        let err = reg.load_from_bytes(id, &gguf_bytes).unwrap_err();
+        match err {
+            OmniError::Internal { .. } => {}
+            _ => panic!("expected Internal error for hash mismatch, got: {err:?}"),
         }
     }
 }

@@ -15,6 +15,33 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ## [Unreleased]
 
+### Added
+
+- **Phase 2 Sprint 2 — Stream 1: Real tensor dispatch in CpuBackend
+  (2026-05-24).**
+  Replaced zeroed stubs in `CpuBackend::execute()` with correct F32
+  implementations: MatMul (naive row-major with transpose support), Add,
+  ReLU, Softmax (numerically stable), LayerNorm (new `TensorOp` variant),
+  EmbeddingLookup (new `TensorOp` variant). +984 lines in
+  `crates/omni-hal/src/tensor.rs`. 42 unit + 22 doc tests.
+
+- **Phase 2 Sprint 2 — Stream 2: AI syscall surface (80–84)
+  (2026-05-24).**
+  Added 5 `SyscallNumber` variants (`AiInvoke=80`, `AiStream=81`,
+  `AiEmbed=82`, `AiClassify=83`, `AiTranscribe=84`) to the kernel
+  dispatcher. Capability-checked stubs returning ENOSYS; IPC relay
+  deferred to Sprint 3. ABI numbers locked per OIP-Phase2-Entry-021.
+
+- **Phase 2 Sprint 2 — Stream 3: GGUF v3 model loader (2026-05-24).**
+  From-scratch GGUF v3 parser in `omni-runtime::gguf` (1012 lines).
+  `ModelRegistry::load_from_bytes()` verifies BLAKE3 hash against
+  manifest, parses GGUF header, transitions model to Loaded. String
+  reads capped at 1 MiB, tensor count capped at 100k. Zero unsafe.
+
+- **ADR-0020: Phase 2 Sprint 2 inference pipeline architecture.**
+  Documents the 4-stream design, GGUF format selection rationale,
+  and AI syscall ABI surface decisions.
+
 ### Changed
 
 - **Wave 4 — TASK-022: omni-mesh postcard alignment + STARK reference update

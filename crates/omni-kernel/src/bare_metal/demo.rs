@@ -1016,7 +1016,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Phase    : ",
         11,
-        "2 - AI Runtime (entry)",
+        "2 - AI Runtime (Sprint 2)",
         graphics::WHITE,
     );
     row(
@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "Phase 2 Foundation complete",
+        "P2S2: tensor+AI syscalls+GGUF",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1048,7 +1048,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "P2 Sprint 2: tensor dispatch",
+        "P2 Sprint 3: IPC relay + optim",
         graphics::WHITE,
     );
     row(
@@ -1056,7 +1056,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Tests    : ",
         11,
-        "1951 workspace pass",
+        "1983 workspace pass",
         graphics::WHITE,
     );
 

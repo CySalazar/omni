@@ -38,6 +38,10 @@
 //! poll-based version is planned for Phase 4 after the SIMD dispatch layer
 //! is benchmarked.
 
+// Float arithmetic is pervasive in tensor math; allowing it for this module
+// is correct and intentional.  All other workspace lints remain in force.
+#![allow(clippy::float_arithmetic)]
+
 use async_trait::async_trait;
 use omni_types::error::{HalErrorKind, OmniError, Result};
 
@@ -404,6 +408,28 @@ pub enum TensorOp {
         /// [`TensorDescriptor::num_elements`].
         new_shape: Vec<usize>,
     },
+
+    /// Layer normalization: normalize the input across the last (feature) axis.
+    ///
+    /// For each slice along the last dimension, computes:
+    /// `output = (x - mean) / sqrt(variance + epsilon)`.
+    ///
+    /// The output has the same shape and dtype as the input.
+    LayerNorm {
+        /// Small constant added to the variance before taking the square root
+        /// for numerical stability.  Typical value: `1e-5` or `1e-6`.
+        epsilon: f32,
+    },
+
+    /// Embedding table lookup: index rows from a 2-D weight table.
+    ///
+    /// - Input 0: weight table with shape `[vocab_size, embed_dim]`, dtype `F32`.
+    /// - Input 1: index tensor with shape `[batch]`, dtype `I8` or `U8`
+    ///   (the byte value is cast to `usize` for the row lookup).
+    ///
+    /// Output shape: `[batch, embed_dim]`, dtype `F32`.
+    /// Returns an error if any index is out of bounds.
+    EmbeddingLookup,
 }
 
 // =============================================================================
@@ -659,13 +685,159 @@ fn detect_simd_capabilities() -> Vec<SimdCapability> {
     caps
 }
 
-/// Derive the output descriptor for a given `TensorOp` and input set.
+// =============================================================================
+// Low-level byte helpers (no unsafe)
+// =============================================================================
+
+/// Read a single `f32` from `bytes` at element index `idx` (little-endian).
 ///
-/// For Phase 2 this is a simple stub: most ops inherit the first input's
-/// shape.  `Reshape` uses the requested `new_shape`.  Returns an error if
-/// `inputs` is empty for ops that require at least one input.
+/// Returns an error if the slice does not contain a full 4-byte word at the
+/// requested position, preventing out-of-bounds access.
+fn read_f32(bytes: &[u8], idx: usize) -> Result<f32> {
+    // Each f32 occupies exactly 4 bytes; compute the byte offset.
+    let start = idx
+        .checked_mul(4)
+        .ok_or_else(|| OmniError::hal(HalErrorKind::DeviceFailure, "read_f32::index_overflow"))?;
+    let end = start
+        .checked_add(4)
+        .ok_or_else(|| OmniError::hal(HalErrorKind::DeviceFailure, "read_f32::end_overflow"))?;
+    // Use TryInto to convert the 4-byte slice to a fixed-size array, avoiding
+    // element-by-element indexing that would trigger clippy::indexing_slicing.
+    let chunk: [u8; 4] = bytes
+        .get(start..end)
+        .and_then(|s| s.try_into().ok())
+        .ok_or_else(|| OmniError::hal(HalErrorKind::DeviceFailure, "read_f32::out_of_bounds"))?;
+    Ok(f32::from_le_bytes(chunk))
+}
+
+/// Write a single `f32` to `bytes` at element index `idx` (little-endian).
+///
+/// Returns an error if `bytes` does not have room for 4 bytes at the
+/// requested offset.
+fn write_f32(bytes: &mut [u8], idx: usize, val: f32) -> Result<()> {
+    let start = idx
+        .checked_mul(4)
+        .ok_or_else(|| OmniError::hal(HalErrorKind::DeviceFailure, "write_f32::index_overflow"))?;
+    let end = start
+        .checked_add(4)
+        .ok_or_else(|| OmniError::hal(HalErrorKind::DeviceFailure, "write_f32::end_overflow"))?;
+    let chunk = bytes
+        .get_mut(start..end)
+        .ok_or_else(|| OmniError::hal(HalErrorKind::DeviceFailure, "write_f32::out_of_bounds"))?;
+    // copy_from_slice avoids element-by-element indexing into `chunk`.
+    chunk.copy_from_slice(&val.to_le_bytes());
+    Ok(())
+}
+
+// =============================================================================
+// Output descriptor derivation
+// =============================================================================
+
+/// Derive the output [`TensorDescriptor`] for a given [`TensorOp`] and input set.
+///
+/// For element-wise ops (`Add`, `Relu`, `Softmax`, `LayerNorm`) the output
+/// descriptor inherits the first input's shape and dtype.  `MatMul` computes
+/// the output shape from the matrix dimensions.  `EmbeddingLookup` derives
+/// `[batch, embed_dim]`.  `Reshape` uses the requested `new_shape`.
+///
+/// Returns an error if `inputs` is empty for ops that require at least one
+/// input, or if there are not enough inputs for multi-input ops.
+// This function covers all TensorOp variants; the length is a structural
+// necessity of a complete match, not a complexity problem.
+#[allow(clippy::too_many_lines)]
 fn output_descriptor_for(op: &TensorOp, inputs: &[&TensorBuffer]) -> Result<TensorDescriptor> {
     match op {
+        TensorOp::MatMul {
+            transpose_a,
+            transpose_b,
+        } => {
+            // MatMul requires exactly 2 inputs: A and B.
+            let mat_a = inputs.first().ok_or_else(|| {
+                OmniError::hal(
+                    HalErrorKind::HardwareUnavailable,
+                    "execute::matmul::requires_two_inputs",
+                )
+            })?;
+            let mat_b = inputs.get(1).ok_or_else(|| {
+                OmniError::hal(
+                    HalErrorKind::HardwareUnavailable,
+                    "execute::matmul::requires_two_inputs",
+                )
+            })?;
+
+            // Resolve the effective rows and columns after optional transpose.
+            let (rows_out, k_from_a) =
+                matmul_effective_dims(&mat_a.descriptor.shape, *transpose_a)?;
+            let (k_from_b, cols_out) =
+                matmul_effective_dims(&mat_b.descriptor.shape, *transpose_b)?;
+
+            if k_from_a != k_from_b {
+                return Err(OmniError::hal(
+                    HalErrorKind::DeviceFailure,
+                    "execute::matmul::inner_dimension_mismatch",
+                ));
+            }
+
+            Ok(TensorDescriptor::new(
+                vec![rows_out, cols_out],
+                mat_a.descriptor.dtype,
+            ))
+        }
+
+        TensorOp::EmbeddingLookup => {
+            // Requires 2 inputs: table [vocab_size, embed_dim] and indices [batch].
+            let emb_table = inputs.first().ok_or_else(|| {
+                OmniError::hal(
+                    HalErrorKind::HardwareUnavailable,
+                    "execute::embedding_lookup::requires_two_inputs",
+                )
+            })?;
+            let emb_indices = inputs.get(1).ok_or_else(|| {
+                OmniError::hal(
+                    HalErrorKind::HardwareUnavailable,
+                    "execute::embedding_lookup::requires_two_inputs",
+                )
+            })?;
+
+            // Table must be 2-D.
+            if emb_table.descriptor.shape.len() != 2 {
+                return Err(OmniError::hal(
+                    HalErrorKind::DeviceFailure,
+                    "execute::embedding_lookup::table_must_be_2d",
+                ));
+            }
+            // Indices must be 1-D.
+            if emb_indices.descriptor.shape.len() != 1 {
+                return Err(OmniError::hal(
+                    HalErrorKind::DeviceFailure,
+                    "execute::embedding_lookup::indices_must_be_1d",
+                ));
+            }
+
+            // Table is confirmed 2-D; use get() to avoid clippy::indexing_slicing.
+            let embed_dim = emb_table.descriptor.shape.get(1).copied().ok_or_else(|| {
+                OmniError::hal(
+                    HalErrorKind::DeviceFailure,
+                    "execute::embedding_lookup::shape_error",
+                )
+            })?;
+            let batch = emb_indices
+                .descriptor
+                .shape
+                .first()
+                .copied()
+                .ok_or_else(|| {
+                    OmniError::hal(
+                        HalErrorKind::DeviceFailure,
+                        "execute::embedding_lookup::shape_error",
+                    )
+                })?;
+            Ok(TensorDescriptor::new(
+                vec![batch, embed_dim],
+                TensorDtype::F32,
+            ))
+        }
+
         TensorOp::Reshape { new_shape } => {
             // Reshape must have exactly one input; grab the dtype from it.
             let src = inputs.first().ok_or_else(|| {
@@ -679,9 +851,9 @@ fn output_descriptor_for(op: &TensorOp, inputs: &[&TensorBuffer]) -> Result<Tens
                 src.descriptor.dtype,
             ))
         }
-        // For all other ops: require at least one input and inherit its
-        // shape/dtype as the output shape (valid for element-wise ops and
-        // as a placeholder for MatMul in Phase 2).
+
+        // Element-wise ops (Add, Relu, Softmax, LayerNorm): inherit first
+        // input's shape and dtype.
         _ => {
             let src = inputs.first().ok_or_else(|| {
                 OmniError::hal(HalErrorKind::HardwareUnavailable, "execute::no_input")
@@ -693,6 +865,473 @@ fn output_descriptor_for(op: &TensorOp, inputs: &[&TensorBuffer]) -> Result<Tens
         }
     }
 }
+
+/// Resolve the effective `(rows, cols)` of a 2-D matrix after an optional transpose.
+///
+/// Returns an error if the shape is not exactly 2-D.
+fn matmul_effective_dims(shape: &[usize], transpose: bool) -> Result<(usize, usize)> {
+    if shape.len() != 2 {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::matmul::input_must_be_2d",
+        ));
+    }
+    // Shape is confirmed 2-D; get() calls succeed by construction.
+    let rows = shape.first().copied().ok_or_else(|| {
+        OmniError::hal(HalErrorKind::DeviceFailure, "execute::matmul::shape_error")
+    })?;
+    let cols = shape.get(1).copied().ok_or_else(|| {
+        OmniError::hal(HalErrorKind::DeviceFailure, "execute::matmul::shape_error")
+    })?;
+    if transpose {
+        Ok((cols, rows))
+    } else {
+        Ok((rows, cols))
+    }
+}
+
+// =============================================================================
+// Per-op scalar implementations (F32 only)
+// =============================================================================
+
+/// Require `dtype == F32`, returning a [`HalErrorKind::DeviceFailure`] error
+/// tagged with `op_tag` if the requirement is not met.
+fn require_f32(dtype: TensorDtype, op_tag: &'static str) -> Result<()> {
+    if dtype == TensorDtype::F32 {
+        Ok(())
+    } else {
+        Err(OmniError::hal(HalErrorKind::DeviceFailure, op_tag))
+    }
+}
+
+/// Naive F32 matrix multiplication: `C[row,col] = sum_inner A[row,inner] * B[inner,col]`.
+///
+/// Supports optional transposition of either input.  Validates that both
+/// inputs are 2-D with matching inner dimensions.
+fn exec_matmul(
+    inputs: &[&TensorBuffer],
+    transpose_a: bool,
+    transpose_b: bool,
+) -> Result<TensorBuffer> {
+    let mat_a = inputs.first().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::matmul::requires_two_inputs",
+        )
+    })?;
+    let mat_b = inputs.get(1).ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::matmul::requires_two_inputs",
+        )
+    })?;
+
+    require_f32(mat_a.descriptor.dtype, "execute::matmul::unsupported_dtype")?;
+    require_f32(mat_b.descriptor.dtype, "execute::matmul::unsupported_dtype")?;
+
+    let (rows_out, inner_a) = matmul_effective_dims(&mat_a.descriptor.shape, transpose_a)?;
+    let (inner_b, cols_out) = matmul_effective_dims(&mat_b.descriptor.shape, transpose_b)?;
+
+    if inner_a != inner_b {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::matmul::inner_dimension_mismatch",
+        ));
+    }
+    let inner = inner_a;
+
+    let out_desc = TensorDescriptor::new(vec![rows_out, cols_out], TensorDtype::F32);
+    let mut out_bytes = vec![0u8; out_desc.byte_size()];
+
+    // C[row][col] = sum_{inner_idx} A_eff[row][inner_idx] * B_eff[inner_idx][col].
+    //
+    // A_eff[row][inner_idx]:
+    //   - no transpose: A physical shape [rows_out, inner]; flat = row * inner + inner_idx
+    //   - transpose_a:  A physical shape [inner, rows_out]; flat = inner_idx * rows_out + row
+    // B_eff[inner_idx][col]:
+    //   - no transpose: B physical shape [inner, cols_out]; flat = inner_idx * cols_out + col
+    //   - transpose_b:  B physical shape [cols_out, inner]; flat = col * inner + inner_idx
+    let a_bytes = mat_a.as_bytes();
+    let b_bytes = mat_b.as_bytes();
+
+    for row in 0..rows_out {
+        for col in 0..cols_out {
+            let mut acc = 0.0_f32;
+            for inner_idx in 0..inner {
+                let a_flat = if transpose_a {
+                    inner_idx * rows_out + row
+                } else {
+                    row * inner + inner_idx
+                };
+                let b_flat = if transpose_b {
+                    col * inner + inner_idx
+                } else {
+                    inner_idx * cols_out + col
+                };
+                acc += read_f32(a_bytes, a_flat)? * read_f32(b_bytes, b_flat)?;
+            }
+            write_f32(&mut out_bytes, row * cols_out + col, acc)?;
+        }
+    }
+
+    Ok(TensorBuffer::new(out_desc, out_bytes))
+}
+
+/// Element-wise F32 addition of two tensors with identical shapes.
+fn exec_add(inputs: &[&TensorBuffer]) -> Result<TensorBuffer> {
+    let lhs = inputs.first().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::add::requires_two_inputs",
+        )
+    })?;
+    let rhs = inputs.get(1).ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::add::requires_two_inputs",
+        )
+    })?;
+
+    require_f32(lhs.descriptor.dtype, "execute::add::unsupported_dtype")?;
+    require_f32(rhs.descriptor.dtype, "execute::add::unsupported_dtype")?;
+
+    if lhs.descriptor.shape != rhs.descriptor.shape {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::add::shape_mismatch",
+        ));
+    }
+
+    let n_elems = lhs.descriptor.num_elements();
+    let out_desc = TensorDescriptor::new(lhs.descriptor.shape.clone(), TensorDtype::F32);
+    let mut out_bytes = vec![0u8; out_desc.byte_size()];
+
+    let lhs_bytes = lhs.as_bytes();
+    let rhs_bytes = rhs.as_bytes();
+
+    for elem_idx in 0..n_elems {
+        let sum = read_f32(lhs_bytes, elem_idx)? + read_f32(rhs_bytes, elem_idx)?;
+        write_f32(&mut out_bytes, elem_idx, sum)?;
+    }
+
+    Ok(TensorBuffer::new(out_desc, out_bytes))
+}
+
+/// Element-wise F32 `ReLU`: `output[i] = max(0.0, input[i])`.
+fn exec_relu(inputs: &[&TensorBuffer]) -> Result<TensorBuffer> {
+    let src = inputs.first().ok_or_else(|| {
+        OmniError::hal(HalErrorKind::HardwareUnavailable, "execute::relu::no_input")
+    })?;
+
+    require_f32(src.descriptor.dtype, "execute::relu::unsupported_dtype")?;
+
+    let n_elems = src.descriptor.num_elements();
+    let out_desc = TensorDescriptor::new(src.descriptor.shape.clone(), TensorDtype::F32);
+    let mut out_bytes = vec![0u8; out_desc.byte_size()];
+    let src_bytes = src.as_bytes();
+
+    for elem_idx in 0..n_elems {
+        let val = read_f32(src_bytes, elem_idx)?;
+        write_f32(&mut out_bytes, elem_idx, f32::max(0.0, val))?;
+    }
+
+    Ok(TensorBuffer::new(out_desc, out_bytes))
+}
+
+/// Numerically stable F32 softmax along a given axis.
+///
+/// For each slice along `axis`, computes:
+/// `exp(x - max(x)) / sum(exp(x - max(x)))`.
+///
+/// Subtracting `max(x)` before exponentiating prevents overflow for large
+/// logits (the result is identical by algebraic equivalence).
+fn exec_softmax(inputs: &[&TensorBuffer], axis: usize) -> Result<TensorBuffer> {
+    let src = inputs.first().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::softmax::no_input",
+        )
+    })?;
+
+    require_f32(src.descriptor.dtype, "execute::softmax::unsupported_dtype")?;
+
+    let shape = &src.descriptor.shape;
+    if axis >= shape.len() {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::softmax::axis_out_of_bounds",
+        ));
+    }
+
+    let out_desc = TensorDescriptor::new(shape.clone(), TensorDtype::F32);
+    let src_bytes = src.as_bytes();
+    let n_total = src.descriptor.num_elements();
+    let mut out_values: Vec<f32> = Vec::with_capacity(n_total);
+
+    // Read all input floats first to simplify the axis-iteration logic.
+    for elem_idx in 0..n_total {
+        out_values.push(read_f32(src_bytes, elem_idx)?);
+    }
+
+    // axis_size: number of elements along the softmax axis.
+    let axis_size = shape.get(axis).copied().ok_or_else(|| {
+        OmniError::hal(HalErrorKind::DeviceFailure, "execute::softmax::axis_error")
+    })?;
+    // outer: product of dims before axis.
+    let outer: usize = shape.get(..axis).map_or(1, |s| s.iter().product());
+    // inner: product of dims after axis.
+    let inner: usize = shape.get(axis + 1..).map_or(1, |s| s.iter().product());
+
+    for outer_idx in 0..outer {
+        for inner_idx in 0..inner {
+            // Flat index of element at axis position `axis_pos`:
+            //   outer_idx * (axis_size * inner) + axis_pos * inner + inner_idx
+            let base = outer_idx * (axis_size * inner) + inner_idx;
+
+            // Pass 1: find max for numerical stability.
+            let mut max_val = f32::NEG_INFINITY;
+            for axis_pos in 0..axis_size {
+                let flat = base + axis_pos * inner;
+                let val = out_values.get(flat).copied().ok_or_else(|| {
+                    OmniError::hal(HalErrorKind::DeviceFailure, "execute::softmax::index_error")
+                })?;
+                if val > max_val {
+                    max_val = val;
+                }
+            }
+
+            // Pass 2: compute exp(x - max) and accumulate sum.
+            let mut exp_sum = 0.0_f32;
+            for axis_pos in 0..axis_size {
+                let flat = base + axis_pos * inner;
+                let val = out_values.get(flat).copied().ok_or_else(|| {
+                    OmniError::hal(HalErrorKind::DeviceFailure, "execute::softmax::index_error")
+                })?;
+                let exp_val = (val - max_val).exp();
+                if let Some(slot) = out_values.get_mut(flat) {
+                    *slot = exp_val;
+                }
+                exp_sum += exp_val;
+            }
+
+            // Pass 3: divide by sum.
+            for axis_pos in 0..axis_size {
+                let flat = base + axis_pos * inner;
+                if let Some(slot) = out_values.get_mut(flat) {
+                    *slot /= exp_sum;
+                }
+            }
+        }
+    }
+
+    let mut out_bytes = vec![0u8; out_desc.byte_size()];
+    for (elem_idx, val) in out_values.iter().enumerate() {
+        write_f32(&mut out_bytes, elem_idx, *val)?;
+    }
+
+    Ok(TensorBuffer::new(out_desc, out_bytes))
+}
+
+/// F32 layer normalization across the last axis.
+///
+/// For each slice of size `last_dim` along the last dimension, computes:
+/// `output = (x - mean) / sqrt(variance + epsilon)`.
+#[allow(clippy::integer_division, clippy::cast_precision_loss)]
+fn exec_layer_norm(inputs: &[&TensorBuffer], epsilon: f32) -> Result<TensorBuffer> {
+    let src = inputs.first().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::layer_norm::no_input",
+        )
+    })?;
+
+    require_f32(
+        src.descriptor.dtype,
+        "execute::layer_norm::unsupported_dtype",
+    )?;
+
+    let shape = &src.descriptor.shape;
+    if shape.is_empty() {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::layer_norm::scalar_not_supported",
+        ));
+    }
+
+    // Use .last() to avoid clippy::indexing_slicing for shape[len-1].
+    let last_dim = shape.last().copied().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::layer_norm::shape_error",
+        )
+    })?;
+    let n_total = src.descriptor.num_elements();
+    // Division is exact: n_total = n_slices * last_dim by construction.
+    let n_slices = n_total / last_dim;
+
+    let src_bytes = src.as_bytes();
+    let out_desc = TensorDescriptor::new(shape.clone(), TensorDtype::F32);
+    let mut out_bytes = vec![0u8; out_desc.byte_size()];
+
+    for slice_idx in 0..n_slices {
+        let slice_start = slice_idx * last_dim;
+
+        // Compute mean.  Cast `last_dim as f32`: dimensions are always < 2^23
+        // in practice on this target so precision loss is not meaningful.
+        let mut mean = 0.0_f32;
+        for dim_pos in 0..last_dim {
+            mean += read_f32(src_bytes, slice_start + dim_pos)?;
+        }
+        mean /= last_dim as f32;
+
+        // Compute variance: E[(x - mean)^2].
+        let mut var = 0.0_f32;
+        for dim_pos in 0..last_dim {
+            let diff = read_f32(src_bytes, slice_start + dim_pos)? - mean;
+            var += diff * diff;
+        }
+        var /= last_dim as f32;
+
+        let std_dev = (var + epsilon).sqrt();
+        for dim_pos in 0..last_dim {
+            let elem = read_f32(src_bytes, slice_start + dim_pos)?;
+            write_f32(
+                &mut out_bytes,
+                slice_start + dim_pos,
+                (elem - mean) / std_dev,
+            )?;
+        }
+    }
+
+    Ok(TensorBuffer::new(out_desc, out_bytes))
+}
+
+/// Embedding table lookup: gather rows from a `[vocab_size, embed_dim]` table
+/// using an index tensor with dtype `I8` or `U8`.
+///
+/// Each byte in the index tensor is cast to `usize` and used as a row index
+/// into the table.  Returns an error if any index is out of bounds.
+fn exec_embedding_lookup(inputs: &[&TensorBuffer]) -> Result<TensorBuffer> {
+    let table = inputs.first().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::embedding_lookup::requires_two_inputs",
+        )
+    })?;
+    let indices = inputs.get(1).ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::embedding_lookup::requires_two_inputs",
+        )
+    })?;
+
+    require_f32(
+        table.descriptor.dtype,
+        "execute::embedding_lookup::unsupported_table_dtype",
+    )?;
+
+    if !matches!(indices.descriptor.dtype, TensorDtype::I8 | TensorDtype::U8) {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::embedding_lookup::unsupported_index_dtype",
+        ));
+    }
+
+    if table.descriptor.shape.len() != 2 {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::embedding_lookup::table_must_be_2d",
+        ));
+    }
+    if indices.descriptor.shape.len() != 1 {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::embedding_lookup::indices_must_be_1d",
+        ));
+    }
+
+    // Both shapes are validated; get() calls below are guaranteed to succeed.
+    let vocab_size = table.descriptor.shape.first().copied().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::embedding_lookup::shape_error",
+        )
+    })?;
+    let embed_dim = table.descriptor.shape.get(1).copied().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::embedding_lookup::shape_error",
+        )
+    })?;
+    let batch = indices.descriptor.shape.first().copied().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::embedding_lookup::shape_error",
+        )
+    })?;
+
+    let table_bytes = table.as_bytes();
+    let index_bytes = indices.as_bytes();
+
+    let out_desc = TensorDescriptor::new(vec![batch, embed_dim], TensorDtype::F32);
+    let mut out_bytes = vec![0u8; out_desc.byte_size()];
+
+    for batch_idx in 0..batch {
+        // Read the raw index byte and cast to usize.  Both I8 and U8 occupy a
+        // single byte; we interpret it as unsigned so indices 0..=255 are valid.
+        let raw_byte = index_bytes.get(batch_idx).copied().ok_or_else(|| {
+            OmniError::hal(
+                HalErrorKind::DeviceFailure,
+                "execute::embedding_lookup::index_read_error",
+            )
+        })?;
+        let row_idx = usize::from(raw_byte);
+
+        if row_idx >= vocab_size {
+            return Err(OmniError::hal(
+                HalErrorKind::DeviceFailure,
+                "execute::embedding_lookup::index_out_of_bounds",
+            ));
+        }
+
+        for dim_pos in 0..embed_dim {
+            let val = read_f32(table_bytes, row_idx * embed_dim + dim_pos)?;
+            write_f32(&mut out_bytes, batch_idx * embed_dim + dim_pos, val)?;
+        }
+    }
+
+    Ok(TensorBuffer::new(out_desc, out_bytes))
+}
+
+/// Reshape: reinterpret the byte data with a new shape.
+///
+/// The total element count of `new_shape` must equal the total element count
+/// of the source tensor.  The dtype is preserved.
+fn exec_reshape(inputs: &[&TensorBuffer], new_shape: &[usize]) -> Result<TensorBuffer> {
+    let src = inputs.first().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::reshape::no_input",
+        )
+    })?;
+
+    let src_elems = src.descriptor.num_elements();
+    let dst_elems: usize = new_shape.iter().product();
+
+    if src_elems != dst_elems {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::reshape::element_count_mismatch",
+        ));
+    }
+
+    let out_desc = TensorDescriptor::new(new_shape.to_vec(), src.descriptor.dtype);
+    Ok(TensorBuffer::new(out_desc, src.as_bytes().to_vec()))
+}
+
+// =============================================================================
+// TensorBackend impl for CpuBackend
+// =============================================================================
 
 #[async_trait]
 impl TensorBackend for CpuBackend {
@@ -725,7 +1364,6 @@ impl TensorBackend for CpuBackend {
             "CpuBackend::allocate"
         );
 
-        // Allocate a zero-initialised byte buffer.
         let bytes = vec![0u8; size];
         Ok(TensorBuffer::new(desc.clone(), bytes))
     }
@@ -734,34 +1372,43 @@ impl TensorBackend for CpuBackend {
         tracing::trace!(
             op = ?op,
             input_count = inputs.len(),
-            "CpuBackend::execute (Phase 2 stub)"
+            "CpuBackend::execute"
         );
 
-        // Determine the output shape/dtype.
+        // Validate output descriptor (validates input counts and shapes).
         let out_desc = output_descriptor_for(&op, inputs)?;
 
-        // Phase 2 stub: return a zeroed buffer of the correct size.
-        // Real SIMD dispatch (AVX2 matmul, ReLU vectorisation, etc.) is
-        // scheduled for Phase 4 once the benchmark harness is in place.
-        let size = out_desc.byte_size();
-        if size > self.max_bytes {
+        // Guard the output size before doing any computation.
+        if out_desc.byte_size() > self.max_bytes {
             return Err(OmniError::hal(
                 HalErrorKind::HardwareUnavailable,
                 "execute::output_exceeds_max_tensor_size",
             ));
         }
 
-        let bytes = vec![0u8; size];
-        Ok(TensorBuffer::new(out_desc, bytes))
+        match op {
+            TensorOp::MatMul {
+                transpose_a,
+                transpose_b,
+            } => exec_matmul(inputs, transpose_a, transpose_b),
+
+            TensorOp::Add => exec_add(inputs),
+
+            TensorOp::Relu => exec_relu(inputs),
+
+            TensorOp::Softmax { axis } => exec_softmax(inputs, axis),
+
+            TensorOp::LayerNorm { epsilon } => exec_layer_norm(inputs, epsilon),
+
+            TensorOp::EmbeddingLookup => exec_embedding_lookup(inputs),
+
+            TensorOp::Reshape { new_shape } => exec_reshape(inputs, &new_shape),
+        }
     }
 
     fn supports_dtype(&self, dtype: TensorDtype) -> bool {
         match dtype {
-            // F32 is always supported — scalar fallback covers it.
             TensorDtype::F32 | TensorDtype::I8 | TensorDtype::U8 => true,
-            // F16 and Bf16 require at minimum AVX-512 on x86_64 for hardware
-            // acceleration.  Without it, accuracy/performance would be
-            // incorrect, so we conservatively report unsupported.
             TensorDtype::F16 | TensorDtype::Bf16 => {
                 self.capabilities.contains(&SimdCapability::Avx512)
                     || self.capabilities.contains(&SimdCapability::Neon)
@@ -1045,34 +1692,341 @@ mod tests {
         Ok(())
     }
 
+    /// Updated matmul test: validates real computation with two inputs.
+    /// Replaced the old Phase-2-stub assertion (single input, shape check only).
     #[tokio::test]
     async fn execute_matmul_stub() -> Result<()> {
-        let b = CpuBackend::new();
-        let desc = TensorDescriptor::new(vec![2, 4], TensorDtype::F32);
-        let a = b.allocate(&desc).await?;
-        let out = b
+        let backend = CpuBackend::new();
+        // A [2,2] × I [2,2] (identity matrix) → result equals A.
+        let mat_a = make_f32_buf(vec![2, 2], &[1.0, 0.0, 0.0, 1.0]);
+        let identity = make_f32_buf(vec![2, 2], &[1.0, 0.0, 0.0, 1.0]);
+
+        let out = backend
             .execute(
                 TensorOp::MatMul {
                     transpose_a: false,
                     transpose_b: false,
                 },
-                &[&a],
+                &[&mat_a, &identity],
             )
             .await?;
-        // Phase 2 stub: output shape equals first input shape.
-        assert_eq!(out.descriptor.shape, vec![2, 4]);
+        assert_eq!(out.descriptor.shape, vec![2, 2]);
+        let vals = read_f32_buf(&out);
+        assert!((vals[0] - 1.0_f32).abs() < 1e-6_f32);
+        assert!((vals[1] - 0.0_f32).abs() < 1e-6_f32);
+        assert!((vals[2] - 0.0_f32).abs() < 1e-6_f32);
+        assert!((vals[3] - 1.0_f32).abs() < 1e-6_f32);
         Ok(())
     }
 
     #[tokio::test]
     async fn execute_no_input_returns_error() {
-        let b = CpuBackend::new();
-        let result = b.execute(TensorOp::Add, &[]).await;
+        let backend = CpuBackend::new();
+        let result = backend.execute(TensorOp::Add, &[]).await;
         assert!(result.is_err());
         assert!(matches!(
             result,
             Err(OmniError::Hal {
                 kind: HalErrorKind::HardwareUnavailable,
+                ..
+            })
+        ));
+    }
+
+    // -------------------------------------------------------------------------
+    // Test helpers: build F32 buffers and read them back.
+    // -------------------------------------------------------------------------
+
+    /// Build an F32 `TensorBuffer` from a `shape` and a flat slice of values.
+    fn make_f32_buf(shape: Vec<usize>, values: &[f32]) -> TensorBuffer {
+        let desc = TensorDescriptor::new(shape, TensorDtype::F32);
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        TensorBuffer::new(desc, bytes)
+    }
+
+    /// Decode all `f32` values from a `TensorBuffer` into a `Vec<f32>`.
+    fn read_f32_buf(buf: &TensorBuffer) -> Vec<f32> {
+        let raw = buf.as_bytes();
+        (0..buf.descriptor.num_elements())
+            .map(|elem| {
+                let byte_start = elem * 4;
+                f32::from_le_bytes([
+                    raw[byte_start],
+                    raw[byte_start + 1],
+                    raw[byte_start + 2],
+                    raw[byte_start + 3],
+                ])
+            })
+            .collect()
+    }
+
+    // -------------------------------------------------------------------------
+    // MatMul tests
+    // -------------------------------------------------------------------------
+
+    /// A [2,3] × [3,2] matmul with known values.
+    ///
+    /// A = [[1,2,3],[4,5,6]], B = [[7,8],[9,10],[11,12]]
+    ///
+    /// Expected C:
+    /// - C[0,0] = 1*7 + 2*9 + 3*11 = 58
+    /// - C[0,1] = 1*8 + 2*10 + 3*12 = 64
+    /// - C[1,0] = 4*7 + 5*9 + 6*11 = 139
+    /// - C[1,1] = 4*8 + 5*10 + 6*12 = 154
+    #[tokio::test]
+    async fn matmul_2x3_times_3x2_identity() -> Result<()> {
+        let backend = CpuBackend::new();
+        let mat_a = make_f32_buf(vec![2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mat_b = make_f32_buf(vec![3, 2], &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+
+        let out = backend
+            .execute(
+                TensorOp::MatMul {
+                    transpose_a: false,
+                    transpose_b: false,
+                },
+                &[&mat_a, &mat_b],
+            )
+            .await?;
+
+        assert_eq!(out.descriptor.shape, vec![2, 2]);
+        let vals = read_f32_buf(&out);
+        assert!((vals[0] - 58.0_f32).abs() < 1e-4_f32, "C[0,0]={}", vals[0]);
+        assert!((vals[1] - 64.0_f32).abs() < 1e-4_f32, "C[0,1]={}", vals[1]);
+        assert!((vals[2] - 139.0_f32).abs() < 1e-4_f32, "C[1,0]={}", vals[2]);
+        assert!((vals[3] - 154.0_f32).abs() < 1e-4_f32, "C[1,1]={}", vals[3]);
+        Ok(())
+    }
+
+    /// MatMul with `transpose_b = true`.
+    ///
+    /// A = [[1,2],[3,4]], B_raw = [[1,3],[2,4]].
+    /// With transpose_b, B_eff = B_raw^T = [[1,2],[3,4]].
+    /// C = A × B_eff = [[7,10],[15,22]].
+    #[tokio::test]
+    async fn matmul_transpose_b() -> Result<()> {
+        let backend = CpuBackend::new();
+        let mat_a = make_f32_buf(vec![2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let mat_b = make_f32_buf(vec![2, 2], &[1.0, 3.0, 2.0, 4.0]);
+
+        let out = backend
+            .execute(
+                TensorOp::MatMul {
+                    transpose_a: false,
+                    transpose_b: true,
+                },
+                &[&mat_a, &mat_b],
+            )
+            .await?;
+
+        assert_eq!(out.descriptor.shape, vec![2, 2]);
+        let vals = read_f32_buf(&out);
+        assert!((vals[0] - 7.0_f32).abs() < 1e-4_f32, "C[0,0]={}", vals[0]);
+        assert!((vals[1] - 10.0_f32).abs() < 1e-4_f32, "C[0,1]={}", vals[1]);
+        assert!((vals[2] - 15.0_f32).abs() < 1e-4_f32, "C[1,0]={}", vals[2]);
+        assert!((vals[3] - 22.0_f32).abs() < 1e-4_f32, "C[1,1]={}", vals[3]);
+        Ok(())
+    }
+
+    /// MatMul with mismatched inner dimensions must return an error.
+    #[tokio::test]
+    async fn matmul_dimension_mismatch_errors() {
+        let backend = CpuBackend::new();
+        let mat_a = make_f32_buf(vec![2, 3], &[1.0; 6]);
+        let mat_b = make_f32_buf(vec![2, 4], &[1.0; 8]);
+
+        let result = backend
+            .execute(
+                TensorOp::MatMul {
+                    transpose_a: false,
+                    transpose_b: false,
+                },
+                &[&mat_a, &mat_b],
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(OmniError::Hal {
+                kind: HalErrorKind::DeviceFailure,
+                ..
+            })
+        ));
+    }
+
+    // -------------------------------------------------------------------------
+    // Add tests
+    // -------------------------------------------------------------------------
+
+    /// Element-wise addition produces correct values.
+    #[tokio::test]
+    async fn add_element_wise_correct() -> Result<()> {
+        let backend = CpuBackend::new();
+        let lhs = make_f32_buf(vec![3], &[1.0, 2.0, 3.0]);
+        let rhs = make_f32_buf(vec![3], &[10.0, 20.0, 30.0]);
+
+        let out = backend.execute(TensorOp::Add, &[&lhs, &rhs]).await?;
+        assert_eq!(out.descriptor.shape, vec![3]);
+        let vals = read_f32_buf(&out);
+        assert!((vals[0] - 11.0_f32).abs() < 1e-6_f32);
+        assert!((vals[1] - 22.0_f32).abs() < 1e-6_f32);
+        assert!((vals[2] - 33.0_f32).abs() < 1e-6_f32);
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // ReLU tests
+    // -------------------------------------------------------------------------
+
+    /// `ReLU` zeroes negative values and preserves positives.
+    #[tokio::test]
+    async fn relu_zeroes_negatives() -> Result<()> {
+        let backend = CpuBackend::new();
+        let src = make_f32_buf(vec![4], &[-3.0, -0.5, 0.0, 2.5]);
+
+        let out = backend.execute(TensorOp::Relu, &[&src]).await?;
+        let vals = read_f32_buf(&out);
+        assert!((vals[0] - 0.0_f32).abs() < 1e-6_f32, "vals[0]={}", vals[0]);
+        assert!((vals[1] - 0.0_f32).abs() < 1e-6_f32, "vals[1]={}", vals[1]);
+        assert!((vals[2] - 0.0_f32).abs() < 1e-6_f32, "vals[2]={}", vals[2]);
+        assert!((vals[3] - 2.5_f32).abs() < 1e-6_f32, "vals[3]={}", vals[3]);
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // Softmax tests
+    // -------------------------------------------------------------------------
+
+    /// Softmax output values for a [1,4] input must sum to 1.0.
+    #[tokio::test]
+    async fn softmax_sums_to_one() -> Result<()> {
+        let backend = CpuBackend::new();
+        let src = make_f32_buf(vec![1, 4], &[1.0, 2.0, 3.0, 4.0]);
+
+        let out = backend
+            .execute(TensorOp::Softmax { axis: 1 }, &[&src])
+            .await?;
+        let vals = read_f32_buf(&out);
+        let total: f32 = vals.iter().sum();
+        assert!((total - 1.0_f32).abs() < 1e-5_f32, "softmax sum={total}");
+        Ok(())
+    }
+
+    /// Softmax along axis 0 on a [4,1] tensor also sums to 1.
+    #[tokio::test]
+    async fn softmax_axis0() -> Result<()> {
+        let backend = CpuBackend::new();
+        let src = make_f32_buf(vec![4, 1], &[1.0, 2.0, 3.0, 4.0]);
+
+        let out = backend
+            .execute(TensorOp::Softmax { axis: 0 }, &[&src])
+            .await?;
+        assert_eq!(out.descriptor.shape, vec![4, 1]);
+        let vals = read_f32_buf(&out);
+        let total: f32 = vals.iter().sum();
+        assert!(
+            (total - 1.0_f32).abs() < 1e-5_f32,
+            "softmax axis=0 sum={total}"
+        );
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // LayerNorm tests
+    // -------------------------------------------------------------------------
+
+    /// After LayerNorm, the mean of the last axis should be ≈ 0 and
+    /// the variance ≈ 1.
+    #[tokio::test]
+    async fn layer_norm_basic() -> Result<()> {
+        let backend = CpuBackend::new();
+        let src = make_f32_buf(vec![1, 4], &[1.0, 2.0, 3.0, 4.0]);
+
+        let out = backend
+            .execute(TensorOp::LayerNorm { epsilon: 1e-5 }, &[&src])
+            .await?;
+        assert_eq!(out.descriptor.shape, vec![1, 4]);
+
+        let vals = read_f32_buf(&out);
+        let mean: f32 = vals.iter().sum::<f32>() / 4.0_f32;
+        let var: f32 = vals.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / 4.0_f32;
+        assert!(mean.abs() < 1e-4_f32, "mean={mean}");
+        assert!((var - 1.0_f32).abs() < 1e-3_f32, "var={var}");
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // EmbeddingLookup tests
+    // -------------------------------------------------------------------------
+
+    /// EmbeddingLookup selects the correct rows from the weight table.
+    #[tokio::test]
+    async fn embedding_lookup_basic() -> Result<()> {
+        let backend = CpuBackend::new();
+        // vocab_size=3, embed_dim=2: rows [[1,2],[3,4],[5,6]]
+        let table = make_f32_buf(vec![3, 2], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let idx_desc = TensorDescriptor::new(vec![2], TensorDtype::U8);
+        let idx_buf = TensorBuffer::new(idx_desc, vec![2u8, 0u8]);
+
+        let out = backend
+            .execute(TensorOp::EmbeddingLookup, &[&table, &idx_buf])
+            .await?;
+        assert_eq!(out.descriptor.shape, vec![2, 2]);
+        let vals = read_f32_buf(&out);
+        // Row 2 = [5.0, 6.0], row 0 = [1.0, 2.0]
+        assert!((vals[0] - 5.0_f32).abs() < 1e-6_f32);
+        assert!((vals[1] - 6.0_f32).abs() < 1e-6_f32);
+        assert!((vals[2] - 1.0_f32).abs() < 1e-6_f32);
+        assert!((vals[3] - 2.0_f32).abs() < 1e-6_f32);
+        Ok(())
+    }
+
+    /// EmbeddingLookup returns an error for out-of-bounds indices.
+    #[tokio::test]
+    async fn embedding_lookup_oob_errors() {
+        let backend = CpuBackend::new();
+        let table = make_f32_buf(vec![3, 2], &[1.0; 6]);
+        let idx_desc = TensorDescriptor::new(vec![1], TensorDtype::U8);
+        let idx_buf = TensorBuffer::new(idx_desc, vec![5u8]);
+
+        let result = backend
+            .execute(TensorOp::EmbeddingLookup, &[&table, &idx_buf])
+            .await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(OmniError::Hal {
+                kind: HalErrorKind::DeviceFailure,
+                ..
+            })
+        ));
+    }
+
+    // -------------------------------------------------------------------------
+    // Reshape tests
+    // -------------------------------------------------------------------------
+
+    /// Reshape validates that the element count matches.
+    #[tokio::test]
+    async fn reshape_validates_element_count() {
+        let backend = CpuBackend::new();
+        // 6-element source, 8-element target → mismatch.
+        let desc = TensorDescriptor::new(vec![2, 3], TensorDtype::F32);
+        let buf = TensorBuffer::new(desc, vec![0u8; 24]);
+
+        let result = backend
+            .execute(
+                TensorOp::Reshape {
+                    new_shape: vec![4, 2],
+                },
+                &[&buf],
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(OmniError::Hal {
+                kind: HalErrorKind::DeviceFailure,
                 ..
             })
         ));
