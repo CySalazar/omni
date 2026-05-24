@@ -74,7 +74,7 @@ Every payload on the mesh MUST:
 
 1. **Be wrapped in a TEE-only decryption envelope.** The session key is sealed against the destination TEE's attestation. Only that specific TEE can decrypt.
 
-2. **Contain a compliance proof.** A cryptographic proof (zk-SNARK for complex predicates, signature for simple predicates) demonstrating:
+2. **Contain a compliance proof.** A cryptographic proof (STARK (per OIP-Crypto-002) for complex predicates, signature for simple predicates) demonstrating:
    - PII has been tokenized at the originating node.
    - The payload schema conforms to the protocol's encrypted-data-type definitions.
    - The session is bound to the attested TEE on the receiver.
