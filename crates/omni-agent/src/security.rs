@@ -21,6 +21,7 @@ use crate::message::{
     SecurityAlertPayload, VetoDecision, VetoOutcome,
 };
 use crate::mode::OperationalMode;
+use crate::privacy::{DataSensitivity, PrivacyBudgetAccountant, PrivacyError};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Heartbeat monitor (private, internal to SecurityAgent)
@@ -709,6 +710,105 @@ impl SecurityAgent {
             request_id: 0,
             outcome: VetoOutcome::Approved,
         }
+    }
+
+    /// Check whether a proposed operation is permitted given the current
+    /// privacy budget.
+    ///
+    /// This is a **pure pre-flight check** — it does NOT consume any budget.
+    /// Call [`crate::privacy::PrivacyBudgetAccountant::consume`] after the
+    /// check passes to actually deduct the cost.
+    ///
+    /// Integrates with [`RiskClass::PrivacyViolating`]: if the accountant
+    /// would deny the operation, callers should treat this as a
+    /// `PrivacyViolating` risk and apply their veto policy accordingly.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`PrivacyError`] from the accountant without modification:
+    ///
+    /// - [`PrivacyError::AgentNotFound`] — no allocation for `agent_id`.
+    /// - [`PrivacyError::BudgetExhausted`] — system budget is exhausted.
+    /// - [`PrivacyError::AgentBudgetExhausted`] — agent's allocation is
+    ///   exhausted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use omni_agent::privacy::{DataSensitivity, PrivacyBudgetAccountant};
+    /// use omni_agent::security::SecurityAgent;
+    ///
+    /// let mut accountant = PrivacyBudgetAccountant::new(10.0, 0.0).unwrap();
+    /// accountant.allocate_agent("task-agent", 5.0).unwrap();
+    ///
+    /// // Pre-flight check passes — budget is available.
+    /// assert!(
+    ///     SecurityAgent::check_privacy_budget(
+    ///         &accountant,
+    ///         "task-agent",
+    ///         DataSensitivity::Personal,
+    ///     )
+    ///     .is_ok()
+    /// );
+    /// ```
+    pub fn check_privacy_budget(
+        accountant: &PrivacyBudgetAccountant,
+        agent_id: &str,
+        sensitivity: DataSensitivity,
+    ) -> core::result::Result<(), PrivacyError> {
+        let cost = PrivacyBudgetAccountant::sensitivity_cost(sensitivity);
+
+        // Public data never costs anything; always permit.
+        if cost == 0.0 {
+            debug!(agent_id, "privacy check: public data, no cost");
+            return Ok(());
+        }
+
+        // Verify the agent has a registered allocation.
+        let agent_remaining = accountant
+            .remaining_agent(agent_id)
+            .map_err(|_| PrivacyError::AgentNotFound(agent_id.to_owned()))?;
+
+        // Check system-wide remaining.
+        let sys_remaining = accountant.remaining_system();
+        #[allow(clippy::float_arithmetic)]
+        if cost > sys_remaining + f64::EPSILON {
+            warn!(
+                agent_id,
+                cost,
+                sys_remaining,
+                "privacy pre-flight: system budget would be exceeded"
+            );
+            return Err(PrivacyError::BudgetExhausted {
+                requested: cost,
+                remaining: sys_remaining,
+            });
+        }
+
+        // Check per-agent remaining.
+        #[allow(clippy::float_arithmetic)]
+        if cost > agent_remaining + f64::EPSILON {
+            warn!(
+                agent_id,
+                cost,
+                agent_remaining,
+                "privacy pre-flight: agent budget would be exceeded"
+            );
+            return Err(PrivacyError::AgentBudgetExhausted {
+                agent_id: agent_id.to_owned(),
+                requested: cost,
+                remaining: agent_remaining,
+            });
+        }
+
+        debug!(
+            agent_id,
+            cost,
+            agent_remaining,
+            sys_remaining,
+            "privacy pre-flight: budget available"
+        );
+        Ok(())
     }
 
     /// Classify the risk level of an action description.

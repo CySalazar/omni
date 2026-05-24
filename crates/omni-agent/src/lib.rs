@@ -29,6 +29,7 @@
 //! - [`context`] — Per-agent persistent context store.
 //! - [`budget`] — Per-agent computational budget.
 //! - [`sandbox`] — Sandboxed execution environment.
+//! - [`privacy`] — Differential privacy budget accountant (ε-DP, sequential composition).
 
 #![doc(html_root_url = "https://docs.omni-os.org/omni-agent")]
 #![warn(missing_docs)]
@@ -67,6 +68,9 @@ pub mod budget;
 
 /// Sandboxed execution environment.
 pub mod sandbox;
+
+/// Differential privacy budget accountant (ε-DP, sequential composition).
+pub mod privacy;
 
 // ── Agent implementations ──────────────────────────────────────────
 

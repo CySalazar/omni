@@ -223,6 +223,48 @@ impl ImpactAssessor {
         }
     }
 
+    /// Map a differential privacy epsilon budget ratio to the `Privacy`
+    /// dimension score (0–100).
+    ///
+    /// `epsilon_used` is the cumulative epsilon consumed so far;
+    /// `epsilon_max` is the maximum budget.  The ratio
+    /// `epsilon_used / epsilon_max` is linearly mapped to the 0–100 range and
+    /// clamped.
+    ///
+    /// - 0 % used → score 0 (no privacy impact yet).
+    /// - 50 % used → score 50.
+    /// - 100 % (or above) used → score 100 (budget fully consumed).
+    ///
+    /// When `epsilon_max` is zero the score is always 100 (budget
+    /// instantaneously exhausted).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use omni_agent::guidance::impact::ImpactAssessor;
+    ///
+    /// assert_eq!(ImpactAssessor::privacy_impact_from_epsilon(0.0, 10.0), 0);
+    /// assert_eq!(ImpactAssessor::privacy_impact_from_epsilon(5.0, 10.0), 50);
+    /// assert_eq!(ImpactAssessor::privacy_impact_from_epsilon(10.0, 10.0), 100);
+    /// // Over-consumption (shouldn't happen in practice) is clamped to 100.
+    /// assert_eq!(ImpactAssessor::privacy_impact_from_epsilon(12.0, 10.0), 100);
+    /// // Zero max → always 100.
+    /// assert_eq!(ImpactAssessor::privacy_impact_from_epsilon(0.0, 0.0), 100);
+    /// ```
+    #[must_use]
+    #[allow(clippy::float_arithmetic)]
+    #[allow(clippy::cast_possible_truncation)] // score fits in u32 after clamping
+    #[allow(clippy::cast_sign_loss)] // ratio is always ≥ 0 after clamping
+    pub fn privacy_impact_from_epsilon(epsilon_used: f64, epsilon_max: f64) -> u32 {
+        if epsilon_max <= 0.0 {
+            return 100;
+        }
+        let ratio = epsilon_used / epsilon_max;
+        // Clamp to [0.0, 1.0], then scale to [0, 100].
+        let score = (ratio * 100.0).clamp(0.0, 100.0);
+        score.round() as u32
+    }
+
     // Score a single dimension using keyword heuristics.
     // Scores are coarse: 0 / 25 / 50 / 75 / 100.
     // The function body is long because it must handle all 7 dimensions; each
