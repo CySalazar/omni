@@ -78,6 +78,7 @@ pub mod bringup_live;
 pub mod controller_regs;
 pub mod discard;
 pub mod identify;
+pub mod interrupt;
 pub mod io;
 pub mod io_error;
 pub mod io_session;
