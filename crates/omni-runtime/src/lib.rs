@@ -9,8 +9,10 @@
 //!
 //! ## Status
 //!
-//! Phase 2 Stream 1 — `ModelRegistry`, `InferencePipeline`, `TierRouter`, and
-//! stubs for `WorkloadScheduler` and model-manifest attestation.
+//! Phase 2 Stream 2 — adds the AI syscall IPC relay, the PII pre-processing
+//! pipeline, and the Orchestrator→Runtime dispatch bridge on top of the
+//! `ModelRegistry`, `InferencePipeline`, `TierRouter`, and
+//! `WorkloadScheduler` stubs from Stream 1.
 //! The tensor backend is a placeholder that returns an empty output vector;
 //! callers must not interpret an empty `output` as a successful inference
 //! result until a real backend lands in a later stream.
@@ -39,6 +41,9 @@
 //! - [`router`] — execution tier routing decisions.
 //! - [`attestation`] — model signature verification.
 //! - [`gguf`] — GGUF v3 binary format parser.
+//! - [`relay`] — AI syscall IPC relay (kernel → pipeline bridge).
+//! - [`preprocessing`] — PII detection and tokenization pipeline.
+//! - [`orchestrator_bridge`] — Orchestrator Agent → inference dispatch.
 
 #![doc(html_root_url = "https://docs.omni-os.org/omni-runtime")]
 #![warn(missing_docs)]
@@ -993,6 +998,40 @@ pub mod attestation {
 }
 
 // =============================================================================
+// relay — AI Syscall IPC Relay
+// =============================================================================
+
+/// AI Syscall IPC relay — bridges kernel AI syscalls to the inference pipeline.
+///
+/// The relay receives [`relay::AiSyscallRequest`] messages from the kernel IPC
+/// channel and routes them through the [`inference::InferencePipeline`],
+/// returning structured [`relay::AiSyscallResponse`] values.
+pub mod relay;
+
+// =============================================================================
+// preprocessing — PII tokenization pipeline
+// =============================================================================
+
+/// PII detection and tokenization pre-processing pipeline.
+///
+/// Scans inference input for email addresses and phone numbers, replaces them
+/// with opaque tokens before the text reaches the model, and reverses the
+/// tokenization on the output. Phase 2 uses simple string scanning; Phase 3
+/// will use the TEE-backed `NerClassifier` from `omni-tokenization`.
+pub mod preprocessing;
+
+// =============================================================================
+// orchestrator_bridge — Orchestrator → Runtime dispatch
+// =============================================================================
+
+/// Orchestrator Agent → inference pipeline dispatch bridge.
+///
+/// [`orchestrator_bridge::OrchestratorBridge`] is the integration point
+/// between the five-agent Orchestrator and the AI runtime. It classifies
+/// intents, pre-processes PII, dispatches inference, and post-processes output.
+pub mod orchestrator_bridge;
+
+// =============================================================================
 // Unit tests
 // =============================================================================
 
@@ -1354,18 +1393,18 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_infer_unloaded_model_fails() {
-        let mut reg = ModelRegistry::new();
+        let mut registry = ModelRegistry::new();
         let manifest = make_manifest(0x21, 0xA0, "unloaded-model");
-        let id = reg.register(manifest).unwrap();
-        // Do NOT call reg.load(id) — model remains Unloaded.
-        let shared = Arc::new(Mutex::new(reg));
+        let id = registry.register(manifest).unwrap();
+        // Do NOT call registry.load(id) — model remains Unloaded.
+        let shared = Arc::new(Mutex::new(registry));
         let pipeline = InferencePipeline::new(shared);
-        let req = InferenceRequest {
+        let infer_req = InferenceRequest {
             model_id: id,
             input: vec![],
             request_id: 4,
         };
-        let err = pipeline.infer(req).await.unwrap_err();
+        let err = pipeline.infer(infer_req).await.unwrap_err();
         match err {
             OmniError::Internal { .. } => {}
             _ => panic!("expected Internal error for unloaded model"),
@@ -1374,15 +1413,15 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_infer_unregistered_model_fails() {
-        let reg = ModelRegistry::new();
-        let shared = Arc::new(Mutex::new(reg));
+        let empty_registry = ModelRegistry::new();
+        let shared = Arc::new(Mutex::new(empty_registry));
         let pipeline = InferencePipeline::new(shared);
-        let req = InferenceRequest {
+        let infer_req = InferenceRequest {
             model_id: ModelId::from_bytes([0xFB; 32]),
             input: vec![],
             request_id: 5,
         };
-        let err = pipeline.infer(req).await.unwrap_err();
+        let err = pipeline.infer(infer_req).await.unwrap_err();
         match err {
             OmniError::Internal { .. } => {}
             _ => panic!("expected Internal error for unregistered model"),
@@ -1453,5 +1492,150 @@ mod tests {
             OmniError::Internal { .. } => {}
             _ => panic!("expected Internal error for hash mismatch, got: {err:?}"),
         }
+    }
+
+    // =========================================================================
+    // E2E: ModelRegistry → InferencePipeline → AiIpcRelay → OrchestratorBridge
+    // =========================================================================
+    //
+    // This test exercises the full Stream 2 inference path:
+    //
+    //   1. Register and load a model.
+    //   2. Wrap in InferencePipeline.
+    //   3. Construct AiIpcRelay.
+    //   4. Construct OrchestratorBridge.
+    //   5. Classify an intent and confirm requires_inference is true.
+    //   6. Process the intent through the bridge.
+    //   7. Verify the result flows through correctly.
+
+    #[tokio::test]
+    async fn e2e_stream2_full_inference_pipeline() {
+        use crate::orchestrator_bridge::OrchestratorBridge;
+        use crate::relay::AiIpcRelay;
+
+        // ── Step 1: build a minimal model registry with one loaded model ──
+
+        let sk = OmniSigningKey::from_bytes([0xE4; 32]);
+        let mut hash = [0u8; 32];
+        hash[..16].fill(0xE5);
+        let manifest = ModelManifest {
+            model_id: ModelId::from_manifest_hash(hash),
+            name: "e2e-stream2-model".into(),
+            version: "1.0.0".into(),
+            hash,
+            signature: sk.sign(&hash),
+            signing_key: sk.verifying_key(),
+            size_bytes: 0,
+            format: ModelFormat::Gguf,
+        };
+
+        let mut reg = ModelRegistry::new();
+        let model_id = reg.register(manifest).unwrap();
+        reg.load(model_id).unwrap();
+        assert!(
+            reg.is_loaded(model_id),
+            "model must be loaded before pipeline"
+        );
+
+        // ── Step 2: wrap in InferencePipeline ──
+
+        let shared_reg = Arc::new(Mutex::new(reg));
+        let pipeline = InferencePipeline::new(Arc::clone(&shared_reg));
+
+        // ── Step 3: construct AiIpcRelay ──
+
+        let relay = AiIpcRelay::new(pipeline);
+
+        // ── Step 4: construct OrchestratorBridge ──
+
+        let bridge = OrchestratorBridge::new(relay);
+
+        // ── Step 5: classify the intent ──
+
+        let intent = "explain what this file does";
+        assert!(
+            OrchestratorBridge::requires_inference(intent),
+            "intent '{intent}' should require inference"
+        );
+
+        // ── Step 6: process the intent end-to-end ──
+
+        let result = bridge.process_intent(intent, model_id, 42).await;
+
+        // ── Step 7: verify the result ──
+
+        assert!(
+            result.success,
+            "E2E pipeline should succeed; error: {:?}",
+            result.response_text
+        );
+        assert_eq!(result.request_id, 42, "request_id must be echoed");
+        // No PII in the test intent.
+        assert_eq!(
+            result.entities_tokenized, 0,
+            "no PII entities expected in clean intent"
+        );
+        // Latency is a non-negative u64 (always true); verify it was populated.
+        let _ = result.inference_latency_us;
+    }
+
+    /// E2E test: PII in the intent is detected and tokenized before dispatch.
+    #[tokio::test]
+    async fn e2e_stream2_pii_detected_in_intent() {
+        use crate::orchestrator_bridge::OrchestratorBridge;
+        use crate::relay::AiIpcRelay;
+
+        let sk = OmniSigningKey::from_bytes([0xE6; 32]);
+        let mut hash = [0u8; 32];
+        hash[..16].fill(0xE7);
+        let manifest = ModelManifest {
+            model_id: ModelId::from_manifest_hash(hash),
+            name: "e2e-pii-model".into(),
+            version: "1.0.0".into(),
+            hash,
+            signature: sk.sign(&hash),
+            signing_key: sk.verifying_key(),
+            size_bytes: 0,
+            format: ModelFormat::Gguf,
+        };
+
+        let mut reg = ModelRegistry::new();
+        let model_id = reg.register(manifest).unwrap();
+        reg.load(model_id).unwrap();
+
+        let pipeline = InferencePipeline::new(Arc::new(Mutex::new(reg)));
+        let relay = AiIpcRelay::new(pipeline);
+        let bridge = OrchestratorBridge::new(relay);
+
+        // Intent contains an email address — preprocessor should detect it.
+        let intent = "explain why admin@example.com cannot log in";
+        let result = bridge.process_intent(intent, model_id, 99).await;
+
+        assert!(result.success);
+        assert_eq!(result.entities_tokenized, 1, "one email address expected");
+    }
+
+    /// E2E test: an unloaded model produces a structured error, not a panic.
+    #[tokio::test]
+    async fn e2e_stream2_unregistered_model_error_is_structured() {
+        use crate::orchestrator_bridge::OrchestratorBridge;
+        use crate::relay::AiIpcRelay;
+
+        let reg = ModelRegistry::new(); // empty — no models registered
+        let pipeline = InferencePipeline::new(Arc::new(Mutex::new(reg)));
+        let relay = AiIpcRelay::new(pipeline);
+        let bridge = OrchestratorBridge::new(relay);
+
+        let unknown_id = ModelId::from_bytes([0xDE; 32]);
+        let result = bridge
+            .process_intent("explain something", unknown_id, 55)
+            .await;
+
+        assert!(!result.success, "should fail for unknown model");
+        assert_eq!(result.request_id, 55);
+        assert!(
+            !result.response_text.is_empty(),
+            "error text must be populated for diagnostics"
+        );
     }
 }

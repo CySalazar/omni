@@ -1,15 +1,15 @@
 # =============================================================================
-# omni-agent — Agent framework
+# omni-agent — Five-Agent framework (OIP-022)
 # =============================================================================
-# Implements the OMNI OS Agent primitive: autonomous AI-driven entity with
-# declared policy, persistent context, capability tokens, and computational
-# budget. Agents are first-class OS primitives, distinct from processes
-# and threads.
+# Five-agent architecture for OMNI OS: Orchestrator, Guidance, SysAdmin,
+# Security & Performance, and Task. Each agent is a first-class OS primitive
+# with declared policy, persistent context, capability tokens, computational
+# budget, and sandboxed execution.
 # =============================================================================
 
 [package]
 name             = "omni-agent"
-description      = "Agent framework for OMNI OS — autonomous AI entities with policy, context, capabilities, and budget."
+description      = "Five-agent framework for OMNI OS — Orchestrator, Guidance, SysAdmin, Security, and Task agents."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

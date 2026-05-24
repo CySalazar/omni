@@ -17,6 +17,34 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Phase 2 Sprint 4+5+6 — Stream 1: Real Agent Logic (OIP-022)
+  (2026-05-24).**
+  Expanded all 5 agents from dispatch skeletons to operational logic.
+  Guidance Agent restructured into 7 OIP-007 sub-modules (triggers,
+  autonomy, escalation, impact, explanation, undo, audit). Security
+  Agent gains TaintTracker, OutputGate, PerformanceBaseline, contextual
+  veto. SysAdmin gains CategoryRouter, RollbackManager, AuditEmitter.
+  Task Agent gains BackgroundTaskRunner, FilesystemScope, ExternalAccessControl.
+  Emergency Recovery Mode: session management, action tracking, post-recovery
+  reports. omni-agent ~2.5K→10K lines, 352 tests. ADR-0021.
+
+- **Phase 2 Sprint 6 — Stream 2: AI Syscall IPC Relay + E2E Inference
+  (2026-05-24).**
+  New modules in omni-runtime: `relay` (AiIpcRelay routing kernel AI
+  syscalls 80–84 to InferencePipeline), `preprocessing` (PII tokenization
+  via simple string scan), `orchestrator_bridge` (intent classification +
+  preprocess → infer → detokenize pipeline). 3 E2E integration tests.
+  87 total runtime tests.
+
+- **Phase 2 Sprint 6 — Stream 3: OmniFS On-Disk Format + CRUD
+  (2026-05-24).**
+  In-memory filesystem (InMemoryFs) with Superblock, Inode, FileType,
+  BlockIntegrityTag types. Real Create/Read/Write/Delete/Stat/ListDir
+  operations. FsService upgraded from NotImplemented stubs to functional
+  dispatch. New FsRequest variants (Create, Delete, WriteData, ListDir),
+  FsResponse::ReadData. OIP-FS-Wire-023 draft. 59 tests.
+  omni-fs 1.2K→2.5K+ lines.
+
 - **Phase 2 Sprint 2 — Stream 1: Real tensor dispatch in CpuBackend
   (2026-05-24).**
   Replaced zeroed stubs in `CpuBackend::execute()` with correct F32
