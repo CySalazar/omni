@@ -69,6 +69,29 @@
 pub mod gguf;
 
 // =============================================================================
+// tensor_loader — GGUF tensor weight extraction
+// =============================================================================
+
+/// GGUF tensor weight extraction into HAL TensorBuffers.
+///
+/// Converts raw GGUF on-disk bytes for each tensor into
+/// [`omni_hal::tensor::TensorBuffer`]s, applying F16/BF16 → F32 expansion
+/// where needed and providing zero-filled stub buffers for quantized types
+/// pending Phase 4 dequantization.
+pub mod tensor_loader;
+
+// =============================================================================
+// model_loader — OmniFS model file loading
+// =============================================================================
+
+/// Load GGUF model files from the OmniFS in-memory filesystem.
+///
+/// Bridges [`omni_fs::InMemoryFs`] and the GGUF tensor loader: reads a model
+/// file, parses the GGUF header, and extracts all tensor weights into
+/// [`omni_hal::tensor::TensorBuffer`]s in a single call.
+pub mod model_loader;
+
+// =============================================================================
 // model — ModelManifest + ModelRegistry
 // =============================================================================
 
@@ -188,11 +211,18 @@ pub mod model {
     // ModelEntry (private)
     // -------------------------------------------------------------------------
 
-    /// Internal registry record pairing a manifest with its load state.
+    /// Internal registry record pairing a manifest with its load state and
+    /// optionally the parsed GGUF header (populated by
+    /// [`ModelRegistry::load_from_bytes`] or
+    /// [`ModelRegistry::load_tensors_from_bytes`]).
     #[derive(Debug)]
     struct ModelEntry {
         manifest: ModelManifest,
         state: LoadState,
+        /// Parsed GGUF header, stored after a successful `load_from_bytes` or
+        /// `load_tensors_from_bytes` call. `None` until the model binary has
+        /// been validated and parsed.
+        gguf_header: Option<crate::gguf::GgufHeader>,
     }
 
     // -------------------------------------------------------------------------
@@ -301,6 +331,7 @@ pub mod model {
                 ModelEntry {
                     manifest,
                     state: LoadState::Unloaded,
+                    gguf_header: None,
                 },
             );
             Ok(id)
@@ -426,9 +457,8 @@ pub mod model {
             }
 
             // Parse the GGUF header to validate the format and extract metadata.
-            // We do not store the header on the entry yet; a future stream will
-            // add a field to ModelEntry to hold the parsed GgufHeader for use by
-            // the tensor backend.
+            // Store it on the entry so the tensor backend can access it without
+            // re-parsing on every inference call.
             let header = crate::gguf::parse_gguf(data)?;
             info!(
                 model_id = ?model_id,
@@ -437,6 +467,7 @@ pub mod model {
                 "GGUF model parsed successfully"
             );
 
+            entry.gguf_header = Some(header);
             entry.state = LoadState::Loaded;
             Ok(())
         }
@@ -567,6 +598,103 @@ pub mod model {
             self.entries
                 .get(&model_id)
                 .is_some_and(|e| e.state == LoadState::Loaded)
+        }
+
+        /// Load a GGUF model from raw bytes, extract all tensor weights, and
+        /// return them as [`crate::tensor_loader::LoadedTensor`]s.
+        ///
+        /// Unlike [`load_from_bytes`][Self::load_from_bytes], which only
+        /// validates the model and stores the parsed header, this method
+        /// additionally extracts all tensor data from the GGUF blob and
+        /// returns it for use by the tensor backend.
+        ///
+        /// The model is transitioned to the `Loaded` state on success, and the
+        /// parsed [`crate::gguf::GgufHeader`] is stored on the entry.
+        ///
+        /// # Errors
+        ///
+        /// - [`OmniError::Internal`] if `model_id` is not registered.
+        /// - [`OmniError::Internal`] if the registered model's format is not
+        ///   [`ModelFormat::Gguf`].
+        /// - [`OmniError::Internal`] if the BLAKE3 hash of `data` does not
+        ///   match the manifest hash.
+        /// - [`OmniError::Internal`] if the GGUF data is malformed.
+        /// - [`OmniError::Internal`] if any tensor extraction or conversion fails.
+        ///
+        /// # Example
+        ///
+        /// ```rust
+        /// use omni_crypto::signing::OmniSigningKey;
+        /// use omni_runtime::model::{ModelFormat, ModelManifest, ModelRegistry};
+        /// use omni_types::ModelId;
+        ///
+        /// // Minimal GGUF v3 file with no tensors.
+        /// let gguf_magic: u32 = 0x4655_4746;
+        /// let mut data = Vec::new();
+        /// data.extend_from_slice(&gguf_magic.to_le_bytes());
+        /// data.extend_from_slice(&3u32.to_le_bytes());
+        /// data.extend_from_slice(&0u64.to_le_bytes());
+        /// data.extend_from_slice(&0u64.to_le_bytes());
+        ///
+        /// let hash: [u8; 32] = *blake3::hash(&data).as_bytes();
+        /// let sk = OmniSigningKey::from_bytes([0x77; 32]);
+        /// let manifest = ModelManifest {
+        ///     model_id: ModelId::from_manifest_hash(hash),
+        ///     name: "tensor-test".into(),
+        ///     version: "1.0.0".into(),
+        ///     hash,
+        ///     signature: sk.sign(&hash),
+        ///     signing_key: sk.verifying_key(),
+        ///     size_bytes: data.len() as u64,
+        ///     format: ModelFormat::Gguf,
+        /// };
+        ///
+        /// let mut reg = ModelRegistry::new();
+        /// let id = reg.register(manifest).unwrap();
+        /// let tensors = reg.load_tensors_from_bytes(id, &data).unwrap();
+        /// assert!(tensors.is_empty());
+        /// assert!(reg.is_loaded(id));
+        /// ```
+        pub fn load_tensors_from_bytes(
+            &mut self,
+            model_id: ModelId,
+            data: &[u8],
+        ) -> Result<Vec<crate::tensor_loader::LoadedTensor>> {
+            let entry = self.entries.get_mut(&model_id).ok_or_else(|| {
+                OmniError::internal(
+                    "runtime::model::load_tensors_from_bytes — model_id not registered",
+                )
+            })?;
+
+            if entry.manifest.format != ModelFormat::Gguf {
+                return Err(OmniError::internal(
+                    "runtime::model::load_tensors_from_bytes — only GGUF format supported",
+                ));
+            }
+
+            // Verify BLAKE3 integrity before doing any further work.
+            let computed_hash = blake3::hash(data);
+            if computed_hash.as_bytes() != &entry.manifest.hash {
+                return Err(OmniError::internal(
+                    "runtime::model::load_tensors_from_bytes — BLAKE3 hash mismatch",
+                ));
+            }
+
+            // Parse and store the GGUF header.
+            let header = crate::gguf::parse_gguf(data)?;
+            info!(
+                model_id = ?model_id,
+                tensor_count = header.tensor_count,
+                "GGUF model tensors being loaded"
+            );
+
+            // Extract all tensor buffers.
+            let tensors = crate::tensor_loader::load_all_tensors(data, &header)?;
+
+            entry.gguf_header = Some(header);
+            entry.state = LoadState::Loaded;
+
+            Ok(tensors)
         }
     }
 }

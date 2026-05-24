@@ -29,6 +29,8 @@ omni-crypto     = { workspace = true }
 omni-capability = { workspace = true }
 omni-tee        = { workspace = true }
 omni-hal        = { workspace = true }
+# OmniFS in-memory filesystem — used by model_loader to read GGUF files.
+omni-fs         = { workspace = true }
 tokio           = { workspace = true }
 async-trait     = { workspace = true }
 serde           = { workspace = true }
