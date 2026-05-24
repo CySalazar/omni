@@ -15,6 +15,19 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ## [Unreleased]
 
+### Changed
+
+- **Wave 4 — TASK-022: omni-mesh postcard alignment + STARK reference update
+  (2026-05-24).**
+  Closed TASK-022 (Wave 4, Stream 2). Verified `crates/omni-mesh` carries no
+  `bincode` references in source, comments, or `Cargo.toml`; the `transport`
+  module docstring already references `omni_types::wire::encode_canonical`
+  (postcard 1.0 per OIP-Serde-004). Updated `docs/03-mesh-protocol.md` §
+  "Privacy primitives": replaced `zk-SNARK` with `STARK (per OIP-Crypto-002)`
+  to align with the cryptography OIP. Updated Build Info panel
+  (`render_buildinfo` in `crates/omni-kernel/src/bare_metal/demo.rs`): Active
+  task now reads "Wave 4 postcard align".
+
 ### Added
 
 - **Governance — TASK-008 OIP-Key-Custody-017 Draft (production

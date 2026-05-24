@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "Wave 4 OmniFS v0",
+        "Wave 4 complete",
         graphics::LIGHT_CYAN,
     );
     row(
