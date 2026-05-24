@@ -1,4 +1,4 @@
-//! DEV-ONLY driver auto-loader (P6.7.9-pre.9).
+//! DEV-ONLY driver auto-loader (P6.7.9-pre.10).
 //!
 //! Spawns a hand-crafted "driver probe" ELF at boot time that exercises
 //! the full `MmioMap (70)` / `DmaMap (71)` / `IrqAttach (72)` syscall
@@ -268,35 +268,62 @@ pub unsafe fn boot_load_driver_probe<const N: usize>(
         early_console::write_str("\n");
     }
 
-    // Pick a device for the MMIO probe. Prefer virtio-net if present;
-    // otherwise use any device with a non-zero BAR0 (just to exercise
-    // the page-table installation path).
-    if let Some(vnet) = scan.find_by_vendor(pci_scan::VIRTIO_VENDOR_ID) {
-        let probe_bar = vnet.bar4_phys();
-        let probe_irq = u16::from(vnet.irq_line);
-        if probe_bar == 0 {
-            // BAR4 is zero (64-bit BAR not decoded properly, or device
-            // doesn't have BAR4). Fall back to BAR0.
-            let bar0 = vnet.bar0_phys();
-            if bar0 != 0 {
-                // SAFETY: same single-CPU invariant as the caller.
-            return unsafe { boot_load_with_bar(bar0, probe_irq, mapper, alloc, scheduler) };
-            }
+    // ── TASK-004: virtio-net live bring-up (P6.7.9-pre.10) ──────────
+    //
+    // Find the virtio-net device (transitional 1AF4:1000 or modern
+    // 1AF4:1041) across all scanned buses. If found and BAR0 is an
+    // I/O port, perform live device initialization via legacy I/O.
+    if let Some(vnet) = scan
+        .find(pci_scan::VIRTIO_VENDOR_ID, pci_scan::VIRTIO_NET_DEVICE_ID_TRANSITIONAL)
+        .or_else(|| scan.find(pci_scan::VIRTIO_VENDOR_ID, pci_scan::VIRTIO_NET_DEVICE_ID_MODERN))
+    {
+        early_console::write_str("[virtio-net] found on bus=");
+        write_hex_u8(vnet.bus);
+        early_console::write_str(" dev=");
+        write_hex_u8(vnet.device);
+        early_console::write_str(" bar0=");
+        write_hex_u32(vnet.bar0);
+        early_console::write_str("\n");
+
+        // SAFETY: Ring 0, single-CPU boot path.
+        unsafe { pci_scan::enable_device_full(vnet) };
+        early_console::write_str("[virtio-net] PCI cmd: IOSE+MSE+BME enabled\n");
+
+        if pci_scan::PciDevice::bar_is_io(vnet.bar0) {
+            let io_base = pci_scan::PciDevice::bar_io_base(vnet.bar0);
+            early_console::write_str("[virtio-net] I/O port base=");
+            write_hex_u16(io_base);
+            early_console::write_str("\n");
+
+            // SAFETY: Ring 0, I/O port reads to PCI device BAR.
+            unsafe { virtio_net_live_bringup(io_base) };
         } else {
-            // SAFETY: same single-CPU invariant as the caller.
-            return unsafe { boot_load_with_bar(probe_bar, probe_irq, mapper, alloc, scheduler) };
+            early_console::write_str("[virtio-net] BAR0 is MMIO — I/O port bringup skipped\n");
         }
-        early_console::write_str("[driver-loader] virtio-net BAR is zero — using synthetic\n");
+    } else {
+        early_console::write_str("[virtio-net] not found on any bus\n");
     }
 
-    // Fallback: use a synthetic BAR in the PCI MMIO window for smoke
-    // testing the page-table path.  The mapped pages will contain
-    // whatever lives at that physical address (likely PCI config space
-    // or unmapped — the MmioMap syscall itself still succeeds).
+    // ── Probe ELF (smoke test for MmioMap/DmaMap/IrqAttach) ──────
+    //
+    // Pick any device with a non-zero BAR for the capability deposit
+    // probe (unchanged from pre.9).
+    if let Some(vdev) = scan.find_by_vendor(pci_scan::VIRTIO_VENDOR_ID) {
+        let probe_bar = vdev.bar4_phys();
+        let probe_irq = u16::from(vdev.irq_line);
+        if probe_bar == 0 {
+            let bar0 = vdev.bar0_phys();
+            if bar0 != 0 {
+                return unsafe { boot_load_with_bar(bar0, probe_irq, mapper, alloc, scheduler) };
+            }
+        } else {
+            return unsafe { boot_load_with_bar(probe_bar, probe_irq, mapper, alloc, scheduler) };
+        }
+    }
+
     let synthetic_bar: u64 = 0xFEBC_0000;
     let synthetic_irq: u16 = 33;
     early_console::write_str("[driver-loader] using synthetic BAR 0xFEBC0000\n");
-    // SAFETY: same single-CPU invariant as the caller.
     unsafe { boot_load_with_bar(synthetic_bar, synthetic_irq, mapper, alloc, scheduler) };
 }
 
@@ -414,6 +441,132 @@ unsafe fn boot_load_with_bar<const N: usize>(
     }
 
     early_console::write_str("[driver-loader] probe enqueued — will dispatch on next tick\n");
+}
+
+// =========================================================================
+// TASK-004: virtio-net legacy I/O port bring-up (P6.7.9-pre.10)
+// =========================================================================
+//
+// The virtio 1.0 § 4.1 legacy interface uses I/O ports via BAR0.
+// Register offsets (transitional device, 1AF4:1000):
+//
+//   0x00  Device Features    (4 bytes, R)
+//   0x04  Driver Features    (4 bytes, R/W)
+//   0x08  Queue Address      (4 bytes, R/W)
+//   0x0C  Queue Size         (2 bytes, R)
+//   0x0E  Queue Select       (2 bytes, R/W)
+//   0x10  Queue Notify       (2 bytes, R/W)
+//   0x12  Device Status      (1 byte,  R/W)
+//   0x13  ISR Status         (1 byte,  R)
+//   0x14  MAC Address        (6 bytes, R)
+
+const VIRTIO_IO_OFF_DEVICE_FEATURES: u16 = 0x00;
+const VIRTIO_IO_OFF_DEVICE_STATUS: u16 = 0x12;
+const VIRTIO_IO_OFF_MAC: u16 = 0x14;
+
+const VIRTIO_STATUS_ACKNOWLEDGE: u8 = 0x01;
+const VIRTIO_STATUS_DRIVER: u8 = 0x02;
+const VIRTIO_STATUS_FEATURES_OK: u8 = 0x08;
+const VIRTIO_STATUS_DRIVER_OK: u8 = 0x04;
+
+/// Perform the live virtio-net bring-up sequence via legacy I/O ports.
+///
+/// # Safety
+///
+/// Ring 0 only. `io_base` must be the decoded I/O port base from BAR0.
+#[cfg(target_arch = "x86_64")]
+unsafe fn virtio_net_live_bringup(io_base: u16) {
+    use super::arch;
+
+    // Step 1: Reset — write 0 to device_status.
+    unsafe { arch::outb(io_base + VIRTIO_IO_OFF_DEVICE_STATUS, 0) };
+    let status = unsafe { arch::inb(io_base + VIRTIO_IO_OFF_DEVICE_STATUS) };
+    early_console::write_str("[virtio-net] RESET  status=");
+    write_hex_u8(status);
+    early_console::write_str(if status == 0 { " OK\n" } else { " FAIL\n" });
+
+    // Step 2: Acknowledge — set ACKNOWLEDGE bit.
+    unsafe { arch::outb(io_base + VIRTIO_IO_OFF_DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE) };
+    let status = unsafe { arch::inb(io_base + VIRTIO_IO_OFF_DEVICE_STATUS) };
+    early_console::write_str("[virtio-net] ACK    status=");
+    write_hex_u8(status);
+    early_console::write_str("\n");
+
+    // Step 3: Driver — set DRIVER bit.
+    unsafe {
+        arch::outb(
+            io_base + VIRTIO_IO_OFF_DEVICE_STATUS,
+            VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER,
+        )
+    };
+    let status = unsafe { arch::inb(io_base + VIRTIO_IO_OFF_DEVICE_STATUS) };
+    early_console::write_str("[virtio-net] DRIVER status=");
+    write_hex_u8(status);
+    early_console::write_str("\n");
+
+    // Step 4: Read device features (first 32 bits).
+    let features = unsafe { arch::inl(io_base + VIRTIO_IO_OFF_DEVICE_FEATURES) };
+    early_console::write_str("[virtio-net] features=");
+    write_hex_u32(features);
+    early_console::write_str("\n");
+
+    // Step 5: Write driver features (accept all device-offered).
+    unsafe { arch::outl(io_base + 0x04, features) };
+
+    // Step 6: Set FEATURES_OK.
+    unsafe {
+        arch::outb(
+            io_base + VIRTIO_IO_OFF_DEVICE_STATUS,
+            VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK,
+        )
+    };
+    let status = unsafe { arch::inb(io_base + VIRTIO_IO_OFF_DEVICE_STATUS) };
+    early_console::write_str("[virtio-net] FEAT   status=");
+    write_hex_u8(status);
+    let features_accepted = (status & VIRTIO_STATUS_FEATURES_OK) != 0;
+    early_console::write_str(if features_accepted {
+        " features_ok=yes\n"
+    } else {
+        " features_ok=NO\n"
+    });
+
+    if !features_accepted {
+        early_console::write_str("[virtio-net] device rejected features — aborting\n");
+        return;
+    }
+
+    // Step 7: Read MAC address (6 bytes at offset 0x14).
+    early_console::write_str("[virtio-net] MAC=");
+    for i in 0u16..6 {
+        if i > 0 {
+            early_console::write_str(":");
+        }
+        let byte = unsafe { arch::inb(io_base + VIRTIO_IO_OFF_MAC + i) };
+        write_hex_u8(byte);
+    }
+    early_console::write_str("\n");
+
+    // Step 8: Set DRIVER_OK — device is live.
+    unsafe {
+        arch::outb(
+            io_base + VIRTIO_IO_OFF_DEVICE_STATUS,
+            VIRTIO_STATUS_ACKNOWLEDGE
+                | VIRTIO_STATUS_DRIVER
+                | VIRTIO_STATUS_FEATURES_OK
+                | VIRTIO_STATUS_DRIVER_OK,
+        )
+    };
+    let status = unsafe { arch::inb(io_base + VIRTIO_IO_OFF_DEVICE_STATUS) };
+    early_console::write_str("[virtio-net] READY  status=");
+    write_hex_u8(status);
+    let driver_ok = (status & VIRTIO_STATUS_DRIVER_OK) != 0;
+    early_console::write_str(if driver_ok {
+        " driver_ok=yes\n"
+    } else {
+        " driver_ok=NO\n"
+    });
+
+    early_console::write_str("[virtio-net] live bring-up complete\n");
 }
 
 // =========================================================================
