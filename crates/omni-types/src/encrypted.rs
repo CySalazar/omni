@@ -23,12 +23,13 @@
 //!    the flag's name starts with `_` (project convention for "internal,
 //!    unstable, do not use").
 //!
-//! # What this module does NOT do
+//! # What this module does NOT do (without `_tokenization_provider`)
 //!
-//! It does not perform encryption. The marker types carry an opaque
-//! ciphertext byte buffer; the cryptographic operation that produces the
-//! ciphertext happens in `omni-tokenization` inside the TEE. This crate
-//! provides the type vocabulary, not the implementation.
+//! Without the feature flag it does not perform encryption. The marker
+//! types carry an opaque ciphertext byte buffer; the cryptographic
+//! operation that produces the ciphertext happens in `omni-tokenization`
+//! inside the TEE. With the flag enabled the `provider` module also
+//! exposes real `ChaCha20-Poly1305` encrypt/decrypt helpers.
 //!
 //! See [`/docs/04-security-model.md`](../../../docs/04-security-model.md)
 //! § "The five privacy primitives in detail" for the security rationale.
@@ -202,7 +203,7 @@ impl AttestedHash {
 // Provider API (feature-gated for the tokenization service only).
 // =============================================================================
 
-/// Constructors for encrypted-by-default types.
+/// Constructors and encryption helpers for encrypted-by-default types.
 ///
 /// **This API is gated behind the `_tokenization_provider` feature flag.**
 /// Only the `omni-tokenization` crate enables the flag in its
@@ -215,12 +216,31 @@ impl AttestedHash {
 /// values. The compile-time gate prevents accidental misuse; the
 /// runtime invariant is enforced by code review and the `omni-tee`
 /// integration tests.
+///
+/// # Encryption scheme
+///
+/// All `encrypt` methods use `ChaCha20-Poly1305` (RFC 8439) with 256-bit
+/// keys and 96-bit nonces. The `KIND` constant of each type is used as
+/// **additional authenticated data (AAD)** to provide domain separation:
+/// encrypting the same plaintext under different types produces different
+/// authentication tags, and decrypting with the wrong type's AAD fails
+/// verification. Callers are responsible for nonce uniqueness; the
+/// `EncryptedPipeline` in `omni-tokenization` provides a monotonic
+/// nonce counter for this purpose.
 #[cfg(feature = "_tokenization_provider")]
 pub mod provider {
+    use alloc::string::String;
     use alloc::vec::Vec;
 
-    use super::{AttestedHash, EncryptedString, MaskedSSN, TokenizedEmail};
-    use crate::error::{IdentityErrorKind, OmniError, Result};
+    use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+    use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+
+    use super::{AttestedHash, EncryptedString, EncryptedType, MaskedSSN, TokenizedEmail};
+    use crate::error::{CryptoErrorKind, IdentityErrorKind, OmniError, Result};
+
+    // -------------------------------------------------------------------------
+    // EncryptedString
+    // -------------------------------------------------------------------------
 
     impl EncryptedString {
         /// Construct an [`EncryptedString`] from raw ciphertext.
@@ -231,11 +251,183 @@ pub mod provider {
         /// ciphertext MUST have been produced by the tokenization
         /// service's encryption routine. There is no runtime check —
         /// misuse is a project-wide invariant violation.
+        ///
+        /// # Example
+        ///
+        /// ```
+        /// # #[cfg(feature = "_tokenization_provider")]
+        /// # {
+        /// use omni_types::encrypted::{EncryptedString, EncryptedType};
+        /// let ct = vec![0xAB, 0xCD, 0xEF];
+        /// let es = EncryptedString::from_ciphertext(ct.clone());
+        /// assert_eq!(es.ciphertext(), &ct[..]);
+        /// # }
+        /// ```
         #[must_use]
         pub fn from_ciphertext(ciphertext: Vec<u8>) -> Self {
             Self { ciphertext }
         }
+
+        /// Encrypt `plaintext` with `ChaCha20-Poly1305` using `key` and `nonce`.
+        ///
+        /// The `KIND` constant (`"encrypted-string"`) is used as additional
+        /// authenticated data (AAD) for domain separation between encrypted
+        /// types. A different type's `KIND` string will cause decryption to
+        /// fail even if the key and nonce are identical.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`OmniError::Crypto`] with
+        /// [`CryptoErrorKind::InternalInvariant`] if the AEAD library
+        /// reports an encryption failure (this should never happen for valid
+        /// 32-byte keys and 12-byte nonces).
+        ///
+        /// # Example
+        ///
+        /// ```
+        /// # #[cfg(feature = "_tokenization_provider")]
+        /// # {
+        /// use omni_types::encrypted::EncryptedString;
+        /// let key = [0u8; 32];
+        /// let nonce = [1u8; 12];
+        /// let es = EncryptedString::encrypt("hello", &key, &nonce)
+        ///     .expect("encryption must succeed");
+        /// let recovered = es.decrypt(&key, &nonce).expect("decryption must succeed");
+        /// assert_eq!(recovered, "hello");
+        /// # }
+        /// ```
+        pub fn encrypt(plaintext: &str, key: &[u8; 32], nonce: &[u8; 12]) -> Result<Self> {
+            let ciphertext = aead_encrypt(key, nonce, Self::KIND.as_bytes(), plaintext.as_bytes())?;
+            Ok(Self { ciphertext })
+        }
+
+        /// Decrypt ciphertext back to a UTF-8 plaintext string.
+        ///
+        /// Requires the same `key` and `nonce` that were used during
+        /// [`EncryptedString::encrypt`]. The `KIND` AAD is verified
+        /// automatically; an attacker cannot substitute a ciphertext
+        /// produced by a different encrypted type.
+        ///
+        /// # Errors
+        ///
+        /// - [`OmniError::Crypto`] with [`CryptoErrorKind::DecryptionFailure`]
+        ///   if the key, nonce, or ciphertext are wrong or tampered.
+        /// - [`OmniError::Crypto`] with [`CryptoErrorKind::InternalInvariant`]
+        ///   if the decrypted bytes are not valid UTF-8 (indicates a bug in
+        ///   the encrypt path).
+        ///
+        /// # Example
+        ///
+        /// ```
+        /// # #[cfg(feature = "_tokenization_provider")]
+        /// # {
+        /// use omni_types::encrypted::EncryptedString;
+        /// let key = [42u8; 32];
+        /// let nonce = [7u8; 12];
+        /// let es = EncryptedString::encrypt("secret data", &key, &nonce).unwrap();
+        /// let pt = es.decrypt(&key, &nonce).unwrap();
+        /// assert_eq!(pt, "secret data");
+        /// # }
+        /// ```
+        pub fn decrypt(&self, key: &[u8; 32], nonce: &[u8; 12]) -> Result<String> {
+            let plaintext = aead_decrypt(key, nonce, Self::KIND.as_bytes(), &self.ciphertext)?;
+            String::from_utf8(plaintext).map_err(|_| {
+                OmniError::crypto(
+                    CryptoErrorKind::InternalInvariant,
+                    "EncryptedString::decrypt::invalid_utf8",
+                )
+            })
+        }
     }
+
+    // -------------------------------------------------------------------------
+    // TokenizedEmail
+    // -------------------------------------------------------------------------
+
+    impl TokenizedEmail {
+        /// Construct a [`TokenizedEmail`] from raw ciphertext.
+        ///
+        /// See the caller contract on [`EncryptedString::from_ciphertext`].
+        ///
+        /// # Example
+        ///
+        /// ```
+        /// # #[cfg(feature = "_tokenization_provider")]
+        /// # {
+        /// use omni_types::encrypted::{EncryptedType, TokenizedEmail};
+        /// let ct = vec![0x01, 0x02];
+        /// let te = TokenizedEmail::from_ciphertext(ct.clone());
+        /// assert_eq!(te.ciphertext(), &ct[..]);
+        /// # }
+        /// ```
+        #[must_use]
+        pub fn from_ciphertext(ciphertext: Vec<u8>) -> Self {
+            Self { ciphertext }
+        }
+
+        /// Encrypt `email` with `ChaCha20-Poly1305` using `key` and `nonce`.
+        ///
+        /// Uses `KIND` (`"tokenized-email"`) as AAD for domain separation.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`OmniError::Crypto`] with
+        /// [`CryptoErrorKind::InternalInvariant`] on AEAD failure.
+        ///
+        /// # Example
+        ///
+        /// ```
+        /// # #[cfg(feature = "_tokenization_provider")]
+        /// # {
+        /// use omni_types::encrypted::TokenizedEmail;
+        /// let key = [0u8; 32];
+        /// let nonce = [2u8; 12];
+        /// let te = TokenizedEmail::encrypt("user@example.com", &key, &nonce)
+        ///     .expect("encrypt");
+        /// let recovered = te.decrypt(&key, &nonce).expect("decrypt");
+        /// assert_eq!(recovered, "user@example.com");
+        /// # }
+        /// ```
+        pub fn encrypt(email: &str, key: &[u8; 32], nonce: &[u8; 12]) -> Result<Self> {
+            let ciphertext = aead_encrypt(key, nonce, Self::KIND.as_bytes(), email.as_bytes())?;
+            Ok(Self { ciphertext })
+        }
+
+        /// Decrypt ciphertext back to the email plaintext string.
+        ///
+        /// # Errors
+        ///
+        /// - [`OmniError::Crypto`] with [`CryptoErrorKind::DecryptionFailure`]
+        ///   on tag mismatch (wrong key, nonce, or tampered data).
+        /// - [`OmniError::Crypto`] with [`CryptoErrorKind::InternalInvariant`]
+        ///   if the decrypted bytes are not valid UTF-8.
+        ///
+        /// # Example
+        ///
+        /// ```
+        /// # #[cfg(feature = "_tokenization_provider")]
+        /// # {
+        /// use omni_types::encrypted::TokenizedEmail;
+        /// let key = [1u8; 32];
+        /// let nonce = [3u8; 12];
+        /// let te = TokenizedEmail::encrypt("a@b.com", &key, &nonce).unwrap();
+        /// assert_eq!(te.decrypt(&key, &nonce).unwrap(), "a@b.com");
+        /// # }
+        /// ```
+        pub fn decrypt(&self, key: &[u8; 32], nonce: &[u8; 12]) -> Result<String> {
+            let plaintext = aead_decrypt(key, nonce, Self::KIND.as_bytes(), &self.ciphertext)?;
+            String::from_utf8(plaintext).map_err(|_| {
+                OmniError::crypto(
+                    CryptoErrorKind::InternalInvariant,
+                    "TokenizedEmail::decrypt::invalid_utf8",
+                )
+            })
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // MaskedSSN
+    // -------------------------------------------------------------------------
 
     impl MaskedSSN {
         /// Construct a [`MaskedSSN`] from raw ciphertext + visible suffix.
@@ -248,6 +440,17 @@ pub mod provider {
         /// Returns [`OmniError::Identity`] with
         /// [`IdentityErrorKind::InvalidLength`] if the suffix is not
         /// exactly 4 ASCII digits.
+        ///
+        /// # Example
+        ///
+        /// ```
+        /// # #[cfg(feature = "_tokenization_provider")]
+        /// # {
+        /// use omni_types::encrypted::MaskedSSN;
+        /// let ok = MaskedSSN::from_ciphertext(vec![1, 2, 3], *b"1234");
+        /// assert!(ok.is_ok());
+        /// # }
+        /// ```
         pub fn from_ciphertext(ciphertext: Vec<u8>, visible_suffix: [u8; 4]) -> Result<Self> {
             // Validate that all four suffix bytes are ASCII digits.
             for b in &visible_suffix {
@@ -263,26 +466,176 @@ pub mod provider {
                 visible_suffix,
             })
         }
-    }
 
-    impl TokenizedEmail {
-        /// Construct a [`TokenizedEmail`] from raw ciphertext.
+        /// Encrypt `ssn` with `ChaCha20-Poly1305` using `key` and `nonce`.
         ///
-        /// See the caller contract on [`EncryptedString::from_ciphertext`].
-        #[must_use]
-        pub fn from_ciphertext(ciphertext: Vec<u8>) -> Self {
-            Self { ciphertext }
+        /// The last 4 ASCII digit characters in `ssn` are extracted and
+        /// stored as the plaintext `visible_suffix` (e.g. `"6789"` for
+        /// `"123-45-6789"`). The full SSN string is encrypted. Uses
+        /// `KIND` (`"masked-ssn"`) as AAD for domain separation.
+        ///
+        /// # Errors
+        ///
+        /// - [`OmniError::Identity`] with [`IdentityErrorKind::InvalidLength`]
+        ///   if `ssn` contains fewer than 4 digit characters.
+        /// - [`OmniError::Crypto`] with [`CryptoErrorKind::InternalInvariant`]
+        ///   on AEAD failure.
+        ///
+        /// # Example
+        ///
+        /// ```
+        /// # #[cfg(feature = "_tokenization_provider")]
+        /// # {
+        /// use omni_types::encrypted::MaskedSSN;
+        /// let key = [0u8; 32];
+        /// let nonce = [4u8; 12];
+        /// let masked = MaskedSSN::encrypt("123-45-6789", &key, &nonce)
+        ///     .expect("encrypt");
+        /// assert_eq!(masked.visible_suffix(), b"6789");
+        /// let recovered = masked.decrypt(&key, &nonce).expect("decrypt");
+        /// assert_eq!(recovered, "123-45-6789");
+        /// # }
+        /// ```
+        pub fn encrypt(ssn: &str, key: &[u8; 32], nonce: &[u8; 12]) -> Result<Self> {
+            // Extract the last 4 ASCII digit characters for the visible suffix.
+            let digit_bytes: Vec<u8> = ssn.bytes().filter(u8::is_ascii_digit).collect();
+            if digit_bytes.len() < 4 {
+                return Err(OmniError::identity(
+                    IdentityErrorKind::InvalidLength,
+                    "MaskedSSN::encrypt::fewer_than_4_digits",
+                ));
+            }
+            // Take the last 4 digits.
+            let suffix_start = digit_bytes.len() - 4;
+            let mut visible_suffix = [0u8; 4];
+            // `suffix_start..suffix_start+4` is in-bounds because
+            // `digit_bytes.len() >= 4` was checked above and
+            // `suffix_start = digit_bytes.len() - 4`.
+            #[allow(clippy::indexing_slicing)]
+            visible_suffix.copy_from_slice(&digit_bytes[suffix_start..suffix_start + 4]);
+
+            let ciphertext = aead_encrypt(key, nonce, Self::KIND.as_bytes(), ssn.as_bytes())?;
+            Ok(Self {
+                ciphertext,
+                visible_suffix,
+            })
+        }
+
+        /// Decrypt ciphertext back to the full SSN plaintext string.
+        ///
+        /// # Errors
+        ///
+        /// - [`OmniError::Crypto`] with [`CryptoErrorKind::DecryptionFailure`]
+        ///   on tag mismatch.
+        /// - [`OmniError::Crypto`] with [`CryptoErrorKind::InternalInvariant`]
+        ///   if the decrypted bytes are not valid UTF-8.
+        ///
+        /// # Example
+        ///
+        /// ```
+        /// # #[cfg(feature = "_tokenization_provider")]
+        /// # {
+        /// use omni_types::encrypted::MaskedSSN;
+        /// let key = [5u8; 32];
+        /// let nonce = [6u8; 12];
+        /// let masked = MaskedSSN::encrypt("987-65-4321", &key, &nonce).unwrap();
+        /// assert_eq!(masked.decrypt(&key, &nonce).unwrap(), "987-65-4321");
+        /// # }
+        /// ```
+        pub fn decrypt(&self, key: &[u8; 32], nonce: &[u8; 12]) -> Result<String> {
+            let plaintext = aead_decrypt(key, nonce, Self::KIND.as_bytes(), &self.ciphertext)?;
+            String::from_utf8(plaintext).map_err(|_| {
+                OmniError::crypto(
+                    CryptoErrorKind::InternalInvariant,
+                    "MaskedSSN::decrypt::invalid_utf8",
+                )
+            })
         }
     }
+
+    // -------------------------------------------------------------------------
+    // AttestedHash
+    // -------------------------------------------------------------------------
 
     impl AttestedHash {
         /// Construct an [`AttestedHash`] from a content hash + attestation.
         ///
         /// See the caller contract on [`EncryptedString::from_ciphertext`].
+        ///
+        /// # Example
+        ///
+        /// ```
+        /// # #[cfg(feature = "_tokenization_provider")]
+        /// # {
+        /// use omni_types::encrypted::AttestedHash;
+        /// let h = AttestedHash::from_parts([0xABu8; 32], vec![0x01, 0x02]);
+        /// assert_eq!(h.hash(), &[0xABu8; 32]);
+        /// # }
+        /// ```
         #[must_use]
         pub fn from_parts(hash: [u8; 32], attestation: Vec<u8>) -> Self {
             Self { hash, attestation }
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Private AEAD helpers (shared by all encrypt/decrypt methods above).
+    // -------------------------------------------------------------------------
+
+    /// Encrypt `plaintext` with `ChaCha20-Poly1305` under `key`, `nonce`,
+    /// and `aad`.
+    ///
+    /// Returns the raw ciphertext+tag bytes on success.
+    ///
+    /// # Why not use `omni-crypto::aead`?
+    ///
+    /// `omni-types` sits below `omni-crypto` in the dependency graph.
+    /// Adding `omni-crypto` as a dep of `omni-types` would create a cycle
+    /// (`omni-crypto` already depends on `omni-types`). We therefore call
+    /// `chacha20poly1305` directly here — the same version already in the
+    /// workspace — keeping the AEAD logic thin (~5 LOC) and auditable.
+    fn aead_encrypt(
+        key: &[u8; 32],
+        nonce: &[u8; 12],
+        aad: &[u8],
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>> {
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+        let nonce_ref = Nonce::from_slice(nonce);
+        let payload = Payload {
+            msg: plaintext,
+            aad,
+        };
+        cipher.encrypt(nonce_ref, payload).map_err(|_| {
+            OmniError::crypto(
+                CryptoErrorKind::InternalInvariant,
+                "encrypted::provider::aead_encrypt",
+            )
+        })
+    }
+
+    /// Authenticate and decrypt `ciphertext` with `ChaCha20-Poly1305` under
+    /// `key`, `nonce`, and `aad`.
+    ///
+    /// Returns the raw plaintext bytes on success.
+    fn aead_decrypt(
+        key: &[u8; 32],
+        nonce: &[u8; 12],
+        aad: &[u8],
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>> {
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+        let nonce_ref = Nonce::from_slice(nonce);
+        let payload = Payload {
+            msg: ciphertext,
+            aad,
+        };
+        cipher.decrypt(nonce_ref, payload).map_err(|_| {
+            OmniError::crypto(
+                CryptoErrorKind::DecryptionFailure,
+                "encrypted::provider::aead_decrypt",
+            )
+        })
     }
 }
 
@@ -292,9 +645,24 @@ pub mod provider {
 
 #[cfg(test)]
 #[cfg(feature = "_tokenization_provider")]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 mod tests {
     use super::*;
     use alloc::vec;
+
+    // Fixed test key and nonce. NOT secret — used only to exercise round-trips.
+    const TEST_KEY: [u8; 32] = [0x42u8; 32];
+    const TEST_NONCE: [u8; 12] = [0x07u8; 12];
+    const TEST_NONCE2: [u8; 12] = [0x08u8; 12];
+
+    // -------------------------------------------------------------------------
+    // Legacy from_ciphertext constructor tests (preserved intact)
+    // -------------------------------------------------------------------------
 
     #[test]
     fn encrypted_string_round_trip_through_provider() {
@@ -335,6 +703,146 @@ mod tests {
                 assert_ne!(a, b, "EncryptedType::KIND collision: {a}");
             }
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // EncryptedString encrypt / decrypt round-trip
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn encrypted_string_encrypt_decrypt_round_trip() {
+        let plaintext = "hello, OMNI OS";
+        let es = EncryptedString::encrypt(plaintext, &TEST_KEY, &TEST_NONCE)
+            .expect("encrypt must succeed");
+        // Ciphertext is longer than plaintext by the 16-byte Poly1305 tag.
+        assert_eq!(es.ciphertext().len(), plaintext.len() + 16);
+        let recovered = es.decrypt(&TEST_KEY, &TEST_NONCE).expect("decrypt");
+        assert_eq!(recovered, plaintext);
+    }
+
+    #[test]
+    fn encrypted_string_wrong_key_fails() {
+        let es = EncryptedString::encrypt("secret", &TEST_KEY, &TEST_NONCE).expect("encrypt");
+        let wrong_key = [0x00u8; 32];
+        let err = es
+            .decrypt(&wrong_key, &TEST_NONCE)
+            .expect_err("wrong key must fail");
+        assert!(
+            matches!(
+                err,
+                crate::error::OmniError::Crypto {
+                    kind: crate::error::CryptoErrorKind::DecryptionFailure,
+                    ..
+                }
+            ),
+            "expected DecryptionFailure, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn encrypted_string_wrong_nonce_fails() {
+        let es = EncryptedString::encrypt("secret", &TEST_KEY, &TEST_NONCE).expect("encrypt");
+        let err = es
+            .decrypt(&TEST_KEY, &TEST_NONCE2)
+            .expect_err("wrong nonce must fail");
+        assert!(matches!(
+            err,
+            crate::error::OmniError::Crypto {
+                kind: crate::error::CryptoErrorKind::DecryptionFailure,
+                ..
+            }
+        ));
+    }
+
+    // -------------------------------------------------------------------------
+    // TokenizedEmail encrypt / decrypt round-trip
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn tokenized_email_encrypt_decrypt_round_trip() {
+        let email = "alice@example.com";
+        let te = TokenizedEmail::encrypt(email, &TEST_KEY, &TEST_NONCE).expect("encrypt");
+        let recovered = te.decrypt(&TEST_KEY, &TEST_NONCE).expect("decrypt");
+        assert_eq!(recovered, email);
+    }
+
+    #[test]
+    fn tokenized_email_wrong_key_fails() {
+        let te =
+            TokenizedEmail::encrypt("user@domain.org", &TEST_KEY, &TEST_NONCE).expect("encrypt");
+        let wrong_key = [0xFFu8; 32];
+        assert!(te.decrypt(&wrong_key, &TEST_NONCE).is_err());
+    }
+
+    // -------------------------------------------------------------------------
+    // MaskedSSN encrypt / decrypt
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn masked_ssn_encrypt_preserves_visible_suffix() {
+        let ssn = "123-45-6789";
+        let masked = MaskedSSN::encrypt(ssn, &TEST_KEY, &TEST_NONCE).expect("encrypt");
+        // Visible suffix must be the last 4 digits of the SSN.
+        assert_eq!(masked.visible_suffix(), b"6789");
+    }
+
+    #[test]
+    fn masked_ssn_encrypt_decrypt_recovers_full_ssn() {
+        let ssn = "987-65-4321";
+        let masked = MaskedSSN::encrypt(ssn, &TEST_KEY, &TEST_NONCE).expect("encrypt");
+        let recovered = masked.decrypt(&TEST_KEY, &TEST_NONCE).expect("decrypt");
+        assert_eq!(recovered, ssn);
+    }
+
+    #[test]
+    fn masked_ssn_encrypt_fewer_than_4_digits_returns_error() {
+        // Only 3 digits total — must fail.
+        let err = MaskedSSN::encrypt("abc-123", &TEST_KEY, &TEST_NONCE)
+            .expect_err("fewer than 4 digits must fail");
+        assert!(matches!(
+            err,
+            crate::error::OmniError::Identity {
+                kind: crate::error::IdentityErrorKind::InvalidLength,
+                ..
+            }
+        ));
+    }
+
+    // -------------------------------------------------------------------------
+    // Domain separation: same plaintext encrypted as different types
+    // produces different ciphertext because the AAD differs.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn domain_separation_same_plaintext_different_ciphertext() {
+        let plaintext = "alice@example.com";
+        let es = EncryptedString::encrypt(plaintext, &TEST_KEY, &TEST_NONCE)
+            .expect("EncryptedString encrypt");
+        let te = TokenizedEmail::encrypt(plaintext, &TEST_KEY, &TEST_NONCE)
+            .expect("TokenizedEmail encrypt");
+        // Authentication tags differ because the AAD (KIND constant) differs.
+        assert_ne!(
+            es.ciphertext(),
+            te.ciphertext(),
+            "domain separation: ciphertexts must differ"
+        );
+    }
+
+    #[test]
+    fn domain_separation_cross_type_decrypt_fails() {
+        // Encrypt as EncryptedString, then try to decrypt as TokenizedEmail
+        // using the same ciphertext bytes — must fail authentication.
+        let plaintext = "cross-type test";
+        let es = EncryptedString::encrypt(plaintext, &TEST_KEY, &TEST_NONCE)
+            .expect("encrypt as EncryptedString");
+        // Build a TokenizedEmail with the same raw ciphertext bytes.
+        let fake_te = TokenizedEmail::from_ciphertext(es.ciphertext().to_vec());
+        // Decrypting with the TokenizedEmail AAD must fail because the tag
+        // was computed with the EncryptedString AAD.
+        assert!(
+            fake_te.decrypt(&TEST_KEY, &TEST_NONCE).is_err(),
+            "cross-type decrypt must fail"
+        );
     }
 }
 

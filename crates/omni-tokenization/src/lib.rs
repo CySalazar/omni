@@ -77,6 +77,7 @@
     )
 )]
 
+pub mod encrypted_pipeline;
 pub mod ner;
 pub mod policy;
 pub mod types;
@@ -186,6 +187,21 @@ impl TokenizationService {
             ner: NerClassifier::new(),
             vault,
         }
+    }
+
+    /// Crate-private helper: tokenize a single PII value via the vault.
+    ///
+    /// Exposed to `encrypted_pipeline` so that module can drive vault
+    /// tokenization for individual spans without requiring a full
+    /// [`TokenizeRequest`]. The vault's co-reference semantics are preserved:
+    /// the same PII value under the same entity type returns the same token
+    /// within a session.
+    pub(crate) fn vault_tokenize(
+        &mut self,
+        pii: &str,
+        entity_type: &crate::types::EntityType,
+    ) -> Result<String> {
+        self.vault.tokenize(pii, entity_type)
     }
 
     /// Tokenize the text in `req`, returning the tokenized text and
