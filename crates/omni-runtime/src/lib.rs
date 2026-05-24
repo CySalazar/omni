@@ -44,6 +44,7 @@
 //! - [`relay`] — AI syscall IPC relay (kernel → pipeline bridge).
 //! - [`preprocessing`] — PII detection and tokenization pipeline.
 //! - [`orchestrator_bridge`] — Orchestrator Agent → inference dispatch.
+//! - [`bpe`] — byte-level BPE tokenizer for LLM text ↔ token ID conversion.
 
 #![doc(html_root_url = "https://docs.omni-os.org/omni-runtime")]
 #![warn(missing_docs)]
@@ -1135,6 +1136,18 @@ pub mod attestation {
 /// channel and routes them through the [`inference::InferencePipeline`],
 /// returning structured [`relay::AiSyscallResponse`] values.
 pub mod relay;
+
+// =============================================================================
+// bpe — byte-level BPE tokenizer
+// =============================================================================
+
+/// Byte-level BPE tokenizer for LLM text ↔ token ID conversion.
+///
+/// Provides [`bpe::BpeTokenizer`] with encode / decode support compatible
+/// with GPT-2 and TinyLlama-style vocabularies. The vocabulary and merge
+/// rules can be loaded from any source; [`bpe::BpeVocabulary::minimal_test_vocab`]
+/// provides a self-contained fixture for testing.
+pub mod bpe;
 
 // =============================================================================
 // preprocessing — PII tokenization pipeline
