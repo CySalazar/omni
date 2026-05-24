@@ -268,8 +268,8 @@ pub enum FileType {
 ///     block_count: 0,
 ///     created: 0,
 ///     modified: 0,
-///     blocks: alloc::vec![],
-///     name: alloc::string::String::from("hello.txt"),
+///     blocks: vec![],
+///     name: String::from("hello.txt"),
 /// };
 /// assert_eq!(inode.inode_number, 2);
 /// assert_eq!(inode.file_type, FileType::RegularFile);

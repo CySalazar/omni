@@ -1016,7 +1016,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Phase    : ",
         11,
-        "2 - AI Runtime (Sprint 4-6)",
+        "2 - AI Runtime (Sprint 7 E2E)",
         graphics::WHITE,
     );
     row(
@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "OIP-022 agents+IPC+OmniFS CRUD",
+        "P2 E2E: transformer+GGUF+BPE",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1048,7 +1048,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "P2 Sprint 7: QEMU E2E + NVMe",
+        "P2 Sprint 8: quantized infer",
         graphics::WHITE,
     );
     row(
@@ -1056,7 +1056,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Tests    : ",
         11,
-        "2177 workspace (1677 host)",
+        "2402 workspace pass",
         graphics::WHITE,
     );
 

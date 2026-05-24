@@ -76,7 +76,7 @@ impl EscalationPolicy {
     /// ```
     // `&self` is intentional: a future version may carry user-configurable keyword
     // lists or a trained classifier as instance state.
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, clippy::cognitive_complexity)]
     #[must_use]
     pub fn classify(&self, action_description: &str) -> Option<EscalationClass> {
         let lower = action_description.to_lowercase();

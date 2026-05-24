@@ -180,7 +180,7 @@ impl PreprocessingPipeline {
     /// assert!(!result.processed_text.contains("dev@omni-os.org"));
     /// ```
     // Same rationale as the other methods: `self` is kept for future state.
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, clippy::cognitive_complexity)]
     #[instrument(skip(self))]
     #[must_use]
     pub fn preprocess(&self, input: &str) -> PreprocessedInput {
