@@ -44,3 +44,10 @@ omni-tee    = { workspace = true }
 async-trait = { workspace = true }
 tracing     = { workspace = true }
 thiserror   = { workspace = true }
+
+[dev-dependencies]
+# `tokio` is required in dev-only context to drive `#[tokio::test]` async
+# test cases for the CpuBackend.  It is NOT a production dependency because
+# omni-hal's trait surface is executor-agnostic and the crate targets a
+# no_std future (Phase 6).
+tokio = { workspace = true }
