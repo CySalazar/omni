@@ -39,6 +39,13 @@
 //! - <https://github.com/ggml-org/ggml/blob/master/docs/gguf.md>
 //! - <https://github.com/ggerganov/llama.cpp/blob/master/gguf-py/gguf/constants.py>
 
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::doc_markdown
+)]
+
 use omni_types::{OmniError, Result};
 
 // =============================================================================

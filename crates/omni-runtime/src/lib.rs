@@ -1388,4 +1388,70 @@ mod tests {
             _ => panic!("expected Internal error for unregistered model"),
         }
     }
+
+    // -------------------------------------------------------------------------
+    // E2E: GGUF build → register → load_from_bytes → verify
+    // -------------------------------------------------------------------------
+
+    fn build_minimal_gguf() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&crate::gguf::GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn e2e_gguf_register_and_load_from_bytes() {
+        let gguf_bytes = build_minimal_gguf();
+        let hash = blake3::hash(&gguf_bytes);
+        let sk = OmniSigningKey::from_bytes([0xE2; 32]);
+        let sig = sk.sign(hash.as_bytes());
+
+        let manifest = ModelManifest {
+            model_id: ModelId::from_manifest_hash(*hash.as_bytes()),
+            name: "e2e-toy-mlp".into(),
+            version: "1.0.0".into(),
+            hash: *hash.as_bytes(),
+            signature: sig,
+            signing_key: sk.verifying_key(),
+            size_bytes: gguf_bytes.len() as u64,
+            format: ModelFormat::Gguf,
+        };
+
+        let mut reg = ModelRegistry::new();
+        let id = reg.register(manifest).unwrap();
+        reg.load_from_bytes(id, &gguf_bytes).unwrap();
+        assert!(reg.is_loaded(id));
+        let attested = reg.attest(id).unwrap();
+        assert_eq!(attested.name, "e2e-toy-mlp");
+    }
+
+    #[test]
+    fn e2e_gguf_load_hash_mismatch_fails() {
+        let gguf_bytes = build_minimal_gguf();
+        let wrong_hash = [0xBB; 32];
+        let sk = OmniSigningKey::from_bytes([0xE3; 32]);
+        let sig = sk.sign(&wrong_hash);
+
+        let manifest = ModelManifest {
+            model_id: ModelId::from_manifest_hash(wrong_hash),
+            name: "bad-hash".into(),
+            version: "1.0.0".into(),
+            hash: wrong_hash,
+            signature: sig,
+            signing_key: sk.verifying_key(),
+            size_bytes: gguf_bytes.len() as u64,
+            format: ModelFormat::Gguf,
+        };
+
+        let mut reg = ModelRegistry::new();
+        let id = reg.register(manifest).unwrap();
+        let err = reg.load_from_bytes(id, &gguf_bytes).unwrap_err();
+        match err {
+            OmniError::Internal { .. } => {}
+            _ => panic!("expected Internal error for hash mismatch, got: {err:?}"),
+        }
+    }
 }
