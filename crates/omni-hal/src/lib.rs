@@ -36,9 +36,10 @@
 #![warn(missing_docs)]
 
 /// Tensor HAL — uniform compute dispatch across CPU/GPU/NPU.
-pub mod tensor {
-    // TODO(phase-2): `TensorBackend` trait + dispatch logic.
-}
+///
+/// See [`tensor`] for the full type surface: [`tensor::TensorBackend`],
+/// [`tensor::CpuBackend`], [`tensor::TensorDtype`], etc.
+pub mod tensor;
 
 /// Network HAL — transport-agnostic networking primitives.
 pub mod network {
