@@ -80,6 +80,7 @@ pub mod discard;
 pub mod identify;
 pub mod io;
 pub mod io_session;
+pub mod namespace_map;
 pub mod pci_ids;
 pub mod queue;
 pub mod queue_config;
