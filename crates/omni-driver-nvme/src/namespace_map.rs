@@ -44,6 +44,29 @@ pub struct NamespaceDescriptor {
 }
 
 impl NamespaceDescriptor {
+    /// Construct a descriptor from pre-validated fields.
+    ///
+    /// The caller is responsible for ensuring the fields are
+    /// consistent (e.g. `byte_size == nsze << lbads`). This
+    /// constructor is used by the live image bring-up where the
+    /// Identify Namespace response has already been validated.
+    #[must_use]
+    pub const fn from_validated(
+        nsid: u32,
+        nsze: u64,
+        ncap: u64,
+        lbads: u8,
+        byte_size: u64,
+    ) -> Self {
+        Self {
+            nsid,
+            nsze,
+            ncap,
+            lbads,
+            byte_size,
+        }
+    }
+
     /// The namespace identifier.
     #[must_use]
     pub const fn nsid(&self) -> u32 {

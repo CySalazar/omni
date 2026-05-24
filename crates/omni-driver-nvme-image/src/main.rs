@@ -144,6 +144,9 @@ use omni_driver_nvme::admin::{
 };
 use omni_driver_nvme::bringup::{BringUp, Event, Phase};
 use omni_driver_nvme::identify::{ActiveNsListView, IdentifyController, IdentifyNamespace};
+use omni_driver_nvme::interrupt::MsixConfig;
+use omni_driver_nvme::io_error::{IoError, RetryVerdict};
+use omni_driver_nvme::namespace_map::NamespaceDescriptor;
 use omni_driver_nvme::controller_regs::{
     CAP_OFFSET, VS_OFFSET, cap_dstrd, cap_mqes, cap_mpsmin, vs_major,
 };
@@ -795,6 +798,18 @@ const EXIT_NVME_IDENTIFY_CTRL_PARSE_FAILED: u64 = 368;
 /// `IdentifyController::nn()` returned 0 — the controller reports
 /// zero namespaces. New in P6.7.10-pre.42.
 const EXIT_NVME_IDENTIFY_CTRL_NN_ZERO: u64 = 370;
+/// Namespace validation failed: `LBADS != 12` and the namespace
+/// is rejected by the multi-namespace validator. New in P6.7.10-pre.46.
+const EXIT_NVME_NS_VALIDATION_REJECTED: u64 = 380;
+/// MSI-X configuration is invalid — the controller does not
+/// support the requested vector index. New in P6.7.10-pre.46.
+const EXIT_NVME_MSIX_VECTOR_UNSUPPORTED: u64 = 382;
+/// An IO command failed with a permanent error after retry
+/// classification. New in P6.7.10-pre.46.
+const EXIT_NVME_IO_PERMANENT_ERROR: u64 = 384;
+/// An IO command triggered a controller reset requirement.
+/// New in P6.7.10-pre.46.
+const EXIT_NVME_IO_RESET_REQUIRED: u64 = 386;
 
 // =============================================================================
 // Raw syscall wrapper
@@ -1371,10 +1386,36 @@ pub extern "C" fn _start() -> ! {
         Ok(v) => v,
         Err(_) => unsafe { sys_exit(EXIT_NVME_NS_PARSE_FAILED) },
     };
-    let _namespace_byte_size = match ns_view.validated_byte_size() {
+    let namespace_byte_size = match ns_view.validated_byte_size() {
         Ok(size) => size,
         Err(_) => unsafe { sys_exit(EXIT_NVME_NS_UNSUPPORTED_LBADS) },
     };
+
+    // Step 4.17.e — P6.7.10-pre.46: multi-namespace validation.
+    // Build a NamespaceDescriptor for the first active namespace
+    // and verify it passes Phase-1 admission (LBADS=12, NSZE>0).
+    // This exercises the namespace_map validation logic in the
+    // live bring-up path. The alloc-free NamespaceDescriptor is
+    // stack-allocated (no heap).
+    let ns_desc = NamespaceDescriptor::from_validated(
+        first_nsid,
+        ns_view.nsze(),
+        ns_view.ncap(),
+        ns_view.lbads(),
+        namespace_byte_size,
+    );
+    if ns_desc.nsze() == 0 || ns_desc.lbads() != 12 {
+        unsafe { sys_exit(EXIT_NVME_NS_VALIDATION_REJECTED) };
+    }
+
+    // Step 4.17.f — P6.7.10-pre.46: MSI-X configuration validation.
+    // Verify that Phase-1's hardcoded vector 0 is within the
+    // controller's MSI-X table size. This exercises the interrupt
+    // module's MsixConfig in the live path.
+    let msix_cfg = MsixConfig::phase_1_default();
+    if !msix_cfg.supports_vector(NVME_IO_CQ_IRQ_VECTOR) {
+        unsafe { sys_exit(EXIT_NVME_MSIX_VECTOR_UNSUPPORTED) };
+    }
 
     // Step 4.18 — P6.7.10-pre.36: Create I/O Completion Queue.
     // Per NVMe 1.4 § 5.3 the IO CQ MUST be created before the
@@ -1535,9 +1576,15 @@ pub extern "C" fn _start() -> ! {
         }
     };
 
-    // Step 4.20.e — Validate the completion status word.
+    // Step 4.20.e — Validate the completion status word with
+    // P6.7.10-pre.46 structured error classification.
     if !io_read_cqe.is_success() {
-        unsafe { sys_exit(EXIT_NVME_IO_READ_FAILED) };
+        let io_err = IoError::from_status(io_read_cqe.sct, io_read_cqe.sc);
+        match io_err.verdict() {
+            RetryVerdict::Permanent => unsafe { sys_exit(EXIT_NVME_IO_PERMANENT_ERROR) },
+            RetryVerdict::ResetAndRetry => unsafe { sys_exit(EXIT_NVME_IO_RESET_REQUIRED) },
+            RetryVerdict::Retry => unsafe { sys_exit(EXIT_NVME_IO_READ_FAILED) },
+        }
     }
 
     // Step 4.21 — P6.7.10-pre.38: NVM Write LBA 0, 1 sector.

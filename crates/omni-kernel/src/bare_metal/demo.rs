@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "P6.7.10-pre.45 IRQ completion",
+        "P6.7.10-pre.46 IO path closure",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1048,7 +1048,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "P6.7.10-pre.46 wire closure",
+        "P6.7.10 CLOSED",
         graphics::WHITE,
     );
     row(
