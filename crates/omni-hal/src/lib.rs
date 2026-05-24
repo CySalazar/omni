@@ -41,6 +41,12 @@
 /// [`tensor::CpuBackend`], [`tensor::TensorDtype`], etc.
 pub mod tensor;
 
+/// Transformer inference building blocks — composing `TensorOp` primitives.
+///
+/// Provides a synchronous-logic, async-surface forward pass for LLaMA-style
+/// decoder-only transformers.  See [`transformer::transformer_forward`].
+pub mod transformer;
+
 /// Network HAL — transport-agnostic networking primitives.
 pub mod network {
     // TODO(phase-1): `NetworkBackend` trait covering Ethernet/Wi-Fi.

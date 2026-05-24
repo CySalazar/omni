@@ -430,6 +430,56 @@ pub enum TensorOp {
     /// Output shape: `[batch, embed_dim]`, dtype `F32`.
     /// Returns an error if any index is out of bounds.
     EmbeddingLookup,
+
+    /// Permute (transpose) tensor axes.
+    ///
+    /// `axes[i]` gives the source dimension for output dimension `i`.
+    /// For example, a 2-D tensor with `axes = [1, 0]` is a standard matrix
+    /// transpose; a 3-D tensor with `axes = [2, 0, 1]` rotates dimensions.
+    ///
+    /// - Single input required.
+    /// - Output shape: `[shape[axes[0]], shape[axes[1]], ...]`.
+    Transpose {
+        /// Permutation of dimension indices (length must equal the input rank).
+        axes: Vec<usize>,
+    },
+
+    /// Element-wise GELU activation.
+    ///
+    /// `output[i] = x * 0.5 * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³)))`
+    ///
+    /// Single F32 input; output has the same shape and dtype.
+    GeLU,
+
+    /// Multiply every element by a scalar constant.
+    ///
+    /// Single F32 input; output has the same shape and dtype.
+    Scale {
+        /// The scalar multiplier applied to every element.
+        scalar: f32,
+    },
+
+    /// Concatenate multiple tensors along a given axis.
+    ///
+    /// All inputs must have the same rank and identical extents on every axis
+    /// except the concat axis.  The output extent on the concat axis is the
+    /// sum of the input extents on that axis.
+    Concat {
+        /// The axis along which inputs are concatenated (0-based).
+        axis: usize,
+    },
+
+    /// RMS Layer Normalization (used by `LLaMA` and modern transformers).
+    ///
+    /// For each slice along the last dimension:
+    /// `output = x / sqrt(mean(x²) + epsilon)`
+    ///
+    /// Weight scaling is handled by the caller (separate `MatMul` or `Scale` op).
+    /// Single F32 input; output has the same shape and dtype.
+    RmsNorm {
+        /// Numerical stability constant added inside the square root.
+        epsilon: f32,
+    },
 }
 
 // =============================================================================
@@ -852,8 +902,86 @@ fn output_descriptor_for(op: &TensorOp, inputs: &[&TensorBuffer]) -> Result<Tens
             ))
         }
 
-        // Element-wise ops (Add, Relu, Softmax, LayerNorm): inherit first
-        // input's shape and dtype.
+        TensorOp::Transpose { axes } => {
+            let src = inputs.first().ok_or_else(|| {
+                OmniError::hal(
+                    HalErrorKind::HardwareUnavailable,
+                    "execute::transpose::no_input",
+                )
+            })?;
+            let shape = &src.descriptor.shape;
+            if axes.len() != shape.len() {
+                return Err(OmniError::hal(
+                    HalErrorKind::DeviceFailure,
+                    "execute::transpose::axes_rank_mismatch",
+                ));
+            }
+            // Build output shape by permuting input shape according to axes.
+            let out_shape = axes
+                .iter()
+                .map(|&ax| {
+                    shape.get(ax).copied().ok_or_else(|| {
+                        OmniError::hal(
+                            HalErrorKind::DeviceFailure,
+                            "execute::transpose::axis_out_of_bounds",
+                        )
+                    })
+                })
+                .collect::<Result<Vec<usize>>>()?;
+            Ok(TensorDescriptor::new(out_shape, src.descriptor.dtype))
+        }
+
+        TensorOp::Concat { axis } => {
+            let first = inputs.first().ok_or_else(|| {
+                OmniError::hal(
+                    HalErrorKind::HardwareUnavailable,
+                    "execute::concat::no_input",
+                )
+            })?;
+            let rank = first.descriptor.shape.len();
+            if *axis >= rank {
+                return Err(OmniError::hal(
+                    HalErrorKind::DeviceFailure,
+                    "execute::concat::axis_out_of_bounds",
+                ));
+            }
+            // Verify all inputs share the same rank and non-concat dimensions.
+            for inp in inputs.iter().skip(1) {
+                if inp.descriptor.shape.len() != rank {
+                    return Err(OmniError::hal(
+                        HalErrorKind::DeviceFailure,
+                        "execute::concat::rank_mismatch",
+                    ));
+                }
+                for (dim_idx, (&a, &b)) in first
+                    .descriptor
+                    .shape
+                    .iter()
+                    .zip(inp.descriptor.shape.iter())
+                    .enumerate()
+                {
+                    if dim_idx != *axis && a != b {
+                        return Err(OmniError::hal(
+                            HalErrorKind::DeviceFailure,
+                            "execute::concat::shape_mismatch_on_non_concat_axis",
+                        ));
+                    }
+                }
+            }
+            // Sum the concat axis across all inputs; copy the rest from first.
+            let mut out_shape = first.descriptor.shape.clone();
+            let axis_total: usize = inputs
+                .iter()
+                .map(|inp| inp.descriptor.shape.get(*axis).copied().unwrap_or(0))
+                .sum();
+            if let Some(slot) = out_shape.get_mut(*axis) {
+                *slot = axis_total;
+            }
+            Ok(TensorDescriptor::new(out_shape, first.descriptor.dtype))
+        }
+
+        // Element-wise ops (Add, Relu, Softmax, LayerNorm, GeLU, Scale,
+        // RmsNorm): inherit first input's shape and dtype.
         _ => {
             let src = inputs.first().ok_or_else(|| {
                 OmniError::hal(HalErrorKind::HardwareUnavailable, "execute::no_input")
@@ -1329,6 +1457,391 @@ fn exec_reshape(inputs: &[&TensorBuffer], new_shape: &[usize]) -> Result<TensorB
     Ok(TensorBuffer::new(out_desc, src.as_bytes().to_vec()))
 }
 
+/// Permute tensor axes: output[axes permutation of coords] = input[coords].
+///
+/// Uses stride arithmetic to compute the source flat index for each output
+/// element without allocating intermediate index vectors.
+fn exec_transpose(inputs: &[&TensorBuffer], axes: &[usize]) -> Result<TensorBuffer> {
+    let src = inputs.first().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::transpose::no_input",
+        )
+    })?;
+
+    require_f32(
+        src.descriptor.dtype,
+        "execute::transpose::unsupported_dtype",
+    )?;
+
+    let in_shape = &src.descriptor.shape;
+    let rank = in_shape.len();
+
+    if axes.len() != rank {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::transpose::axes_rank_mismatch",
+        ));
+    }
+
+    // Output shape: shape[axes[i]] for each i.
+    let out_shape: Vec<usize> = axes
+        .iter()
+        .map(|&ax| {
+            in_shape.get(ax).copied().ok_or_else(|| {
+                OmniError::hal(
+                    HalErrorKind::DeviceFailure,
+                    "execute::transpose::axis_out_of_bounds",
+                )
+            })
+        })
+        .collect::<Result<Vec<usize>>>()?;
+
+    // Precompute row-major strides for the input shape.
+    // stride[i] = product of in_shape[i+1..rank].
+    let mut in_strides = vec![1usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        let next = in_strides.get(i + 1).copied().ok_or_else(|| {
+            OmniError::hal(HalErrorKind::DeviceFailure, "transpose::stride_error")
+        })?;
+        let dim = in_shape.get(i + 1).copied().ok_or_else(|| {
+            OmniError::hal(HalErrorKind::DeviceFailure, "transpose::stride_error")
+        })?;
+        if let Some(s) = in_strides.get_mut(i) {
+            *s = next * dim;
+        }
+    }
+
+    // Precompute row-major strides for the output shape.
+    let mut out_strides = vec![1usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        let next = out_strides.get(i + 1).copied().ok_or_else(|| {
+            OmniError::hal(HalErrorKind::DeviceFailure, "transpose::stride_error")
+        })?;
+        let dim = out_shape.get(i + 1).copied().ok_or_else(|| {
+            OmniError::hal(HalErrorKind::DeviceFailure, "transpose::stride_error")
+        })?;
+        if let Some(s) = out_strides.get_mut(i) {
+            *s = next * dim;
+        }
+    }
+
+    let n_total: usize = out_shape.iter().product();
+    let out_desc = TensorDescriptor::new(out_shape, TensorDtype::F32);
+    let mut out_bytes = vec![0u8; out_desc.byte_size()];
+    let src_bytes = src.as_bytes();
+
+    // For each output flat index, reconstruct its multi-dimensional coordinate
+    // in the output space, then map to the input flat index via axes permutation.
+    #[allow(clippy::integer_division)]
+    for out_flat in 0..n_total {
+        // Decode out_flat into per-dimension indices in output space.
+        let mut remaining = out_flat;
+        let mut out_coords = vec![0usize; rank];
+        for dim_idx in 0..rank {
+            let stride = out_strides.get(dim_idx).copied().ok_or_else(|| {
+                OmniError::hal(HalErrorKind::DeviceFailure, "transpose::decode_error")
+            })?;
+            let coord = remaining / stride;
+            remaining %= stride;
+            if let Some(c) = out_coords.get_mut(dim_idx) {
+                *c = coord;
+            }
+        }
+
+        // Map output coord[i] → input coord[axes[i]], then compute input flat index.
+        let mut in_flat = 0usize;
+        for (out_dim, &ax) in axes.iter().enumerate() {
+            let out_coord = out_coords.get(out_dim).copied().ok_or_else(|| {
+                OmniError::hal(HalErrorKind::DeviceFailure, "transpose::map_error")
+            })?;
+            let in_stride = in_strides.get(ax).copied().ok_or_else(|| {
+                OmniError::hal(HalErrorKind::DeviceFailure, "transpose::map_error")
+            })?;
+            in_flat += out_coord * in_stride;
+        }
+
+        write_f32(&mut out_bytes, out_flat, read_f32(src_bytes, in_flat)?)?;
+    }
+
+    Ok(TensorBuffer::new(out_desc, out_bytes))
+}
+
+/// Element-wise GELU activation (tanh approximation).
+///
+/// `output[i] = x * 0.5 * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³)))`
+#[allow(clippy::cast_precision_loss)]
+fn exec_gelu(inputs: &[&TensorBuffer]) -> Result<TensorBuffer> {
+    let src = inputs.first().ok_or_else(|| {
+        OmniError::hal(HalErrorKind::HardwareUnavailable, "execute::gelu::no_input")
+    })?;
+
+    require_f32(src.descriptor.dtype, "execute::gelu::unsupported_dtype")?;
+
+    let n_elems = src.descriptor.num_elements();
+    let out_desc = TensorDescriptor::new(src.descriptor.shape.clone(), TensorDtype::F32);
+    let mut out_bytes = vec![0u8; out_desc.byte_size()];
+    let src_bytes = src.as_bytes();
+
+    // Coefficient: sqrt(2/π) ≈ 0.7978845608.
+    let sqrt_2_over_pi = (2.0_f32 / std::f32::consts::PI).sqrt();
+
+    for elem_idx in 0..n_elems {
+        let x = read_f32(src_bytes, elem_idx)?;
+        // Use mul_add for better FP accuracy as suggested by clippy::suboptimal_flops.
+        let inner = sqrt_2_over_pi * (0.044_715 * x * x).mul_add(x, x);
+        let val = x * 0.5 * (1.0 + inner.tanh());
+        write_f32(&mut out_bytes, elem_idx, val)?;
+    }
+
+    Ok(TensorBuffer::new(out_desc, out_bytes))
+}
+
+/// Multiply every element by a scalar constant.
+fn exec_scale(inputs: &[&TensorBuffer], scalar: f32) -> Result<TensorBuffer> {
+    let src = inputs.first().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::scale::no_input",
+        )
+    })?;
+
+    require_f32(src.descriptor.dtype, "execute::scale::unsupported_dtype")?;
+
+    let n_elems = src.descriptor.num_elements();
+    let out_desc = TensorDescriptor::new(src.descriptor.shape.clone(), TensorDtype::F32);
+    let mut out_bytes = vec![0u8; out_desc.byte_size()];
+    let src_bytes = src.as_bytes();
+
+    for elem_idx in 0..n_elems {
+        let val = read_f32(src_bytes, elem_idx)? * scalar;
+        write_f32(&mut out_bytes, elem_idx, val)?;
+    }
+
+    Ok(TensorBuffer::new(out_desc, out_bytes))
+}
+
+/// Concatenate multiple tensors along `axis`.
+///
+/// All inputs must share the same rank and identical extents on every axis
+/// except `axis`.  The output's `axis` extent is the sum of the inputs'.
+#[allow(clippy::integer_division, clippy::too_many_lines)]
+fn exec_concat(inputs: &[&TensorBuffer], axis: usize) -> Result<TensorBuffer> {
+    let first = inputs.first().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::concat::no_input",
+        )
+    })?;
+
+    require_f32(first.descriptor.dtype, "execute::concat::unsupported_dtype")?;
+
+    let rank = first.descriptor.shape.len();
+    if axis >= rank {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::concat::axis_out_of_bounds",
+        ));
+    }
+
+    // Validate all inputs and compute output axis size.
+    let mut out_axis_size = 0usize;
+    for inp in inputs {
+        require_f32(inp.descriptor.dtype, "execute::concat::unsupported_dtype")?;
+        if inp.descriptor.shape.len() != rank {
+            return Err(OmniError::hal(
+                HalErrorKind::DeviceFailure,
+                "execute::concat::rank_mismatch",
+            ));
+        }
+        for (dim_idx, (&a, &b)) in first
+            .descriptor
+            .shape
+            .iter()
+            .zip(inp.descriptor.shape.iter())
+            .enumerate()
+        {
+            if dim_idx != axis && a != b {
+                return Err(OmniError::hal(
+                    HalErrorKind::DeviceFailure,
+                    "execute::concat::shape_mismatch_on_non_concat_axis",
+                ));
+            }
+        }
+        let ax_size = inp.descriptor.shape.get(axis).copied().ok_or_else(|| {
+            OmniError::hal(HalErrorKind::DeviceFailure, "execute::concat::shape_error")
+        })?;
+        out_axis_size += ax_size;
+    }
+
+    // Build output shape.
+    let mut out_shape = first.descriptor.shape.clone();
+    if let Some(slot) = out_shape.get_mut(axis) {
+        *slot = out_axis_size;
+    }
+    let out_desc = TensorDescriptor::new(out_shape.clone(), TensorDtype::F32);
+    let mut out_bytes = vec![0u8; out_desc.byte_size()];
+
+    // Compute strides for output and each input using the output shape.
+    // We iterate output elements and determine which input tensor contributes.
+    //
+    // Strategy: for each element in the output, decode its coordinate along
+    // the concat axis; then find which input owns that slice, and copy the
+    // value from the appropriate input offset.
+    //
+    // Precompute row-major strides for the output shape.
+    let mut out_strides = vec![1usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        let next_stride = out_strides
+            .get(i + 1)
+            .copied()
+            .ok_or_else(|| OmniError::hal(HalErrorKind::DeviceFailure, "concat::stride_error"))?;
+        let next_dim = out_shape
+            .get(i + 1)
+            .copied()
+            .ok_or_else(|| OmniError::hal(HalErrorKind::DeviceFailure, "concat::stride_error"))?;
+        if let Some(s) = out_strides.get_mut(i) {
+            *s = next_stride * next_dim;
+        }
+    }
+
+    let n_total: usize = out_shape.iter().product();
+
+    for out_flat in 0..n_total {
+        // Decode the coordinate along the concat axis only (others mirror input).
+        let axis_stride = out_strides
+            .get(axis)
+            .copied()
+            .ok_or_else(|| OmniError::hal(HalErrorKind::DeviceFailure, "concat::decode_error"))?;
+        // The coordinate along the concat axis within the full output.
+        let out_axis_coord = (out_flat / axis_stride) % out_axis_size;
+
+        // Find which input tensor owns this coordinate and the local offset.
+        let mut cursor = 0usize;
+        let mut found_input: Option<(&TensorBuffer, usize)> = None;
+        for inp in inputs {
+            let inp_axis_size = inp.descriptor.shape.get(axis).copied().ok_or_else(|| {
+                OmniError::hal(HalErrorKind::DeviceFailure, "concat::inp_shape_error")
+            })?;
+            if out_axis_coord < cursor + inp_axis_size {
+                found_input = Some((inp, out_axis_coord - cursor));
+                break;
+            }
+            cursor += inp_axis_size;
+        }
+
+        let (inp, local_axis_coord) = found_input.ok_or_else(|| {
+            OmniError::hal(HalErrorKind::DeviceFailure, "concat::input_lookup_error")
+        })?;
+
+        // Precompute strides for this input shape.
+        let inp_shape = &inp.descriptor.shape;
+        let mut inp_strides = vec![1usize; rank];
+        for i in (0..rank.saturating_sub(1)).rev() {
+            let next_s = inp_strides
+                .get(i + 1)
+                .copied()
+                .ok_or_else(|| OmniError::hal(HalErrorKind::DeviceFailure, "concat::inp_stride"))?;
+            let next_d = inp_shape
+                .get(i + 1)
+                .copied()
+                .ok_or_else(|| OmniError::hal(HalErrorKind::DeviceFailure, "concat::inp_stride"))?;
+            if let Some(s) = inp_strides.get_mut(i) {
+                *s = next_s * next_d;
+            }
+        }
+
+        // Reconstruct the input flat index from the output coordinates,
+        // replacing the concat axis coordinate with `local_axis_coord`.
+        let mut in_flat = 0usize;
+        for dim_idx in 0..rank {
+            let stride = out_strides.get(dim_idx).copied().ok_or_else(|| {
+                OmniError::hal(HalErrorKind::DeviceFailure, "concat::reindex_error")
+            })?;
+            let coord = if dim_idx == axis {
+                local_axis_coord
+            } else {
+                // Decode the coordinate for this non-concat dimension from out_flat.
+                // The "outer" size for this dimension is the product of all dimensions
+                // before it in the output layout, but since we only need the coord we
+                // derive it as: coord = (out_flat / stride) % out_shape[dim_idx].
+                let dim_size = out_shape.get(dim_idx).copied().ok_or_else(|| {
+                    OmniError::hal(HalErrorKind::DeviceFailure, "concat::reindex_error")
+                })?;
+                (out_flat / stride) % dim_size
+            };
+            let inp_stride = inp_strides.get(dim_idx).copied().ok_or_else(|| {
+                OmniError::hal(HalErrorKind::DeviceFailure, "concat::reindex_error")
+            })?;
+            in_flat += coord * inp_stride;
+        }
+
+        write_f32(&mut out_bytes, out_flat, read_f32(inp.as_bytes(), in_flat)?)?;
+    }
+
+    Ok(TensorBuffer::new(out_desc, out_bytes))
+}
+
+/// RMS Layer Normalization across the last axis.
+///
+/// For each slice of size `last_dim`:
+/// `rms = sqrt(mean(x²) + epsilon)`, `output = x / rms`.
+///
+/// Weight scaling is handled separately by the caller.
+#[allow(clippy::integer_division, clippy::cast_precision_loss)]
+fn exec_rms_norm(inputs: &[&TensorBuffer], epsilon: f32) -> Result<TensorBuffer> {
+    let src = inputs.first().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::rms_norm::no_input",
+        )
+    })?;
+
+    require_f32(src.descriptor.dtype, "execute::rms_norm::unsupported_dtype")?;
+
+    let shape = &src.descriptor.shape;
+    if shape.is_empty() {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::rms_norm::scalar_not_supported",
+        ));
+    }
+
+    let last_dim = shape.last().copied().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::rms_norm::shape_error",
+        )
+    })?;
+    let n_total = src.descriptor.num_elements();
+    // Division is exact: n_total = n_slices * last_dim by construction.
+    let n_slices = n_total / last_dim;
+
+    let src_bytes = src.as_bytes();
+    let out_desc = TensorDescriptor::new(shape.clone(), TensorDtype::F32);
+    let mut out_bytes = vec![0u8; out_desc.byte_size()];
+
+    for slice_idx in 0..n_slices {
+        let slice_start = slice_idx * last_dim;
+
+        // Compute mean of squares.
+        let mut mean_sq = 0.0_f32;
+        for dim_pos in 0..last_dim {
+            let x = read_f32(src_bytes, slice_start + dim_pos)?;
+            mean_sq += x * x;
+        }
+        mean_sq /= last_dim as f32;
+
+        let rms = (mean_sq + epsilon).sqrt();
+        for dim_pos in 0..last_dim {
+            let x = read_f32(src_bytes, slice_start + dim_pos)?;
+            write_f32(&mut out_bytes, slice_start + dim_pos, x / rms)?;
+        }
+    }
+
+    Ok(TensorBuffer::new(out_desc, out_bytes))
+}
+
 // =============================================================================
 // TensorBackend impl for CpuBackend
 // =============================================================================
@@ -1403,6 +1916,16 @@ impl TensorBackend for CpuBackend {
             TensorOp::EmbeddingLookup => exec_embedding_lookup(inputs),
 
             TensorOp::Reshape { new_shape } => exec_reshape(inputs, &new_shape),
+
+            TensorOp::Transpose { axes } => exec_transpose(inputs, &axes),
+
+            TensorOp::GeLU => exec_gelu(inputs),
+
+            TensorOp::Scale { scalar } => exec_scale(inputs, scalar),
+
+            TensorOp::Concat { axis } => exec_concat(inputs, axis),
+
+            TensorOp::RmsNorm { epsilon } => exec_rms_norm(inputs, epsilon),
         }
     }
 
@@ -2030,5 +2553,249 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    // -------------------------------------------------------------------------
+    // Transpose tests
+    // -------------------------------------------------------------------------
+
+    /// Transpose a [2,3] tensor → [3,2] and verify value placement.
+    ///
+    /// Input row-major:
+    ///   [[1,2,3],[4,5,6]]
+    /// Transposed (axes=[1,0]):
+    ///   [[1,4],[2,5],[3,6]]
+    #[tokio::test]
+    async fn test_transpose_2d() -> Result<()> {
+        let backend = CpuBackend::new();
+        let src = make_f32_buf(vec![2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+
+        let out = backend
+            .execute(TensorOp::Transpose { axes: vec![1, 0] }, &[&src])
+            .await?;
+
+        assert_eq!(out.descriptor.shape, vec![3, 2]);
+        let vals = read_f32_buf(&out);
+        assert!((vals[0] - 1.0_f32).abs() < 1e-6_f32, "vals[0]={}", vals[0]);
+        assert!((vals[1] - 4.0_f32).abs() < 1e-6_f32, "vals[1]={}", vals[1]);
+        assert!((vals[2] - 2.0_f32).abs() < 1e-6_f32, "vals[2]={}", vals[2]);
+        assert!((vals[3] - 5.0_f32).abs() < 1e-6_f32, "vals[3]={}", vals[3]);
+        assert!((vals[4] - 3.0_f32).abs() < 1e-6_f32, "vals[4]={}", vals[4]);
+        assert!((vals[5] - 6.0_f32).abs() < 1e-6_f32, "vals[5]={}", vals[5]);
+        Ok(())
+    }
+
+    /// Transpose a [2,3,4] tensor with axes [2,0,1] → [4,2,3].
+    #[tokio::test]
+    async fn test_transpose_3d() -> Result<()> {
+        let backend = CpuBackend::new();
+        // Flat values 0..24.
+        let vals_in: Vec<f32> = (0..24_u32).map(|v| v as f32).collect();
+        let src = make_f32_buf(vec![2, 3, 4], &vals_in);
+
+        let out = backend
+            .execute(
+                TensorOp::Transpose {
+                    axes: vec![2, 0, 1],
+                },
+                &[&src],
+            )
+            .await?;
+
+        assert_eq!(out.descriptor.shape, vec![4, 2, 3]);
+        // Verify total element count is unchanged.
+        assert_eq!(out.descriptor.num_elements(), 24);
+        // Spot-check: out[0,0,0] = in[0,0,0] = 0.
+        // out[1,0,0] corresponds to axes=[2,0,1]: out_coord=(1,0,0)→
+        //   in_dim2_coord=1, in_dim0_coord=0, in_dim1_coord=0 → in[0,0,1]=1.
+        let out_vals = read_f32_buf(&out);
+        assert!((out_vals[0] - 0.0_f32).abs() < 1e-6_f32);
+        // out_flat=1 → out_coord=(0,0,1) [shape 4,2,3] →
+        //   axes=[2,0,1]: in_dim2=0,in_dim0=0,in_dim1=1 → in[0,1,0]=4.
+        assert!(
+            (out_vals[1] - 4.0_f32).abs() < 1e-6_f32,
+            "out[0,0,1]={} expected 4",
+            out_vals[1]
+        );
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // GeLU tests
+    // -------------------------------------------------------------------------
+
+    /// GELU(0) ≈ 0, GELU(1) ≈ 0.8413, GELU(-1) ≈ -0.1587.
+    #[tokio::test]
+    async fn test_gelu_basic() -> Result<()> {
+        let backend = CpuBackend::new();
+        let src = make_f32_buf(vec![3], &[0.0, 1.0, -1.0]);
+
+        let out = backend.execute(TensorOp::GeLU, &[&src]).await?;
+        assert_eq!(out.descriptor.shape, vec![3]);
+        let vals = read_f32_buf(&out);
+        assert!(vals[0].abs() < 1e-5_f32, "GELU(0)={}", vals[0]);
+        assert!(
+            (vals[1] - 0.8413_f32).abs() < 1e-3_f32,
+            "GELU(1)={} expected ≈0.8413",
+            vals[1]
+        );
+        assert!(
+            (vals[2] - (-0.1587_f32)).abs() < 1e-3_f32,
+            "GELU(-1)={} expected ≈-0.1587",
+            vals[2]
+        );
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // Scale tests
+    // -------------------------------------------------------------------------
+
+    /// Scale [1,2,3] by 0.5 → [0.5,1.0,1.5].
+    #[tokio::test]
+    async fn test_scale_basic() -> Result<()> {
+        let backend = CpuBackend::new();
+        let src = make_f32_buf(vec![3], &[1.0, 2.0, 3.0]);
+
+        let out = backend
+            .execute(TensorOp::Scale { scalar: 0.5 }, &[&src])
+            .await?;
+        assert_eq!(out.descriptor.shape, vec![3]);
+        let vals = read_f32_buf(&out);
+        assert!((vals[0] - 0.5_f32).abs() < 1e-6_f32, "vals[0]={}", vals[0]);
+        assert!((vals[1] - 1.0_f32).abs() < 1e-6_f32, "vals[1]={}", vals[1]);
+        assert!((vals[2] - 1.5_f32).abs() < 1e-6_f32, "vals[2]={}", vals[2]);
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // Concat tests
+    // -------------------------------------------------------------------------
+
+    /// Concatenate two [2,3] tensors along axis 0 → [4,3].
+    #[tokio::test]
+    async fn test_concat_axis0() -> Result<()> {
+        let backend = CpuBackend::new();
+        let a = make_f32_buf(vec![2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = make_f32_buf(vec![2, 3], &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+
+        let out = backend
+            .execute(TensorOp::Concat { axis: 0 }, &[&a, &b])
+            .await?;
+        assert_eq!(out.descriptor.shape, vec![4, 3]);
+        let vals = read_f32_buf(&out);
+        // First two rows from a, last two from b.
+        assert!((vals[0] - 1.0_f32).abs() < 1e-6_f32);
+        assert!((vals[3] - 4.0_f32).abs() < 1e-6_f32);
+        assert!((vals[6] - 7.0_f32).abs() < 1e-6_f32);
+        assert!((vals[9] - 10.0_f32).abs() < 1e-6_f32);
+        Ok(())
+    }
+
+    /// Concatenate two [2,3] tensors along axis 1 → [2,6].
+    #[tokio::test]
+    async fn test_concat_axis1() -> Result<()> {
+        let backend = CpuBackend::new();
+        let a = make_f32_buf(vec![2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = make_f32_buf(vec![2, 3], &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+
+        let out = backend
+            .execute(TensorOp::Concat { axis: 1 }, &[&a, &b])
+            .await?;
+        assert_eq!(out.descriptor.shape, vec![2, 6]);
+        let vals = read_f32_buf(&out);
+        // Row 0: [1,2,3,7,8,9], row 1: [4,5,6,10,11,12].
+        assert!((vals[0] - 1.0_f32).abs() < 1e-6_f32, "vals[0]={}", vals[0]);
+        assert!((vals[3] - 7.0_f32).abs() < 1e-6_f32, "vals[3]={}", vals[3]);
+        assert!((vals[6] - 4.0_f32).abs() < 1e-6_f32, "vals[6]={}", vals[6]);
+        assert!((vals[9] - 10.0_f32).abs() < 1e-6_f32, "vals[9]={}", vals[9]);
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // RmsNorm tests
+    // -------------------------------------------------------------------------
+
+    /// After RmsNorm, the RMS of each slice should be ≈ 1.
+    #[tokio::test]
+    async fn test_rms_norm() -> Result<()> {
+        let backend = CpuBackend::new();
+        let src = make_f32_buf(vec![1, 4], &[1.0, 2.0, 3.0, 4.0]);
+
+        let out = backend
+            .execute(TensorOp::RmsNorm { epsilon: 1e-5 }, &[&src])
+            .await?;
+        assert_eq!(out.descriptor.shape, vec![1, 4]);
+        let vals = read_f32_buf(&out);
+        // RMS of output slice should be ≈ 1.
+        let mean_sq: f32 = vals.iter().map(|v| v * v).sum::<f32>() / 4.0_f32;
+        let rms = mean_sq.sqrt();
+        assert!((rms - 1.0_f32).abs() < 1e-4_f32, "rms={rms}");
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // Transformer forward pass smoke test
+    // -------------------------------------------------------------------------
+
+    /// Tiny transformer smoke test: verify output shape is [seq_len, vocab_size].
+    ///
+    /// Uses 2 layers, 2 heads, d_model=8, d_ff=16, vocab_size=16, seq_len=4.
+    #[tokio::test]
+    async fn test_transformer_forward_smoke() -> Result<()> {
+        use crate::transformer::{
+            TransformerConfig, TransformerLayerWeights, TransformerWeights, transformer_forward,
+        };
+
+        let backend = CpuBackend::new();
+        let cfg = TransformerConfig {
+            n_layers: 2,
+            n_heads: 2,
+            d_model: 8,
+            d_ff: 16,
+            vocab_size: 16,
+            max_seq_len: 16,
+            rms_norm_eps: 1e-5,
+        };
+
+        // Helper: create an F32 buffer filled with a repeating pattern.
+        let make_weight = |rows: usize, cols: usize| -> TensorBuffer {
+            let n = rows * cols;
+            let vals: Vec<f32> = (0..n).map(|i| ((i % 7) as f32) * 0.1 + 0.01).collect();
+            make_f32_buf(vec![rows, cols], &vals)
+        };
+        let make_vec = |size: usize| -> TensorBuffer {
+            let vals: Vec<f32> = (0..size).map(|i| ((i % 5) as f32) * 0.1 + 0.01).collect();
+            make_f32_buf(vec![size], &vals)
+        };
+
+        let layer = || -> TransformerLayerWeights {
+            TransformerLayerWeights {
+                attn_q: make_weight(cfg.d_model, cfg.d_model),
+                attn_k: make_weight(cfg.d_model, cfg.d_model),
+                attn_v: make_weight(cfg.d_model, cfg.d_model),
+                attn_o: make_weight(cfg.d_model, cfg.d_model),
+                ffn_gate: make_weight(cfg.d_model, cfg.d_ff),
+                ffn_up: make_weight(cfg.d_model, cfg.d_ff),
+                ffn_down: make_weight(cfg.d_ff, cfg.d_model),
+                attn_norm: make_vec(cfg.d_model),
+                ffn_norm: make_vec(cfg.d_model),
+            }
+        };
+
+        let weights = TransformerWeights {
+            token_embedding: make_weight(cfg.vocab_size, cfg.d_model),
+            layers: vec![layer(), layer()],
+            output_norm: make_vec(cfg.d_model),
+            output_proj: make_weight(cfg.d_model, cfg.vocab_size),
+        };
+
+        let seq_len = 4usize;
+        let idx_desc = TensorDescriptor::new(vec![seq_len], TensorDtype::U8);
+        let input_ids = TensorBuffer::new(idx_desc, vec![0u8, 1, 2, 3]);
+
+        let logits = transformer_forward(&backend, &cfg, &weights, &input_ids).await?;
+        assert_eq!(logits.descriptor.shape, vec![seq_len, cfg.vocab_size]);
+        Ok(())
     }
 }
