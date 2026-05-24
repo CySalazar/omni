@@ -34,6 +34,10 @@ async-trait     = { workspace = true }
 serde           = { workspace = true }
 tracing         = { workspace = true }
 thiserror       = { workspace = true }
+# BLAKE3 is the OMNI OS protocol-level hash (workspace pin: 1.5).
+# Used by ModelRegistry::load_from_bytes to verify model data integrity
+# against the signed hash in the model manifest.
+blake3          = { workspace = true }
 
 [dev-dependencies]
 mockall  = { workspace = true }
