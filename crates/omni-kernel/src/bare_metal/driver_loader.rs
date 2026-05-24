@@ -1,4 +1,4 @@
-//! DEV-ONLY driver auto-loader (P6.7.9-pre.8).
+//! DEV-ONLY driver auto-loader (P6.7.9-pre.9).
 //!
 //! Spawns a hand-crafted "driver probe" ELF at boot time that exercises
 //! the full `MmioMap (70)` / `DmaMap (71)` / `IrqAttach (72)` syscall
@@ -230,20 +230,27 @@ pub unsafe fn boot_load_driver_probe<const N: usize>(
     alloc: &mut crate::memory::BitmapFrameAllocator<N>,
     scheduler: &mut crate::scheduling::RoundRobinScheduler,
 ) {
-    early_console::write_str("[driver-loader] PCI scan bus 0...\n");
+    early_console::write_str("[driver-loader] PCI scan all buses (bridge traversal)...\n");
 
     // SAFETY: Ring 0, single-CPU boot path.
-    let scan = unsafe { pci_scan::scan_bus_0() };
+    let scan = unsafe { pci_scan::scan_all_buses() };
+    early_console::write_str("[driver-loader] buses scanned: ");
+    early_console::write_usize(scan.buses_scanned() as usize);
+    early_console::write_str("  bridges: ");
+    early_console::write_usize(scan.bridges_found() as usize);
+    early_console::write_str("\n");
     early_console::write_str("[driver-loader] PCI devices found: ");
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "PCI device count always < 32; fits usize"
+        reason = "PCI device count always < 64; fits usize"
     )]
     early_console::write_usize(scan.count());
     early_console::write_str("\n");
 
     for dev in scan.iter() {
-        early_console::write_str("[driver-loader]   ");
+        early_console::write_str("[driver-loader]   bus=");
+        write_hex_u8(dev.bus);
+        early_console::write_str(" ");
         write_hex_u16(dev.vendor_id);
         early_console::write_str(":");
         write_hex_u16(dev.device_id);
@@ -255,6 +262,9 @@ pub unsafe fn boot_load_driver_probe<const N: usize>(
         write_hex_u32(dev.bar0);
         early_console::write_str(" irq=");
         early_console::write_usize(dev.irq_line as usize);
+        if dev.is_pci_bridge() {
+            early_console::write_str(" [BRIDGE]");
+        }
         early_console::write_str("\n");
     }
 

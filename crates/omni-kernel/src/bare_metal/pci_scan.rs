@@ -1,13 +1,16 @@
-//! PCI Type 1 configuration space bus scanner (P6.7.9-pre.8).
+//! PCI configuration-space bus scanner with PCI-to-PCI bridge traversal
+//! (P6.7.9-pre.9).
 //!
-//! Discovers PCI devices on bus 0 via the legacy CF8/CFC I/O port
-//! mechanism.  Used by the DEV-ONLY driver auto-loader to find devices
-//! before issuing `DriverLoad`.
+//! Discovers PCI devices across all reachable buses via the legacy
+//! CF8/CFC I/O port mechanism.  When a Type 1 header (PCI-to-PCI bridge)
+//! is found, the scanner reads the bridge's secondary bus number and
+//! recursively enumerates devices behind it.
 //!
 //! ## Scope
 //!
-//! Phase 1 scans a single bus (bus 0) with 32 devices × 8 functions.
-//! Multi-bus / PCI-to-PCI bridge traversal is deferred to Phase 2.
+//! Phase 1 scans up to 256 buses with a recursion depth limit of 8
+//! levels (matching typical hardware topologies).  Each bus enumerates
+//! 32 device slots × 8 functions.
 
 #![allow(unsafe_code, reason = "PCI config-space reads via I/O ports")]
 #![allow(
@@ -20,13 +23,32 @@
 
 use super::arch;
 
-/// Maximum number of devices the scanner will discover.
-const MAX_DISCOVERED: usize = 32;
+/// Maximum number of devices the scanner will record.
+const MAX_DISCOVERED: usize = 64;
+
+/// Maximum bridge traversal depth to prevent infinite loops on
+/// misconfigured topologies.
+const MAX_BRIDGE_DEPTH: u8 = 8;
+
+/// PCI header type register offset.
+const PCI_REG_HEADER_TYPE: u8 = 0x0C;
+
+/// PCI class/subclass register offset.
+const PCI_REG_CLASS: u8 = 0x08;
+
+/// Bridge secondary/primary bus register offset (Type 1 header).
+const PCI_REG_BUS_INFO: u8 = 0x18;
+
+/// PCI-to-PCI bridge class code.
+const PCI_CLASS_BRIDGE: u8 = 0x06;
+
+/// PCI-to-PCI bridge sub-class code.
+const PCI_SUBCLASS_PCI_TO_PCI: u8 = 0x04;
 
 /// A discovered PCI device descriptor.
 #[derive(Debug, Clone, Copy)]
 pub struct PciDevice {
-    /// PCI bus number (always 0 in Phase 1).
+    /// PCI bus number.
     pub bus: u8,
     /// PCI device number (0..31).
     pub device: u8,
@@ -50,6 +72,8 @@ pub struct PciDevice {
     pub bar5: u32,
     /// Interrupt line from config register 0x3C[7:0].
     pub irq_line: u8,
+    /// Header type (0 = endpoint, 1 = PCI-to-PCI bridge).
+    pub header_type: u8,
 }
 
 impl PciDevice {
@@ -90,12 +114,22 @@ impl PciDevice {
             Self::bar_mmio_base(self.bar4)
         }
     }
+
+    /// Returns `true` if this device is a PCI-to-PCI bridge (Type 1).
+    #[must_use]
+    pub const fn is_pci_bridge(&self) -> bool {
+        self.class_code == PCI_CLASS_BRIDGE
+            && self.subclass == PCI_SUBCLASS_PCI_TO_PCI
+            && (self.header_type & 0x7F) == 0x01
+    }
 }
 
 /// Result of a PCI bus scan.
 pub struct ScanResult {
     devices: [Option<PciDevice>; MAX_DISCOVERED],
     count: usize,
+    buses_scanned: u16,
+    bridges_found: u8,
 }
 
 impl ScanResult {
@@ -103,6 +137,18 @@ impl ScanResult {
     #[must_use]
     pub const fn count(&self) -> usize {
         self.count
+    }
+
+    /// Number of PCI buses scanned during traversal.
+    #[must_use]
+    pub const fn buses_scanned(&self) -> u16 {
+        self.buses_scanned
+    }
+
+    /// Number of PCI-to-PCI bridges found.
+    #[must_use]
+    pub const fn bridges_found(&self) -> u8 {
+        self.bridges_found
     }
 
     /// Find the first device matching the given vendor and device ID.
@@ -118,6 +164,13 @@ impl ScanResult {
         self.iter().find(|d| d.vendor_id == vendor_id)
     }
 
+    /// Find the first device matching the given class + subclass.
+    #[must_use]
+    pub fn find_by_class(&self, class_code: u8, subclass: u8) -> Option<&PciDevice> {
+        self.iter()
+            .find(|d| d.class_code == class_code && d.subclass == subclass)
+    }
+
     /// Iterator over discovered devices.
     pub fn iter(&self) -> impl Iterator<Item = &PciDevice> {
         self.devices.get(..self.count)
@@ -125,27 +178,81 @@ impl ScanResult {
             .iter()
             .flatten()
     }
+
+    fn push(&mut self, dev: PciDevice) -> bool {
+        if self.count < MAX_DISCOVERED {
+            self.devices[self.count] = Some(dev);
+            self.count += 1;
+            true
+        } else {
+            false
+        }
+    }
 }
 
-/// Scan PCI bus 0 for all present devices.
+/// Scan all reachable PCI buses, traversing PCI-to-PCI bridges.
 ///
-/// Reads vendor/device ID at each (bus=0, device=0..31, function=0..7)
-/// slot via the CF8/CFC mechanism.  Non-existent slots return
-/// vendor_id `0xFFFF` and are skipped.
+/// Starts at bus 0 and recursively follows every bridge's secondary bus.
+/// A depth limit of [`MAX_BRIDGE_DEPTH`] prevents runaway recursion on
+/// misconfigured topologies.
 ///
 /// # Safety
 ///
 /// Must be called from Ring 0.  PCI config reads via I/O ports are
 /// side-effect-free.
-pub unsafe fn scan_bus_0() -> ScanResult {
+pub unsafe fn scan_all_buses() -> ScanResult {
     let mut result = ScanResult {
         devices: [None; MAX_DISCOVERED],
         count: 0,
+        buses_scanned: 0,
+        bridges_found: 0,
     };
+
+    // Check if host bridge is a multi-function device (multiple root
+    // complexes on separate bus segments).
+    let header_type_0 = unsafe { arch::pci_cfg_read32(0, 0, 0, PCI_REG_HEADER_TYPE) };
+    let multi_func = ((header_type_0 >> 23) & 1) != 0;
+
+    if multi_func {
+        for func in 0u8..8 {
+            let id = unsafe { arch::pci_cfg_read32(0, 0, func, 0x00) };
+            let vendor_id = (id & 0xFFFF) as u16;
+            if vendor_id == 0xFFFF {
+                continue;
+            }
+            unsafe { scan_bus(func, 0, &mut result) };
+        }
+    } else {
+        unsafe { scan_bus(0, 0, &mut result) };
+    }
+
+    result
+}
+
+/// Scan PCI bus 0 for all present devices (backward-compatible entry point).
+///
+/// # Safety
+///
+/// Must be called from Ring 0.
+pub unsafe fn scan_bus_0() -> ScanResult {
+    unsafe { scan_all_buses() }
+}
+
+/// Recursively scan a single PCI bus.
+///
+/// # Safety
+///
+/// Ring-0 only.
+unsafe fn scan_bus(bus: u8, depth: u8, result: &mut ScanResult) {
+    if depth > MAX_BRIDGE_DEPTH {
+        return;
+    }
+
+    result.buses_scanned += 1;
 
     for dev_slot in 0u8..32 {
         for func in 0u8..8 {
-            let id = unsafe { arch::pci_cfg_read32(0, dev_slot, func, 0x00) };
+            let id = unsafe { arch::pci_cfg_read32(bus, dev_slot, func, 0x00) };
             let vendor_id = (id & 0xFFFF) as u16;
             if vendor_id == 0xFFFF {
                 if func == 0 {
@@ -155,47 +262,59 @@ pub unsafe fn scan_bus_0() -> ScanResult {
             }
             let device_id = ((id >> 16) & 0xFFFF) as u16;
 
-            let class_reg = unsafe { arch::pci_cfg_read32(0, dev_slot, func, 0x08) };
+            let class_reg = unsafe { arch::pci_cfg_read32(bus, dev_slot, func, PCI_REG_CLASS) };
             let class_code = ((class_reg >> 24) & 0xFF) as u8;
             let subclass = ((class_reg >> 16) & 0xFF) as u8;
 
-            let bar0 = unsafe { arch::pci_cfg_read32(0, dev_slot, func, 0x10) };
-            let bar1 = unsafe { arch::pci_cfg_read32(0, dev_slot, func, 0x14) };
-            let bar4 = unsafe { arch::pci_cfg_read32(0, dev_slot, func, 0x20) };
-            let bar5 = unsafe { arch::pci_cfg_read32(0, dev_slot, func, 0x24) };
+            let header_reg = unsafe { arch::pci_cfg_read32(bus, dev_slot, func, PCI_REG_HEADER_TYPE) };
+            let header_type = ((header_reg >> 16) & 0xFF) as u8;
 
-            let intr_reg = unsafe { arch::pci_cfg_read32(0, dev_slot, func, 0x3C) };
+            let bar0 = unsafe { arch::pci_cfg_read32(bus, dev_slot, func, 0x10) };
+            let bar1 = unsafe { arch::pci_cfg_read32(bus, dev_slot, func, 0x14) };
+            let bar4 = unsafe { arch::pci_cfg_read32(bus, dev_slot, func, 0x20) };
+            let bar5 = unsafe { arch::pci_cfg_read32(bus, dev_slot, func, 0x24) };
+
+            let intr_reg = unsafe { arch::pci_cfg_read32(bus, dev_slot, func, 0x3C) };
             let irq_line = (intr_reg & 0xFF) as u8;
 
-            if result.count < MAX_DISCOVERED {
-                result.devices[result.count] = Some(PciDevice {
-                    bus: 0,
-                    device: dev_slot,
-                    function: func,
-                    vendor_id,
-                    device_id,
-                    class_code,
-                    subclass,
-                    bar0,
-                    bar1,
-                    bar4,
-                    bar5,
-                    irq_line,
-                });
-                result.count += 1;
+            let dev = PciDevice {
+                bus,
+                device: dev_slot,
+                function: func,
+                vendor_id,
+                device_id,
+                class_code,
+                subclass,
+                bar0,
+                bar1,
+                bar4,
+                bar5,
+                irq_line,
+                header_type,
+            };
+
+            let is_bridge = dev.is_pci_bridge();
+            result.push(dev);
+
+            if is_bridge {
+                result.bridges_found += 1;
+                let bus_info = unsafe {
+                    arch::pci_cfg_read32(bus, dev_slot, func, PCI_REG_BUS_INFO)
+                };
+                let secondary_bus = ((bus_info >> 8) & 0xFF) as u8;
+                if secondary_bus != 0 && secondary_bus != bus {
+                    unsafe { scan_bus(secondary_bus, depth + 1, result) };
+                }
             }
 
             if func == 0 {
-                let header_type = unsafe { arch::pci_cfg_read32(0, dev_slot, 0, 0x0C) };
-                let multi_func = (header_type >> 23) & 1;
+                let multi_func = (header_type >> 7) & 1;
                 if multi_func == 0 {
                     break;
                 }
             }
         }
     }
-
-    result
 }
 
 /// Enable Bus Master + Memory Space on the given PCI device.
@@ -266,6 +385,8 @@ mod tests {
         let result = ScanResult {
             devices: [None; MAX_DISCOVERED],
             count: 0,
+            buses_scanned: 0,
+            bridges_found: 0,
         };
         assert!(result.find(0x1AF4, 0x1000).is_none());
     }
@@ -275,7 +396,139 @@ mod tests {
         let result = ScanResult {
             devices: [None; MAX_DISCOVERED],
             count: 0,
+            buses_scanned: 0,
+            bridges_found: 0,
         };
         assert_eq!(result.iter().count(), 0);
+    }
+
+    #[test]
+    fn scan_result_push_respects_capacity() {
+        let mut result = ScanResult {
+            devices: [None; MAX_DISCOVERED],
+            count: 0,
+            buses_scanned: 0,
+            bridges_found: 0,
+        };
+        let dev = PciDevice {
+            bus: 0,
+            device: 1,
+            function: 0,
+            vendor_id: 0x1AF4,
+            device_id: 0x1000,
+            class_code: 0x02,
+            subclass: 0x00,
+            bar0: 0xFEBC_0000,
+            bar1: 0,
+            bar4: 0,
+            bar5: 0,
+            irq_line: 11,
+            header_type: 0x00,
+        };
+        for _ in 0..MAX_DISCOVERED {
+            assert!(result.push(dev));
+        }
+        assert!(!result.push(dev));
+        assert_eq!(result.count(), MAX_DISCOVERED);
+    }
+
+    #[test]
+    fn is_pci_bridge_detects_type1_header() {
+        let bridge = PciDevice {
+            bus: 0,
+            device: 0,
+            function: 0,
+            vendor_id: 0x8086,
+            device_id: 0x1234,
+            class_code: PCI_CLASS_BRIDGE,
+            subclass: PCI_SUBCLASS_PCI_TO_PCI,
+            bar0: 0,
+            bar1: 0,
+            bar4: 0,
+            bar5: 0,
+            irq_line: 0,
+            header_type: 0x01,
+        };
+        assert!(bridge.is_pci_bridge());
+    }
+
+    #[test]
+    fn is_pci_bridge_rejects_non_bridge() {
+        let endpoint = PciDevice {
+            bus: 0,
+            device: 1,
+            function: 0,
+            vendor_id: 0x1AF4,
+            device_id: 0x1000,
+            class_code: 0x02,
+            subclass: 0x00,
+            bar0: 0xFEBC_0000,
+            bar1: 0,
+            bar4: 0,
+            bar5: 0,
+            irq_line: 11,
+            header_type: 0x00,
+        };
+        assert!(!endpoint.is_pci_bridge());
+    }
+
+    #[test]
+    fn is_pci_bridge_ignores_multifunction_bit() {
+        let bridge_mf = PciDevice {
+            bus: 0,
+            device: 0,
+            function: 0,
+            vendor_id: 0x8086,
+            device_id: 0x1234,
+            class_code: PCI_CLASS_BRIDGE,
+            subclass: PCI_SUBCLASS_PCI_TO_PCI,
+            bar0: 0,
+            bar1: 0,
+            bar4: 0,
+            bar5: 0,
+            irq_line: 0,
+            header_type: 0x81, // multi-function bit set
+        };
+        assert!(bridge_mf.is_pci_bridge());
+    }
+
+    #[test]
+    fn find_by_class_returns_matching_device() {
+        let mut result = ScanResult {
+            devices: [None; MAX_DISCOVERED],
+            count: 0,
+            buses_scanned: 1,
+            bridges_found: 0,
+        };
+        let dev = PciDevice {
+            bus: 0,
+            device: 3,
+            function: 0,
+            vendor_id: 0x8086,
+            device_id: 0x5678,
+            class_code: NVME_CLASS_CODE,
+            subclass: NVME_SUBCLASS,
+            bar0: 0xFC00_0000,
+            bar1: 0,
+            bar4: 0,
+            bar5: 0,
+            irq_line: 10,
+            header_type: 0x00,
+        };
+        result.push(dev);
+        assert!(result.find_by_class(NVME_CLASS_CODE, NVME_SUBCLASS).is_some());
+        assert!(result.find_by_class(0x02, 0x00).is_none());
+    }
+
+    #[test]
+    fn scan_result_metadata_initializes_zero() {
+        let result = ScanResult {
+            devices: [None; MAX_DISCOVERED],
+            count: 0,
+            buses_scanned: 0,
+            bridges_found: 0,
+        };
+        assert_eq!(result.buses_scanned(), 0);
+        assert_eq!(result.bridges_found(), 0);
     }
 }

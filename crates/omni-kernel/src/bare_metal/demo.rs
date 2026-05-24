@@ -1040,7 +1040,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "P6.7.9-pre.8 virtio-net live bringup",
+        "P6.7.9-pre.9 multi-bus PCI bridge scan",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1048,7 +1048,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "TASK-004 virtio-net live",
+        "pre.10 TASK-004 virtio-net live",
         graphics::WHITE,
     );
     row(
