@@ -79,6 +79,12 @@ omni-tee        = { workspace = true }
 # crate (see `docs/09-tech-specifications.md`).
 thiserror = { workspace = true }
 
+# Synchronization. `parking_lot::Mutex` is the workspace-preferred replacement
+# for `std::sync::Mutex` (no PoisonError, simpler audit surface). The
+# `clippy.toml` disallowed-methods policy bans `std::sync::Mutex::new` and
+# redirects to `parking_lot`. Version pinned to workspace.
+parking_lot = { workspace = true }
+
 # Serialization. Used for `OciImageRef`, the OMNI extension manifest in
 # image annotations, and `CapabilityProfile` definitions stored as TOML/
 # JSON on disk. Outbound encoding routes through `omni-types::wire`.

@@ -86,7 +86,9 @@
 
 pub mod attestation;
 pub mod cli;
+pub mod console;
 pub mod engine;
+pub mod hypervisor;
 pub mod image;
 pub mod lifecycle;
 pub mod profile;
@@ -100,7 +102,11 @@ pub mod virtio;
 // CapabilityProfile, OciImageRef, ContainerError};` without navigating
 // the module tree.
 
+pub use console::ConsoleOutput;
 pub use engine::ContainerEngine;
+#[cfg(feature = "kvm")]
+pub use engine::KvmEngine;
+pub use hypervisor::{Hypervisor, MockHypervisor, VcpuExit, VcpuHandle, VmHandle};
 pub use image::OciImageRef;
 pub use lifecycle::{ContainerLifecycleState, TransitionError};
 pub use profile::CapabilityProfile;

@@ -238,6 +238,13 @@ hex                = { version = "0.4", default-features = false, features = ["a
 quinn = "0.11"
 snow  = "0.9"
 
+# --- Synchronization primitives ---
+# `parking_lot` is the workspace-standard `Mutex` / `RwLock` replacement.
+# It does not have PoisonError semantics (unlike `std::sync::Mutex`), which
+# simplifies audit paths. The `clippy.toml` disallowed-methods list bans
+# `std::sync::Mutex::new` and redirects callers here. MIT/Apache-2.0.
+parking_lot = "0.12"
+
 # --- Observability ---
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
