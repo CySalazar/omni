@@ -22,6 +22,10 @@ readme.workspace       = true
 
 [dependencies]
 omni-types = { workspace = true }
+# `serde` with `derive` and `alloc` features for `FileMetadata` wire serialization.
+# `default-features = false` keeps this crate `no_std + alloc` compatible,
+# consistent with the workspace `no_std` policy in /docs/09-tech-specifications.md.
+serde      = { workspace = true }
 
 [lints]
 workspace = true

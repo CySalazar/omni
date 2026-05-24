@@ -952,6 +952,7 @@ name = "omni-fs"
 version = "0.2.0"
 dependencies = [
  "omni-types",
+ "serde",
 ]
 
 [[package]]
