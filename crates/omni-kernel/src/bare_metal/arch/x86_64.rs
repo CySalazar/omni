@@ -389,25 +389,20 @@ pub fn acpi_poweroff() {
     // All attempts exhausted; caller falls through to halt_forever.
 }
 
-/// Trigger a system reset. Tries three paths in order; at least one
-/// is guaranteed to reset any x86_64 machine.
+/// Trigger a system reset. Tries two paths; the second is guaranteed.
 ///
-/// 1. **8042 keyboard controller** (`0xFE` → port `0x64`): pulses the
-///    CPU RESET line. Works on QEMU (all machine types) and virtually
-///    all physical hardware.
-/// 2. **Port 0xCF9 full reset** (Intel ICH/PCH reset control register):
-///    read-modify-write sequence per the Linux kernel's reboot.c —
-///    clear RST_CPU+SYS_RST, assert RST_CPU, short spin, assert both.
-/// 3. **Triple fault**: load a zero-length IDT and trigger `int3`.
-///    The CPU cannot find an exception handler, faults again, and the
-///    resulting triple fault resets the platform unconditionally.
+/// 1. **Port 0xCF9 full reset** (Intel ICH/PCH reset control register):
+///    read-modify-write per Linux reboot.c. Works on QEMU q35/i440fx
+///    and all Intel/AMD chipsets with ICH/PCH.
+/// 2. **Triple fault**: load a zero-length IDT and trigger `ud2`.
+///    The CPU faults, cannot find a handler, and the triple fault
+///    unconditionally resets the platform.
+///
+/// The 8042 keyboard reset (`0xFE` → port `0x64`) is intentionally
+/// NOT used: QEMU/KVM converts it to a VM exit (shutdown) rather
+/// than a guest-visible CPU reset on some Proxmox configurations.
 pub fn acpi_reboot() {
-    // Attempt 1: 8042 keyboard controller reset.
-    unsafe { outb(0x64, 0xFE) };
-
-    // Attempt 2: port 0xCF9 (ICH/PCH reset control register).
-    // Sequence from Linux arch/x86/kernel/reboot.c: clear bits 1-2,
-    // write back with bit 1 (RST_CPU), spin, then set bits 1+2.
+    // Attempt 1: port 0xCF9 (ICH/PCH reset control register).
     let cf9 = unsafe { inb(0xCF9) } & !0x06;
     unsafe { outb(0xCF9, cf9 | 0x02) };
     for _ in 0..1_000_000 {
@@ -415,14 +410,15 @@ pub fn acpi_reboot() {
     }
     unsafe { outb(0xCF9, cf9 | 0x06) };
 
-    // Attempt 3: triple fault — guaranteed reset on all x86_64 CPUs.
+    // Attempt 2: triple fault — guaranteed reset on all x86_64 CPUs.
     #[allow(unsafe_code, reason = "intentional triple-fault to force CPU reset")]
     unsafe {
+        let null_idt: [u8; 10] = [0; 10];
         asm!(
-            "lidt [{}]",
-            "int3",
-            in(reg) &[0u16; 5] as *const _ as u64,
-            options(noreturn, nomem, nostack),
+            "lidt [{ptr}]",
+            "ud2",
+            ptr = in(reg) &null_idt as *const _ as u64,
+            options(noreturn),
         );
     }
 }
