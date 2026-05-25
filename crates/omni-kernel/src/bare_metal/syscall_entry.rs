@@ -2896,6 +2896,45 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                 Err(KernelError::NotYetImplemented)
             }
 
+            // Shell terminal syscalls. On bare-metal these will route to the
+            // global KernelState instances (SHELL_FD_TABLE, etc.) once the
+            // full handler wiring lands. For now — and on host test builds —
+            // they report `NotYetImplemented` (ENOSYS equivalent) so that:
+            //   a) the compiler forces every variant to be named (no silent
+            //      catch-all swallowing them), and
+            //   b) the handler logic tested via `syscall_handlers::tests`
+            //      uses a local `KernelState` rather than the bare-metal
+            //      global, keeping test isolation intact.
+            SyscallNumber::ReadConsole
+            | SyscallNumber::FdRead
+            | SyscallNumber::FdWrite
+            | SyscallNumber::FdClose
+            | SyscallNumber::FdDup
+            | SyscallNumber::FdSeek
+            | SyscallNumber::FsOpen
+            | SyscallNumber::FsStat
+            | SyscallNumber::FsListDir
+            | SyscallNumber::FsCreate
+            | SyscallNumber::FsDelete
+            | SyscallNumber::FsMkdir
+            | SyscallNumber::GetCwd
+            | SyscallNumber::SetCwd
+            | SyscallNumber::ProcessList
+            | SyscallNumber::ProcessKill
+            | SyscallNumber::ProcessSpawn => {
+                let _ = args;
+                Err(KernelError::NotYetImplemented)
+            }
+
+            // These syscalls use the two-register return path (`dispatch_full`);
+            // landing here from the single-register path is not expected in
+            // normal operation. Report `NotYetImplemented` to be loud and
+            // observable in host tests without the bare-metal singletons.
+            SyscallNumber::PipeCreate | SyscallNumber::FdDup2 | SyscallNumber::ProcessWait => {
+                let _ = args;
+                Err(KernelError::NotYetImplemented)
+            }
+
             // All other syscalls are scaffolded but not yet implemented.
             _ => Err(KernelError::NotYetImplemented),
         }
@@ -3014,6 +3053,41 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                 let _ = args;
                 Ok(SyscallReturn::err(crate::syscall::syscall_errno::ENOSYS))
             }
+            // Shell terminal syscalls that natively return two registers.
+            // `PipeCreate` returns `(rax=read_fd, rdx=write_fd)`;
+            // `FdDup2` returns `(rax=new_fd, rdx=errno)`;
+            // `ProcessWait` returns `(rax=exit_code, rdx=child_pid)`.
+            // Until the full handler wiring lands these return ENOSYS via the
+            // rich two-register path so callers using `dispatch_full` (the
+            // canonical path per the OIP-013 dispatcher convention) get a
+            // clean `(rax=0, rdx=ENOSYS)` rather than the legacy
+            // `(rax=SYSCALL_ERROR, rdx=0)` sentinel.
+            SyscallNumber::PipeCreate | SyscallNumber::FdDup2 | SyscallNumber::ProcessWait => {
+                let _ = args;
+                Ok(SyscallReturn::err(crate::syscall::syscall_errno::ENOSYS))
+            }
+
+            // Shell terminal single-register syscalls — route through the
+            // default single-register path so they participate in the
+            // existing `dispatch` error-handling flow.
+            SyscallNumber::ReadConsole
+            | SyscallNumber::FdRead
+            | SyscallNumber::FdWrite
+            | SyscallNumber::FdClose
+            | SyscallNumber::FdDup
+            | SyscallNumber::FdSeek
+            | SyscallNumber::FsOpen
+            | SyscallNumber::FsStat
+            | SyscallNumber::FsListDir
+            | SyscallNumber::FsCreate
+            | SyscallNumber::FsDelete
+            | SyscallNumber::FsMkdir
+            | SyscallNumber::GetCwd
+            | SyscallNumber::SetCwd
+            | SyscallNumber::ProcessSpawn
+            | SyscallNumber::ProcessList
+            | SyscallNumber::ProcessKill => self.dispatch(number, args).map(SyscallReturn::ok),
+
             other => self.dispatch(other, args).map(SyscallReturn::ok),
         }
     }
@@ -3068,6 +3142,19 @@ extern "C" fn kernel_syscall_dispatch(
         43 => SyscallNumber::TeeUnseal,
         50 => SyscallNumber::TimeMonotonicNanos,
         60 => SyscallNumber::WriteConsole,
+        // Shell I/O + fd syscalls (terminal support).
+        // Numeric range 61–68 reserved for console I/O and fd operations.
+        // Translation MUST stay in lock-step with the `SyscallNumber`
+        // discriminants — the `syscall_numbers_are_stable` test in
+        // `crate::syscall` pins both ends against drift.
+        61 => SyscallNumber::ReadConsole,
+        62 => SyscallNumber::PipeCreate,
+        63 => SyscallNumber::FdRead,
+        64 => SyscallNumber::FdWrite,
+        65 => SyscallNumber::FdClose,
+        66 => SyscallNumber::FdDup,
+        67 => SyscallNumber::FdDup2,
+        68 => SyscallNumber::FdSeek,
         // OIP-013 + OIP-016 driver framework (P6.7.3 skeleton).
         70 => SyscallNumber::MmioMap,
         71 => SyscallNumber::DmaMap,
@@ -3083,6 +3170,24 @@ extern "C" fn kernel_syscall_dispatch(
         76 => SyscallNumber::BlkRegister,
         77 => SyscallNumber::BlkUnregister,
         78 => SyscallNumber::BlkLookup,
+        // Filesystem + process management syscalls (shell terminal support).
+        // Numeric range 90–97 reserved; process mgmt reuses slots 14–17
+        // from the scheduling decade. Translation MUST stay in lock-step
+        // with `SyscallNumber` discriminants.
+        90 => SyscallNumber::FsOpen,
+        91 => SyscallNumber::FsStat,
+        92 => SyscallNumber::FsListDir,
+        93 => SyscallNumber::FsCreate,
+        94 => SyscallNumber::FsDelete,
+        95 => SyscallNumber::FsMkdir,
+        96 => SyscallNumber::ProcessList,
+        97 => SyscallNumber::ProcessKill,
+        // Process management (shell terminal support) — numeric slots
+        // 14–17 share the scheduling decade alongside TaskCreate/TaskExit.
+        14 => SyscallNumber::ProcessSpawn,
+        15 => SyscallNumber::ProcessWait,
+        16 => SyscallNumber::GetCwd,
+        17 => SyscallNumber::SetCwd,
         // OIP-Phase2-Entry-021 AI syscall surface (P2 Sprint 2).
         // Numeric decade `8x` reserved for AI. Translation here MUST
         // stay in lock-step with the `SyscallNumber` discriminants —

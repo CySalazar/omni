@@ -775,9 +775,7 @@ impl SecurityAgent {
         if cost > sys_remaining + f64::EPSILON {
             warn!(
                 agent_id,
-                cost,
-                sys_remaining,
-                "privacy pre-flight: system budget would be exceeded"
+                cost, sys_remaining, "privacy pre-flight: system budget would be exceeded"
             );
             return Err(PrivacyError::BudgetExhausted {
                 requested: cost,
@@ -790,9 +788,7 @@ impl SecurityAgent {
         if cost > agent_remaining + f64::EPSILON {
             warn!(
                 agent_id,
-                cost,
-                agent_remaining,
-                "privacy pre-flight: agent budget would be exceeded"
+                cost, agent_remaining, "privacy pre-flight: agent budget would be exceeded"
             );
             return Err(PrivacyError::AgentBudgetExhausted {
                 agent_id: agent_id.to_owned(),
@@ -803,10 +799,7 @@ impl SecurityAgent {
 
         debug!(
             agent_id,
-            cost,
-            agent_remaining,
-            sys_remaining,
-            "privacy pre-flight: budget available"
+            cost, agent_remaining, sys_remaining, "privacy pre-flight: budget available"
         );
         Ok(())
     }

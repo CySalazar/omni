@@ -92,7 +92,10 @@ extern crate alloc;
 pub mod blk;
 pub mod encrypted;
 pub mod error;
+pub mod net;
+pub mod net_channel;
 pub mod nvme;
+pub mod socket;
 // `identity` is feature-gated behind `id-types` (default ON via
 // `id-generation`) because its newtypes wrap `uuid::Uuid`. The
 // CSPRNG-driven `::new()` constructors live in the same module but are

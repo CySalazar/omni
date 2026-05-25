@@ -61,6 +61,57 @@ members = [
     "crates/omni-driver-net-virtio",
     "crates/omni-driver-nvme",
     "crates/omni-driver-e1000e",
+    # `omni-usys` is the thin userspace syscall wrapper library (mini-libc)
+    # for OMNI OS userspace programs (T4.1, Phase 1).
+    "crates/omni-usys",
+    # `omni-net` is the userspace TCP/IP network stack service (N2.1–N2.6,
+    # N3.2, N5.1).  `no_std + alloc`; implements ARP, IPv4 routing, ICMP,
+    # UDP, TCP (RFC 793 + Reno), DNS stub resolver, and the Socket API
+    # dispatcher that bridges userspace SocketRequest IPC to the stack.
+    "crates/omni-net",
+    # `omni-cmd-ping` is the `ping` network diagnostic command (N7.1).
+    # `no_std + alloc`; provides ICMP echo request/reply packet construction,
+    # response parsing, RTT calculation, and statistics aggregation.
+    # The bare-metal binary entry point lives in a sibling `-image` crate
+    # (excluded from the default workspace matrix; added at bring-up time).
+    "crates/omni-cmd-ping",
+    # `omni-cmd-traceroute` is the `traceroute` command (N7.2).
+    # `no_std + alloc`; ICMP TTL-based route discovery: probe construction,
+    # response parsing, hop formatting, and argument parsing.
+    "crates/omni-cmd-traceroute",
+    # `omni-cmd-ifconfig` is the `ifconfig` command (N7.3).
+    # `no_std + alloc`; network interface configuration: list, show, set
+    # address, bring up/down.
+    "crates/omni-cmd-ifconfig",
+    # `omni-cmd-route` is the `route` command (N7.4).
+    # `no_std + alloc`; routing table management: show, add, delete, default.
+    "crates/omni-cmd-route",
+    # `omni-cmd-netstat` is the `netstat` command (N7.5).
+    # `no_std + alloc`; network connection listing: tabular format and filters.
+    "crates/omni-cmd-netstat",
+    # `omni-cmd-nslookup` is the `nslookup` command (N7.6).
+    # `no_std + alloc`; DNS lookup: A/AAAA/MX/PTR/TXT query types,
+    # result formatting, and argument parsing.
+    "crates/omni-cmd-nslookup",
+    # `omni-cmd-curl` is the minimal HTTP/1.1 client command (N7.7).
+    # `no_std + alloc`; request construction, response parsing, URL
+    # decomposition, and argument parsing.
+    "crates/omni-cmd-curl",
+    # `omni-cmd-wget` is the file downloader command (N7.8).
+    # `no_std + alloc`; filename extraction, range headers, progress
+    # formatting, and argument parsing.
+    "crates/omni-cmd-wget",
+    # `omni-cmd-ssh` is the SSH client scaffold (N7.9).
+    # `no_std + alloc`; SSH-2 binary packet framing (RFC 4253 §6) and
+    # type definitions.  Full protocol is deferred to a future sprint.
+    "crates/omni-cmd-ssh",
+    # `omni-cmd-scp` is the SCP file transfer scaffold (N7.10).
+    # `no_std + alloc`; ScpPath type and argument parsing.  Transfer
+    # logic depends on the SSH scaffold.
+    "crates/omni-cmd-scp",
+    # `omni-cmd-nc` is the `nc` (netcat) command (N7.11).
+    # `no_std + alloc`; connect/listen mode types and argument parsing.
+    "crates/omni-cmd-nc",
 ]
 
 # Fuzz harnesses live in their own ephemeral packages outside the
@@ -160,6 +211,30 @@ omni-agent          = { path = "crates/omni-agent",          version = "0.2.0" }
 omni-fs             = { path = "crates/omni-fs",             version = "0.2.0" }
 # Driver SDK helper (P6.7.8.10, OIP-013 § S5.3 step 8): dep-free, no_std.
 omni-driver-shared  = { path = "crates/omni-driver-shared",  version = "0.2.0" }
+# Network stack service (N2.1–N2.6, N3.2, N5.1): no_std + alloc.
+omni-net            = { path = "crates/omni-net",            version = "0.2.0" }
+# `ping` network diagnostic command (N7.1): no_std + alloc.
+omni-cmd-ping       = { path = "crates/omni-cmd-ping",       version = "0.2.0" }
+# `traceroute` command (N7.2): no_std + alloc.
+omni-cmd-traceroute = { path = "crates/omni-cmd-traceroute", version = "0.2.0" }
+# `ifconfig` command (N7.3): no_std + alloc.
+omni-cmd-ifconfig   = { path = "crates/omni-cmd-ifconfig",   version = "0.2.0" }
+# `route` command (N7.4): no_std + alloc.
+omni-cmd-route      = { path = "crates/omni-cmd-route",      version = "0.2.0" }
+# `netstat` command (N7.5): no_std + alloc.
+omni-cmd-netstat    = { path = "crates/omni-cmd-netstat",    version = "0.2.0" }
+# `nslookup` command (N7.6): no_std + alloc.
+omni-cmd-nslookup   = { path = "crates/omni-cmd-nslookup",   version = "0.2.0" }
+# `curl` HTTP client command (N7.7): no_std + alloc.
+omni-cmd-curl       = { path = "crates/omni-cmd-curl",       version = "0.2.0" }
+# `wget` file downloader command (N7.8): no_std + alloc.
+omni-cmd-wget       = { path = "crates/omni-cmd-wget",       version = "0.2.0" }
+# `ssh` client scaffold (N7.9): no_std + alloc.
+omni-cmd-ssh        = { path = "crates/omni-cmd-ssh",        version = "0.2.0" }
+# `scp` file transfer scaffold (N7.10): no_std + alloc.
+omni-cmd-scp        = { path = "crates/omni-cmd-scp",        version = "0.2.0" }
+# `nc` (netcat) command (N7.11): no_std + alloc.
+omni-cmd-nc         = { path = "crates/omni-cmd-nc",         version = "0.2.0" }
 
 # --- Async runtime ---
 tokio        = { version = "1.52", features = ["full"] }

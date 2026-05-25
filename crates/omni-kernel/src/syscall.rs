@@ -54,6 +54,19 @@ pub enum SyscallNumber {
     TaskYield = 12,
     /// Sleep until a deadline.
     TaskSleep = 13,
+    /// Spawn a new process with argv/envp and inherited file descriptors.
+    /// ABI: `(elf_path_ptr, elf_path_len, argv_ptr, argv_count, envp_ptr, envp_count) -> child_pid`.
+    ProcessSpawn = 14,
+    /// Wait for a child process to exit.
+    /// ABI: `(child_pid, flags, 0, 0, 0, 0) -> (rax=exit_code, rdx=child_pid)`.
+    /// Pass `child_pid = 0` to wait for any child. Flags: bit 0 = WNOHANG.
+    ProcessWait = 15,
+    /// Get the calling process's current working directory.
+    /// ABI: `(buf_ptr, buf_len, 0, 0, 0, 0) -> path_len`.
+    GetCwd = 16,
+    /// Set the calling process's current working directory.
+    /// ABI: `(path_ptr, path_len, 0, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    SetCwd = 17,
 
     // ----- IPC -----
     /// Create a new channel.
@@ -92,6 +105,32 @@ pub enum SyscallNumber {
     /// `(ptr: u64, len: u64) -> u64`. Returns `len` on success or
     /// `u64::MAX` on a validation failure.
     WriteConsole = 60,
+    /// Read bytes from the console input buffer (keyboard / serial).
+    /// ABI: `(buf_ptr, buf_len, 0, 0, 0, 0) -> bytes_read`.
+    /// Line-buffered: blocks until `\n` or `buf_len` bytes available.
+    ReadConsole = 61,
+    /// Create an anonymous pipe.
+    /// ABI: `(0, 0, 0, 0, 0, 0) -> (rax=read_fd, rdx=write_fd)`.
+    PipeCreate = 62,
+    /// Read from a file descriptor (console, pipe, or file).
+    /// ABI: `(fd, buf_ptr, buf_len, 0, 0, 0) -> bytes_read`.
+    FdRead = 63,
+    /// Write to a file descriptor (console, pipe, or file).
+    /// ABI: `(fd, buf_ptr, buf_len, 0, 0, 0) -> bytes_written`.
+    FdWrite = 64,
+    /// Close a file descriptor.
+    /// ABI: `(fd, 0, 0, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    FdClose = 65,
+    /// Duplicate a file descriptor (lowest available number).
+    /// ABI: `(fd, 0, 0, 0, 0, 0) -> new_fd`.
+    FdDup = 66,
+    /// Duplicate a file descriptor to a specific target number.
+    /// ABI: `(old_fd, new_fd, 0, 0, 0, 0) -> new_fd`.
+    FdDup2 = 67,
+    /// Seek on a file descriptor.
+    /// ABI: `(fd, offset_i64, whence, 0, 0, 0) -> new_offset`.
+    /// Whence: 0 = SEEK_SET, 1 = SEEK_CUR, 2 = SEEK_END.
+    FdSeek = 68,
 
     // ----- Driver framework (OIP-013, P6.7.3 skeleton) -----
     // Numeric decade `7x` reserved for the user-space driver framework.
@@ -157,6 +196,40 @@ pub enum SyscallNumber {
     /// per-channel capability tokens minted at create time).
     BlkLookup = 78,
 
+    // ----- Filesystem (shell terminal support) -----
+    // Numeric range `90..=95` reserved for the in-kernel VFS syscalls
+    // that back the shell's filesystem operations. Phase 1: dispatched
+    // directly to `InMemoryVfs`. Phase 2: proxied via IPC to the
+    // `omni-fs` userspace service.
+    /// Open a file and return a file descriptor.
+    /// ABI: `(path_ptr, path_len, flags, 0, 0, 0) -> fd`.
+    /// Flags follow the `OpenFlags` bitfield (O_RDONLY, O_WRONLY, O_RDWR,
+    /// O_CREAT, O_TRUNC, O_APPEND).
+    FsOpen = 90,
+    /// Stat a file or directory.
+    /// ABI: `(path_ptr, path_len, stat_buf_ptr, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    /// Writes `FileStat` (inode: u64, size: u64, file_type: u8) to stat_buf_ptr.
+    FsStat = 91,
+    /// List the entries in a directory.
+    /// ABI: `(path_ptr, path_len, buf_ptr, buf_len, 0, 0) -> entry_count`.
+    /// Writes `\n`-separated entry names to buf_ptr.
+    FsListDir = 92,
+    /// Create an empty regular file.
+    /// ABI: `(path_ptr, path_len, 0, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    FsCreate = 93,
+    /// Delete a file or empty directory.
+    /// ABI: `(path_ptr, path_len, 0, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    FsDelete = 94,
+    /// Create a directory.
+    /// ABI: `(path_ptr, path_len, 0, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    FsMkdir = 95,
+    /// List all running processes.
+    /// ABI: `(buf_ptr, buf_len, 0, 0, 0, 0) -> entry_count`.
+    ProcessList = 96,
+    /// Terminate another process.
+    /// ABI: `(target_pid, 0, 0, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    ProcessKill = 97,
+
     // ----- AI Runtime (Phase 2 Sprint 2, OIP-Phase2-Entry-021 § AI Surface) -----
     // Numeric decade `8x` reserved for the AI syscall surface. These are
     // thin kernel entry points that validate the caller's capability and
@@ -184,6 +257,73 @@ pub enum SyscallNumber {
     /// Transcribe audio input to text.
     /// ABI: `(model_id_ptr, model_id_len, input_ptr, input_len, output_ptr, output_cap) -> output_len`.
     AiTranscribe = 84,
+
+    // ----- NET service-channel registry (OIP-Driver-Net-015 § S2) -----
+    // Numeric range `100..=113` reserved for the kernel-mediated NET
+    // channel registry and the microkernel IPC proxy for socket
+    // operations. NIC drivers call `NetRegister` after they create
+    // both the command and event channels via `IpcCreateChannel`; the
+    // network stack calls `NetLookup` to resolve `interface_name →
+    // (ChannelId, EventChannelId)` without sniffing the IPC layer by
+    // string. The socket syscalls (103–113) are thin capability-checked
+    // relays that forward to the `omni-net` user-space network service.
+    //
+    // See `OIP-Driver-Net-015` § S2 for the full reconciliation.
+    //
+    /// Record an `omni.svc.net.<interface>` channel pair in the kernel
+    /// NET registry. ABI:
+    /// `(interface_name_ptr, name_len, channel_id, event_channel_id, mac_ptr, mac_len) -> (rax=0, rdx=errno)`.
+    /// The caller MUST already own both supplied channel ids; the
+    /// kernel rejects the call with `EACCES` otherwise.
+    /// Interface-name validation matches
+    /// [`crate::services::net::NetChannelRegistry::register`]
+    /// (ASCII `[A-Za-z0-9_-]`, ≤ `MAX_INTERFACE_NAME_LEN` bytes).
+    NetRegister = 100,
+    /// Remove an `omni.svc.net.<interface>` mapping the caller owns.
+    /// ABI: `(interface_name_ptr, name_len, 0, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    /// Returns `EACCES` if the caller is not the recorded owner;
+    /// task-exit clean-up is handled separately via
+    /// [`crate::services::net::NetChannelRegistry::clear_for_owner`].
+    NetUnregister = 101,
+    /// Resolve `omni.svc.net.<interface>` to its live command channel id.
+    /// ABI: `(interface_name_ptr, name_len, 0, 0, 0, 0) -> (rax=channel_id, rdx=0)`
+    /// on success; `(rax=0, rdx=ENOENT)` if the interface is not
+    /// registered. Read-only.
+    NetLookup = 102,
+    /// Create a new socket handle via the `omni-net` service.
+    /// ABI: `(domain, type, 0, 0, 0, 0) -> socket_handle`.
+    NetSocket = 103,
+    /// Bind a socket handle to a local address.
+    /// ABI: `(handle, addr_ptr, addr_len, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    NetBind = 104,
+    /// Mark a bound socket as passive (listening).
+    /// ABI: `(handle, backlog, 0, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    NetListen = 105,
+    /// Accept an incoming connection on a listening socket.
+    /// ABI: `(handle, addr_buf_ptr, addr_buf_len, 0, 0, 0) -> new_handle`.
+    NetAccept = 106,
+    /// Initiate an outgoing connection.
+    /// ABI: `(handle, addr_ptr, addr_len, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    NetConnect = 107,
+    /// Send data on a connected socket.
+    /// ABI: `(handle, buf_ptr, buf_len, 0, 0, 0) -> bytes_sent`.
+    NetSend = 108,
+    /// Receive data from a connected socket.
+    /// ABI: `(handle, buf_ptr, buf_len, 0, 0, 0) -> bytes_received`.
+    NetRecv = 109,
+    /// Send data to an explicit destination address (connectionless).
+    /// ABI: `(handle, buf_ptr, buf_len, addr_ptr, addr_len, 0) -> bytes_sent`.
+    NetSendTo = 110,
+    /// Receive data and record the sender's address (connectionless).
+    /// ABI: `(handle, buf_ptr, buf_len, addr_buf_ptr, 0, 0) -> bytes_received`.
+    NetRecvFrom = 111,
+    /// Close a socket handle.
+    /// ABI: `(handle, 0, 0, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    NetClose = 112,
+    /// Shut down part or all of a full-duplex connection.
+    /// ABI: `(handle, how, 0, 0, 0, 0) -> (rax=0, rdx=errno)`.
+    /// `how`: 0 = shut read, 1 = shut write, 2 = shut both.
+    NetShutdown = 113,
 }
 
 // -----------------------------------------------------------------------------
@@ -255,9 +395,53 @@ pub mod syscall_errno {
     /// the BLK syscall boundary without aborting the kernel. POSIX
     /// `EIO = 5`.
     pub const EIO: u64 = 5;
+    /// Bad file descriptor — `fd` is not open or is not valid.
+    /// POSIX `EBADF = 9`.
+    pub const EBADF: u64 = 9;
+    /// No child processes — `ProcessWait` called but the caller has no
+    /// children to wait for. POSIX `ECHILD = 10`.
+    pub const ECHILD: u64 = 10;
+    /// Broken pipe — write to a pipe whose read end has been closed.
+    /// POSIX `EPIPE = 32`.
+    pub const EPIPE: u64 = 32;
+    /// Illegal seek — the fd does not support seeking (pipes, consoles).
+    /// POSIX `ESPIPE = 29`.
+    pub const ESPIPE: u64 = 29;
+    /// No such process — target PID does not exist.
+    /// POSIX `ESRCH = 3`.
+    pub const ESRCH: u64 = 3;
+    /// File or directory is not empty — `FsDelete` on a non-empty
+    /// directory. POSIX `ENOTEMPTY = 39`.
+    pub const ENOTEMPTY: u64 = 39;
     /// AI runtime service is not available — the omni-runtime IPC channel
     /// has not been registered. POSIX `EAGAIN = 11`.
     pub const EAGAIN: u64 = 11;
+    /// Address already in use — the local address supplied to `NetBind`
+    /// is already bound by another socket. POSIX `EADDRINUSE = 98`.
+    pub const EADDRINUSE: u64 = 98;
+    /// Connection refused — the remote host actively rejected the
+    /// connection attempt (`NetConnect`). POSIX `ECONNREFUSED = 111`.
+    pub const ECONNREFUSED: u64 = 111;
+    /// Connection timed out — `NetConnect` or `NetRecv` did not
+    /// complete within the allotted time. POSIX `ETIMEDOUT = 110`.
+    pub const ETIMEDOUT: u64 = 110;
+    /// Network unreachable — no route to the destination network.
+    /// POSIX `ENETUNREACH = 101`.
+    pub const ENETUNREACH: u64 = 101;
+    /// Host unreachable — no route to the destination host.
+    /// POSIX `EHOSTUNREACH = 113`.
+    pub const EHOSTUNREACH: u64 = 113;
+    /// Connection reset by peer. POSIX `ECONNRESET = 104`.
+    pub const ECONNRESET: u64 = 104;
+    /// Connection aborted by local policy or error.
+    /// POSIX `ECONNABORTED = 103`.
+    pub const ECONNABORTED: u64 = 103;
+    /// Socket is not connected — `NetSend` / `NetRecv` on an
+    /// unconnected socket. POSIX `ENOTCONN = 107`.
+    pub const ENOTCONN: u64 = 107;
+    /// Socket is already connected — `NetConnect` called on a socket
+    /// that already has a peer. POSIX `EISCONN = 106`.
+    pub const EISCONN: u64 = 106;
 }
 
 // -----------------------------------------------------------------------------
@@ -300,15 +484,41 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "ABI stability test must enumerate every pinned syscall number in one place"
+    )]
     fn syscall_numbers_are_stable() {
         // These constants form the userspace ABI. Any test failure
         // here is a deliberate ABI change and MUST go through OIP.
         assert_eq!(SyscallNumber::MemMap as u32, 1);
         assert_eq!(SyscallNumber::TaskCreate as u32, 10);
+        assert_eq!(SyscallNumber::ProcessSpawn as u32, 14);
+        assert_eq!(SyscallNumber::ProcessWait as u32, 15);
+        assert_eq!(SyscallNumber::GetCwd as u32, 16);
+        assert_eq!(SyscallNumber::SetCwd as u32, 17);
         assert_eq!(SyscallNumber::IpcSend as u32, 22);
         assert_eq!(SyscallNumber::CapValidate as u32, 30);
         assert_eq!(SyscallNumber::TeeAttest as u32, 40);
         assert_eq!(SyscallNumber::TimeMonotonicNanos as u32, 50);
+        // Shell I/O + fd syscalls (terminal support).
+        assert_eq!(SyscallNumber::ReadConsole as u32, 61);
+        assert_eq!(SyscallNumber::PipeCreate as u32, 62);
+        assert_eq!(SyscallNumber::FdRead as u32, 63);
+        assert_eq!(SyscallNumber::FdWrite as u32, 64);
+        assert_eq!(SyscallNumber::FdClose as u32, 65);
+        assert_eq!(SyscallNumber::FdDup as u32, 66);
+        assert_eq!(SyscallNumber::FdDup2 as u32, 67);
+        assert_eq!(SyscallNumber::FdSeek as u32, 68);
+        // Filesystem syscalls (shell terminal support).
+        assert_eq!(SyscallNumber::FsOpen as u32, 90);
+        assert_eq!(SyscallNumber::FsStat as u32, 91);
+        assert_eq!(SyscallNumber::FsListDir as u32, 92);
+        assert_eq!(SyscallNumber::FsCreate as u32, 93);
+        assert_eq!(SyscallNumber::FsDelete as u32, 94);
+        assert_eq!(SyscallNumber::FsMkdir as u32, 95);
+        assert_eq!(SyscallNumber::ProcessList as u32, 96);
+        assert_eq!(SyscallNumber::ProcessKill as u32, 97);
         // OIP-013 + OIP-016 driver-framework decade (P6.7.3 skeleton).
         // Pinning these here prevents an accidental renumber that would
         // silently break a driver manifest signed against the old number.
@@ -331,6 +541,46 @@ mod tests {
         assert_eq!(SyscallNumber::AiEmbed as u32, 82);
         assert_eq!(SyscallNumber::AiClassify as u32, 83);
         assert_eq!(SyscallNumber::AiTranscribe as u32, 84);
+        // OIP-Driver-Net-015 § S2 NET registry + socket IPC proxy.
+        // Pinning these prevents an accidental renumber that would
+        // silently break a NIC driver manifest or the network stack
+        // ABI signed against the old numbers.
+        assert_eq!(SyscallNumber::NetRegister as u32, 100);
+        assert_eq!(SyscallNumber::NetUnregister as u32, 101);
+        assert_eq!(SyscallNumber::NetLookup as u32, 102);
+        assert_eq!(SyscallNumber::NetSocket as u32, 103);
+        assert_eq!(SyscallNumber::NetBind as u32, 104);
+        assert_eq!(SyscallNumber::NetListen as u32, 105);
+        assert_eq!(SyscallNumber::NetAccept as u32, 106);
+        assert_eq!(SyscallNumber::NetConnect as u32, 107);
+        assert_eq!(SyscallNumber::NetSend as u32, 108);
+        assert_eq!(SyscallNumber::NetRecv as u32, 109);
+        assert_eq!(SyscallNumber::NetSendTo as u32, 110);
+        assert_eq!(SyscallNumber::NetRecvFrom as u32, 111);
+        assert_eq!(SyscallNumber::NetClose as u32, 112);
+        assert_eq!(SyscallNumber::NetShutdown as u32, 113);
+    }
+
+    #[test]
+    fn net_syscall_numbers_are_stable() {
+        // Dedicated tripwire for the NET syscall range (100–113).
+        // This test is intentionally redundant with the slice in
+        // `syscall_numbers_are_stable`; the duplication makes it
+        // trivial to grep for NET-specific stability assertions.
+        assert_eq!(SyscallNumber::NetRegister as u32, 100);
+        assert_eq!(SyscallNumber::NetUnregister as u32, 101);
+        assert_eq!(SyscallNumber::NetLookup as u32, 102);
+        assert_eq!(SyscallNumber::NetSocket as u32, 103);
+        assert_eq!(SyscallNumber::NetBind as u32, 104);
+        assert_eq!(SyscallNumber::NetListen as u32, 105);
+        assert_eq!(SyscallNumber::NetAccept as u32, 106);
+        assert_eq!(SyscallNumber::NetConnect as u32, 107);
+        assert_eq!(SyscallNumber::NetSend as u32, 108);
+        assert_eq!(SyscallNumber::NetRecv as u32, 109);
+        assert_eq!(SyscallNumber::NetSendTo as u32, 110);
+        assert_eq!(SyscallNumber::NetRecvFrom as u32, 111);
+        assert_eq!(SyscallNumber::NetClose as u32, 112);
+        assert_eq!(SyscallNumber::NetShutdown as u32, 113);
     }
 
     #[test]
@@ -387,5 +637,21 @@ mod tests {
     #[test]
     fn ai_syscall_errno_eagain() {
         assert_eq!(syscall_errno::EAGAIN, 11);
+    }
+
+    #[test]
+    fn net_syscall_errno_codes_are_posix_aligned() {
+        // These values match the Linux `errno.h` numbers for the
+        // NET socket error family. Any deviation from the POSIX table
+        // must be accompanied by an OIP and a comment explaining why.
+        assert_eq!(syscall_errno::EADDRINUSE, 98);
+        assert_eq!(syscall_errno::ECONNREFUSED, 111);
+        assert_eq!(syscall_errno::ETIMEDOUT, 110);
+        assert_eq!(syscall_errno::ENETUNREACH, 101);
+        assert_eq!(syscall_errno::EHOSTUNREACH, 113);
+        assert_eq!(syscall_errno::ECONNRESET, 104);
+        assert_eq!(syscall_errno::ECONNABORTED, 103);
+        assert_eq!(syscall_errno::ENOTCONN, 107);
+        assert_eq!(syscall_errno::EISCONN, 106);
     }
 }

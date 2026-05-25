@@ -23,6 +23,11 @@
 //!   first consumer is the user-space NVMe driver per
 //!   [`OIP-Driver-NVMe-014`](../../../../oips/oip-driver-nvme-014.md)
 //!   § S4 + § S6 step 12.
+//! - [`net`] — the NET channel registry (`omni.svc.net.<iface>`),
+//!   mapping interface name → (command [`crate::ipc::ChannelId`],
+//!   event [`crate::ipc::ChannelId`]) per OIP-Driver-Net-015 § S2.
+//!   First consumer is the user-space NIC driver + network stack
+//!   service.
 //!
 //! ## Scope
 //!
@@ -34,3 +39,4 @@
 //! glues the two together.
 
 pub mod blk;
+pub mod net;

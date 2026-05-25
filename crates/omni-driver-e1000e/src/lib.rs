@@ -76,6 +76,8 @@ extern crate alloc;
 
 pub mod bringup;
 pub mod controller_regs;
+pub mod driver;
 pub mod interrupts;
 pub mod pci_ids;
+pub mod ring;
 pub mod ring_config;

@@ -1059,6 +1059,84 @@ dependencies = [
 ]
 
 [[package]]
+name = "omni-cmd-curl"
+version = "0.2.0"
+dependencies = [
+ "omni-types",
+]
+
+[[package]]
+name = "omni-cmd-ifconfig"
+version = "0.2.0"
+dependencies = [
+ "omni-types",
+]
+
+[[package]]
+name = "omni-cmd-nc"
+version = "0.2.0"
+dependencies = [
+ "omni-types",
+]
+
+[[package]]
+name = "omni-cmd-netstat"
+version = "0.2.0"
+dependencies = [
+ "omni-types",
+]
+
+[[package]]
+name = "omni-cmd-nslookup"
+version = "0.2.0"
+dependencies = [
+ "omni-types",
+]
+
+[[package]]
+name = "omni-cmd-ping"
+version = "0.2.0"
+dependencies = [
+ "omni-types",
+ "proptest",
+]
+
+[[package]]
+name = "omni-cmd-route"
+version = "0.2.0"
+dependencies = [
+ "omni-types",
+]
+
+[[package]]
+name = "omni-cmd-scp"
+version = "0.2.0"
+dependencies = [
+ "omni-types",
+]
+
+[[package]]
+name = "omni-cmd-ssh"
+version = "0.2.0"
+dependencies = [
+ "omni-types",
+]
+
+[[package]]
+name = "omni-cmd-traceroute"
+version = "0.2.0"
+dependencies = [
+ "omni-types",
+]
+
+[[package]]
+name = "omni-cmd-wget"
+version = "0.2.0"
+dependencies = [
+ "omni-types",
+]
+
+[[package]]
 name = "omni-container"
 version = "0.2.0"
 dependencies = [
@@ -1103,6 +1181,8 @@ name = "omni-driver-e1000e"
 version = "0.2.0"
 dependencies = [
  "omni-driver-shared",
+ "omni-types",
+ "serde",
 ]
 
 [[package]]
@@ -1110,6 +1190,7 @@ name = "omni-driver-net-virtio"
 version = "0.2.0"
 dependencies = [
  "omni-driver-shared",
+ "omni-types",
 ]
 
 [[package]]
@@ -1187,6 +1268,15 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "omni-net"
+version = "0.2.0"
+dependencies = [
+ "omni-types",
+ "proptest",
+ "serde",
 ]
 
 [[package]]
@@ -1275,6 +1365,14 @@ dependencies = [
  "trybuild",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "omni-usys"
+version = "0.2.0"
+dependencies = [
+ "omni-types",
+ "proptest",
 ]
 
 [[package]]

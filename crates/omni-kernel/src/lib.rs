@@ -85,16 +85,54 @@ extern crate alloc;
 
 pub mod cap_deposit;
 pub mod capabilities;
+/// Capability forwarding — command → scope registry (T6.3).
+///
+/// When the OMNI shell spawns a child command, it queries this registry
+/// to determine the minimum capability scope the command requires and
+/// attenuates the token accordingly (least-privilege forwarding).
+///
+/// Not gated behind `bare-metal`: the registry logic is fully testable
+/// on host builds.
+pub mod capability_forward;
+/// Kernel console input ring buffer (T0.2).
+pub mod console_input;
 pub mod driver_cap_issuer;
 pub mod driver_manifest;
 pub mod entropy;
+/// Per-process file descriptor table (T0.1).
+///
+/// Ungated: the FD types are useful in host-side tests and in the
+/// userspace syscall layer regardless of the `bare-metal` feature.
+pub mod fd;
+/// Init process wiring — default args and environment for PID 1 (T6.2).
+///
+/// Describes the boot sequence after initramfs is loaded: build
+/// `InitProcessArgs` for `/bin/omni-shell` and pass them to the spawner
+/// that creates PID 1.
+///
+/// Not gated behind `bare-metal`: fully testable on host builds.
+pub mod init_process;
+/// Initramfs flat archive parser and loader (T6.1).
+///
+/// Parses the `[name_len: u16][name][elf_len: u32][elf]` format and
+/// writes each binary into [`vfs::InMemoryVfs`] under `/bin/<name>`.
+///
+/// Not gated behind `bare-metal`: fully testable on host builds.
+pub mod initramfs;
 pub mod ipc;
 pub mod kaslr;
 pub mod known_issuers;
 pub mod memory;
 pub mod mm;
+/// Kernel pipe — unidirectional byte streams (T0.3).
+pub mod pipe;
 #[cfg(feature = "bare-metal")]
 pub mod process;
+/// Kernel process table — parent-child tracking and wait/exit bookkeeping (T0.5).
+///
+/// Not gated behind `bare-metal`: the wait/exit logic is testable on host
+/// builds without the full page-table / ELF-loader infrastructure.
+pub mod process_table;
 pub mod scheduling;
 // `services` hosts kernel-side bookkeeping for the well-known
 // `omni.svc.<kind>.<slot>` IPC-channel namespaces surfaced by user-space
@@ -105,6 +143,31 @@ pub mod scheduling;
 #[cfg(feature = "bare-metal")]
 pub mod services;
 pub mod syscall;
+/// Testable syscall handler logic — bridges userspace syscalls to kernel
+/// data structures without requiring the `bare-metal` feature.
+///
+/// Each `handle_*` method on [`syscall_handlers::KernelState`] corresponds
+/// to one syscall number defined in [`syscall::SyscallNumber`]. The bare-metal
+/// entry path constructs a `KernelState` view and calls the appropriate
+/// handler; host-side tests use [`syscall_handlers::KernelState::new_for_test`].
+pub mod syscall_handlers;
+/// System V AMD64 ABI stack argument layout builder (T6.4 / user_stack_args).
+///
+/// Builds the `argc` / `argv[]` / `envp[]` in-memory image that the kernel
+/// writes to the top of a new process's user stack before transferring
+/// control to `_start`. Fully testable on host builds — not gated behind
+/// `bare-metal`.
+pub mod user_stack_args;
+/// Virtual filesystem layer — in-memory Phase 1 backing store.
+///
+/// Provides [`vfs::InMemoryVfs`], the kernel-internal filesystem abstraction
+/// used by the filesystem syscall handlers (`FsOpen`, `FsStat`, `FsListDir`,
+/// `FsCreate`, `FsDelete`, `FsMkdir`). Phase 2 will replace the in-memory
+/// implementation with an IPC proxy to the `omni-fs` userspace service.
+///
+/// Ungated: host-side test builds need access to the VFS types without the
+/// full `bare-metal` infrastructure.
+pub mod vfs;
 
 // Bare-metal runtime: panic handler, global allocator, early console,
 // arch intrinsics. Lives only when the `bare-metal` feature is on; the
@@ -183,6 +246,26 @@ static mut FRAME_ALLOC: memory::BitmapFrameAllocator<{ FRAME_BITMAP_WORDS }> =
 // Single-CPU, non-preemptive. Same safety invariant as FRAME_ALLOC.
 #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
 static mut SCHEDULER: scheduling::RoundRobinScheduler = scheduling::RoundRobinScheduler::new();
+
+// Shell terminal support — global instances for the syscall handlers.
+//
+// None of these types expose a `const fn new()` (they all heap-allocate
+// internally via `BTreeMap` / `VecDeque`), so they cannot be placed in a
+// `static mut T = T::new()` directly. Instead each is wrapped in
+// `Option<T>` initialised to `None` and lazily populated in `kmain` before
+// the first userspace task is scheduled. The same single-CPU, no-preemption
+// safety invariant that covers `FRAME_ALLOC` and `SCHEDULER` applies here:
+// P6 is single-core and interrupts are disabled across syscall dispatch.
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+static mut SHELL_FD_TABLE: Option<fd::FileDescriptorTable> = None;
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+static mut SHELL_PIPE_REGISTRY: Option<pipe::PipeRegistry> = None;
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+static mut SHELL_CONSOLE_INPUT: Option<console_input::ConsoleInputBuffer> = None;
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+static mut SHELL_PROCESS_TABLE: Option<process_table::ProcessTable> = None;
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+static mut SHELL_VFS: Option<vfs::InMemoryVfs> = None;
 
 // MB14.g — the per-CPU tick counter previously lived here as a single
 // `pub static mut TICK_COUNT: u64 = 0;` global, written only by the LAPIC
@@ -494,6 +577,7 @@ pub fn kmain(
     early_console::write_str(" MiB unmapped\n");
     early_console::write_str("[idt] loaded  vectors=#DE #DF #GP #PF\n");
     early_console::write_str("[syscall] LSTAR set  INT80=0x80\n");
+    early_console::write_str("[build] shell-infra=pending (init deferred to post-sched)\n");
 
     // -------------------------------------------------------------------------
     // P6.7.9-pre.5 — Intel VT-d live MMIO programming.
@@ -1408,6 +1492,45 @@ pub fn kmain(
         } else {
             early_console::write_str("[lapic] LAPIC init FAILED — running without timer\n");
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Shell infrastructure initialization — global statics for the syscall
+    // handler bridge (fd table, pipe registry, console input, VFS, process table).
+    // -------------------------------------------------------------------------
+    #[cfg(target_arch = "x86_64")]
+    #[allow(
+        unsafe_code,
+        reason = "single-CPU static-mut init for shell globals; same invariant as SCHEDULER"
+    )]
+    unsafe {
+        // Initialize the in-kernel VFS with a root directory and /bin.
+        let vfs = vfs::InMemoryVfs::new();
+        // /bin is created by initramfs::load_into_vfs; pre-create here
+        // so early boot can stat("/bin") without error.
+        SHELL_VFS = Some(vfs);
+        if let Some(ref mut v) = *core::ptr::addr_of_mut!(SHELL_VFS) {
+            let _ = v.create_directory("/bin");
+        }
+
+        // File descriptor table with stdin/stdout/stderr on the console.
+        SHELL_FD_TABLE = Some(fd::FileDescriptorTable::new_with_stdio());
+
+        // Pipe and process tables.
+        SHELL_PIPE_REGISTRY = Some(pipe::PipeRegistry::new());
+        SHELL_CONSOLE_INPUT = Some(console_input::ConsoleInputBuffer::new());
+        SHELL_PROCESS_TABLE = Some(process_table::ProcessTable::new());
+
+        // Register init process (PID 1) in the process table.
+        if let Some(ref mut pt) = *core::ptr::addr_of_mut!(SHELL_PROCESS_TABLE) {
+            pt.register(
+                scheduling::TaskId(1),
+                None,
+                alloc::string::String::from("omni-shell"),
+            );
+        }
+
+        early_console::write_str("[OMNI OS] shell infrastructure initialized.\n");
     }
 
     // -------------------------------------------------------------------------

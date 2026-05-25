@@ -61,7 +61,13 @@
         clippy::unwrap_used,
         clippy::expect_used,
         clippy::panic,
-        clippy::doc_markdown
+        clippy::doc_markdown,
+        // Tests write to fixed offsets in pre-allocated byte buffers whose
+        // sizes are known at test construction time.  The ADR-0003 carve-out
+        // extends to indexing in test-only code.
+        clippy::indexing_slicing,
+        // Test-only casts from small `usize` values (known to fit in u32).
+        clippy::cast_possible_truncation
     )
 )]
 
@@ -69,6 +75,9 @@ extern crate alloc;
 
 pub mod bringup;
 pub mod device_status;
+pub mod driver;
 pub mod features;
 pub mod pci_ids;
+pub mod ring;
+pub mod tx_rx;
 pub mod virtqueue;

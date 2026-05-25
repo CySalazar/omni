@@ -901,9 +901,7 @@ fn render_sysinfo(
             let (line, rest) = if remaining.len() <= max_chars {
                 (remaining, "")
             } else {
-                let cut = remaining[..max_chars]
-                    .rfind(' ')
-                    .unwrap_or(max_chars);
+                let cut = remaining[..max_chars].rfind(' ').unwrap_or(max_chars);
                 let (l, r) = remaining.split_at(cut);
                 (l, r.trim_start())
             };

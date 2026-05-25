@@ -345,16 +345,10 @@ mod tests {
     #[test]
     fn sct_from_raw_maps_known_values() {
         assert_eq!(StatusCodeType::from_raw(0), StatusCodeType::Generic);
-        assert_eq!(
-            StatusCodeType::from_raw(1),
-            StatusCodeType::CommandSpecific
-        );
+        assert_eq!(StatusCodeType::from_raw(1), StatusCodeType::CommandSpecific);
         assert_eq!(StatusCodeType::from_raw(2), StatusCodeType::MediaError);
         assert_eq!(StatusCodeType::from_raw(3), StatusCodeType::PathRelated);
-        assert_eq!(
-            StatusCodeType::from_raw(7),
-            StatusCodeType::VendorSpecific
-        );
+        assert_eq!(StatusCodeType::from_raw(7), StatusCodeType::VendorSpecific);
     }
 
     #[test]
@@ -399,7 +393,10 @@ mod tests {
 
     #[test]
     fn controller_fatal_verdict_is_reset_and_retry() {
-        assert_eq!(IoError::ControllerFatal.verdict(), RetryVerdict::ResetAndRetry);
+        assert_eq!(
+            IoError::ControllerFatal.verdict(),
+            RetryVerdict::ResetAndRetry
+        );
     }
 
     #[test]

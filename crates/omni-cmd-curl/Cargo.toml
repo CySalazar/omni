@@ -1,0 +1,34 @@
+# =============================================================================
+# omni-cmd-curl — `curl` command for OMNI OS
+# =============================================================================
+# Minimal HTTP/1.1 client command: request construction, response parsing,
+# URL parsing, argument processing.
+#
+# Architecture:
+#   `no_std + alloc` library crate. Zero external production dependencies.
+#
+# References:
+#   - RFC 7230 (HTTP/1.1 Message Syntax)
+#   - RFC 3986 (URI)
+#   - OIP-Net-N7.7 (curl command specification)
+# =============================================================================
+
+[package]
+name             = "omni-cmd-curl"
+description      = "curl command for OMNI OS — minimal HTTP/1.1 client."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[lints]
+workspace = true
+
+[dependencies]
+omni-types = { workspace = true }

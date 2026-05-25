@@ -58,5 +58,10 @@ workspace = true
 # `caps::find_token` helper for locating capability tokens at bring-up
 # (OIP-013 § S5.3 step 8, P6.7.8.10).  Dep-free, no_std-compatible.
 omni-driver-shared = { workspace = true }
+# `omni-types` provides the NET channel ABI types (NetRequest, NetResponse,
+# NetEvent, LinkState) required by the driver state machine (N1.3,
+# OIP-Driver-Net-015 § S2). Re-introduced now that the bring-up FSM wires
+# real IPC types per the plan in the P6.7.8.2 Cargo.toml comment.
+omni-types = { workspace = true }
 
 [dev-dependencies]

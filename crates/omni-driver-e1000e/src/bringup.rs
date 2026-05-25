@@ -752,7 +752,9 @@ mod tests {
         }
         assert_eq!(s.phase(), Phase::GlobalReset);
         // Simulate hardware never clearing CTRL.RST
-        let err = s.on_event(Event::Abort(BringUpError::ResetTimeout)).unwrap_err();
+        let err = s
+            .on_event(Event::Abort(BringUpError::ResetTimeout))
+            .unwrap_err();
         assert_eq!(err, BringUpError::ResetTimeout);
         assert_eq!(s.phase(), Phase::Failed);
         assert_eq!(s.pending_step(), StepKind::ParkExit);
