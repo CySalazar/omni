@@ -247,7 +247,7 @@ pub enum PolicyErrorKind {
 /// Variants are `#[non_exhaustive]` so adding a new subsystem error
 /// category in the future is not a breaking change. Downstream
 /// pattern-match sites should always include a `_ => ...` arm.
-#[derive(Clone, Copy, Debug, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum OmniError {
     /// Cryptographic primitive failure.

@@ -80,6 +80,7 @@
 pub mod encrypted_pipeline;
 pub mod ner;
 pub mod policy;
+pub mod privacy;
 pub mod types;
 pub mod vault;
 

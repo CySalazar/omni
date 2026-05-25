@@ -358,6 +358,75 @@ impl TensorBuffer {
 }
 
 // =============================================================================
+// Quantization types
+// =============================================================================
+
+/// Linear quantization scheme — controls whether parameters are computed
+/// globally or per output channel.
+///
+/// # Example
+///
+/// ```
+/// use omni_hal::tensor::QuantizationScheme;
+///
+/// let per_tensor = QuantizationScheme::PerTensor;
+/// let per_channel = QuantizationScheme::PerChannel { axis: 0 };
+/// let _ = format!("{per_tensor:?}");
+/// let _ = format!("{per_channel:?}");
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QuantizationScheme {
+    /// Compute a single scale and zero-point from the whole tensor.
+    PerTensor,
+    /// Compute independent scale and zero-point for each slice along `axis`.
+    ///
+    /// This is commonly applied along the output-channel axis (axis 0) of
+    /// weight tensors; it preserves more accuracy at a small metadata cost.
+    PerChannel {
+        /// Dimension along which independent quantization parameters are
+        /// computed. Must be less than the tensor rank.
+        axis: usize,
+    },
+}
+
+/// Symmetric or asymmetric INT8 quantization parameters.
+///
+/// A single (scale, zero\_point) pair maps the floating-point domain to INT8:
+/// - Quantize: `q = clamp(round(x / scale) + zero_point, -128, 127)`
+/// - Dequantize: `x = (q - zero_point) * scale`
+///
+/// For symmetric quantization (the default for weight tensors) `zero_point`
+/// is `0`, which removes the zero-point correction term from the matmul and
+/// reduces arithmetic.
+///
+/// # Example
+///
+/// ```
+/// use omni_hal::tensor::QuantizationParams;
+///
+/// let p = QuantizationParams { scale: 0.05, zero_point: 0 };
+/// assert_eq!(p.zero_point, 0);
+/// // Manually apply dequantize formula.
+/// let q: i8 = 64;
+/// let x = (f32::from(q) - f32::from(p.zero_point)) * p.scale;
+/// assert!((x - 3.2_f32).abs() < 1e-5_f32);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QuantizationParams {
+    /// Linear scale factor: maps the INT8 grid step to FP32 units.
+    ///
+    /// Must be finite and positive. A `scale` of 0 would divide by zero
+    /// during quantization and is rejected at runtime.
+    pub scale: f32,
+    /// Zero-point shift applied after rounding.
+    ///
+    /// For symmetric quantization set this to `0`. For asymmetric
+    /// quantization it centres the representable range on the actual
+    /// data distribution, improving accuracy on non-zero-centred activations.
+    pub zero_point: i8,
+}
+
+// =============================================================================
 // TensorOp
 // =============================================================================
 
@@ -479,6 +548,96 @@ pub enum TensorOp {
     RmsNorm {
         /// Numerical stability constant added inside the square root.
         epsilon: f32,
+    },
+
+    /// Quantize an F32 tensor to INT8 using a linear scale/zero-point mapping.
+    ///
+    /// The formula is: `q = clamp(round(x / scale) + zero_point, -128, 127)`
+    ///
+    /// Supports per-tensor and per-channel quantization via [`QuantizationScheme`].
+    ///
+    /// - Single F32 input; output has the same shape with dtype [`TensorDtype::I8`].
+    /// - For per-channel quantization the [`QuantizationParams`] are derived
+    ///   automatically from the input data along the specified axis.
+    /// - The computed [`QuantizationParams`] (scale, zero\_point) are embedded in the
+    ///   returned buffer's descriptor for later use by [`TensorOp::Dequantize`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use omni_hal::tensor::TensorOp;
+    /// use omni_hal::tensor::QuantizationScheme;
+    ///
+    /// let op = TensorOp::Quantize { scheme: QuantizationScheme::PerTensor };
+    /// let _ = format!("{op:?}");
+    /// ```
+    Quantize {
+        /// Determines whether quantization parameters are computed globally
+        /// (per-tensor) or independently along one axis (per-channel).
+        scheme: QuantizationScheme,
+    },
+
+    /// Dequantize an INT8 tensor back to F32.
+    ///
+    /// The formula is: `x = (q - zero_point) * scale`
+    ///
+    /// - Single I8 input; output has the same shape with dtype [`TensorDtype::F32`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use omni_hal::tensor::TensorOp;
+    /// use omni_hal::tensor::QuantizationParams;
+    ///
+    /// let op = TensorOp::Dequantize {
+    ///     params: QuantizationParams { scale: 0.1, zero_point: 0 },
+    /// };
+    /// let _ = format!("{op:?}");
+    /// ```
+    Dequantize {
+        /// Scale and zero-point used during the original quantization step.
+        /// These must match the parameters that were used to produce the I8
+        /// input tensor, otherwise the reconstructed F32 values will be incorrect.
+        params: QuantizationParams,
+    },
+
+    /// Matrix multiplication on INT8 tensors with INT32 accumulation.
+    ///
+    /// Computes `C[i,j] = sum_k A[i,k] * B[k,j]` in the integer domain,
+    /// accumulating in `i32` to prevent overflow, then rescales the result to
+    /// `f32` via `out_scale`.
+    ///
+    /// The rescaling formula is:
+    /// `c_f32 = (c_i32 - correction) * (scale_a * scale_b) / out_scale`
+    ///
+    /// For symmetric quantization (`zero_point = 0`), the correction term is 0.
+    ///
+    /// - Input 0: INT8 matrix A with shape `[M, K]`.
+    /// - Input 1: INT8 matrix B with shape `[K, N]`.
+    /// - Output: F32 matrix C with shape `[M, N]`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use omni_hal::tensor::TensorOp;
+    /// use omni_hal::tensor::QuantizationParams;
+    ///
+    /// let op = TensorOp::QuantizedMatMul {
+    ///     params_a: QuantizationParams { scale: 0.01, zero_point: 0 },
+    ///     params_b: QuantizationParams { scale: 0.01, zero_point: 0 },
+    ///     out_scale: 1.0,
+    /// };
+    /// let _ = format!("{op:?}");
+    /// ```
+    QuantizedMatMul {
+        /// Quantization parameters for the first (A) input matrix.
+        params_a: QuantizationParams,
+        /// Quantization parameters for the second (B) input matrix.
+        params_b: QuantizationParams,
+        /// Output scale factor applied after integer accumulation.
+        /// Set to `1.0` to get raw dequantized values; set to a larger value
+        /// to keep output in a numerically stable range.
+        out_scale: f32,
     },
 }
 
@@ -978,6 +1137,63 @@ fn output_descriptor_for(op: &TensorOp, inputs: &[&TensorBuffer]) -> Result<Tens
                 *slot = axis_total;
             }
             Ok(TensorDescriptor::new(out_shape, first.descriptor.dtype))
+        }
+
+        // Quantize: same shape as input but dtype changes to I8.
+        TensorOp::Quantize { .. } => {
+            let src = inputs.first().ok_or_else(|| {
+                OmniError::hal(
+                    HalErrorKind::HardwareUnavailable,
+                    "execute::quantize::no_input",
+                )
+            })?;
+            Ok(TensorDescriptor::new(
+                src.descriptor.shape.clone(),
+                TensorDtype::I8,
+            ))
+        }
+
+        // Dequantize: same shape as input but dtype changes to F32.
+        TensorOp::Dequantize { .. } => {
+            let src = inputs.first().ok_or_else(|| {
+                OmniError::hal(
+                    HalErrorKind::HardwareUnavailable,
+                    "execute::dequantize::no_input",
+                )
+            })?;
+            Ok(TensorDescriptor::new(
+                src.descriptor.shape.clone(),
+                TensorDtype::F32,
+            ))
+        }
+
+        // QuantizedMatMul: same shape derivation as FP32 MatMul but output dtype is F32.
+        TensorOp::QuantizedMatMul { .. } => {
+            let mat_a = inputs.first().ok_or_else(|| {
+                OmniError::hal(
+                    HalErrorKind::HardwareUnavailable,
+                    "execute::quant_matmul::requires_two_inputs",
+                )
+            })?;
+            let mat_b = inputs.get(1).ok_or_else(|| {
+                OmniError::hal(
+                    HalErrorKind::HardwareUnavailable,
+                    "execute::quant_matmul::requires_two_inputs",
+                )
+            })?;
+            // No transposition for quantized matmul; A is [M,K], B is [K,N].
+            let (rows_out, k_from_a) = matmul_effective_dims(&mat_a.descriptor.shape, false)?;
+            let (k_from_b, cols_out) = matmul_effective_dims(&mat_b.descriptor.shape, false)?;
+            if k_from_a != k_from_b {
+                return Err(OmniError::hal(
+                    HalErrorKind::DeviceFailure,
+                    "execute::quant_matmul::inner_dimension_mismatch",
+                ));
+            }
+            Ok(TensorDescriptor::new(
+                vec![rows_out, cols_out],
+                TensorDtype::F32,
+            ))
         }
 
         // Element-wise ops (Add, Relu, Softmax, LayerNorm, GeLU, Scale,
@@ -1843,6 +2059,443 @@ fn exec_rms_norm(inputs: &[&TensorBuffer], epsilon: f32) -> Result<TensorBuffer>
 }
 
 // =============================================================================
+// Quantization helpers
+// =============================================================================
+
+/// Compute the `(min, max)` range of a slice of `f32` values.
+///
+/// Returns `(0.0, 0.0)` for an empty slice, which produces a scale of 0.
+/// Callers that depend on a non-zero scale must validate the input is non-empty.
+///
+/// # Example
+///
+/// ```
+/// use omni_hal::tensor::f32_min_max;
+///
+/// let (mn, mx) = f32_min_max(&[-1.0, 0.5, 2.0]);
+/// assert!((mn - (-1.0_f32)).abs() < 1e-6_f32);
+/// assert!((mx - 2.0_f32).abs() < 1e-6_f32);
+/// ```
+pub fn f32_min_max(values: &[f32]) -> (f32, f32) {
+    values
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(mn, mx), &v| {
+            (mn.min(v), mx.max(v))
+        })
+}
+
+/// Derive symmetric per-tensor [`QuantizationParams`] from the absolute maximum
+/// of the data.
+///
+/// Symmetric quantization sets `zero_point = 0` and derives `scale` so that the
+/// largest absolute value maps to `127`.  This is the standard approach for
+/// weight tensors in post-training quantization.
+///
+/// Returns `scale = 1.0, zero_point = 0` for all-zero data to avoid division by
+/// zero.
+///
+/// # Example
+///
+/// ```
+/// use omni_hal::tensor::symmetric_quant_params;
+///
+/// let p = symmetric_quant_params(&[-2.0, 1.0, 2.0]);
+/// assert_eq!(p.zero_point, 0);
+/// // scale = 2.0 / 127 ≈ 0.01574
+/// assert!((p.scale - 2.0_f32 / 127.0_f32).abs() < 1e-6_f32);
+/// ```
+#[allow(clippy::cast_precision_loss)]
+pub fn symmetric_quant_params(values: &[f32]) -> QuantizationParams {
+    let abs_max = values.iter().fold(0.0_f32, |m, &v| m.max(v.abs()));
+    // Guard: if all values are 0 return a no-op scale.
+    if abs_max == 0.0 {
+        return QuantizationParams {
+            scale: 1.0,
+            zero_point: 0,
+        };
+    }
+    // 127 = max representable INT8 value for symmetric range [-127, 127].
+    let scale = abs_max / 127.0_f32;
+    QuantizationParams {
+        scale,
+        zero_point: 0,
+    }
+}
+
+/// Derive asymmetric per-tensor [`QuantizationParams`] from the actual data range.
+///
+/// Asymmetric quantization maps `[min_val, max_val]` onto `[-128, 127]`, choosing
+/// `scale` and `zero_point` to minimise clipping.  This is appropriate for
+/// activation tensors which are often non-zero-centred.
+///
+/// Returns `scale = 1.0, zero_point = 0` for degenerate ranges to avoid
+/// division by zero.
+///
+/// # Example
+///
+/// ```
+/// use omni_hal::tensor::asymmetric_quant_params;
+///
+/// // A range of [0, 1] should give a zero_point that centres the data.
+/// let p = asymmetric_quant_params(&[0.0, 0.5, 1.0]);
+/// assert!(p.scale > 0.0);
+/// ```
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+pub fn asymmetric_quant_params(values: &[f32]) -> QuantizationParams {
+    let (min_val, max_val) = f32_min_max(values);
+    let range = max_val - min_val;
+    if range == 0.0 {
+        return QuantizationParams {
+            scale: 1.0,
+            zero_point: 0,
+        };
+    }
+    // Map [min_val, max_val] to [-128, 127].
+    let scale = range / 255.0_f32;
+    // zero_point: the INT8 value that represents 0.0 in the float domain.
+    // Derived from: 0 = (zp - zero_point) * scale  →  zero_point = -min_val / scale.
+    // Clamped to [-128, 127] to stay in the representable range.
+    let zp_f32 = (-min_val / scale).round();
+    let zero_point = zp_f32.clamp(-128.0, 127.0) as i8;
+    QuantizationParams { scale, zero_point }
+}
+
+/// Quantize a single `f32` value to `i8` given `scale` and `zero_point`.
+///
+/// `q = clamp(round(x / scale) + zero_point, -128, 127)`
+#[allow(clippy::cast_possible_truncation)]
+fn quantize_element(x: f32, scale: f32, zero_point: i8) -> i8 {
+    // Division by scale: scale is guaranteed non-zero by the callers that
+    // compute it via `symmetric_quant_params` / `asymmetric_quant_params`.
+    let q_f32 = (x / scale).round() + f32::from(zero_point);
+    // clamp to [-128, 127] before cast to i8.
+    q_f32.clamp(-128.0, 127.0) as i8
+}
+
+/// Dequantize a single `i8` value to `f32` given `scale` and `zero_point`.
+///
+/// `x = (q - zero_point) * scale`
+#[allow(clippy::cast_precision_loss)]
+fn dequantize_element(q: i8, scale: f32, zero_point: i8) -> f32 {
+    f32::from(q - zero_point) * scale
+}
+
+/// Quantize an F32 tensor to INT8.
+///
+/// Supports per-tensor (symmetric) quantization for weight tensors and
+/// per-channel quantization for weight matrices where channels run along
+/// axis 0.
+///
+/// For `PerTensor`: uses symmetric quantization (zero\_point = 0).
+/// For `PerChannel { axis }`: uses symmetric quantization per slice along
+/// `axis`.
+///
+/// The output buffer has dtype `I8`.
+// cast_sign_loss: storing i8 bytes in a Vec<u8> requires an i8 → u8 bit-cast.
+// This is intentional and semantically correct: the byte pattern is preserved
+// and read back as i8 in exec_dequantize using the same u8 → i8 cast.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::integer_division,
+    clippy::cast_sign_loss
+)]
+fn exec_quantize(inputs: &[&TensorBuffer], scheme: &QuantizationScheme) -> Result<TensorBuffer> {
+    let src = inputs.first().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::quantize::no_input",
+        )
+    })?;
+
+    require_f32(src.descriptor.dtype, "execute::quantize::unsupported_dtype")?;
+
+    let n_elems = src.descriptor.num_elements();
+    let src_bytes = src.as_bytes();
+
+    // Read all source floats once to avoid repeated byte arithmetic.
+    let mut src_vals: Vec<f32> = Vec::with_capacity(n_elems);
+    for i in 0..n_elems {
+        src_vals.push(read_f32(src_bytes, i)?);
+    }
+
+    let out_desc = TensorDescriptor::new(src.descriptor.shape.clone(), TensorDtype::I8);
+    let mut out_bytes = vec![0u8; out_desc.byte_size()];
+
+    match scheme {
+        QuantizationScheme::PerTensor => {
+            // Compute a single scale from the full tensor.
+            let params = symmetric_quant_params(&src_vals);
+            for (i, &x) in src_vals.iter().enumerate() {
+                let q = quantize_element(x, params.scale, params.zero_point);
+                // SAFETY: i8 and u8 are both 1-byte types; transmuting the sign
+                // bit is well-defined and the only way to store a signed byte in
+                // a Vec<u8> without unsafe: we use u8::wrapping_cast semantics.
+                // The pattern `q as u8` is equivalent to reinterpreting the bits.
+                if let Some(slot) = out_bytes.get_mut(i) {
+                    *slot = q as u8;
+                }
+            }
+        }
+
+        QuantizationScheme::PerChannel { axis } => {
+            let shape = &src.descriptor.shape;
+            let rank = shape.len();
+            if *axis >= rank {
+                return Err(OmniError::hal(
+                    HalErrorKind::DeviceFailure,
+                    "execute::quantize::per_channel::axis_out_of_bounds",
+                ));
+            }
+
+            // axis_size: number of channels.
+            let axis_size = shape.get(*axis).copied().ok_or_else(|| {
+                OmniError::hal(
+                    HalErrorKind::DeviceFailure,
+                    "execute::quantize::shape_error",
+                )
+            })?;
+            // outer: product of dims before axis.
+            let outer: usize = shape.get(..*axis).map_or(1, |s| s.iter().product());
+            // inner: product of dims after axis.
+            let inner: usize = shape.get(axis + 1..).map_or(1, |s| s.iter().product());
+
+            // For each channel, collect its elements, compute params, then quantize.
+            for ch in 0..axis_size {
+                // Gather all element values for this channel.
+                let ch_vals: Vec<f32> = (0..outer)
+                    .flat_map(|o| (0..inner).map(move |i| o * (axis_size * inner) + ch * inner + i))
+                    .map(|flat| src_vals.get(flat).copied().unwrap_or(0.0))
+                    .collect();
+
+                let params = symmetric_quant_params(&ch_vals);
+
+                for (local_idx, &x) in ch_vals.iter().enumerate() {
+                    // Reconstruct the global flat index for this element.
+                    let o = local_idx / inner;
+                    let i = local_idx % inner;
+                    let flat = o * (axis_size * inner) + ch * inner + i;
+                    let q = quantize_element(x, params.scale, params.zero_point);
+                    if let Some(slot) = out_bytes.get_mut(flat) {
+                        *slot = q as u8;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(TensorBuffer::new(out_desc, out_bytes))
+}
+
+/// Dequantize an INT8 tensor to F32.
+///
+/// Applies `x = (q - zero_point) * scale` to every element.
+/// The input tensor must have dtype `I8`.
+// cast_possible_wrap: u8 → i8 is an intentional bit-reinterpretation. The byte
+// was stored by exec_quantize using the same i8 → u8 convention, so the cast
+// recovers the original signed value correctly.
+#[allow(clippy::cast_possible_wrap)]
+fn exec_dequantize(inputs: &[&TensorBuffer], params: QuantizationParams) -> Result<TensorBuffer> {
+    let src = inputs.first().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::dequantize::no_input",
+        )
+    })?;
+
+    if src.descriptor.dtype != TensorDtype::I8 {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::dequantize::input_must_be_i8",
+        ));
+    }
+
+    let n_elems = src.descriptor.num_elements();
+    let src_bytes = src.as_bytes();
+
+    let out_desc = TensorDescriptor::new(src.descriptor.shape.clone(), TensorDtype::F32);
+    let mut out_bytes = vec![0u8; out_desc.byte_size()];
+
+    for i in 0..n_elems {
+        // Read the raw byte and reinterpret as i8 (bit-cast).
+        let raw = src_bytes.get(i).copied().ok_or_else(|| {
+            OmniError::hal(
+                HalErrorKind::DeviceFailure,
+                "execute::dequantize::read_error",
+            )
+        })?;
+        // SAFETY: u8 → i8 is a well-defined bit-reinterpretation in Rust.
+        // The byte was stored by exec_quantize using the same convention.
+        let q = raw as i8;
+        let x = dequantize_element(q, params.scale, params.zero_point);
+        write_f32(&mut out_bytes, i, x)?;
+    }
+
+    Ok(TensorBuffer::new(out_desc, out_bytes))
+}
+
+/// INT8 matrix multiplication with INT32 accumulation, output in F32.
+///
+/// Computes `C[i,j] = sum_k A[i,k] * B[k,j]` where A and B are INT8 matrices.
+/// Accumulation happens in `i32` to avoid overflow for large K.
+///
+/// The dequantized output is:
+/// `c_f32 = (c_i32 * scale_a * scale_b) / out_scale`
+///
+/// For symmetric quantization (`zero_point = 0` for both A and B), the
+/// zero-point correction terms cancel and the formula reduces to a simple
+/// scaling of the integer dot product.
+///
+/// For asymmetric quantization the correction terms are computed and subtracted:
+/// `correction = zero_point_a * sum_k B[k,j] + zero_point_b * sum_k A[i,k]
+///               - zero_point_a * zero_point_b * K`
+///
+/// This correction is computed once per output element.
+// cast_possible_wrap: u8 → i8 bit-cast is intentional (see exec_dequantize comment).
+// cast_possible_truncation: `inner as i32` — inner dimension is a tensor size;
+//   in practice < 2^16 and cannot wrap a 32-bit signed integer.
+#[allow(
+    clippy::integer_division,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::too_many_lines
+)]
+fn exec_quantized_matmul(
+    inputs: &[&TensorBuffer],
+    params_a: QuantizationParams,
+    params_b: QuantizationParams,
+    out_scale: f32,
+) -> Result<TensorBuffer> {
+    let mat_a = inputs.first().ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::quant_matmul::requires_two_inputs",
+        )
+    })?;
+    let mat_b = inputs.get(1).ok_or_else(|| {
+        OmniError::hal(
+            HalErrorKind::HardwareUnavailable,
+            "execute::quant_matmul::requires_two_inputs",
+        )
+    })?;
+
+    if mat_a.descriptor.dtype != TensorDtype::I8 {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::quant_matmul::input_a_must_be_i8",
+        ));
+    }
+    if mat_b.descriptor.dtype != TensorDtype::I8 {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::quant_matmul::input_b_must_be_i8",
+        ));
+    }
+
+    if out_scale == 0.0 {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::quant_matmul::out_scale_must_be_nonzero",
+        ));
+    }
+
+    let (rows, inner_a) = matmul_effective_dims(&mat_a.descriptor.shape, false)?;
+    let (inner_b, cols) = matmul_effective_dims(&mat_b.descriptor.shape, false)?;
+
+    if inner_a != inner_b {
+        return Err(OmniError::hal(
+            HalErrorKind::DeviceFailure,
+            "execute::quant_matmul::inner_dimension_mismatch",
+        ));
+    }
+    let inner = inner_a;
+
+    let a_bytes = mat_a.as_bytes();
+    let b_bytes = mat_b.as_bytes();
+
+    let out_desc = TensorDescriptor::new(vec![rows, cols], TensorDtype::F32);
+    let mut out_bytes = vec![0u8; out_desc.byte_size()];
+
+    // Pre-compute combined float scale: product of both input scales divided by
+    // the output scale.  Multiplied once per output element rather than per
+    // accumulation step.
+    let combined_scale = params_a.scale * params_b.scale / out_scale;
+
+    // Zero-point integers cast to i32 for arithmetic without overflow.
+    let zp_a = i32::from(params_a.zero_point);
+    let zp_b = i32::from(params_b.zero_point);
+    let k_i32 = inner as i32;
+
+    for row in 0..rows {
+        // Pre-compute sum_k A[row,k] once per row for the asymmetric correction.
+        let row_sum_a: i32 = (0..inner)
+            .map(|k| {
+                let idx = row * inner + k;
+                a_bytes.get(idx).map_or(0_i32, |&b| i32::from(b as i8))
+            })
+            .fold(0_i32, i32::saturating_add);
+
+        for col in 0..cols {
+            // Integer dot product: accumulate A[row,k] * B[k,col] in i32.
+            let mut acc_i32: i32 = 0;
+            for k in 0..inner {
+                let a_idx = row * inner + k;
+                let b_idx = k * cols + col;
+                let a_val = a_bytes
+                    .get(a_idx)
+                    .copied()
+                    .ok_or_else(|| {
+                        OmniError::hal(
+                            HalErrorKind::DeviceFailure,
+                            "execute::quant_matmul::index_error_a",
+                        )
+                    })
+                    .map(|b| i32::from(b as i8))?;
+                let b_val = b_bytes
+                    .get(b_idx)
+                    .copied()
+                    .ok_or_else(|| {
+                        OmniError::hal(
+                            HalErrorKind::DeviceFailure,
+                            "execute::quant_matmul::index_error_b",
+                        )
+                    })
+                    .map(|b| i32::from(b as i8))?;
+                acc_i32 = acc_i32.saturating_add(a_val * b_val);
+            }
+
+            // Asymmetric correction: handles non-zero zero-points.
+            // correction = zp_a * sum_k(B[k,col]) + zp_b * row_sum_a
+            //              - zp_a * zp_b * K
+            // For symmetric (zp = 0) this entire block is zero and is compiled
+            // away by the optimizer.
+            if zp_a != 0 || zp_b != 0 {
+                // sum_k B[k,col] for this column.
+                let col_sum_b: i32 = (0..inner)
+                    .map(|k| {
+                        let idx = k * cols + col;
+                        b_bytes.get(idx).map_or(0_i32, |&b| i32::from(b as i8))
+                    })
+                    .fold(0_i32, i32::saturating_add);
+
+                let correction = zp_a
+                    .saturating_mul(col_sum_b)
+                    .saturating_add(zp_b.saturating_mul(row_sum_a))
+                    .saturating_sub(zp_a.saturating_mul(zp_b).saturating_mul(k_i32));
+
+                acc_i32 = acc_i32.saturating_sub(correction);
+            }
+
+            // Rescale to F32.
+            let out_val = (acc_i32 as f32) * combined_scale;
+            write_f32(&mut out_bytes, row * cols + col, out_val)?;
+        }
+    }
+
+    Ok(TensorBuffer::new(out_desc, out_bytes))
+}
+
+// =============================================================================
 // TensorBackend impl for CpuBackend
 // =============================================================================
 
@@ -1926,6 +2579,16 @@ impl TensorBackend for CpuBackend {
             TensorOp::Concat { axis } => exec_concat(inputs, axis),
 
             TensorOp::RmsNorm { epsilon } => exec_rms_norm(inputs, epsilon),
+
+            TensorOp::Quantize { scheme } => exec_quantize(inputs, &scheme),
+
+            TensorOp::Dequantize { params } => exec_dequantize(inputs, params),
+
+            TensorOp::QuantizedMatMul {
+                params_a,
+                params_b,
+                out_scale,
+            } => exec_quantized_matmul(inputs, params_a, params_b, out_scale),
         }
     }
 

@@ -185,7 +185,8 @@ impl ScanResult {
 
     /// Iterator over discovered devices.
     pub fn iter(&self) -> impl Iterator<Item = &PciDevice> {
-        self.devices.get(..self.count)
+        self.devices
+            .get(..self.count)
             .unwrap_or(&[])
             .iter()
             .flatten()
@@ -278,7 +279,8 @@ unsafe fn scan_bus(bus: u8, depth: u8, result: &mut ScanResult) {
             let class_code = ((class_reg >> 24) & 0xFF) as u8;
             let subclass = ((class_reg >> 16) & 0xFF) as u8;
 
-            let header_reg = unsafe { arch::pci_cfg_read32(bus, dev_slot, func, PCI_REG_HEADER_TYPE) };
+            let header_reg =
+                unsafe { arch::pci_cfg_read32(bus, dev_slot, func, PCI_REG_HEADER_TYPE) };
             let header_type = ((header_reg >> 16) & 0xFF) as u8;
 
             let bar0 = unsafe { arch::pci_cfg_read32(bus, dev_slot, func, 0x10) };
@@ -310,9 +312,8 @@ unsafe fn scan_bus(bus: u8, depth: u8, result: &mut ScanResult) {
 
             if is_bridge {
                 result.bridges_found += 1;
-                let bus_info = unsafe {
-                    arch::pci_cfg_read32(bus, dev_slot, func, PCI_REG_BUS_INFO)
-                };
+                let bus_info =
+                    unsafe { arch::pci_cfg_read32(bus, dev_slot, func, PCI_REG_BUS_INFO) };
                 let secondary_bus = ((bus_info >> 8) & 0xFF) as u8;
                 if secondary_bus != 0 && secondary_bus != bus {
                     unsafe { scan_bus(secondary_bus, depth + 1, result) };
@@ -411,7 +412,10 @@ mod tests {
 
     #[test]
     fn bar64_combines_halves() {
-        assert_eq!(PciDevice::bar64(0x0000_0004, 0x0000_0001), 0x0000_0001_0000_0000);
+        assert_eq!(
+            PciDevice::bar64(0x0000_0004, 0x0000_0001),
+            0x0000_0001_0000_0000
+        );
     }
 
     #[test]
@@ -550,7 +554,11 @@ mod tests {
             header_type: 0x00,
         };
         result.push(dev);
-        assert!(result.find_by_class(NVME_CLASS_CODE, NVME_SUBCLASS).is_some());
+        assert!(
+            result
+                .find_by_class(NVME_CLASS_CODE, NVME_SUBCLASS)
+                .is_some()
+        );
         assert!(result.find_by_class(0x02, 0x00).is_none());
     }
 

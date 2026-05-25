@@ -675,11 +675,19 @@ mod tests {
         };
         let stub = StubCapabilityProvider;
         assert_eq!(
-            stub.verify(&token_a, KernelAction::IpcSend, KernelResource::IpcChannel(1)),
+            stub.verify(
+                &token_a,
+                KernelAction::IpcSend,
+                KernelResource::IpcChannel(1)
+            ),
             CapabilityVerdict::Authorised
         );
         assert_eq!(
-            stub.verify(&token_b, KernelAction::IpcSend, KernelResource::IpcChannel(1)),
+            stub.verify(
+                &token_b,
+                KernelAction::IpcSend,
+                KernelResource::IpcChannel(1)
+            ),
             CapabilityVerdict::Authorised
         );
     }

@@ -113,6 +113,30 @@ impl EncryptedType for EncryptedString {
     }
 }
 
+impl core::fmt::Display for EncryptedString {
+    /// Always renders as `[ENCRYPTED]`.
+    ///
+    /// The plaintext is never accessible through `Display` — surfacing it
+    /// would bypass the TEE boundary and expose PII. Logs and UI code that
+    /// call `format!("{}", encrypted_string)` receive the safe placeholder
+    /// string `[ENCRYPTED]`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[cfg(feature = "_tokenization_provider")]
+    /// # {
+    /// use omni_types::encrypted::EncryptedString;
+    /// let es = EncryptedString::from_ciphertext(vec![0xAB, 0xCD]);
+    /// assert_eq!(format!("{es}"), "[ENCRYPTED]");
+    /// # }
+    /// // Even without provider feature, Display is available on the type.
+    /// ```
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("[ENCRYPTED]")
+    }
+}
+
 /// Structurally masked Social Security Number.
 ///
 /// Stores the ciphertext of the full SSN plus a small number of plaintext
@@ -142,6 +166,39 @@ impl MaskedSSN {
     #[must_use]
     pub const fn visible_suffix(&self) -> &[u8; 4] {
         &self.visible_suffix
+    }
+}
+
+impl core::fmt::Display for MaskedSSN {
+    /// Renders as `***-**-XXXX` where `XXXX` is the visible 4-digit suffix.
+    ///
+    /// The full SSN is never recoverable from the `Display` output.  Only the
+    /// last four digit characters are shown, following standard U.S. SSN
+    /// masking practice (e.g. `***-**-6789`).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[cfg(feature = "_tokenization_provider")]
+    /// # {
+    /// use omni_types::encrypted::MaskedSSN;
+    /// let key = [0u8; 32];
+    /// let nonce = [0u8; 12];
+    /// let masked = MaskedSSN::encrypt("123-45-6789", &key, &nonce).unwrap();
+    /// assert_eq!(format!("{masked}"), "***-**-6789");
+    /// # }
+    /// ```
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The visible_suffix is guaranteed to contain exactly 4 ASCII digits;
+        // validated at construction time by `from_ciphertext` and `encrypt`.
+        //
+        // Convert each byte to char. Since they are ASCII digits (0x30..0x39),
+        // `from(b)` is infallible for all byte values in [0x30, 0x39].
+        let d0 = char::from(self.visible_suffix[0]);
+        let d1 = char::from(self.visible_suffix[1]);
+        let d2 = char::from(self.visible_suffix[2]);
+        let d3 = char::from(self.visible_suffix[3]);
+        write!(f, "***-**-{d0}{d1}{d2}{d3}")
     }
 }
 

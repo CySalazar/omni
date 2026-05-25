@@ -1173,6 +1173,20 @@ pub mod preprocessing;
 pub mod orchestrator_bridge;
 
 // =============================================================================
+// decode — Streaming autoregressive decode loop (Sprint 8)
+// =============================================================================
+
+/// Streaming greedy / sampled decode loop for autoregressive language models.
+///
+/// [`decode::streaming_decode`] returns a lazy [`Iterator`] that yields one
+/// [`decode::DecodeToken`] per transformer forward pass.  Supports temperature
+/// scaling, top-k sampling, and EOS-based termination.  Works with both FP32
+/// and quantized model weights.
+///
+/// See [`decode`] for the full API surface and usage examples.
+pub mod decode;
+
+// =============================================================================
 // Unit tests
 // =============================================================================
 

@@ -58,11 +58,7 @@ fn make_tiny_weights(config: &TransformerConfig) -> TransformerWeights {
 }
 
 /// Build a minimal GGUF file with one F32 tensor for testing the load path.
-fn make_test_gguf_with_tensor(
-    tensor_name: &str,
-    dims: &[u64],
-    f32_data: &[f32],
-) -> Vec<u8> {
+fn make_test_gguf_with_tensor(tensor_name: &str, dims: &[u64], f32_data: &[f32]) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
     buf.extend_from_slice(&GGUF_VERSION_3.to_le_bytes());
