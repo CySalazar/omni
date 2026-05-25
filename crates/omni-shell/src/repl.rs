@@ -10,8 +10,9 @@
 //!
 //! The [`Shell`] struct bundles the environment, line editor, and current
 //! working directory. In a live session the REPL owner calls [`process_line`]
-//! for every line obtained from the line editor, then uses the returned exit
-//! code to update `$?`.
+//! for every line obtained from the line editor, destructures the returned
+//! `(exit_code, output)` tuple, writes `output` to the console, and uses
+//! `exit_code` to update `$?`.
 //!
 //! ## Pipeline
 //!
@@ -93,18 +94,24 @@ pub fn format_prompt(env: &ShellEnv, cwd: &str) -> String {
 ///
 /// Steps performed:
 /// 1. Trim leading and trailing whitespace.
-/// 2. Skip empty lines and comments (`#`-prefixed) — return `0`.
-/// 3. Tokenise via [`lexer::tokenize`]; syntax errors return `1`.
-/// 4. Parse via [`parser::parse`]; parse errors return `1`.
+/// 2. Skip empty lines and comments (`#`-prefixed) — return `(0, vec![])`.
+/// 3. Tokenise via [`lexer::tokenize`]; syntax errors return `(1, vec![])`.
+/// 4. Parse via [`parser::parse`]; parse errors return `(1, vec![])`.
 /// 5. Execute via [`executor::execute_command_list`].
-/// 6. Flush captured output to stdout via `print!`.
+/// 6. Flush captured output to stdout via `print!` (only under the `std`
+///    feature).
 /// 7. Update `*cwd` from the execution context (the `cd` builtin may have
 ///    changed it).
 ///
 /// # Returns
 ///
-/// The exit code of the last executed pipeline, or `0` for blank/comment
-/// lines, or `1` on tokenisation/parse failure.
+/// A `(exit_code, output)` tuple where:
+/// - `exit_code` is the exit code of the last executed pipeline, `0` for
+///   blank/comment lines, or `1` on tokenisation/parse failure.
+/// - `output` contains the raw bytes of captured pipeline output. Under the
+///   `std` feature this function also flushes those bytes to stdout. On
+///   bare-metal targets the caller is responsible for writing `output` to the
+///   console via the kernel syscall layer.
 ///
 /// # Examples
 ///
@@ -120,15 +127,20 @@ pub fn format_prompt(env: &ShellEnv, cwd: &str) -> String {
 ///
 /// let mut env = ShellEnv::new();
 /// let mut cwd = "/".to_string();
-/// let code = process_line("echo hello", &mut env, &mut cwd, &EmptyFs);
+/// let (code, _output) = process_line("echo hello", &mut env, &mut cwd, &EmptyFs);
 /// assert_eq!(code, 0);
 /// ```
-pub fn process_line(input: &str, env: &mut ShellEnv, cwd: &mut String, fs: &dyn FsQuery) -> i32 {
+pub fn process_line(
+    input: &str,
+    env: &mut ShellEnv,
+    cwd: &mut String,
+    fs: &dyn FsQuery,
+) -> (i32, Vec<u8>) {
     let trimmed = input.trim();
 
-    // Empty lines and comments are no-ops.
+    // Empty lines and comments are no-ops — return immediately with no output.
     if trimmed.is_empty() || trimmed.starts_with('#') {
-        return 0;
+        return (0, Vec::new());
     }
 
     // Tokenise.
@@ -140,11 +152,11 @@ pub fn process_line(input: &str, env: &mut ShellEnv, cwd: &mut String, fs: &dyn 
             #[cfg(feature = "std")]
             tracing::warn!(error = %e, "omni-shell: syntax error");
             let _ = e;
-            return 1;
+            return (1, Vec::new());
         }
     };
     if tokens.is_empty() {
-        return 0;
+        return (0, Vec::new());
     }
 
     // Parse.
@@ -154,11 +166,11 @@ pub fn process_line(input: &str, env: &mut ShellEnv, cwd: &mut String, fs: &dyn 
             #[cfg(feature = "std")]
             tracing::warn!(error = %e, "omni-shell: parse error");
             let _ = e;
-            return 1;
+            return (1, Vec::new());
         }
     };
     if ast.entries.is_empty() {
-        return 0;
+        return (0, Vec::new());
     }
 
     // Classify intent before execution so the label can be prepended to output
@@ -181,8 +193,8 @@ pub fn process_line(input: &str, env: &mut ShellEnv, cwd: &mut String, fs: &dyn 
     *cwd = ctx.cwd;
 
     // Flush captured output to stdout when running on a host with std.
-    // On bare-metal targets the caller reads `ctx.output` directly and
-    // dispatches it via the kernel console/syscall layer.
+    // On bare-metal targets the caller receives the raw bytes in the returned
+    // Vec<u8> and dispatches them via the kernel console/syscall layer.
     #[cfg(feature = "std")]
     if !ctx.output.is_empty() {
         // When OMNI_AGENT=1 is set in the shell environment, prepend the
@@ -217,7 +229,7 @@ pub fn process_line(input: &str, env: &mut ShellEnv, cwd: &mut String, fs: &dyn 
     // Record in audit log. Timestamp is 0 in Phase 1 (no HAL clock yet).
     ctx.audit_log.record(trimmed.into(), intent, code, 0);
 
-    code
+    (code, ctx.output)
 }
 
 // ── Shell ─────────────────────────────────────────────────────────────────────
@@ -326,39 +338,44 @@ mod tests {
     fn process_line_empty_returns_zero() {
         let mut env = ShellEnv::new();
         let mut cwd = "/".to_string();
-        let code = process_line("", &mut env, &mut cwd, &EmptyFs);
+        let (code, output) = process_line("", &mut env, &mut cwd, &EmptyFs);
         assert_eq!(code, 0);
+        assert!(output.is_empty());
     }
 
     #[test]
     fn process_line_whitespace_only_returns_zero() {
         let mut env = ShellEnv::new();
         let mut cwd = "/".to_string();
-        let code = process_line("   \t  ", &mut env, &mut cwd, &EmptyFs);
+        let (code, output) = process_line("   \t  ", &mut env, &mut cwd, &EmptyFs);
         assert_eq!(code, 0);
+        assert!(output.is_empty());
     }
 
     #[test]
     fn process_line_comment_returns_zero() {
         let mut env = ShellEnv::new();
         let mut cwd = "/".to_string();
-        let code = process_line("# this is a comment", &mut env, &mut cwd, &EmptyFs);
+        let (code, output) = process_line("# this is a comment", &mut env, &mut cwd, &EmptyFs);
         assert_eq!(code, 0);
+        assert!(output.is_empty());
     }
 
     #[test]
     fn process_line_echo_returns_zero() {
         let mut env = ShellEnv::new();
         let mut cwd = "/".to_string();
-        let code = process_line("echo hello", &mut env, &mut cwd, &EmptyFs);
+        let (code, output) = process_line("echo hello", &mut env, &mut cwd, &EmptyFs);
         assert_eq!(code, 0);
+        // echo writes to the output buffer; the buffer should contain the word.
+        assert!(String::from_utf8_lossy(&output).contains("hello"));
     }
 
     #[test]
     fn process_line_true_returns_zero() {
         let mut env = ShellEnv::new();
         let mut cwd = "/".to_string();
-        let code = process_line("true", &mut env, &mut cwd, &EmptyFs);
+        let (code, _output) = process_line("true", &mut env, &mut cwd, &EmptyFs);
         assert_eq!(code, 0);
     }
 
@@ -366,7 +383,7 @@ mod tests {
     fn process_line_false_returns_one() {
         let mut env = ShellEnv::new();
         let mut cwd = "/".to_string();
-        let code = process_line("false", &mut env, &mut cwd, &EmptyFs);
+        let (code, _output) = process_line("false", &mut env, &mut cwd, &EmptyFs);
         assert_eq!(code, 1);
     }
 
@@ -374,7 +391,7 @@ mod tests {
     fn process_line_cd_changes_cwd() {
         let mut env = ShellEnv::new();
         let mut cwd = "/".to_string();
-        let code = process_line("cd /tmp", &mut env, &mut cwd, &EmptyFs);
+        let (code, _output) = process_line("cd /tmp", &mut env, &mut cwd, &EmptyFs);
         assert_eq!(code, 0);
         assert_eq!(cwd, "/tmp");
     }
@@ -383,7 +400,7 @@ mod tests {
     fn process_line_unknown_command_returns_127() {
         let mut env = ShellEnv::new();
         let mut cwd = "/".to_string();
-        let code = process_line("totally_unknown_cmd_xyz", &mut env, &mut cwd, &EmptyFs);
+        let (code, _output) = process_line("totally_unknown_cmd_xyz", &mut env, &mut cwd, &EmptyFs);
         assert_eq!(code, 127);
     }
 
@@ -393,8 +410,9 @@ mod tests {
         env.set("MYVAR", "expanded");
         let mut cwd = "/".to_string();
         // echo $MYVAR — the value is expanded before execution.
-        let code = process_line("echo $MYVAR", &mut env, &mut cwd, &EmptyFs);
+        let (code, output) = process_line("echo $MYVAR", &mut env, &mut cwd, &EmptyFs);
         assert_eq!(code, 0);
+        assert!(String::from_utf8_lossy(&output).contains("expanded"));
     }
 
     #[test]
@@ -402,7 +420,7 @@ mod tests {
         let mut env = ShellEnv::new();
         let mut cwd = "/".to_string();
         // true && true should return 0.
-        let code = process_line("true && true", &mut env, &mut cwd, &EmptyFs);
+        let (code, _output) = process_line("true && true", &mut env, &mut cwd, &EmptyFs);
         assert_eq!(code, 0);
     }
 
@@ -411,7 +429,7 @@ mod tests {
         let mut env = ShellEnv::new();
         let mut cwd = "/".to_string();
         // false || true should return 0.
-        let code = process_line("false || true", &mut env, &mut cwd, &EmptyFs);
+        let (code, _output) = process_line("false || true", &mut env, &mut cwd, &EmptyFs);
         assert_eq!(code, 0);
     }
 

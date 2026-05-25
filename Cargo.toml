@@ -158,6 +158,14 @@ exclude = [
     # `cargo build --manifest-path crates/omni-driver-e1000e-image/Cargo.toml \
     #              --target x86_64-unknown-none --release` (P6.7.8.7).
     "crates/omni-driver-e1000e-image",
+    # `omni-shell-image` is the bare-metal PID 1 shell binary (`no_std +
+    # no_main`, target `x86_64-unknown-none`). Excluded from the default
+    # workspace matrix so `cargo build --workspace` stays green on developer
+    # machines without the cross-toolchain. Build explicitly via:
+    #
+    #   cargo build --manifest-path crates/omni-shell-image/Cargo.toml \
+    #               --target x86_64-unknown-none --release
+    "crates/omni-shell-image",
     # `disk-image` is the host-side UEFI/BIOS disk image builder.
     # It depends on the heavy `bootloader 0.11` crate (which embeds
     # pre-compiled bootloader binary blobs) and only needs to run on CI
