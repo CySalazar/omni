@@ -59,7 +59,7 @@ const TOTAL_SECS: usize = 300;
 /// "Power Off" button in the System Info window content area.
 const POWEROFF_BTN: widget::Button = widget::Button {
     rel_x: 8,
-    rel_y: 254, // bumped from 148 to clear the 6 added CPU rows (84 px)
+    rel_y: 268, // 254 + 14 (extra row for feature flag wrap)
     width: 96,
     height: 22,
     label: "Power Off",
@@ -106,7 +106,7 @@ pub fn run_desktop(
         x: 20,
         y: 20,
         width: 484,
-        height: 308, // 224 + 84 (6 new CPU rows × 14)
+        height: 322, // 308 + 14 (extra row for feature flag wrap)
         title: "System Info",
         bg_color: graphics::DARK_NAVY,
     });
@@ -123,7 +123,7 @@ pub fn run_desktop(
     // running image is self-describing on Proxmox / VirtualBox / QEMU.
     wm_state.add(wm::Window {
         x: 20,
-        y: 336,
+        y: 350,
         width: 984,
         height: 198,
         title: "Build Info",
@@ -874,7 +874,9 @@ fn render_sysinfo(
         w.bg_color,
     );
 
-    // Row 15 — feature flags (selected subset of CPUID 1/7).
+    // Row 15+ — feature flags (selected subset of CPUID 1/7).
+    // The feature string can exceed the window width on CPUs with many
+    // extensions, so we word-wrap at the nearest space boundary.
     font::render_str(
         fb,
         cx,
@@ -886,14 +888,37 @@ fn render_sysinfo(
     {
         let feats = cpuinfo::trim_feature_summary(&snap.feature_summary);
         let feats_str = core::str::from_utf8(feats).unwrap_or("(non-ASCII)");
-        font::render_str(
-            fb,
-            cx + 10 * 8,
-            cy + step * 15,
-            feats_str,
-            graphics::LIGHT_CYAN,
-            w.bg_color,
-        );
+        let label_px = 10 * 8;
+        let max_value_px = w.width.saturating_sub(16 + label_px);
+        #[allow(
+            clippy::integer_division,
+            reason = "pixel-to-char conversion; sub-char precision is meaningless"
+        )]
+        let max_chars = (max_value_px / 8) as usize;
+        let mut remaining = feats_str;
+        let mut row_off: u32 = 0;
+        while !remaining.is_empty() {
+            let (line, rest) = if remaining.len() <= max_chars {
+                (remaining, "")
+            } else {
+                let cut = remaining[..max_chars]
+                    .rfind(' ')
+                    .unwrap_or(max_chars);
+                let (l, r) = remaining.split_at(cut);
+                (l, r.trim_start())
+            };
+            let x_off = if row_off == 0 { label_px } else { label_px };
+            font::render_str(
+                fb,
+                cx + x_off,
+                cy + step * (15 + row_off),
+                line,
+                graphics::LIGHT_CYAN,
+                w.bg_color,
+            );
+            remaining = rest;
+            row_off += 1;
+        }
     }
 
     widget::draw_button(fb, w.x + 1, w.y + wm::TITLEBAR_H, &POWEROFF_BTN, false);
