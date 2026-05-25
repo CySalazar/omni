@@ -2903,21 +2903,46 @@ mod shell_handlers {
             None => return SyscallReturn::err(syscall_errno::EFAULT),
         };
 
-        // SAFETY: single-CPU; SHELL_CONSOLE_INPUT not otherwise aliased.
-        let console = unsafe {
-            match (*core::ptr::addr_of_mut!(crate::SHELL_CONSOLE_INPUT)).as_mut() {
-                Some(c) => c,
-                None => return SyscallReturn::err(syscall_errno::EIO),
+        // Read from COM1 serial port with line-buffered polling.
+        // Blocks until a newline or the buffer is full.
+        let max = dest.len();
+        let mut pos = 0usize;
+        while pos < max {
+            // Poll COM1 Line Status Register (0x3FD) bit 0 = Data Ready.
+            let ready: u8;
+            // SAFETY: port I/O is Ring 0 only; single-CPU.
+            unsafe { core::arch::asm!("in al, dx", out("al") ready, in("dx") 0x3FDu16, options(nomem, nostack)); }
+            if ready & 1 == 0 {
+                if pos > 0 {
+                    break; // Return what we have so far.
+                }
+                core::hint::spin_loop();
+                continue;
             }
-        };
-
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "buf_len ≤ 0x10_0000 by user_slice_mut; fits usize"
-        )]
-        let data = console.read_bytes(buf_len as usize, true);
-        let n = data.len().min(dest.len());
-        dest[..n].copy_from_slice(&data[..n]);
+            // Read the byte from COM1 data port (0x3F8).
+            let byte: u8;
+            // SAFETY: same as above.
+            unsafe { core::arch::asm!("in al, dx", out("al") byte, in("dx") 0x3F8u16, options(nomem, nostack)); }
+            // Echo the byte back to the serial console for user feedback.
+            crate::bare_metal::early_console::emit(&[byte]);
+            if byte == b'\r' {
+                crate::bare_metal::early_console::emit(b"\n");
+                dest[pos] = b'\n';
+                pos += 1;
+                break; // Line complete.
+            }
+            if byte == 0x7F || byte == 0x08 {
+                // Backspace — erase last char if any.
+                if pos > 0 {
+                    pos -= 1;
+                    crate::bare_metal::early_console::emit(b"\x08 \x08");
+                }
+                continue;
+            }
+            dest[pos] = byte;
+            pos += 1;
+        }
+        let n = pos;
         #[allow(
             clippy::cast_possible_truncation,
             reason = "n ≤ buf_len ≤ 0x10_0000; fits u64"
@@ -2982,21 +3007,38 @@ mod shell_handlers {
                 if !readable {
                     return SyscallReturn::err(syscall_errno::EBADF);
                 }
-                // SAFETY: single-CPU; SHELL_CONSOLE_INPUT not aliased.
-                let console = unsafe {
-                    match (*core::ptr::addr_of_mut!(crate::SHELL_CONSOLE_INPUT)).as_mut() {
-                        Some(c) => c,
-                        None => return SyscallReturn::err(syscall_errno::EIO),
+                // Read from COM1 serial port with blocking poll.
+                let mut pos = 0usize;
+                while pos < max {
+                    let ready: u8;
+                    // SAFETY: port I/O; single-CPU Ring 0.
+                    unsafe { core::arch::asm!("in al, dx", out("al") ready, in("dx") 0x3FDu16, options(nomem, nostack)); }
+                    if ready & 1 == 0 {
+                        if pos > 0 { break; }
+                        core::hint::spin_loop();
+                        continue;
                     }
-                };
-                let data = console.read_bytes(max, true);
-                let n = data.len().min(dest.len());
-                dest[..n].copy_from_slice(&data[..n]);
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "n ≤ max ≤ 0x10_0000; fits u64"
-                )]
-                SyscallReturn::ok(n as u64)
+                    let byte: u8;
+                    // SAFETY: same.
+                    unsafe { core::arch::asm!("in al, dx", out("al") byte, in("dx") 0x3F8u16, options(nomem, nostack)); }
+                    crate::bare_metal::early_console::emit(&[byte]);
+                    if byte == b'\r' {
+                        crate::bare_metal::early_console::emit(b"\n");
+                        dest[pos] = b'\n';
+                        pos += 1;
+                        break;
+                    }
+                    if byte == 0x7F || byte == 0x08 {
+                        if pos > 0 {
+                            pos -= 1;
+                            crate::bare_metal::early_console::emit(b"\x08 \x08");
+                        }
+                        continue;
+                    }
+                    dest[pos] = byte;
+                    pos += 1;
+                }
+                SyscallReturn::ok(pos as u64)
             }
 
             FdKind::Pipe {

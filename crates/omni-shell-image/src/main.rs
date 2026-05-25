@@ -423,13 +423,13 @@ pub extern "C" fn _start() -> ! {
         // Read one line (up to 1 KiB) from stdin.
         let n = sys_read(0, &mut line_buf);
         if n == 0 {
-            // EOF (stdin closed). Exit cleanly.
-            sys_write(1, b"\nexit\n");
-            sys_exit(0);
+            // No data yet — yield CPU and retry. The kernel's ReadConsole/
+            // FdRead returns 0 when the buffer is empty; we poll until
+            // the user types something. A future sprint will add blocking
+            // I/O so this busy-wait is replaced by a scheduler park.
+            continue;
         }
 
-        // Interpret the bytes as UTF-8. Non-UTF-8 input is silently skipped;
-        // the shell lexer requires valid text anyway.
         let input = match core::str::from_utf8(&line_buf[..n]) {
             Ok(s) => s.trim_end_matches('\n').trim_end_matches('\r'),
             Err(_) => continue,
@@ -439,16 +439,11 @@ pub extern "C" fn _start() -> ! {
             continue;
         }
 
-        // Echo back input for debugging
-        sys_write(1, b"you typed: ");
-        sys_write(1, input.as_bytes());
-        sys_write(1, b"\n");
+        if input == "exit" {
+            sys_write(1, b"exit\n");
+            sys_exit(0);
+        }
 
-        // ── Run the command through the shell pipeline ────────────────────────
-        //
-        // `process_line` returns `(exit_code, output_bytes)`. In `no_std` mode
-        // it does not flush to stdout itself — we write `output` here via the
-        // syscall wrapper.
         let (_exit_code, output) = process_line(input, &mut env, &mut cwd, &fs);
 
         // Write all buffered output to stdout, handling partial writes.
