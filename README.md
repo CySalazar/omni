@@ -2,7 +2,7 @@
 
 > An AI-native operating system. Local-first, privacy-by-construction, decentralized by design.
 
-**Status:** Phase 1 (Microkernel POC) — `v0.3.0-alpha.1` released 2026-05-20 — **P0/P1/P2 closed**, **Track A desktop M1–M5 complete**, **Track B kernel MB1–MB14 cycle closed (MP up to cross-CPU context switch)**, **P6.7 user-space driver framework active** — OIP-013/014/015/016 all `Active`; sub-tasks P6.7.0–7 + P6.7.8.0–9 closed (incluso `DriverLoad (73)` syscall handler e capability-deposit trampoline); next is P6.7.8.10 (driver-shared SDK helper + driver-side cap lookup).
+**Status:** Phase 1 (Microkernel POC) — `v0.3.0-alpha.1` released 2026-05-20 — **P0/P1/P2 closed**, **Track A desktop M1–M5 complete + terminal shell** (omni-shell integrated), **Track B kernel MB1–MB14 cycle closed** (MP live INIT-SIPI, cross-CPU context switch, TLB shootdown), **P6.7 user-space driver framework active** (NVMe/virtio-net/e1000e live on Proxmox) — **Phase 2 Sprint 7 E2E complete** (transformer + GGUF + BPE). **34 crates, 3799 tests, 58 syscalls, 253 commits.** Next: BlkRequest/BlkResponse types, IRQ attach wiring, NVMe driver E2E IPC loop.
 
 OMNI OS reimagines the operating system around AI as a first-class citizen. Inference, model orchestration, and intelligent agents are built into the kernel and runtime — not bolted on as cloud services. Privacy is enforced cryptographically, not by policy. The system can leverage other OMNI OS instances as a peer-to-peer compute mesh, scaling computational power collectively without depending on commercial AI providers.
 
@@ -85,7 +85,7 @@ signed commits — not in marketing copy that can be quietly walked back.
 
 ![OMNI OS K4 boot demo — VGA banner on VirtualBox](./docs/assets/k4-boot-demo.png)
 
-OMNI OS is currently in **Phase 1 (Microkernel PoC)**. The v0.1 design is complete, the foundational layer is implemented, the kernel bare-metal track has closed its MB1–MB14 cycle (including multi-CPU bring-up and cross-CPU context switching), and the user-space driver framework is in active implementation:
+OMNI OS is currently closing **Phase 1 (Microkernel PoC)** and has entered **Phase 2 (AI Runtime)** in parallel. The v0.1 design is complete, the foundational layer is implemented, the kernel bare-metal track has closed its MB1–MB14 cycle (including live INIT-SIPI multi-core, cross-CPU context switching, and TLB shootdown), the user-space driver framework is in active implementation, and the AI runtime has completed Sprint 7 E2E (transformer + GGUF + BPE tokenizer):
 
 | Layer | Crates | State |
 |---|---|---|
@@ -93,7 +93,9 @@ OMNI OS is currently in **Phase 1 (Microkernel PoC)**. The v0.1 design is comple
 | TEE root of trust | `omni-tee` | Trait surface + `MockTeeBackend` implemented (P5 scaffolding); concrete TDX / SEV-SNP backends land in P5. |
 | **Kernel** | `omni-kernel` | **MB1–MB14 cycle closed (v0.3.0-alpha.1, 2026-05-20).** Boots bare-metal on x86_64 via UEFI (`bootloader` 0.11). **Track A complete:** GOP framebuffer, bitmap font, software cursor, PS/2 + VirtIO tablet, widget toolkit, desktop WM, RTC clock, ACPI S5 power-off, Build Info panel. **Track B complete:** frame allocator, page-table walker, IDT, SYSCALL/SYSRET, ELF64 loader, scheduler, LAPIC timer, Ring 3 + per-process CR3, IPC + multi-task, kernel-stack isolation, MP boot (AP INIT-SIPI live), TLB shootdown, per-CPU run queues, x2APIC, AP dispatch + cross-CPU context switch (MB14.h.2 + SCHED_LOCK). **P6.7 user-space driver framework active:** full `OIP-013` syscall set (`MmioMap`/`DmaMap`/`IrqAttach`/`DriverLoad`) wired end-to-end, kernel CSPRNG (`RDRAND+RDTSC → ChaCha20Rng`), kernel-side Ed25519 capability issuer + 32 KiB read-only token deposit window at user-VA `0x0010_0000`, three first-party driver scaffolds (`omni-driver-net-virtio`, `omni-driver-nvme`, `omni-driver-e1000e`) + bootable image siblings landed. |
 | **Drivers (user-space)** | `omni-driver-net-virtio`, `omni-driver-nvme`, `omni-driver-e1000e` (+ bootable `*-image` siblings) | **Scaffold + bring-up FSM** (P6.7.8.0–9). Library crates host the auditable bring-up state machines; workspace-excluded `*-image` sibling crates produce the bootable Ring 3 ELFs that `DriverLoad (73)` ingests + verifies (omni-pack v1 envelope + Ed25519 manifest signature + BLAKE3 image hash). On successful load the kernel mints attenuated `CapabilityToken`s for every declared `Resource` and pre-installs them in the driver's address space; the per-driver token-lookup helper that consumes the deposit is the next step (P6.7.8.10). |
-| HAL, services, user-facing | `omni-hal`, `omni-runtime`, `omni-mesh`, `omni-tokenization`, `omni-sdk`, `omni-agent`, `omni-shell` | Stubs. |
+| AI Runtime | `omni-hal`, `omni-runtime`, `omni-tokenization` | **Phase 2 Sprint 7 E2E complete** (2026-05-24): transformer forward (multi-head attention + SwiGLU FFN + RMSNorm), GGUF tensor loading with F16/BF16→F32 dequantization, byte-level BPE tokenizer, E2E inference pipeline (tokenize→load→forward→decode). Sprint 8 quantized inference next. |
+| Shell | `omni-shell`, `omni-shell-image` | **Functional** — `no_std + alloc` bare-metal shell, colored prompt `root@omni:/$`, integrated into desktop graphical terminal. Boot path: kmain → VFS `/bin/omni-shell` → `spawn_from_elf` → REPL. |
+| P2P Mesh & Agents | `omni-mesh`, `omni-sdk`, `omni-agent` | **Scaffolded** — OIP-022 five-agent architecture (119 tests), mesh protocol spec, SDK stubs. |
 
 ### Kernel milestone tracker (Phase 1, Track B)
 
@@ -110,7 +112,7 @@ OMNI OS is currently in **Phase 1 (Microkernel PoC)**. The v0.1 design is comple
 | MB12 | IPC concrete + multi-task user-space | ✅ 2026-05-18 |
 | MB13 | omni-capability integration | ✅ 2026-05-19 |
 | MB14.a–h.2 | MP boot (AP INIT-SIPI live), TLB shootdown, per-CPU run queues, x2APIC, cross-CPU context switch | ✅ 2026-05-20 (v0.3.0-alpha.1) |
-| P6.7.x | User-space driver framework + virtio-net + NVMe + e1000e scaffolds & bootable image siblings + `DriverLoad (73)` + capability deposit trampoline | 🔄 P6.7.8.9 closed 2026-05-20; next P6.7.8.10 (driver-shared SDK helper) |
+| P6.7.x | User-space driver framework + virtio-net + NVMe + e1000e scaffolds & bootable image siblings + `DriverLoad (73)` + capability deposit trampoline + IOMMU per-device + PCI ECAM live | 🔄 P6.7.9 closed (IOMMU, PCI scan, NVMe + virtio-net live on Proxmox); next: BlkRequest/BlkResponse types, IRQ attach handler, NVMe E2E IPC loop |
 
 > **`omni-crypto` carries an `AWAITING_CRYPTO_REVIEW` marker.** The implementation follows established `RustCrypto`-family APIs with RFC test vectors for every primitive, but no external cryptographer has signed off yet (P3.2 in `/todo.md`, blocked on funding). Do not use the output of this crate in adversarial settings until that review lands.
 

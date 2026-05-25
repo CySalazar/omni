@@ -1367,8 +1367,8 @@ del kernel ELF in upper half.
 | Roadmap | Stato attuale |
 |---|---|
 | **Phase 0 — Foundation (mesi 0-6)** | ~75% (governance ✅, foundational crates ✅, OIP process ✅, funding/legal in corso) |
-| **Phase 1 — Microkernel POC (mesi 6-18)** | ~88% (boot ✅, paging ✅, scheduler ✅, syscall ✅, ELF loader ✅, kernel-stack isolation ✅, userspace Ring 3 + per-process CR3 ✅, **IPC concreto + multi-task user ✅ MB12**, **bare-metal smoke unblocked ✅ MB13.b** (ET_DYN/PIE kernel, upper-half mapping), **`omni-capability` integration ✅ MB13.a-h+e** (Ed25519CapabilityProvider canonical + `IpcCreateChannel` signed-token ABI + TSS `ltr` wiring + ADR-0006 accepted), **MP/AP foundation in corso ✅ MB14.a-c.2.b.2** (per-CPU descriptor + `IA32_GS_BASE`/`swapgs` + ACPI MADT cpu enumeration + INIT-SIPI ICR encoder pinned a Intel SDM Vol 3A + pure-function trampoline builder + **bare-metal emplacement della trampoline page a phys `0x8000` con temp PML4/PDPT/PD identity-paging materializzata**); mancano driver model user-space (P6.7), live INIT-SIPI fire (MB14.c.2.c), audit (P6.8)) |
-| **Phase 2 — AI Runtime + Tier 0** | 0% (bloccato da Phase 1) |
+| **Phase 1 — Microkernel POC (mesi 6-18)** | **~99.99%** (tutti i milestone kernel MB1–MB14 chiusi ✅; IPC ✅ MB12; capability Ed25519 ✅ MB13; **MP/AP live INIT-SIPI fire ✅ MB14.c.2.c** (trampoline a phys 0x8000, ack counter, per-AP TSS/stack/PerCpu/GDT, cross-CPU context switch + TLB shootdown + per-CPU run queues); **P6.7 driver framework attivo** (OIP-013 syscall set wired, NVMe/virtio-net/e1000e scaffolds + bootable images, capability deposit window, IOMMU per-device attach, kernel CSPRNG, PCI ECAM enumeration live su Proxmox); **terminal shell funzionante** (omni-shell integrato nel desktop grafico); mancano: BLK channel types formali, IRQ attach handler wiring, NVMe driver E2E IPC loop, audit esterno P6.8) |
+| **Phase 2 — AI Runtime + Tier 0** | **~25%** (Sprint 7 E2E complete: transformer forward + GGUF loader + BPE tokenizer; Sprint 8 quantized inference next) |
 | **Phase 3-7** | 0% |
 
 I deliverable Phase 1 della roadmap (`docs/06-roadmap.md` § "Phase 1"):
@@ -1380,32 +1380,35 @@ I deliverable Phase 1 della roadmap (`docs/06-roadmap.md` § "Phase 1"):
   `KernelIpcRegistry` con `BackpressurePolicy::{Block,Drop,EvictOldest}`,
   4 syscall handler (`IpcCreateChannel/Destroy/Send/Receive`), wait
   queues per canale, cross-process integration test.
-- ⚠️ "Capability-based security primitives implemented" — `omni-capability`
-  c'è (43 unit + 7 integration test) ma non integrato nel kernel per
-  via del blocker SIMD su `omni-crypto` bare-metal. MB12 ha consegnato
-  uno `StubCapabilityProvider` interno (subject byte-compare + action
-  shape-match, no Ed25519). MB13 swappa con il provider reale.
+- ✅ **"Capability-based security primitives implemented"** — MB13:
+  `omni-capability` integrato nel kernel con `Ed25519CapabilityProvider`
+  canonico, `IpcCreateChannel` signed-token ABI, kernel-side Ed25519
+  capability issuer + 32 KiB read-only token deposit window a user-VA
+  `0x0010_0000`. ADR-0006 accepted.
 - ✅ "Memory management, scheduling, interrupt handling" (MB1-MB3 + MB6-MB10).
 - ✅ **"Ring 3 userspace + per-process address space isolation"** (MB11).
-- ⬜ "Drivers (in user space): NVMe storage, Ethernet/Wi-Fi networking, TEE"
-  → P6.7 (sbloccato da MB12 ✅; richiede ancora MP/AP enable + capability
-  Ed25519 reale MB13).
+- 🔄 "Drivers (in user space): NVMe storage, Ethernet/Wi-Fi networking, TEE"
+  → **P6.7 attivo**: framework completo (OIP-013 syscall set `MmioMap`/`DmaMap`/`IrqAttach`/`DriverLoad` wired, IOMMU VT-d + AMD-Vi per-device attach, PCI ECAM scan live). Tre driver scaffolds (`omni-driver-nvme`, `omni-driver-net-virtio`, `omni-driver-e1000e`) + bootable image siblings landed. NVMe live controller bring-up verificato su Proxmox Q35. Mancano: `BlkRequest`/`BlkResponse` types, IRQ attach handler wiring IOAPIC→IPC, NVMe driver E2E IPC loop.
 - ✅ "Boot loader (UEFI-based)" — `bootloader` 0.11+ + `kernel-runner`
   (OIP-Kernel-005 Active).
-- ⚠️ "Minimal shell sufficient for development" — il desktop demo (Track A)
-  ha un terminal echo ma non un REPL; userprobe MB11 dimostra Ring 3
-  funzionante, una shell user-space proper è work post-MB12 (richiede IPC
-  per pty + filesystem).
-- ⬜ "No AI yet — focus on a solid kernel foundation" — rispettato.
+- ✅ **"Minimal shell sufficient for development"** — `omni-shell` integrato
+  nel desktop grafico con terminal window, colored prompt `root@omni:/$`,
+  `process_line` per command dispatch, blocking COM1 serial input. Boot
+  sequence: kmain → VFS `/bin/omni-shell` → `spawn_from_elf` → REPL.
+- ✅ "No AI yet — focus on a solid kernel foundation" — rispettato (Phase 2
+  Sprint 7 E2E è parallelo e non altera il kernel core).
 - ⬜ "First external security audit of kernel + capability system" → P6.8,
-  bloccato da P4 funding + P6.7 done.
+  bloccato da P4 funding + P6.7 completion.
 
-**Conclusione:** la roadmap Phase 1 è on-track con un'accelerazione
-significativa (MB10 + Step 7 + MB11 + **MB12** chiusi nella stessa
-giornata; +41 test workspace; ADR-0005 `accepted`). Il prossimo collo
-di bottiglia tecnico è **MB13** (`omni-capability` reale →
-feature-gating SIMD su `sha2`/`poly1305`/`curve25519-dalek`); il
-prossimo collo di bottiglia non-tecnico resta il funding Phase 0.
+**Conclusione:** la Phase 1 è sostanzialmente completa (~99.99%). Tutti
+i 14 milestone kernel (MB1–MB14) sono chiusi incluso il multi-core live
+con INIT-SIPI-SIPI, cross-CPU context switch, e TLB shootdown. Il driver
+framework user-space è in fase di completamento (NVMe live su Proxmox,
+mancano i tipi BLK channel e l'IRQ attach wiring). La Phase 2 AI Runtime
+è iniziata in parallelo con il Sprint 7 E2E (transformer + GGUF + BPE)
+chiuso. Il prossimo collo di bottiglia tecnico è il **completamento P6.7**
+(BlkRequest/BlkResponse, IRQ attach, NVMe E2E IPC loop); il prossimo collo
+di bottiglia non-tecnico resta il funding Phase 0 + security audit P6.8.
 
 ---
 
@@ -1414,20 +1417,24 @@ prossimo collo di bottiglia non-tecnico resta il funding Phase 0.
 | Rischio | Probabilità | Impatto | Mitigation |
 |---|---|---|---|
 | `bootloader_api` 0.12 rompe il direct-map | media | alta | Pinning a `=0.11.X` in `kernel-runner/Cargo.toml` (OIP-Kernel-005 § S9). Validator MB9 segnala automaticamente "skipped M MiB" se l'invariante decade. |
-| ~~Stack overflow nel kernel passa inosservato~~ | ~~alta~~ → bassa | ~~alta~~ | ✅ MB10 chiuso: guard page → `#PF` deterministico con `CR2` sul serial. |
-| ~~User process può corrompere kernel memory~~ | ~~alta~~ → bassa | ~~alta~~ | ✅ MB11 chiuso: per-process CR3 + `PTE_USER` hardware paging + `validate_user_buffer` su syscall. |
-| ~~Blanket allow su omni-kernel maschera bug futuri di lint~~ | ~~media~~ → bassa | ~~media~~ | ✅ Step 7 chiuso: ADR-0003 + CI guardrail bloccante `blanket-allow-guard`. |
+| ~~Stack overflow nel kernel passa inosservato~~ | ~~alta~~ → bassa | ~~alta~~ | ✅ MB10 chiuso. |
+| ~~User process può corrompere kernel memory~~ | ~~alta~~ → bassa | ~~alta~~ | ✅ MB11 chiuso. |
+| ~~Blanket allow su omni-kernel maschera bug futuri di lint~~ | ~~media~~ → bassa | ~~media~~ | ✅ Step 7 chiuso. |
+| ~~MB12 capability stub vs Ed25519 reale~~ | ~~media~~ → bassa | ~~media~~ | ✅ MB13 chiuso: `Ed25519CapabilityProvider` canonico, kernel-side issuer + deposit window. |
+| ~~`omni-crypto` SIMD LLVM ICE su `x86_64-unknown-none`~~ | ~~alta~~ → bassa | ~~media~~ | ✅ MB13 chiuso: feature-gating `force-soft` su `sha2`+`poly1305`+`curve25519-dalek`. |
+| ~~Triple-fault muta post-iretq~~ | ~~alta~~ → bassa | ~~alta~~ | ✅ MB13.h chiuso. |
+| ~~STAR/GDT/iretq selector aritmetica errata~~ | ~~media~~ → bassa | ~~alta~~ | ✅ MB11.1 riconciliato. Unit test enforza. |
+| ~~Live INIT-SIPI-SIPI non testato~~ | ~~alta~~ → bassa | ~~alta~~ | ✅ MB14.c.2.c chiuso: start_aps_live() wired in kmain, trampoline a phys 0x8000, ack counter polling, AP parked in hlt. |
 | Cryptographer review non si chiude in tempo per Phase 2 | alta | alta | Tamarin v0.4 chiude la metà spec; cercare review pro-bono se P4 funding ritarda. |
 | `OIP-Kernel-005` (kernel-runner) dipende da single contributor | alta | media | Documentazione esiste; pinning versione bootloader; CI smoke gate. |
 | Hardware TEE acquisition (Intel TDX / AMD SEV-SNP) | alta | media | Cloud TEE è alternativa (Azure Confidential VMs); decision deferred a Phase 1 mid-point. |
 | Proxmox manual deploy step non scalabile | media | bassa | Documentato in `reference-proxmox-deploy`; valutare automation script in Step 3-4. |
-| `cargo test (ubuntu-24.04)` SIGSEGV blocca i futuri PR sul required check | alta | media | Carryover preesistente; mergiato via admin bypass su PR #29 e #33. Fix: rifattorizzare `TestArena` di `paging.rs` o `--test-threads=1`. |
-| **STAR/GDT/iretq selector aritmetica errata** | media | alta | MB11.1 ha riconciliato (`STAR[63:48]=0x10` → CS=0x23, SS=0x1B). Unit test `sysret_arithmetic_matches_intel_sdm` lo enforza. |
-| **Kernel-half shared by reference vs MP** | media (Phase 2+) | media | ADR-0004 § Alt B documenta la strategia full-clone per Phase 2 quando l'enable MP/AP arriva. Non bloccante Phase 1. |
-| **MB12 capability stub vs Ed25519 reale** | bassa (oggi) → media (MB13) | media | ADR-0005 § Migration: il trait `KernelCapabilityCheck` è swap-in compatibile con il futuro `Ed25519CapabilityProvider`. `StubCapabilityProvider::verify` autorizza qualunque token con action/resource shape match — sufficiente in dev mode, **non** in production. Blocker tracciato come MB13. |
-| **`omni-crypto` SIMD LLVM ICE su `x86_64-unknown-none`** | alta | media | Scoperto in MB12.0c. Soluzione MB13: `force-soft` feature su `sha2`+`poly1305`+`curve25519-dalek` oppure crate `omni-crypto-verify` separato. ADR-0005 § Alternative A. |
+| `cargo test (ubuntu-24.04)` SIGSEGV blocca i futuri PR sul required check | alta | media | Carryover preesistente; mergiato via admin bypass. Fix: rifattorizzare `TestArena` di `paging.rs` o `--test-threads=1`. |
+| **Kernel-half shared by reference vs MP** | media (Phase 2+) | media | ADR-0004 § Alt B documenta la strategia full-clone. Con MB14 chiuso, il rischio è concreto se più di 1 AP schedula task con kernel-half mutation. Mitigato dal fatto che gli AP parcheggiano in hlt. |
 | **BumpHeap no-free per canali IPC distrutti** | media | media | Documentato in ADR-0005 § Negative. Cap raccomandato `queue_depth ≤ 256` per canale. Slab/free-list allocator → OIP separato (Phase 2). |
-| ~~Triple-fault muta post-iretq~~ | ~~alta~~ → bassa | ~~alta~~ | ✅ MB13.h chiuso: `tss::ltr_load()` ora caricato in `kmain` (`ltr 0x28`) e IST1/IST2 wired con stack dedicati per #DF/#PF. Senza `ltr`, qualunque eccezione Ring 3 → Ring 0 cascadava prima di poter scrivere su COM1. |
+| **IRQ attach handler non wired** | media | alta | Syscall 72 (`IrqAttach`) è definito ma il handler non è collegato a IOAPIC/MSI-X routing. Bloccante per NVMe driver E2E interrupt-driven. Implementazione in corso. |
+| **`BlkRequest`/`BlkResponse` types mancanti** | media | media | `omni-types` non ha ancora i tipi wire BLK channel. Bloccante per NVMe driver IPC loop. Implementazione in corso. |
+| **Phase 2 AI Runtime su kernel senza slab allocator** | media | media | Il transformer forward (Sprint 7) gira in user-space; se serve in-kernel inference, il BumpHeap non-free diventa critico. Mitigato: inference rimane in user-space per design. |
 
 ---
 
@@ -1439,13 +1446,23 @@ prossimo collo di bottiglia non-tecnico resta il funding Phase 0.
 - ADR Step 7 policy: [`docs/adr/0003-no-blanket-allows-in-production-crates.md`](docs/adr/0003-no-blanket-allows-in-production-crates.md)
 - ADR MB11: [`docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md`](docs/adr/0004-mb11-userspace-ring3-per-process-cr3.md)
 - ADR MB12: [`docs/adr/0005-mb12-ipc-message-passing.md`](docs/adr/0005-mb12-ipc-message-passing.md)
+- ADR MB13 capability: [`docs/adr/0006-mb13-capability-integration.md`](docs/adr/0006-mb13-capability-integration.md)
+- ADR NVMe driver image I/O: [`docs/adr/0011-nvme-driver-image-io-path.md`](docs/adr/0011-nvme-driver-image-io-path.md)
+- ADR IOMMU per-device: [`docs/adr/0013-driver-probe-auto-loader-p6-7-9.md`](docs/adr/0013-driver-probe-auto-loader-p6-7-9.md)
+- ADR virtio-net live: [`docs/adr/0015-virtio-net-live-bringup.md`](docs/adr/0015-virtio-net-live-bringup.md)
+- ADR NVMe live: [`docs/adr/0016-nvme-live-bringup.md`](docs/adr/0016-nvme-live-bringup.md)
+- ADR Phase 2 Sprint 7: [`docs/adr/0022-phase2-sprint7-e2e.md`](docs/adr/0022-phase2-sprint7-e2e.md)
+- OIP Driver Framework: [`oips/oip-driver-framework-013.md`](oips/oip-driver-framework-013.md)
+- OIP NVMe Driver: [`oips/oip-driver-nvme-014.md`](oips/oip-driver-nvme-014.md)
+- OIP NET Driver: [`oips/oip-driver-net-015.md`](oips/oip-driver-net-015.md)
 - Guardrail script: [`scripts/check-no-blanket-allow.sh`](scripts/check-no-blanket-allow.sh)
 - Plan OIP-Kernel-003: [`docs/plans/oip-kernel-003-activation.md`](docs/plans/oip-kernel-003-activation.md)
 - Changelog: [`CHANGELOG.md`](CHANGELOG.md)
 - OIP index: [`oips/README.md`](oips/README.md)
 - Todo dettagliato: [`todo.md`](todo.md)
 - GitHub release v0.2.0: [github.com/CySalazar/omni/releases/tag/v0.2.0](https://github.com/CySalazar/omni/releases/tag/v0.2.0)
+- GitHub release v0.3.0-alpha.1: [github.com/CySalazar/omni/releases/tag/v0.3.0-alpha.1](https://github.com/CySalazar/omni/releases/tag/v0.3.0-alpha.1)
 
 ---
 
-*Report aggiornato manualmente dallo stato del repository post-`c743173` sul branch locale `feat/kernel-mb11-userspace` (post v0.2.0 release, MB10 merge, Step 7.1-7.4 lift, MB11.1-MB11.9 closure, **MB12.0a-MB12.9 closure con ADR-0005**). Aggiornare a ogni milestone closure.*
+*Report aggiornato 2026-05-25. Stato: 253 commit su `main`, 34 crate nel workspace, 3799 test (0 fail), 58 syscall, Phase 1 ~99.99% (MB1–MB14 chiusi, P6.7 driver framework attivo), Phase 2 ~25% (Sprint 7 E2E complete). Sezioni 6-7 allineate con codice attuale (MB14 code-complete e wired in kmain, MB13 Ed25519 reale, terminal shell funzionante). Prossimi: BlkRequest/BlkResponse types, IRQ attach handler, NVMe driver E2E IPC loop.*

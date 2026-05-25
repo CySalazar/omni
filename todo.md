@@ -981,7 +981,7 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 
 ### P6.MB14 — Multi-processor enable + TLB shootdown
 
-- **Status:** `[~]` (MB14.a `[x]` + MB14.b `[x]` + MB14.c.1 `[x]` chiusi 2026-05-19; MB14.c.2-f open)
+- **Status:** `[x]` (MB14.a–h.2 chiusi 2026-05-20; AP INIT-SIPI live, TLB shootdown, per-CPU run queues, x2APIC, cross-CPU context switch — v0.3.0-alpha.1)
 - **Priority:** P6 / High (Phase 1.5)
 - **Effort stimato (totale):** 5-10 giornate (MB14.a delivered in 0.2 giornate; il grosso è MB14.c AP startup + MB14.d/e TLB shootdown)
 - **Dependencies:** MB13 ✅; nessuna esterna
@@ -1025,7 +1025,7 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 
 #### P6.MB14.c — AP startup via INIT-SIPI-SIPI + real-mode trampoline
 
-- **Status:** `[~]` (MB14.c.1 + MB14.c.2.a chiusi 2026-05-19; MB14.c.2.b + MB14.c.2.c open)
+- **Status:** `[x]` (MB14.c.1–c.2.c chiusi 2026-05-20; trampoline emplaced, INIT-SIPI-SIPI live, ack counter verified)
 - **Effort stimato:** 2-3 giornate (la più complessa di MB14)
 - **Dependencies:** MB14.b ✅
 - **Rationale:** ogni Application Processor parte in real mode a `0xFFFF_FFF0`. Per portarli in long mode serve un trampoline 16→32→64 bit a una pagina fisica nota (tipicamente `0x8000`), che inizializza GDT, abilita PAE+LME+paging e salta al kernel entry per-AP. Il BSP scrive (INIT, SIPI, SIPI) al LAPIC ICR di ogni AP.
@@ -1170,7 +1170,7 @@ Sezione introdotta 2026-05-19 per riflettere il flusso effettivo di lavoro sul b
 
 #### P6.MB14.d — IPI vettore + TLB shootdown protocol
 
-- **Status:** `[ ]` (open)
+- **Status:** `[x]` (chiuso 2026-05-20; vector 0xFD, AP ack verified post-MB14.f.1 LAPIC init fix)
 - **Effort stimato:** 1-2 giornate
 - **Dependencies:** MB14.c ✅
 - **Rationale:** quando un thread modifica un mapping in un AS condiviso (es. driver-process che fa `MemMap`), bisogna broadcast `invlpg <addr>` su tutte le CPU che hanno quel CR3 attivo. Pattern Linux: scrivere il target VA in una struct per-CPU + raise IPI; handler IPI emette `invlpg` e acknowledged.
