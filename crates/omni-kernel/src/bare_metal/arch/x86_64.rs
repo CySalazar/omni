@@ -389,26 +389,49 @@ pub fn acpi_poweroff() {
     // All attempts exhausted; caller falls through to halt_forever.
 }
 
-/// Trigger a system reset. Tries two paths; the second is guaranteed.
+/// Trigger a system reset via the ACPI FADT `RESET_REG`, with port
+/// `0xCF9` and triple-fault fallbacks.
 ///
-/// 1. **Port 0xCF9 full reset** (Intel ICH/PCH reset control register):
-///    read-modify-write per Linux reboot.c. Works on QEMU q35/i440fx
-///    and all Intel/AMD chipsets with ICH/PCH.
-/// 2. **Triple fault**: load a zero-length IDT and trigger `ud2`.
-///    The CPU faults, cannot find a handler, and the triple fault
-///    unconditionally resets the platform.
+/// # Safety
+///
+/// Same as [`acpi_poweroff_from_fadt`]: caller ensures the RSDP and
+/// ACPI tables fall inside the `phys_offset` direct-map window.
+#[allow(
+    rustdoc::private_intra_doc_links,
+    reason = "links to the private FADT walker; preserved for --document-private-items"
+)]
+pub unsafe fn acpi_reboot_from_fadt(rsdp_phys: u64, phys_offset: u64) {
+    // Attempt 1: ACPI FADT RESET_REG (the correct, spec-compliant method).
+    if let Some((port, value)) = unsafe { find_fadt_reset_reg(rsdp_phys, phys_offset) } {
+        if port != 0 {
+            unsafe { outb(port, value) };
+            for _ in 0..50_000 {
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    // Attempt 2: port 0xCF9 (ICH/PCH reset control register).
+    acpi_reboot();
+}
+
+/// Trigger a system reset without FADT. Uses port `0xCF9` and
+/// triple-fault fallback.
 ///
 /// The 8042 keyboard reset (`0xFE` → port `0x64`) is intentionally
 /// NOT used: QEMU/KVM converts it to a VM exit (shutdown) rather
 /// than a guest-visible CPU reset on some Proxmox configurations.
-pub fn acpi_reboot() {
+pub fn acpi_reboot() -> ! {
     // Attempt 1: port 0xCF9 (ICH/PCH reset control register).
     let cf9 = unsafe { inb(0xCF9) } & !0x06;
     unsafe { outb(0xCF9, cf9 | 0x02) };
-    for _ in 0..1_000_000 {
+    for _ in 0..50_000 {
         core::hint::spin_loop();
     }
     unsafe { outb(0xCF9, cf9 | 0x06) };
+    for _ in 0..50_000 {
+        core::hint::spin_loop();
+    }
 
     // Attempt 2: triple fault — guaranteed reset on all x86_64 CPUs.
     #[allow(unsafe_code, reason = "intentional triple-fault to force CPU reset")]
@@ -421,6 +444,101 @@ pub fn acpi_reboot() {
             options(noreturn),
         );
     }
+}
+
+/// Parse RSDP → RSDT/XSDT → FADT and return the `RESET_REG` I/O port
+/// and `RESET_VALUE` (ACPI 2.0+, FADT revision ≥ 2).
+///
+/// Returns `None` if the FADT is too short, the RESET_REG is not in
+/// System I/O space, or the `RESET_REG_SUP` flag (FADT flags bit 10)
+/// is not set.
+///
+/// # Safety
+///
+/// Same as [`find_pm1a_cnt_from_fadt`].
+unsafe fn find_fadt_reset_reg(rsdp_phys: u64, phys_offset: u64) -> Option<(u16, u8)> {
+    let p2v = |phys: u64| -> *const u8 { (phys_offset.wrapping_add(phys)) as *const u8 };
+    let read32 = |ptr: *const u8, off: usize| -> u32 {
+        unsafe { (ptr.add(off) as *const u32).read_unaligned() }
+    };
+    let read64 = |ptr: *const u8, off: usize| -> u64 {
+        unsafe { (ptr.add(off) as *const u64).read_unaligned() }
+    };
+
+    let rsdp = p2v(rsdp_phys);
+    let sig = unsafe { core::slice::from_raw_parts(rsdp, 8) };
+    if sig != b"RSD PTR " {
+        return None;
+    }
+    let revision = unsafe { *rsdp.add(15) };
+
+    let find_facp = |rsdt_phys: u64, wide: bool| -> Option<*const u8> {
+        let rsdt = p2v(rsdt_phys);
+        let sig4 = unsafe { core::slice::from_raw_parts(rsdt, 4) };
+        let expected: &[u8] = if wide { b"XSDT" } else { b"RSDT" };
+        if sig4 != expected {
+            return None;
+        }
+        let len = read32(rsdt, 4) as usize;
+        let entry_size: usize = if wide { 8 } else { 4 };
+        let count = len.saturating_sub(36) / entry_size;
+        for i in 0..count {
+            let entry_phys: u64 = if wide {
+                read64(rsdt, 36 + i * 8)
+            } else {
+                u64::from(read32(rsdt, 36 + i * 4))
+            };
+            let tbl = p2v(entry_phys);
+            let tsig = unsafe { core::slice::from_raw_parts(tbl, 4) };
+            if tsig == b"FACP" {
+                return Some(tbl);
+            }
+        }
+        None
+    };
+
+    // Find FADT (prefer XSDT).
+    let fadt = if revision >= 2 {
+        let xsdt_phys = read64(rsdp, 24);
+        find_facp(xsdt_phys, true).or_else(|| {
+            let rsdt_phys = u64::from(read32(rsdp, 16));
+            find_facp(rsdt_phys, false)
+        })
+    } else {
+        let rsdt_phys = u64::from(read32(rsdp, 16));
+        find_facp(rsdt_phys, false)
+    };
+
+    let fadt = fadt?;
+    let fadt_len = read32(fadt, 4) as usize;
+
+    // RESET_REG is at FADT offset 128 (12-byte Generic Address Structure),
+    // RESET_VALUE at offset 128+12 = 140. Requires FADT length ≥ 141.
+    if fadt_len < 141 {
+        return None;
+    }
+
+    // FADT flags at offset 112; bit 10 = RESET_REG_SUP.
+    let flags = read32(fadt, 112);
+    if flags & (1 << 10) == 0 {
+        return None;
+    }
+
+    // Generic Address Structure at offset 128:
+    //   byte 0: address_space_id (must be 1 = System I/O)
+    //   byte 1: register_bit_width
+    //   byte 2: register_bit_offset
+    //   byte 3: access_size
+    //   bytes 4..12: address (u64)
+    let addr_space = unsafe { *fadt.add(128) };
+    if addr_space != 1 {
+        return None; // Not System I/O — we only support port I/O resets.
+    }
+    let reset_port = read64(fadt, 132);
+    let reset_value = unsafe { *fadt.add(140) };
+
+    #[allow(clippy::cast_possible_truncation)]
+    Some((reset_port as u16, reset_value))
 }
 
 /// Scan PCI bus 0 for the PIIX4 PM controller and return its `PMBASE`.
