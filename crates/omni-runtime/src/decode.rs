@@ -639,6 +639,7 @@ mod tests {
             layers: vec![layer],
             output_norm: ones(d),
             output_proj: eye(d, v),
+            n_kv_heads: None,
         }
     }
 

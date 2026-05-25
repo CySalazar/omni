@@ -70,6 +70,7 @@ async fn test_e2e_tiny_model() -> Result<()> {
         layers: vec![layer(), layer()],
         output_norm: make_vec(cfg.d_model),
         output_proj: make_weight(cfg.d_model, cfg.vocab_size),
+        n_kv_heads: None,
     };
 
     let seq_len = 4usize;

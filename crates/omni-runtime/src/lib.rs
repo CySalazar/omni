@@ -1187,6 +1187,36 @@ pub mod orchestrator_bridge;
 pub mod decode;
 
 // =============================================================================
+// speculative — Speculative decoding engine (Sprint 10)
+// =============================================================================
+
+/// Speculative decoding engine for autoregressive language models.
+///
+/// Implements the algorithm from Leviathan et al. (2023): a fast draft model
+/// speculatively generates [`speculative::SpeculativeConfig::draft_len`] tokens
+/// which are then verified against the target model in a single batched forward
+/// pass.  Accepted tokens are free; rejected tokens trigger a corrected resample.
+/// The output distribution is provably identical to pure target autoregressive
+/// sampling.
+///
+/// Key entry point: [`speculative::speculative_decode`].
+pub mod speculative;
+
+// =============================================================================
+// batch — Continuous batching inference scheduler (Sprint 10)
+// =============================================================================
+
+/// Continuous batching inference scheduler for concurrent LLM request serving.
+///
+/// [`batch::BatchScheduler`] manages a priority queue of pending requests and
+/// an active batch of concurrently generating requests.  Each call to
+/// [`batch::BatchScheduler::step`] advances every active request by one token
+/// using a caller-supplied forward function, then checks termination conditions.
+/// Supports priority-based preemption, token-budget gating, and per-request
+/// temperature / top-k sampling.
+pub mod batch;
+
+// =============================================================================
 // Unit tests
 // =============================================================================
 
@@ -2072,6 +2102,7 @@ mod tests {
             layers: vec![layer],
             output_norm: find_tensor("output_norm.weight", vec![4]),
             output_proj: find_tensor("output.weight", vec![4, 8]),
+            n_kv_heads: None,
         };
 
         // Step 5: build the input token IDs tensor.

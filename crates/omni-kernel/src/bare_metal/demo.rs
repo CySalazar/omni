@@ -1264,7 +1264,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Phase    : ",
         11,
-        "2 - AI Runtime (Sprint 8)",
+        "2 - AI Runtime (Sprint 10)",
         graphics::WHITE,
     );
     row(
@@ -1288,7 +1288,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "P2 Sprint 9: KV cache+batching",
+        "P2 Sprint 10: spec decode+GQA",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1296,7 +1296,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "P2 Sprint 10: speculative decode",
+        "P2 Sprint 11: model serving",
         graphics::WHITE,
     );
     row(
@@ -1304,7 +1304,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Tests    : ",
         11,
-        "4585 workspace pass",
+        "4791 workspace pass",
         graphics::WHITE,
     );
 

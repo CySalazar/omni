@@ -54,6 +54,7 @@ fn make_tiny_weights(config: &TransformerConfig) -> TransformerWeights {
         layers,
         output_norm: make_f32_buf(vec![d], 1.0),
         output_proj: make_f32_buf(vec![d, v], 0.01),
+        n_kv_heads: None,
     }
 }
 
