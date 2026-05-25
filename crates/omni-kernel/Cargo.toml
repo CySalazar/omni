@@ -96,7 +96,7 @@ rand_chacha    = { version = "0.3", default-features = false }
 # `spin` provides the no_std `Mutex` used by the global `KERNEL_CSPRNG`
 # wrapper. The `mutex` + `spin_mutex` features are enabled explicitly
 # (default would also bring `lazy`/`barrier` which we do not need).
-spin           = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
+spin           = { version = "0.12", default-features = false, features = ["mutex", "spin_mutex"] }
 # `omni-shell` provides `process_line` and `ShellEnv` for the bare-metal
 # desktop terminal. Compiled without `std` so it uses the kernel's `alloc`
 # heap. Gated behind `bare-metal` so host builds are unaffected.
