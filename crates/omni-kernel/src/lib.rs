@@ -1534,6 +1534,143 @@ pub fn kmain(
     }
 
     // -------------------------------------------------------------------------
+    // Shell boot sequence — attempt to spawn `/bin/omni-shell` from the VFS as
+    // PID 1 (the init process). This block is additive: if the binary has not
+    // been embedded in the VFS (the normal case until the initramfs pipeline is
+    // wired in Phase F.2), it logs a diagnostic and falls through to the
+    // existing desktop demo. The existing boot path is unaffected.
+    //
+    // Phase 1 constraint: argv/envp are not forwarded to the child's user
+    // stack (that requires access to the child's PML4 after spawn, which is
+    // a Phase 2 concern). The shell ELF reads its configuration from
+    // hardcoded defaults.
+    //
+    // SAFETY: single-CPU; SHELL_VFS, SCHEDULER, FRAME_ALLOC are not aliased.
+    // -------------------------------------------------------------------------
+    #[cfg(all(target_arch = "x86_64", target_os = "none", not(test)))]
+    #[allow(
+        unsafe_code,
+        reason = "single-core static-mut deref + spawn_from_elf; same invariant as driver_loader"
+    )]
+    {
+        early_console::write_str("[OMNI OS] shell boot: checking VFS for /bin/omni-shell...\n");
+
+        // SAFETY: single-CPU; SHELL_VFS not aliased.
+        let shell_found = unsafe {
+            (*core::ptr::addr_of!(SHELL_VFS))
+                .as_ref()
+                .map_or(false, |v| v.exists("/bin/omni-shell"))
+        };
+
+        if shell_found {
+            early_console::write_str("[OMNI OS] shell boot: /bin/omni-shell found, spawning...\n");
+
+            // Read the ELF stat and bytes from the VFS.
+            // SAFETY: single-CPU; SHELL_VFS read-only in this block.
+            let spawn_result: Result<scheduling::TaskId, &'static str> = unsafe {
+                let vfs_ref = match (*core::ptr::addr_of!(SHELL_VFS)).as_ref() {
+                    Some(v) => v,
+                    None => {
+                        early_console::write_str("[OMNI OS] shell boot: VFS vanished\n");
+                        return bare_metal::arch::halt_forever();
+                    }
+                };
+
+                let stat = match vfs_ref.stat("/bin/omni-shell") {
+                    Ok(s) => s,
+                    Err(_) => return bare_metal::arch::halt_forever(),
+                };
+
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "ELF size is bounded by the VFS in-memory allocator; well under usize::MAX"
+                )]
+                let elf_bytes = match vfs_ref.read_file(stat.inode, 0, stat.size as usize) {
+                    Ok(b) => b,
+                    Err(_) => return bare_metal::arch::halt_forever(),
+                };
+
+                let boot_cr3_val = bare_metal::boot_cr3();
+                let phys_off = bare_metal::phys_offset();
+
+                if boot_cr3_val == 0 || phys_off == 0 {
+                    Err("boot_cr3 or phys_offset not set")
+                } else {
+                    let mut shell_mapper = bare_metal::paging::PageMapper::new(
+                        phys_off,
+                        memory::PhysAddr(boot_cr3_val),
+                    );
+                    let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+                    let fa = &mut *core::ptr::addr_of_mut!(FRAME_ALLOC);
+
+                    match process::ProcessControlBlock::spawn_from_elf(
+                        &elf_bytes,
+                        memory::PhysAddr(boot_cr3_val),
+                        &mut shell_mapper,
+                        fa,
+                        sched,
+                        scheduling::PriorityClass::Interactive,
+                        capabilities::KernelPrincipal::ZERO,
+                    ) {
+                        Ok(id) => Ok(id),
+                        Err(KernelError::ResourceExhausted) => Err("ResourceExhausted (OOM)"),
+                        Err(KernelError::InvalidArgument) => Err("InvalidArgument (bad ELF)"),
+                        Err(_) => Err("unknown spawn error"),
+                    }
+                }
+            };
+
+            match spawn_result {
+                Ok(task_id) => {
+                    early_console::write_str("[OMNI OS] shell boot: shell spawned as task_id=");
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "task_id.0 is u64; cast to usize is safe on x86_64"
+                    )]
+                    early_console::write_usize(task_id.0 as usize);
+                    early_console::write_str("\n");
+
+                    // Update the process table entry for PID 1 / the init
+                    // process that was pre-registered in kmain with
+                    // `omni-shell` as a placeholder (no parent). We register
+                    // the real task_id returned by spawn_from_elf in addition
+                    // to the pre-registered slot so both identifiers work.
+                    // If they happen to collide (unlikely), the table deduplicates
+                    // by key, so this is harmless.
+                    // SAFETY: single-CPU; SHELL_PROCESS_TABLE not aliased.
+                    unsafe {
+                        if let Some(pt) = (*core::ptr::addr_of_mut!(SHELL_PROCESS_TABLE)).as_mut() {
+                            // Register the real spawned task id with no parent
+                            // (it is the init process). The placeholder entry
+                            // for TaskId(1) registered during shell-infra init
+                            // remains for backwards compatibility with any path
+                            // that hard-codes task 1.
+                            if task_id != scheduling::TaskId(1) {
+                                pt.register(
+                                    task_id,
+                                    None,
+                                    alloc::string::String::from("omni-shell"),
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(reason) => {
+                    early_console::write_str("[OMNI OS] shell boot: spawn failed: ");
+                    early_console::write_str(reason);
+                    early_console::write_str("\n");
+                    early_console::write_str(
+                        "[OMNI OS] shell boot: falling through to desktop demo\n",
+                    );
+                }
+            }
+        } else {
+            early_console::write_str("[OMNI OS] shell boot: /bin/omni-shell not found in VFS\n");
+            early_console::write_str("[OMNI OS] shell boot: falling through to desktop demo\n");
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // MB8 smoke (feature-gated): spawn two tight-loop tasks that never yield
     // cooperatively, then enter a halt loop. Any 'A'/'B' interleaving on the
     // serial port proves that the LAPIC timer is preempting them.

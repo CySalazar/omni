@@ -4203,30 +4203,158 @@ mod shell_handlers {
     }
 
     // -----------------------------------------------------------------------
-    // ProcessSpawn (14) — Phase D stub
+    // ProcessSpawn (14) — Phase D implementation
     // -----------------------------------------------------------------------
 
     /// `ProcessSpawn (14)` — spawn a new process from a VFS ELF binary.
     ///
-    /// **Phase C stub**: returns `ENOSYS`. Full ELF loading and address-space
-    /// setup require the Phase D ELF-loader + per-process page-table wiring
-    /// which is tracked separately. The stub is present so the syscall number
-    /// is handled explicitly (no silent fall-through to `NotYetImplemented`)
-    /// and so the ABI contract is documented here for Phase D.
+    /// Reads the ELF image from `SHELL_VFS`, builds a fresh per-process
+    /// address space (kernel-half mirrored from the boot PML4), maps and
+    /// loads the ELF segments, allocates a user stack, registers the new
+    /// task with the scheduler, and records the child in `SHELL_PROCESS_TABLE`.
     ///
-    /// ## ABI (Phase D target)
+    /// ## ABI
     ///
     /// | Slot | Reg | Role                            |
     /// |------|-----|---------------------------------|
     /// | a0   | RDI | `path_ptr` — ELF path in VFS    |
     /// | a1   | RSI | `path_len`                      |
-    /// | a2   | RDX | `argv_ptr` — argument array     |
-    /// | a3   | R10 | `argv_len` — number of args     |
-    /// | a4   | R8  | `envp_ptr` — env-var array      |
-    /// | a5   | R9  | `envp_len` — number of env vars |
-    pub(super) fn process_spawn(_args: [u64; 6]) -> SyscallReturn {
-        // Full spawn requires Phase D work (ELF loading + address-space setup).
-        SyscallReturn::err(syscall_errno::ENOSYS)
+    /// | a2   | RDX | `argv_ptr` — argument array (Phase 1: ignored) |
+    /// | a3   | R10 | `argv_len` — number of args (Phase 1: ignored)  |
+    /// | a4   | R8  | `envp_ptr` — env-var array (Phase 1: ignored)   |
+    /// | a5   | R9  | `envp_len` — number of env vars (Phase 1: ignored) |
+    ///
+    /// Returns `ok(child_task_id)` on success, or an errno on failure.
+    ///
+    /// ## Phase 1 limitations
+    ///
+    /// argv/envp are accepted by the ABI but not forwarded to the child's
+    /// user stack. The child ELF starts with an empty initial stack
+    /// (no `argc`/`argv`/`envp`). Full `user_stack_args` wiring is
+    /// deferred to Phase 2, which requires access to the child's PML4
+    /// from outside a context-switch boundary. The shell image reads its
+    /// configuration from hardcoded defaults, so this is acceptable.
+    pub(super) fn process_spawn(args: [u64; 6]) -> SyscallReturn {
+        // Step 1 — Decode the path argument from user memory.
+        let path = match user_str(args[0], args[1]) {
+            Some(p) => p,
+            None => return SyscallReturn::err(syscall_errno::EFAULT),
+        };
+
+        // Step 2 — Resolve against cwd (handles both absolute and relative paths).
+        // SAFETY: single-CPU; SHELL_PROCESS_TABLE and SCHEDULER are not aliased.
+        let abs_path = unsafe { resolve_path(&path) };
+
+        // Step 3 — Stat the file to get its inode and size.
+        // SAFETY: single-CPU; SHELL_VFS is read-only in this block.
+        let stat = unsafe {
+            match (*core::ptr::addr_of!(crate::SHELL_VFS)).as_ref() {
+                Some(v) => match v.stat(&abs_path) {
+                    Ok(s) => s,
+                    Err(crate::vfs::VfsError::NotFound) => {
+                        return SyscallReturn::err(syscall_errno::ENOENT);
+                    }
+                    Err(_) => return SyscallReturn::err(syscall_errno::EIO),
+                },
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        // Step 4 — Copy the ELF bytes out of the VFS into a kernel-owned Vec.
+        // We snapshot the bytes here so subsequent VFS mutations cannot affect
+        // the in-progress spawn.
+        // SAFETY: single-CPU; SHELL_VFS is read-only in this block.
+        let elf_bytes: alloc::vec::Vec<u8> = unsafe {
+            match (*core::ptr::addr_of!(crate::SHELL_VFS)).as_ref() {
+                Some(v) =>
+                {
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "VFS file sizes are bounded by the in-memory allocator; \
+                                  Phase 1 ELFs are well under usize::MAX"
+                    )]
+                    match v.read_file(stat.inode, 0, stat.size as usize) {
+                        Ok(b) => b,
+                        Err(_) => return SyscallReturn::err(syscall_errno::EIO),
+                    }
+                }
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        // Step 5 — Obtain the current-task id (the spawner becomes the parent).
+        // SAFETY: single-CPU; SCHEDULER is not aliased.
+        let parent_id = unsafe { current_task() };
+
+        // Step 6 — Retrieve the boot PML4 and direct-map offset. Both are
+        // published by kmain at boot and are constant for the system lifetime.
+        let boot_cr3_val = crate::bare_metal::boot_cr3();
+        if boot_cr3_val == 0 {
+            // kmain has not yet set the boot CR3 — this should never happen
+            // at syscall time, but guard defensively.
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+        let phys_off = crate::bare_metal::phys_offset();
+        if phys_off == 0 {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+
+        // Step 7 — Build a PageMapper rooted at the boot PML4.
+        let mut mapper = crate::bare_metal::paging::PageMapper::new(
+            phys_off,
+            crate::memory::PhysAddr(boot_cr3_val),
+        );
+
+        // Step 8 — Spawn the ELF as a new Ring 3 process.
+        //
+        // SAFETY: single-CPU syscall path; `boot_cr3_val`, `mapper`,
+        // `FRAME_ALLOC`, and `SCHEDULER` are the live kernel singletons
+        // and are not otherwise aliased. The new process is not entered until
+        // the scheduler dispatches it — this function returns to Ring 3 before
+        // that happens. Pattern is identical to `driver_loader::boot_load_with_bar`.
+        let task_id = unsafe {
+            let sched = &mut *core::ptr::addr_of_mut!(crate::SCHEDULER);
+            let fa = &mut *core::ptr::addr_of_mut!(crate::FRAME_ALLOC);
+            match crate::process::ProcessControlBlock::spawn_from_elf(
+                &elf_bytes,
+                crate::memory::PhysAddr(boot_cr3_val),
+                &mut mapper,
+                fa,
+                sched,
+                crate::scheduling::PriorityClass::Interactive,
+                crate::capabilities::KernelPrincipal::ZERO,
+            ) {
+                Ok(id) => id,
+                Err(crate::KernelError::ResourceExhausted) => {
+                    return SyscallReturn::err(syscall_errno::ENOSPC);
+                }
+                Err(_) => {
+                    // InvalidArgument means the ELF parser rejected the binary.
+                    return SyscallReturn::err(syscall_errno::EINVAL);
+                }
+            }
+        };
+
+        // Step 9 — Register the child in the shell process table so that
+        // ProcessWait (15) can reap it and GetCwd / ProcessList see it.
+        // SAFETY: single-CPU; SHELL_PROCESS_TABLE is not aliased.
+        unsafe {
+            if let Some(pt) = (*core::ptr::addr_of_mut!(crate::SHELL_PROCESS_TABLE)).as_mut() {
+                // Derive the human-readable name from the last path component
+                // (mirrors POSIX basename semantics for the process list).
+                let name = abs_path
+                    .rsplit('/')
+                    .find(|s| !s.is_empty())
+                    .unwrap_or(&abs_path);
+                pt.register(task_id, Some(parent_id), alloc::string::String::from(name));
+            }
+        }
+
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "TaskId.0 is u64; returning it directly as the child PID"
+        )]
+        SyscallReturn::ok(task_id.0)
     }
 
     // -----------------------------------------------------------------------
