@@ -404,21 +404,15 @@ pub extern "C" fn _start() -> ! {
         "Welcome to OMNI OS shell. Type 'help' for available commands.\n\n",
     );
     sys_write(1, banner.as_bytes());
-    sys_write(1, b"[shell-dbg] banner done, entering REPL\n");
+    sys_write(1, b"[shell-dbg] entering REPL\n");
 
-    // ── REPL loop ────────────────────────────────────────────────────────────
-    //
-    // The line buffer is stack-allocated. 1 KiB covers any realistic
-    // interactive command. A future sprint will introduce a heap-backed line
-    // editor with history and arrow-key navigation.
     let mut line_buf = [0u8; 1024];
 
     loop {
-        // Simple prompt (avoids format! which may crash in PIE due to vtable)
-        sys_write(1, b"omni$ ");
-
-        // Skip format_prompt for now — use simple static prompt above.
-        let _ = (&env, &cwd);
+        // Build prompt manually without format! (PIE vtable issue).
+        sys_write(1, b"\x1b[1;32mroot@omni\x1b[0m:\x1b[1;34m");
+        sys_write(1, cwd.as_bytes());
+        sys_write(1, b"\x1b[0m$ ");
 
         // Read one line (up to 1 KiB) from stdin.
         let n = sys_read(0, &mut line_buf);
