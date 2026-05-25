@@ -326,11 +326,18 @@ unsafe fn find_pm1a_cnt_from_fadt(rsdp_phys: u64, phys_offset: u64) -> Option<u1
 
 /// Trigger ACPI S5 via FADT-provided `PM1a_CNT_BLK`.
 ///
-/// Preferred path when the RSDP / physical-memory-offset are available
-/// (UEFI boot). Works on VirtualBox EFI, QEMU q35+OVMF, and any other
-/// ACPI-compliant environment regardless of PCI device layout.
+/// The ACPI spec requires parsing the DSDT `_S5` object to obtain the
+/// exact `SLP_TYP` bits. Since we do not have an AML interpreter yet,
+/// we try the three most common values in order:
 ///
-/// Falls through to [`acpi_poweroff`] if table parsing fails.
+/// | SLP_TYP | Platform                          | PM1a_CNT value |
+/// |---------|-----------------------------------|----------------|
+/// | 0       | QEMU q35 + OVMF                   | `0x2000`       |
+/// | 5       | VirtualBox / QEMU i440fx           | `0x3400`       |
+/// | 1       | Bochs / alternative QEMU configs   | `0x2400`       |
+///
+/// Falls through to [`acpi_poweroff`] if table parsing fails or none
+/// of the hardcoded values triggers S5.
 ///
 /// # Safety
 ///
@@ -343,8 +350,18 @@ unsafe fn find_pm1a_cnt_from_fadt(rsdp_phys: u64, phys_offset: u64) -> Option<u1
 pub unsafe fn acpi_poweroff_from_fadt(rsdp_phys: u64, phys_offset: u64) {
     if let Some(pm1a_cnt) = unsafe { find_pm1a_cnt_from_fadt(rsdp_phys, phys_offset) } {
         if pm1a_cnt != 0 {
-            unsafe { outw(pm1a_cnt, 0x3400) };
-            // If we reach here, the write had no effect — fall through.
+            // SLP_EN = bit 13 = 0x2000. Combined with SLP_TYP in bits [12:10].
+            // Attempt A: QEMU q35 + OVMF (SLP_TYP = 0).
+            unsafe { outw(pm1a_cnt, 0x2000) };
+            for _ in 0..10_000 { core::hint::spin_loop(); }
+
+            // Attempt B: VirtualBox / QEMU i440fx (SLP_TYP = 5).
+            unsafe { outw(pm1a_cnt, 0x2000 | (5 << 10)) };
+            for _ in 0..10_000 { core::hint::spin_loop(); }
+
+            // Attempt C: Bochs / alternative (SLP_TYP = 1).
+            unsafe { outw(pm1a_cnt, 0x2000 | (1 << 10)) };
+            for _ in 0..10_000 { core::hint::spin_loop(); }
         }
     }
     // FADT path failed; fall back to PCI/hardcoded scan.
