@@ -5,20 +5,31 @@
 //! from the GGUF data blob and, where possible, converts them to a canonical
 //! `F32` representation suitable for inference.
 //!
-//! ## Phase 2 scope
+//! ## Phase 2 / Sprint 8 scope
 //!
 //! - **F32**: passed through as-is (zero-copy byte slice → owned `Vec`).
 //! - **F16**: each 16-bit half-precision value is expanded to `f32`.
 //! - **BF16**: each 16-bit bfloat16 value is expanded to `f32`.
 //! - **I8**: stored as [`TensorDtype::I8`] without conversion.
-//! - **All quantized types** (Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q8_1, k-quants,
+//! - **Q8_0**: real dequantization (Sprint 8). Block layout: 2-byte f16 scale
+//!   + 32 × i8 quantized values = 34 bytes/block.
+//!   Output formula: `x[i] = q[i] * scale`.
+//! - **Q4_0**: real dequantization (Sprint 8). Block layout: 2-byte f16 scale
+//!   + 16 packed bytes (32 × 4-bit nibbles) = 18 bytes/block.
+//!   Each nibble is sign-extended by subtracting 8, giving range [-8, 7],
+//!   then multiplied by the scale.
+//! - **All other quantized types** (Q4_1, Q5_0, Q5_1, Q8_1, k-quants,
 //!   I16, I32, I64, F64): a zero-filled `F32` buffer of the correct shape is
-//!   returned. Full dequantization is deferred to Phase 4.
+//!   returned. Full dequantization is deferred to a later phase.
 
+// Float arithmetic is fundamental to tensor dequantization; the lint is
+// suppressed file-wide because every arithmetic operation here is intentional.
 #![allow(
     clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    clippy::float_arithmetic
 )]
 
 use omni_hal::tensor::{TensorBuffer, TensorDescriptor, TensorDtype};
@@ -282,12 +293,16 @@ fn bf16_bits_to_f32(bits: u16) -> f32 {
 /// | F16 | F32 | each 16-bit value expanded to f32 |
 /// | BF16 | F32 | each 16-bit value expanded to f32 |
 /// | I8 | I8 | byte copy |
-/// | All others | F32 | zeroed buffer (Phase 2 stub) |
+/// | `Q8_0` | F32 | block dequantization: `q[i] * scale` (f16 scale, 34 bytes/block) |
+/// | `Q4_0` | F32 | block dequantization: `(nibble - 8) * scale` (f16 scale, 18 bytes/block) |
+/// | All others | F32 | zeroed buffer (stub; full dequantization deferred) |
 ///
 /// # Errors
 ///
 /// - [`OmniError::Internal`] if `raw_bytes.len()` is not a multiple of the
 ///   element byte width for F32, F16, BF16, or I8.
+/// - [`OmniError::Internal`] if `raw_bytes.len()` does not equal the expected
+///   block-aligned byte count for `Q8_0` or `Q4_0`.
 ///
 /// # Example
 ///
@@ -306,6 +321,11 @@ fn bf16_bits_to_f32(bits: u16) -> f32 {
 /// let buf = dequantize_to_f32(&info, &raw).unwrap();
 /// assert_eq!(buf.len(), 8);
 /// ```
+// This function is necessarily long: each branch handles a distinct GGUF dtype
+// with its own block layout and conversion arithmetic. Splitting it would
+// scatter related constants and error messages across multiple private helpers
+// without improving comprehension. The line count is justified.
+#[allow(clippy::too_many_lines)]
 pub fn dequantize_to_f32(tensor_info: &GgufTensorInfo, raw_bytes: &[u8]) -> Result<TensorBuffer> {
     let shape: Vec<usize> = tensor_info.dimensions.iter().map(|&d| d as usize).collect();
 
@@ -380,9 +400,110 @@ pub fn dequantize_to_f32(tensor_info: &GgufTensorInfo, raw_bytes: &[u8]) -> Resu
             (TensorDtype::I8, raw_bytes.to_vec())
         }
 
-        // All quantized types (Q4_0 … Q6_K, I16, I32, I64, F64):
-        // return a zeroed F32 buffer with the correct shape.
-        // Full dequantization is deferred to Phase 4.
+        // Q8_0 dequantization (Sprint 8).
+        //
+        // Block layout (34 bytes per block):
+        //   bytes [0..2]  — f16 LE scale `d`
+        //   bytes [2..34] — 32 × i8 quantized values
+        //
+        // Dequantize: x[i] = q[i] * d
+        //
+        // The GGUF spec requires tensor data to be written in complete blocks;
+        // when n_elements is not a multiple of 32 the last block is zero-padded
+        // on disk. We allocate n_blocks * 32 output elements but only the first
+        // n_elements are semantically meaningful.
+        GgufDtype::Q8_0 => {
+            let n_blocks = n_elements.div_ceil(32);
+            let expected_bytes = n_blocks.checked_mul(34).ok_or_else(|| {
+                OmniError::internal("tensor_loader::dequantize — Q8_0 byte count overflow")
+            })?;
+            if raw_bytes.len() != expected_bytes {
+                return Err(OmniError::internal(
+                    "tensor_loader::dequantize — Q8_0 byte count mismatch",
+                ));
+            }
+            // Each output element is 4 bytes (f32 LE).
+            let mut out = vec![0u8; n_blocks * 32 * 4];
+            // SAFETY: All index arithmetic below is in-bounds because:
+            //   raw_bytes.len() == n_blocks * 34 (verified above), so for
+            //   block ∈ [0, n_blocks), base = block*34:
+            //     base+1 < n_blocks*34  ✓
+            //     base+2+j < n_blocks*34 for j < 32  ✓
+            //   out.len() == n_blocks*32*4, so out_offset+4 <= n_blocks*32*4  ✓
+            #[allow(clippy::indexing_slicing)]
+            for block in 0..n_blocks {
+                let base = block * 34;
+                // Read the f16 scale from the first two bytes of the block.
+                let scale_bits = u16::from_le_bytes([raw_bytes[base], raw_bytes[base + 1]]);
+                let scale = f16_bits_to_f32(scale_bits);
+                // Dequantize each of the 32 i8 quantized values in this block.
+                for j in 0..32usize {
+                    // Reinterpret the u8 byte as a signed i8; this is a
+                    // value-preserving bit cast with no undefined behaviour.
+                    let q = raw_bytes[base + 2 + j] as i8;
+                    let x = f32::from(q) * scale;
+                    let out_offset = (block * 32 + j) * 4;
+                    out[out_offset..out_offset + 4].copy_from_slice(&x.to_le_bytes());
+                }
+            }
+            (TensorDtype::F32, out)
+        }
+
+        // Q4_0 dequantization (Sprint 8).
+        //
+        // Block layout (18 bytes per block):
+        //   bytes [0..2]  — f16 LE scale `d`
+        //   bytes [2..18] — 16 packed bytes holding 32 × 4-bit nibbles
+        //
+        // Each packed byte `b` at nibble-pair index `k` encodes:
+        //   element 2k+0 from the low  nibble: (b & 0x0F)
+        //   element 2k+1 from the high nibble: (b >> 4)
+        //
+        // Nibbles are unsigned [0, 15]; subtract 8 to get signed range [-8, 7].
+        // Dequantize: x[i] = (nibble_i - 8) * d
+        GgufDtype::Q4_0 => {
+            let n_blocks = n_elements.div_ceil(32);
+            let expected_bytes = n_blocks.checked_mul(18).ok_or_else(|| {
+                OmniError::internal("tensor_loader::dequantize — Q4_0 byte count overflow")
+            })?;
+            if raw_bytes.len() != expected_bytes {
+                return Err(OmniError::internal(
+                    "tensor_loader::dequantize — Q4_0 byte count mismatch",
+                ));
+            }
+            let mut out = vec![0u8; n_blocks * 32 * 4];
+            // SAFETY: All index arithmetic below is in-bounds because:
+            //   raw_bytes.len() == n_blocks * 18 (verified above), so for
+            //   block ∈ [0, n_blocks), base = block*18:
+            //     base+1 < n_blocks*18  ✓
+            //     base+2+k < n_blocks*18 for k < 16  ✓
+            //   out.len() == n_blocks*32*4; out_hi+4 = (block*32+k*2+1)*4+4
+            //     ≤ (n_blocks*32)*4  ✓  (since block < n_blocks, k < 16)
+            #[allow(clippy::indexing_slicing)]
+            for block in 0..n_blocks {
+                let base = block * 18;
+                let scale_bits = u16::from_le_bytes([raw_bytes[base], raw_bytes[base + 1]]);
+                let scale = f16_bits_to_f32(scale_bits);
+                // 16 packed bytes → 32 nibbles.
+                for k in 0..16usize {
+                    let packed = raw_bytes[base + 2 + k];
+                    // Low nibble → element 2k, high nibble → element 2k+1.
+                    // Cast through i32 to perform the signed subtraction before
+                    // narrowing to f32; avoids any intermediate unsigned wrap.
+                    let lo = (i32::from(packed & 0x0F) - 8) as f32 * scale;
+                    let hi = (i32::from(packed >> 4) - 8) as f32 * scale;
+                    let out_lo = (block * 32 + k * 2) * 4;
+                    let out_hi = out_lo + 4;
+                    out[out_lo..out_lo + 4].copy_from_slice(&lo.to_le_bytes());
+                    out[out_hi..out_hi + 4].copy_from_slice(&hi.to_le_bytes());
+                }
+            }
+            (TensorDtype::F32, out)
+        }
+
+        // All remaining quantized types (Q4_1, Q5_0, Q5_1, Q8_1, k-quants,
+        // I16, I32, I64, F64): return a zeroed F32 buffer with the correct
+        // shape. Full dequantization is deferred to a later phase.
         _ => {
             let zero_bytes = vec![0u8; n_elements * 4];
             (TensorDtype::F32, zero_bytes)
@@ -720,23 +841,22 @@ mod tests {
 
     #[test]
     fn test_dequantize_quantized_returns_zeros() {
-        // Q4_0 with 4 elements: byte size = ceil(4/32) * 18 = 18 bytes on disk.
-        // But dequantize_to_f32 receives raw_bytes of any length for quantized
-        // types; it returns a zero F32 buffer sized to n_elements.
+        // Q4_1 with 4 elements: Sprint 8 has not yet implemented Q4_1 dequantization,
+        // so it falls through to the zero-fill stub.
+        // Byte size for Q4_1: ceil(4/32) * 20 = 20 bytes on disk.
+        // The stub ignores raw_bytes and returns a zeroed F32 buffer.
         let info = GgufTensorInfo {
             name: "q".into(),
             n_dimensions: 1,
             dimensions: vec![4],
-            dtype: GgufDtype::Q4_0,
+            dtype: GgufDtype::Q4_1,
             offset: 0,
         };
-        // For quantized types dequantize_to_f32 ignores the raw bytes and
-        // returns zeros — any non-empty slice is fine.
-        let raw: Vec<u8> = vec![0xAB; 18];
+        let raw: Vec<u8> = vec![0xAB; 20];
         let buf = dequantize_to_f32(&info, &raw).unwrap();
         assert_eq!(buf.descriptor.dtype, TensorDtype::F32);
         assert_eq!(buf.descriptor.shape, vec![4]);
-        // All bytes must be zero (zeroed stub).
+        // All bytes must be zero (deferred dequantization returns zeroed stub).
         assert!(buf.as_bytes().iter().all(|&b| b == 0));
     }
 

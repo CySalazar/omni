@@ -57,7 +57,7 @@ extern crate alloc;
 use std::{string::String, vec::Vec};
 
 #[cfg(feature = "bare-metal")]
-use alloc::{string::String, vec::Vec};
+use alloc::{string::String, string::ToString, vec::Vec};
 
 // ---------------------------------------------------------------------------
 // Modules
@@ -1012,6 +1012,8 @@ impl Syscall for KernelSyscall {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "bare-metal")]
+    use alloc::vec;
 
     // ---- Errno::from_raw ---------------------------------------------------
 

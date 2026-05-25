@@ -430,9 +430,15 @@ impl<'a> Elf64<'a> {
         while pos + 16 <= dyn_offset + dyn_size {
             let tag = r_u64(self.data, pos).unwrap_or(0);
             let val = r_u64(self.data, pos + 8).unwrap_or(0);
-            if tag == 0 { break; } // DT_NULL
-            if tag == DT_RELA { rela_off = val; }
-            if tag == DT_RELASZ { rela_sz = val; }
+            if tag == 0 {
+                break;
+            } // DT_NULL
+            if tag == DT_RELA {
+                rela_off = val;
+            }
+            if tag == DT_RELASZ {
+                rela_sz = val;
+            }
             pos += 16;
         }
         if rela_off == 0 || rela_sz == 0 {
@@ -469,13 +475,14 @@ impl<'a> Elf64<'a> {
             let value = bias + r_addend;
 
             // Translate VA → physical via the page table we just built.
-            if let Some(phys) = mapper.translate_in(root_phys, crate::memory::VirtAddr(target_va))
-            {
+            if let Some(phys) = mapper.translate_in(root_phys, crate::memory::VirtAddr(target_va)) {
                 let dst = (phys.0 + phys_offset) as *mut u64;
                 // SAFETY: the page was just mapped and allocated by us;
                 // writing the relocation value is required for the binary
                 // to function correctly at the biased address.
-                unsafe { core::ptr::write(dst, value); }
+                unsafe {
+                    core::ptr::write(dst, value);
+                }
             }
         }
     }

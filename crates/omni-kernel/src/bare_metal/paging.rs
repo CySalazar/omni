@@ -252,22 +252,34 @@ impl PageMapper {
     pub fn translate_in(&self, root: PhysAddr, virt: VirtAddr) -> Option<PhysAddr> {
         let pml4 = self.table_ptr(root);
         let pml4e = unsafe { (*pml4).entry(virt_index(virt, PageLevel::Pml4)) };
-        if !pml4e.is_present() { return None; }
+        if !pml4e.is_present() {
+            return None;
+        }
         let pdpt = self.table_ptr(pml4e.phys_addr());
         let pdpte = unsafe { (*pdpt).entry(virt_index(virt, PageLevel::Pdpt)) };
-        if !pdpte.is_present() { return None; }
+        if !pdpte.is_present() {
+            return None;
+        }
         if pdpte.0 & PTE_HUGE != 0 {
-            return Some(PhysAddr((pdpte.0 & HUGE_1G_FRAME_MASK) + (virt.0 & HUGE_1G_OFFSET_MASK)));
+            return Some(PhysAddr(
+                (pdpte.0 & HUGE_1G_FRAME_MASK) + (virt.0 & HUGE_1G_OFFSET_MASK),
+            ));
         }
         let pd = self.table_ptr(pdpte.phys_addr());
         let pde = unsafe { (*pd).entry(virt_index(virt, PageLevel::Pd)) };
-        if !pde.is_present() { return None; }
+        if !pde.is_present() {
+            return None;
+        }
         if pde.0 & PTE_HUGE != 0 {
-            return Some(PhysAddr((pde.0 & HUGE_2M_FRAME_MASK) + (virt.0 & HUGE_2M_OFFSET_MASK)));
+            return Some(PhysAddr(
+                (pde.0 & HUGE_2M_FRAME_MASK) + (virt.0 & HUGE_2M_OFFSET_MASK),
+            ));
         }
         let pt = self.table_ptr(pde.phys_addr());
         let pte = unsafe { (*pt).entry(virt_index(virt, PageLevel::Pt)) };
-        if !pte.is_present() { return None; }
+        if !pte.is_present() {
+            return None;
+        }
         Some(PhysAddr(pte.phys_addr().0 + (virt.0 & 0xFFF)))
     }
 
@@ -388,9 +400,7 @@ impl PageMapper {
                     self.zero_table(f);
                 }
                 unsafe {
-                    (*pml4)
-                        .entry_mut(pml4_idx)
-                        .set_frame(f, intermediate_flags);
+                    (*pml4).entry_mut(pml4_idx).set_frame(f, intermediate_flags);
                 }
                 f
             }
@@ -417,9 +427,7 @@ impl PageMapper {
                     self.zero_table(f);
                 }
                 unsafe {
-                    (*pdpt)
-                        .entry_mut(pdpt_idx)
-                        .set_frame(f, intermediate_flags);
+                    (*pdpt).entry_mut(pdpt_idx).set_frame(f, intermediate_flags);
                 }
                 f
             }
@@ -446,9 +454,7 @@ impl PageMapper {
                     self.zero_table(f);
                 }
                 unsafe {
-                    (*pd)
-                        .entry_mut(pd_idx)
-                        .set_frame(f, intermediate_flags);
+                    (*pd).entry_mut(pd_idx).set_frame(f, intermediate_flags);
                 }
                 f
             }
@@ -559,19 +565,50 @@ mod tests {
     const ARENA_SIZE: usize = ARENA_FRAMES as usize * 4096;
     const PHYS_BASE: u64 = 0x0100_0000; // 16 MiB — arbitrary "physical" base
 
+    /// Per-test arena: a single heap allocation that stands in for physical
+    /// RAM in unit tests.
+    ///
+    /// Each call to [`TestArena::new`] produces an independent, zero-filled
+    /// allocation aligned to 4 096 bytes. Because every `TestArena` owns its
+    /// own backing buffer there is **no shared global state** between test
+    /// instances; tests can run in parallel without any synchronisation.
+    ///
+    /// The `phys_offset` method returns the value to pass as
+    /// [`PageMapper::new`]'s first argument so that `phys + phys_offset`
+    /// resolves to the correct virtual address within the arena buffer.
     struct TestArena {
         ptr: *mut u8,
         layout: std::alloc::Layout,
     }
 
+    // SAFETY: `TestArena` owns the heap allocation exclusively. `ptr` is never
+    // aliased — no other `TestArena` or code holds a reference to the same
+    // allocation. It is therefore safe to transfer ownership of a `TestArena`
+    // to another thread: the owning thread's `Drop` will run exactly once, and
+    // until then the pointer is valid and unaliased.
+    unsafe impl Send for TestArena {}
+
     impl TestArena {
+        /// Allocates a fresh, zero-filled arena of [`ARENA_SIZE`] bytes
+        /// aligned to 4 096 bytes.
+        ///
+        /// Panics if the global allocator cannot satisfy the request (only
+        /// possible if the test runner is memory-constrained, not a code bug).
         fn new() -> Self {
-            let layout = std::alloc::Layout::from_size_align(ARENA_SIZE, 4096).unwrap();
+            let layout = std::alloc::Layout::from_size_align(ARENA_SIZE, 4096)
+                .expect("ARENA_SIZE and alignment are compile-time constants and always valid");
+            // SAFETY: `layout` has non-zero size (ARENA_SIZE = 64 * 4096) and
+            // power-of-two alignment (4096). The returned pointer is checked
+            // for null immediately below.
             let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
             assert!(!ptr.is_null(), "test arena allocation failed");
             Self { ptr, layout }
         }
 
+        /// Returns the `phys_offset` value for [`PageMapper::new`]: the
+        /// difference `arena_base_virt - PHYS_BASE`, so that the mapper's
+        /// `phys + phys_offset` arithmetic resolves to the correct byte inside
+        /// this arena buffer.
         fn phys_offset(&self) -> u64 {
             (self.ptr as u64).wrapping_sub(PHYS_BASE)
         }
@@ -579,10 +616,23 @@ mod tests {
 
     impl Drop for TestArena {
         fn drop(&mut self) {
+            // SAFETY: `self.ptr` was obtained from `alloc_zeroed` with
+            // `self.layout` in `new()`, and this `Drop` impl runs exactly
+            // once per `TestArena`.
             unsafe { std::alloc::dealloc(self.ptr, self.layout) };
         }
     }
 
+    /// Creates a ready-to-use mapper backed by a fresh, independently
+    /// allocated [`TestArena`].
+    ///
+    /// The returned tuple keeps the arena alive for the duration of the test:
+    /// the caller must bind it (e.g. `let (_arena, mapper, alloc) = ...`);
+    /// dropping `_arena` before using `mapper` would be a use-after-free.
+    ///
+    /// Because every call allocates a new arena on the heap, multiple calls
+    /// within the same test — or across concurrent tests — produce completely
+    /// independent memory regions with no aliasing.
     fn make_mapper() -> (TestArena, PageMapper, BitmapFrameAllocator<1>) {
         let arena = TestArena::new();
         let phys_offset = arena.phys_offset();
@@ -940,5 +990,240 @@ mod tests {
             mapper.translate(VirtAddr(virt.0 + 0xABC)),
             Some(PhysAddr(phys.0 + 0xABC)),
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Concurrent-access safety tests (TASK-012)
+    //
+    // These four tests prove that independent `TestArena` instances are
+    // completely isolated from one another under concurrent use. Because
+    // each arena is a distinct heap allocation there is no shared mutable
+    // state; the tests pass with the default thread count.
+    // -------------------------------------------------------------------
+
+    /// Spawn 4 threads, each writing a distinct byte pattern to a disjoint
+    /// region of a *shared* arena (disjoint regions, no overlap).
+    ///
+    /// Verifies that concurrent writes to non-overlapping memory do not
+    /// corrupt each other and that all written values are readable after all
+    /// threads complete.
+    ///
+    /// The arena base pointer is transmitted as a plain `usize` (an integer,
+    /// not a raw pointer), which is `Send`. Each thread receives its own
+    /// disjoint slice base address and writes only within that region. All
+    /// threads are joined before the main thread reads any bytes, establishing
+    /// the required happens-before relationship.
+    #[test]
+    fn arena_concurrent_disjoint_writes() {
+        use std::sync::{Arc, Barrier};
+
+        // Declared before `let` statements (clippy::items_after_statements).
+        const THREADS: usize = 4;
+        // ARENA_SIZE is an exact multiple of THREADS (64 * 4096 / 4 = 16384).
+        #[allow(
+            clippy::integer_division,
+            reason = "ARENA_SIZE is an exact multiple of THREADS; truncation is intentional"
+        )]
+        const CHUNK: usize = ARENA_SIZE / THREADS;
+
+        let arena = TestArena::new();
+        // Transmit the base address as a plain integer so the closure is `Send`.
+        // The raw pointer is reconstructed inside the thread from this integer.
+        let base_addr: usize = arena.ptr as usize;
+        let barrier = Arc::new(Barrier::new(THREADS));
+
+        let handles: Vec<_> = (0..THREADS)
+            .map(|id| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let offset = id * CHUNK;
+                    // id is in 0..THREADS (= 4), so the low byte is exact.
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "id is in 0..THREADS (= 4); fits in u8 exactly"
+                    )]
+                    let byte_value = (id as u8).wrapping_add(1); // 1, 2, 3, 4
+                    // SAFETY:
+                    // - `base_addr` is the start of the arena, which remains live
+                    //   on the main thread until after all handles are joined
+                    //   (enforced by the sequential join loop below).
+                    // - Each thread operates on the disjoint byte range
+                    //   `[offset, offset+CHUNK)`. No two threads alias the same
+                    //   byte because `id` is unique per thread.
+                    unsafe {
+                        let base = (base_addr + offset) as *mut u8;
+                        core::ptr::write_bytes(base, byte_value, CHUNK);
+                    }
+                    (offset, byte_value)
+                })
+            })
+            .collect();
+
+        // Join all threads before reading — establishes happens-before.
+        for handle in handles {
+            let (offset, expected) = handle.join().expect("thread panicked");
+            for i in 0..CHUNK {
+                // SAFETY: `offset + i < ARENA_SIZE`, arena is live.
+                let actual = unsafe { *arena.ptr.add(offset + i) };
+                assert_eq!(
+                    actual, expected,
+                    "byte corruption at {offset}+{i}: expected {expected:#x}, got {actual:#x}"
+                );
+            }
+        }
+        // `arena` dropped here — all threads are already joined.
+    }
+
+    /// Spawn 4 threads, each creating its **own** `TestArena` and verifying
+    /// that writes to one arena do not affect any other.
+    ///
+    /// This is the primary regression test for the original SIGSEGV: if a
+    /// shared `static mut` backing buffer existed, concurrent zeroing followed
+    /// by writes would race. With per-instance heap allocation each thread
+    /// operates on completely independent memory.
+    #[test]
+    fn arena_concurrent_independent_instances() {
+        use std::sync::{Arc, Barrier};
+
+        let barrier = Arc::new(Barrier::new(4));
+        let handles: Vec<_> = (0..4u8)
+            .map(|id| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    // Each thread allocates its own arena — completely independent.
+                    let arena = TestArena::new();
+                    barrier.wait();
+                    // Fill this thread's arena with a distinctive byte.
+                    let fill = id.wrapping_add(0xA0);
+                    // SAFETY: we own `arena` exclusively; no other thread
+                    // references this allocation.
+                    unsafe {
+                        core::ptr::write_bytes(arena.ptr, fill, ARENA_SIZE);
+                    }
+                    // Verify the fill survived intact before dropping.
+                    for i in 0..ARENA_SIZE {
+                        // SAFETY: i < ARENA_SIZE, arena is live.
+                        let actual = unsafe { *arena.ptr.add(i) };
+                        assert_eq!(
+                            actual, fill,
+                            "corruption in thread {id} at byte {i}: expected {fill:#x}, got {actual:#x}"
+                        );
+                    }
+                    // `arena` is dropped here — its allocation is freed.
+                    // Other threads' arenas are unaffected.
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().expect("thread panicked");
+        }
+    }
+
+    /// Two threads each create independent arenas, build mappers, and perform
+    /// `map_4k` + `translate` operations concurrently.
+    ///
+    /// Verifies that page-table operations on separate arenas do not interfere
+    /// with each other's mappings even when executing simultaneously.
+    #[test]
+    fn arena_parallel_map_operations() {
+        use std::sync::{Arc, Barrier};
+
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = (0..2u64)
+            .map(|id| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let (arena, mut mapper, mut alloc) = make_mapper();
+                    barrier.wait(); // start both threads simultaneously
+                    // Use different virtual and physical addresses per thread
+                    // to keep them logically independent (they are already
+                    // physically independent due to separate arenas).
+                    let virt = VirtAddr(0x0000_0009_0000_0000 + id * 0x1000_0000);
+                    let phys = PhysAddr(0x0000_0010_0000_0000 + id * 0x1000_0000);
+                    assert!(
+                        mapper.map_4k(virt, phys, PTE_WRITABLE, &mut alloc),
+                        "map_4k failed in thread {id}"
+                    );
+                    assert_eq!(
+                        mapper.translate(virt),
+                        Some(phys),
+                        "translate mismatch in thread {id}"
+                    );
+                    // arena kept alive until end of closure.
+                    drop(arena);
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().expect("thread panicked");
+        }
+    }
+
+    /// Dropping one `TestArena` must not corrupt an arena owned by a different
+    /// thread (or a different scope in the same thread).
+    ///
+    /// Creates two arenas, writes a sentinel pattern to the first, drops the
+    /// second, and verifies the first is unaffected — then does the same with
+    /// two arenas on separate threads.
+    #[test]
+    fn arena_no_use_after_drop() {
+        const SENTINEL: u8 = 0xCD;
+
+        // --- Case A: fill arena_a, drop arena_b, verify arena_a is intact ---
+        let arena_a = TestArena::new();
+        let arena_b = TestArena::new();
+
+        // Fill arena_a with the sentinel byte.
+        // SAFETY: we have exclusive ownership; arena_a is live.
+        unsafe { core::ptr::write_bytes(arena_a.ptr, SENTINEL, ARENA_SIZE) };
+
+        // Dropping arena_b must not touch arena_a's memory (they are distinct
+        // heap allocations).
+        drop(arena_b);
+
+        for i in 0..ARENA_SIZE {
+            // SAFETY: i < ARENA_SIZE, arena_a is live.
+            let actual = unsafe { *arena_a.ptr.add(i) };
+            assert_eq!(
+                actual, SENTINEL,
+                "arena_a corrupted after arena_b drop at byte {i}: expected {SENTINEL:#x}, got {actual:#x}"
+            );
+        }
+
+        // --- Case B: same test with arenas created in separate threads ---
+        let (tx_ready, rx_ready) = std::sync::mpsc::channel::<()>();
+        let (tx_done, rx_done) = std::sync::mpsc::channel::<()>();
+
+        // Thread B: allocate an arena, signal readiness, wait for the drop
+        // signal, then exit (dropping its arena).
+        let handle_b = std::thread::spawn(move || {
+            let _arena_b2 = TestArena::new();
+            tx_ready.send(()).expect("send failed");
+            // Wait until main thread signals us to proceed (by dropping rx_done).
+            rx_done.recv().ok();
+            // `_arena_b2` dropped here.
+        });
+
+        // Wait for B to have its arena live, then build and fill our own.
+        rx_ready.recv().expect("recv failed");
+        let arena_c = TestArena::new();
+        // SAFETY: we have exclusive ownership of arena_c.
+        unsafe { core::ptr::write_bytes(arena_c.ptr, SENTINEL, ARENA_SIZE) };
+        // Signal B to drop its arena, then join.
+        drop(tx_done);
+        handle_b.join().expect("thread B panicked");
+
+        // After B's arena is dropped, arena_c must still be intact.
+        for i in 0..ARENA_SIZE {
+            // SAFETY: i < ARENA_SIZE, arena_c is live.
+            let actual = unsafe { *arena_c.ptr.add(i) };
+            assert_eq!(
+                actual, SENTINEL,
+                "arena_c corrupted after thread B dropped its arena at byte {i}"
+            );
+        }
     }
 }

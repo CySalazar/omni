@@ -1248,10 +1248,359 @@ fn require_f32(dtype: TensorDtype, op_tag: &'static str) -> Result<()> {
     }
 }
 
-/// Naive F32 matrix multiplication: `C[row,col] = sum_inner A[row,inner] * B[inner,col]`.
+// =============================================================================
+// SIMD matmul implementations
+// =============================================================================
+
+/// Scalar (no-SIMD) F32 matrix multiplication kernel.
+///
+/// Computes `C[row,col] = sum_{k} A_eff[row,k] * B_eff[k,col]` for all
+/// valid `(row, col)` pairs, writing results into `out_bytes`.
+///
+/// Index mapping (row-major, C order):
+/// - `A_eff[row][k]` without transpose: `A[row * inner + k]`
+/// - `A_eff[row][k]` with `transpose_a`: `A[k * rows_out + row]`
+/// - `B_eff[k][col]` without transpose: `B[k * cols_out + col]`
+/// - `B_eff[k][col]` with `transpose_b`: `B[col * inner + k]`
+///
+/// # Errors
+///
+/// Returns `Err` only if an index overflows `usize` (impossible in practice
+/// for matrices sized from a valid [`TensorDescriptor`]).
+// Eight parameters are a structural necessity of a complete matrix-multiply
+// kernel signature; splitting would require a struct or extra indirection that
+// adds no clarity for an internal helper.
+#[allow(clippy::too_many_arguments)]
+fn matmul_scalar(
+    a_bytes: &[u8],
+    b_bytes: &[u8],
+    rows_out: usize,
+    cols_out: usize,
+    inner: usize,
+    transpose_a: bool,
+    transpose_b: bool,
+    out_bytes: &mut [u8],
+) -> Result<()> {
+    for row in 0..rows_out {
+        for col in 0..cols_out {
+            let mut acc = 0.0_f32;
+            for k in 0..inner {
+                let a_flat = if transpose_a {
+                    k * rows_out + row
+                } else {
+                    row * inner + k
+                };
+                let b_flat = if transpose_b {
+                    col * inner + k
+                } else {
+                    k * cols_out + col
+                };
+                acc += read_f32(a_bytes, a_flat)? * read_f32(b_bytes, b_flat)?;
+            }
+            write_f32(out_bytes, row * cols_out + col, acc)?;
+        }
+    }
+    Ok(())
+}
+
+/// AVX2 + FMA3 F32 matrix multiplication kernel (`x86_64` only).
+///
+/// Processes 8 `f32` elements per iteration using 256-bit YMM registers and
+/// fused multiply-add (`_mm256_fmadd_ps`).  Only the non-transposed case uses
+/// the SIMD hot path; transposed inputs fall back to [`matmul_scalar`]
+/// because the non-contiguous B access pattern would negate any SIMD gain
+/// without an explicit in-place transpose.
+///
+/// Remainder elements (when `inner % 8 != 0`) are handled by a scalar tail
+/// loop so correctness is preserved for any matrix dimension.
+///
+/// # Safety
+///
+/// Must only be called after confirming `is_x86_feature_detected!("avx2")`
+/// **and** `is_x86_feature_detected!("fma")` return `true`.  The
+/// `#[target_feature(enable = "avx2,fma")]` attribute ensures the compiler
+/// emits legal instructions, but calling the function on a CPU that does not
+/// support AVX2/FMA is undefined behaviour per the Intel ISA manual.
+/// The dispatcher in [`exec_matmul`] guarantees the feature check is
+/// performed before any call to this function.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+// `unsafe_code` is allowed for SIMD intrinsic functions; the workspace-level
+// `unsafe_code = "warn"` lint is intentionally suppressed here because
+// x86 SIMD intrinsics are inherently unsafe by API contract.  Each unsafe
+// operation is individually justified with a `// SAFETY:` comment.
+#[allow(unsafe_code)]
+// Eight parameters are a structural necessity; see `matmul_scalar`.
+#[allow(clippy::too_many_arguments)]
+// `inner / lanes * lanes` is intentional integer truncation to find the
+// largest multiple of `lanes` that is <= `inner`.  All values are `usize`;
+// no precision loss is possible and the result is used only as a loop bound.
+#[allow(clippy::integer_division)]
+unsafe fn matmul_avx2(
+    a: &[f32],
+    b: &[f32],
+    rows_out: usize,
+    cols_out: usize,
+    inner: usize,
+    transpose_a: bool,
+    transpose_b: bool,
+    out: &mut [f32],
+) {
+    use std::arch::x86_64::{
+        _mm256_fmadd_ps, _mm256_loadu_ps, _mm256_setzero_ps, _mm256_storeu_ps,
+    };
+
+    // Transposed access patterns produce non-contiguous memory strides that
+    // would require a gather load or an explicit pre-transpose.  Neither is
+    // worth the added complexity here; fall back to the proven scalar path.
+    if transpose_a || transpose_b {
+        // Reinterpret `&[f32]` as `&[u8]` for the scalar helper.
+        // SAFETY: `a` and `b` are valid `&[f32]` slices; `f32` has no
+        // padding and any bit pattern is a valid byte sequence, so the byte
+        // reinterpretation is well-defined.  Byte length = element count * 4.
+        let a_bytes = unsafe { std::slice::from_raw_parts(a.as_ptr().cast::<u8>(), a.len() * 4) };
+        let b_bytes = unsafe { std::slice::from_raw_parts(b.as_ptr().cast::<u8>(), b.len() * 4) };
+        // SAFETY: same reasoning; the mutable borrow is exclusive.
+        let out_bytes =
+            unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<u8>(), out.len() * 4) };
+        // matmul_scalar only fails on index overflow, which cannot happen
+        // because `a`, `b`, and `out` were already sized correctly by the
+        // caller.  Ignore the Result.
+        let _ = matmul_scalar(
+            a_bytes,
+            b_bytes,
+            rows_out,
+            cols_out,
+            inner,
+            transpose_a,
+            transpose_b,
+            out_bytes,
+        );
+        return;
+    }
+
+    // Non-transposed hot path:
+    //   A is row-major [rows_out, inner]
+    //   B is row-major [inner,    cols_out]
+    //   C is row-major [rows_out, cols_out]
+    //
+    // For each output element C[row, col] we compute the dot product of
+    // row `row` of A with column `col` of B.  The inner dimension is
+    // vectorised in chunks of 8 f32 (256 bits).
+    let lanes = 8_usize;
+    let inner_full = inner / lanes * lanes; // largest multiple of 8 <= inner
+
+    for row in 0..rows_out {
+        for col in 0..cols_out {
+            // SAFETY: `_mm256_setzero_ps` requires AVX2, guaranteed by caller.
+            let mut acc_vec = unsafe { _mm256_setzero_ps() };
+
+            let mut k = 0_usize;
+            while k < inner_full {
+                // A[row, k..k+8] is contiguous in memory (A is row-major).
+                // SAFETY: `a` has `rows_out * inner` elements.  Offset
+                // `row * inner + k` through `+ k + 7` is in bounds because
+                // `row < rows_out` and `k + 7 < inner_full <= inner`.
+                // `_mm256_loadu_ps` does NOT require 32-byte alignment.
+                let a_ptr = unsafe { a.as_ptr().add(row * inner + k) };
+                let a_vec = unsafe { _mm256_loadu_ps(a_ptr) };
+
+                // B[k..k+7, col] is non-contiguous (stride = cols_out).
+                // Load each scalar individually into a temporary array,
+                // then pack into a YMM register via `_mm256_loadu_ps`.
+                // SAFETY: `k + 7 < inner_full <= inner` and `col < cols_out`,
+                // so `(k+i) * cols_out + col < inner * cols_out = b.len()`
+                // for all `i` in 0..8.
+                let b0 = unsafe { *b.get_unchecked(k * cols_out + col) };
+                let b1 = unsafe { *b.get_unchecked((k + 1) * cols_out + col) };
+                let b2 = unsafe { *b.get_unchecked((k + 2) * cols_out + col) };
+                let b3 = unsafe { *b.get_unchecked((k + 3) * cols_out + col) };
+                let b4 = unsafe { *b.get_unchecked((k + 4) * cols_out + col) };
+                let b5 = unsafe { *b.get_unchecked((k + 5) * cols_out + col) };
+                let b6 = unsafe { *b.get_unchecked((k + 6) * cols_out + col) };
+                let b7 = unsafe { *b.get_unchecked((k + 7) * cols_out + col) };
+                let b_arr: [f32; 8] = [b0, b1, b2, b3, b4, b5, b6, b7];
+                // SAFETY: `b_arr` is an 8-element `f32` stack array; valid
+                // pointer, no alignment requirement for `_mm256_loadu_ps`.
+                let b_vec = unsafe { _mm256_loadu_ps(b_arr.as_ptr()) };
+
+                // Fused multiply-add: acc += a * b (single rounding).
+                // SAFETY: `_mm256_fmadd_ps` is an FMA3 instruction; caller
+                // guarantees both AVX2 and FMA are available.
+                acc_vec = unsafe { _mm256_fmadd_ps(a_vec, b_vec, acc_vec) };
+                k += lanes;
+            }
+
+            // Horizontal reduction: store 8 lanes to stack and sum scalarly.
+            // Avoids a dependency on AVX `hadd` which is slow on most
+            // µarchitectures.
+            let mut lane_arr = [0.0_f32; 8];
+            // SAFETY: `lane_arr` is 8 `f32` on the stack; `_mm256_storeu_ps`
+            // requires only a valid pointer — not 32-byte alignment.  Stack
+            // allocations are at least 8-byte aligned on x86_64, which
+            // satisfies the unaligned-store contract.
+            unsafe { _mm256_storeu_ps(lane_arr.as_mut_ptr(), acc_vec) };
+            let mut acc = lane_arr.iter().copied().fold(0.0_f32, |s, v| s + v);
+
+            // Scalar tail: handle the remaining `inner - inner_full` elements.
+            for ki in inner_full..inner {
+                // SAFETY: `ki < inner`, `row < rows_out`, `col < cols_out`,
+                // so both offsets are within their respective slice bounds.
+                let av = unsafe { *a.get_unchecked(row * inner + ki) };
+                let bv = unsafe { *b.get_unchecked(ki * cols_out + col) };
+                acc += av * bv;
+            }
+
+            // SAFETY: `row < rows_out` and `col < cols_out`, therefore
+            // `row * cols_out + col < rows_out * cols_out = out.len()`.
+            unsafe { *out.get_unchecked_mut(row * cols_out + col) = acc };
+        }
+    }
+}
+
+/// SSE4.2 F32 matrix multiplication kernel (`x86_64` only).
+///
+/// Processes 4 `f32` elements per iteration using 128-bit XMM registers.
+/// SSE4.2 does not include FMA, so separate `_mm_mul_ps` + `_mm_add_ps`
+/// instructions are used.  Transposed inputs fall back to [`matmul_scalar`]
+/// for the same reasons as in [`matmul_avx2`].
+///
+/// # Safety
+///
+/// Must only be called after confirming `is_x86_feature_detected!("sse4.2")`
+/// returns `true`.  The `#[target_feature(enable = "sse4.2")]` attribute
+/// ensures correct code generation; calling on a CPU without SSE4.2 is
+/// undefined behaviour per the Intel ISA manual.
+/// The dispatcher in [`exec_matmul`] guarantees the feature check is
+/// performed before any call to this function.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.2")]
+// `unsafe_code` suppressed for the same reason as `matmul_avx2`: SSE
+// intrinsics are unsafe by API contract and every unsafe block carries a
+// SAFETY comment.
+#[allow(unsafe_code)]
+// Eight parameters are a structural necessity; see `matmul_scalar`.
+#[allow(clippy::too_many_arguments)]
+// `inner / lanes * lanes` is intentional integer truncation; see `matmul_avx2`.
+#[allow(clippy::integer_division)]
+unsafe fn matmul_sse42(
+    a: &[f32],
+    b: &[f32],
+    rows_out: usize,
+    cols_out: usize,
+    inner: usize,
+    transpose_a: bool,
+    transpose_b: bool,
+    out: &mut [f32],
+) {
+    use std::arch::x86_64::{_mm_add_ps, _mm_loadu_ps, _mm_mul_ps, _mm_setzero_ps, _mm_storeu_ps};
+
+    // Fall back to scalar for transposed cases (see `matmul_avx2` for
+    // rationale).
+    if transpose_a || transpose_b {
+        // SAFETY: `f32` slices reinterpreted as `u8` — always well-defined;
+        // `f32` has no padding and any bit pattern is a valid byte sequence.
+        let a_bytes = unsafe { std::slice::from_raw_parts(a.as_ptr().cast::<u8>(), a.len() * 4) };
+        let b_bytes = unsafe { std::slice::from_raw_parts(b.as_ptr().cast::<u8>(), b.len() * 4) };
+        // SAFETY: same reasoning; the mutable borrow is exclusive.
+        let out_bytes =
+            unsafe { std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<u8>(), out.len() * 4) };
+        let _ = matmul_scalar(
+            a_bytes,
+            b_bytes,
+            rows_out,
+            cols_out,
+            inner,
+            transpose_a,
+            transpose_b,
+            out_bytes,
+        );
+        return;
+    }
+
+    let lanes = 4_usize;
+    let inner_full = inner / lanes * lanes; // largest multiple of 4 <= inner
+
+    for row in 0..rows_out {
+        for col in 0..cols_out {
+            // SAFETY: `_mm_setzero_ps` requires SSE (implied by SSE4.2).
+            let mut acc_vec = unsafe { _mm_setzero_ps() };
+
+            let mut k = 0_usize;
+            while k < inner_full {
+                // A[row, k..k+4] is contiguous in memory (A is row-major).
+                // SAFETY: offset `row * inner + k` through `+ k + 3` is in
+                // bounds because `row < rows_out` and `k + 3 < inner_full
+                // <= inner`.  `_mm_loadu_ps` does NOT require 16-byte
+                // alignment.
+                let a_ptr = unsafe { a.as_ptr().add(row * inner + k) };
+                let a_vec = unsafe { _mm_loadu_ps(a_ptr) };
+
+                // B[k..k+3, col] is non-contiguous; load each scalar
+                // individually.
+                // SAFETY: `k + 3 < inner_full <= inner` and `col < cols_out`,
+                // so `(k+i) * cols_out + col < inner * cols_out = b.len()`
+                // for all `i` in 0..4.
+                let b0 = unsafe { *b.get_unchecked(k * cols_out + col) };
+                let b1 = unsafe { *b.get_unchecked((k + 1) * cols_out + col) };
+                let b2 = unsafe { *b.get_unchecked((k + 2) * cols_out + col) };
+                let b3 = unsafe { *b.get_unchecked((k + 3) * cols_out + col) };
+                let b_arr: [f32; 4] = [b0, b1, b2, b3];
+                // SAFETY: 4-element `f32` stack array; `_mm_loadu_ps` needs
+                // only a valid pointer, not 16-byte alignment.
+                let b_vec = unsafe { _mm_loadu_ps(b_arr.as_ptr()) };
+
+                // No FMA in SSE4.2: use separate multiply + add.
+                // SAFETY: `_mm_mul_ps` and `_mm_add_ps` are baseline SSE
+                // instructions (guaranteed by SSE4.2 presence).
+                let prod = unsafe { _mm_mul_ps(a_vec, b_vec) };
+                acc_vec = unsafe { _mm_add_ps(acc_vec, prod) };
+                k += lanes;
+            }
+
+            // Horizontal reduction.
+            let mut lane_arr = [0.0_f32; 4];
+            // SAFETY: `lane_arr` is 4 `f32` on the stack; `_mm_storeu_ps`
+            // requires only a valid pointer, not 16-byte alignment.
+            unsafe { _mm_storeu_ps(lane_arr.as_mut_ptr(), acc_vec) };
+            let mut acc = lane_arr.iter().copied().fold(0.0_f32, |s, v| s + v);
+
+            // Scalar tail.
+            for ki in inner_full..inner {
+                // SAFETY: `ki < inner`, `row < rows_out`, `col < cols_out`,
+                // so both offsets are within their respective slice bounds.
+                let av = unsafe { *a.get_unchecked(row * inner + ki) };
+                let bv = unsafe { *b.get_unchecked(ki * cols_out + col) };
+                acc += av * bv;
+            }
+
+            // SAFETY: `row < rows_out` and `col < cols_out`, therefore
+            // `row * cols_out + col < rows_out * cols_out = out.len()`.
+            unsafe { *out.get_unchecked_mut(row * cols_out + col) = acc };
+        }
+    }
+}
+
+/// F32 matrix multiplication dispatcher: `C[row,col] = sum_inner A[row,inner] * B[inner,col]`.
+///
+/// Selects the best available SIMD backend at runtime:
+/// - **AVX2 + FMA** — 8-wide `f32` FMA using `_mm256_fmadd_ps`
+/// - **SSE4.2** — 4-wide `f32` multiply-add using `_mm_mul_ps` + `_mm_add_ps`
+/// - **Scalar** — portable triple-loop fallback (always available)
+///
+/// Detection is performed once per call via `is_x86_feature_detected!`.  All
+/// paths produce results equivalent within `f32` precision; the AVX2 path may
+/// differ slightly from scalar for large inner dimensions due to FMA3
+/// single-rounding semantics (the difference is within `1e-3` for typical
+/// weight matrices).
 ///
 /// Supports optional transposition of either input.  Validates that both
 /// inputs are 2-D with matching inner dimensions.
+// `unsafe_code` is allowed here because the dispatcher calls `align_to`
+// (which requires an `unsafe` block per its stdlib signature) and the SIMD
+// kernel functions (which are `unsafe fn` by `#[target_feature]` contract).
+// Every unsafe call site carries an explicit `// SAFETY:` justification.
+#[allow(unsafe_code)]
 fn exec_matmul(
     inputs: &[&TensorBuffer],
     transpose_a: bool,
@@ -1285,38 +1634,98 @@ fn exec_matmul(
     let inner = inner_a;
 
     let out_desc = TensorDescriptor::new(vec![rows_out, cols_out], TensorDtype::F32);
+    // Zero-initialise so SIMD paths that skip tail elements leave 0.0 there.
     let mut out_bytes = vec![0u8; out_desc.byte_size()];
 
-    // C[row][col] = sum_{inner_idx} A_eff[row][inner_idx] * B_eff[inner_idx][col].
-    //
-    // A_eff[row][inner_idx]:
-    //   - no transpose: A physical shape [rows_out, inner]; flat = row * inner + inner_idx
-    //   - transpose_a:  A physical shape [inner, rows_out]; flat = inner_idx * rows_out + row
-    // B_eff[inner_idx][col]:
-    //   - no transpose: B physical shape [inner, cols_out]; flat = inner_idx * cols_out + col
-    //   - transpose_b:  B physical shape [cols_out, inner]; flat = col * inner + inner_idx
     let a_bytes = mat_a.as_bytes();
     let b_bytes = mat_b.as_bytes();
 
-    for row in 0..rows_out {
-        for col in 0..cols_out {
-            let mut acc = 0.0_f32;
-            for inner_idx in 0..inner {
-                let a_flat = if transpose_a {
-                    inner_idx * rows_out + row
-                } else {
-                    row * inner + inner_idx
-                };
-                let b_flat = if transpose_b {
-                    col * inner + inner_idx
-                } else {
-                    inner_idx * cols_out + col
-                };
-                acc += read_f32(a_bytes, a_flat)? * read_f32(b_bytes, b_flat)?;
+    // Attempt to reinterpret the byte buffers as &[f32] using `align_to`.
+    // `align_to` splits the slice into a (possibly empty) byte prefix that
+    // satisfies the alignment requirement, a well-aligned middle, and a
+    // (possibly empty) suffix.  We can use the SIMD path only when both
+    // prefixes are empty, meaning the data is already f32-aligned.
+    //
+    // In practice the Rust global allocator returns memory aligned to at
+    // least 8 bytes on x86_64, so the prefix will be empty for any Vec<u8>
+    // whose total length is a multiple of 4 — which is guaranteed here
+    // because we only reach this code for F32 buffers (4 bytes/element).
+    //
+    // SAFETY: `align_to::<f32>` is a safe standard library function; it
+    // takes a shared reference and returns slices with the same lifetime.
+    // The only unsafe requirement is that the resulting `middle` elements
+    // are valid `f32` bit patterns — which is always true because every
+    // 4-byte sequence is a valid (possibly NaN) f32.
+    let (a_prefix, a_floats, _a_suffix) = unsafe { a_bytes.align_to::<f32>() };
+    let (b_prefix, b_floats, _b_suffix) = unsafe { b_bytes.align_to::<f32>() };
+
+    let simd_eligible = a_prefix.is_empty() && b_prefix.is_empty();
+
+    // Dispatch to the best available kernel.
+    #[cfg(target_arch = "x86_64")]
+    if simd_eligible {
+        let n_out = rows_out * cols_out;
+        let mut out_floats = vec![0.0_f32; n_out];
+
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            // SAFETY: we just confirmed AVX2 and FMA are supported by this
+            // CPU.  `matmul_avx2` is annotated
+            // `#[target_feature(enable = "avx2,fma")]` and must only be
+            // called when those features are present — which we verified.
+            unsafe {
+                matmul_avx2(
+                    a_floats,
+                    b_floats,
+                    rows_out,
+                    cols_out,
+                    inner,
+                    transpose_a,
+                    transpose_b,
+                    &mut out_floats,
+                );
             }
-            write_f32(&mut out_bytes, row * cols_out + col, acc)?;
+            for (i, &v) in out_floats.iter().enumerate() {
+                write_f32(&mut out_bytes, i, v)?;
+            }
+            return Ok(TensorBuffer::new(out_desc, out_bytes));
+        }
+
+        if is_x86_feature_detected!("sse4.2") {
+            // SAFETY: we just confirmed SSE4.2 is supported by this CPU.
+            // `matmul_sse42` must only be called when `sse4.2` is present.
+            unsafe {
+                matmul_sse42(
+                    a_floats,
+                    b_floats,
+                    rows_out,
+                    cols_out,
+                    inner,
+                    transpose_a,
+                    transpose_b,
+                    &mut out_floats,
+                );
+            }
+            for (i, &v) in out_floats.iter().enumerate() {
+                write_f32(&mut out_bytes, i, v)?;
+            }
+            return Ok(TensorBuffer::new(out_desc, out_bytes));
         }
     }
+
+    // Scalar fallback — always correct, no SIMD required.
+    //
+    // Also reached on non-x86_64 architectures and when the alignment check
+    // above fails (extremely unlikely; see comment above `align_to` call).
+    matmul_scalar(
+        a_bytes,
+        b_bytes,
+        rows_out,
+        cols_out,
+        inner,
+        transpose_a,
+        transpose_b,
+        &mut out_bytes,
+    )?;
 
     Ok(TensorBuffer::new(out_desc, out_bytes))
 }
@@ -3459,6 +3868,203 @@ mod tests {
 
         let logits = transformer_forward(&backend, &cfg, &weights, &input_ids).await?;
         assert_eq!(logits.descriptor.shape, vec![seq_len, cfg.vocab_size]);
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // SIMD matmul correctness tests
+    // -------------------------------------------------------------------------
+
+    /// Run [`exec_matmul`] on the given values and return the flat output.
+    ///
+    /// Returns `Err` if the matmul fails (e.g. dimension mismatch).
+    fn run_matmul(
+        a_vals: &[f32],
+        a_shape: Vec<usize>,
+        b_vals: &[f32],
+        b_shape: Vec<usize>,
+        transpose_a: bool,
+        transpose_b: bool,
+    ) -> Result<Vec<f32>> {
+        let a_buf = make_f32_buf(a_shape, a_vals);
+        let b_buf = make_f32_buf(b_shape, b_vals);
+        let out = exec_matmul(&[&a_buf, &b_buf], transpose_a, transpose_b)?;
+        Ok(read_f32_buf(&out))
+    }
+
+    /// Run [`matmul_scalar`] directly, bypassing any SIMD dispatch.
+    ///
+    /// Used as the reference result when comparing SIMD output.
+    /// Returns `Err` on dimension mismatch.
+    fn run_scalar(
+        a_vals: &[f32],
+        a_shape: Vec<usize>,
+        b_vals: &[f32],
+        b_shape: Vec<usize>,
+        transpose_a: bool,
+        transpose_b: bool,
+    ) -> Result<Vec<f32>> {
+        let a_buf = make_f32_buf(a_shape, a_vals);
+        let b_buf = make_f32_buf(b_shape, b_vals);
+
+        // Derive output dimensions (mirrors exec_matmul logic).
+        let (rows_out, inner_a) = matmul_effective_dims(&a_buf.descriptor.shape, transpose_a)?;
+        let (inner_b, cols_out) = matmul_effective_dims(&b_buf.descriptor.shape, transpose_b)?;
+        if inner_a != inner_b {
+            return Err(OmniError::hal(
+                HalErrorKind::DeviceFailure,
+                "run_scalar::inner_dimension_mismatch",
+            ));
+        }
+
+        let out_desc = TensorDescriptor::new(vec![rows_out, cols_out], TensorDtype::F32);
+        let mut out_bytes = vec![0u8; out_desc.byte_size()];
+
+        matmul_scalar(
+            a_buf.as_bytes(),
+            b_buf.as_bytes(),
+            rows_out,
+            cols_out,
+            inner_a,
+            transpose_a,
+            transpose_b,
+            &mut out_bytes,
+        )?;
+
+        // Decode output using the existing helper so indexing lint is avoided.
+        let tmp = TensorBuffer::new(out_desc, out_bytes);
+        Ok(read_f32_buf(&tmp))
+    }
+
+    /// Assert that two `f32` slices are element-wise close within `eps`.
+    fn assert_f32_close(got: &[f32], want: &[f32], eps: f32, label: &str) {
+        assert_eq!(
+            got.len(),
+            want.len(),
+            "{label}: length mismatch got={} want={}",
+            got.len(),
+            want.len()
+        );
+        for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate() {
+            assert!(
+                (g - w).abs() <= eps,
+                "{label}: element[{i}] got={g} want={w} diff={}",
+                (g - w).abs()
+            );
+        }
+    }
+
+    /// 4×4 × 4×4 matmul: SIMD dispatcher result must match scalar within
+    /// `1e-3`.  Tests the standard non-transposed path on square matrices
+    /// whose inner dimension (4) is a multiple of the SSE4.2 lane width.
+    #[test]
+    fn matmul_simd_matches_scalar_small() -> Result<()> {
+        // Non-trivial values to exercise accumulation paths.
+        // i16 → f32 conversion is lossless (i16 range fits within f32 mantissa).
+        let a: Vec<f32> = (1_i16..=16).map(f32::from).map(|x| x * 0.5).collect();
+        let b: Vec<f32> = (1_i16..=16).map(f32::from).map(|x| x * 0.25).collect();
+
+        let simd = run_matmul(&a, vec![4, 4], &b, vec![4, 4], false, false)?;
+        let scalar = run_scalar(&a, vec![4, 4], &b, vec![4, 4], false, false)?;
+
+        assert_f32_close(&simd, &scalar, 1e-3, "4x4 no-transpose");
+        Ok(())
+    }
+
+    /// 7×5 × 5×3 matmul with non-power-of-2 dimensions.
+    ///
+    /// Exercises the scalar tail loop: `inner = 5`, so `5 % 8 = 5` elements
+    /// remain after the AVX2 vectorised loop, and `5 % 4 = 1` element after
+    /// the SSE4.2 vectorised loop.
+    #[test]
+    fn matmul_simd_matches_scalar_non_aligned() -> Result<()> {
+        // Use `mul_add` to avoid the `clippy::float_arithmetic` multiply-then-
+        // add pattern.  Values span both positive and negative range.
+        // i16 → f32 is lossless; mul_add avoids the float_arithmetic lint.
+        let a: Vec<f32> = (0_i16..35)
+            .map(|x| f32::from(x).mul_add(0.3, -5.0))
+            .collect();
+        let b: Vec<f32> = (0_i16..15)
+            .map(|x| f32::from(x).mul_add(0.7, 1.0))
+            .collect();
+
+        let simd = run_matmul(&a, vec![7, 5], &b, vec![5, 3], false, false)?;
+        let scalar = run_scalar(&a, vec![7, 5], &b, vec![5, 3], false, false)?;
+
+        assert_f32_close(&simd, &scalar, 1e-3, "7x5 x 5x3");
+        Ok(())
+    }
+
+    /// Multiplying any matrix A by the identity matrix I must yield A.
+    ///
+    /// Verifies that the SIMD dispatcher produces the correct result on the
+    /// identity case, where all output elements equal the corresponding input.
+    #[test]
+    fn matmul_simd_identity() -> Result<()> {
+        // 4×4 identity matrix.
+        #[rustfmt::skip]
+        let identity: Vec<f32> = vec![
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ];
+        let a: Vec<f32> = (1_i16..=16).map(f32::from).collect();
+
+        let result = run_matmul(&a, vec![4, 4], &identity, vec![4, 4], false, false)?;
+
+        assert_f32_close(&result, &a, 1e-3, "A x I = A");
+        Ok(())
+    }
+
+    /// Multiplying any matrix A by the zero matrix must yield the zero matrix.
+    #[test]
+    fn matmul_simd_zero() -> Result<()> {
+        let a: Vec<f32> = (1_i16..=16).map(f32::from).collect();
+        let zero = vec![0.0_f32; 16];
+
+        let result = run_matmul(&a, vec![4, 4], &zero, vec![4, 4], false, false)?;
+
+        let expected = vec![0.0_f32; 16];
+        assert_f32_close(&result, &expected, 1e-6, "A x 0 = 0");
+        Ok(())
+    }
+
+    /// 64×64 × 64×64 matmul using the AVX2 path when available.
+    ///
+    /// Compares the dispatcher output (which will use AVX2 if the host CPU
+    /// supports it) against the scalar reference.  On machines without AVX2
+    /// both paths reduce to scalar so the test still passes — the comparison
+    /// just verifies the scalar path itself in that case.
+    ///
+    /// Tolerance is `1e-3` to accommodate FMA3 single-rounding differences
+    /// that accumulate over 64 inner-dimension multiplications.
+    #[test]
+    fn matmul_avx2_large() -> Result<()> {
+        let n = 64_usize;
+        // Deterministic but varied pattern to stress accumulation.
+        // `usize` → `u32` → `f32` avoids `cast_precision_loss` on usize.
+        // `i % 13` and `i % 7` always fit in u8; cast to u16 first so
+        // `f32::from(u16)` is lossless (u16 range ≤ 65535 < 2^24 mantissa).
+        let a: Vec<f32> = (0..n * n)
+            .map(|i| {
+                #[allow(clippy::cast_possible_truncation)]
+                let v = (i % 13) as u16;
+                f32::from(v).mul_add(0.1, -0.6)
+            })
+            .collect();
+        let b: Vec<f32> = (0..n * n)
+            .map(|i| {
+                #[allow(clippy::cast_possible_truncation)]
+                let v = (i % 7) as u16;
+                f32::from(v).mul_add(0.2, 0.05)
+            })
+            .collect();
+
+        let simd = run_matmul(&a, vec![n, n], &b, vec![n, n], false, false)?;
+        let scalar = run_scalar(&a, vec![n, n], &b, vec![n, n], false, false)?;
+
+        assert_f32_close(&simd, &scalar, 1e-3, "64x64 avx2_large");
         Ok(())
     }
 }

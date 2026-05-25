@@ -53,13 +53,9 @@
 //! ```
 
 #[cfg(feature = "bare-metal")]
-use alloc::string::String;
-#[cfg(feature = "bare-metal")]
-use alloc::vec::Vec;
+use alloc::{string::String, string::ToString, vec::Vec};
 #[cfg(not(feature = "bare-metal"))]
-use std::string::String;
-#[cfg(not(feature = "bare-metal"))]
-use std::vec::Vec;
+use std::{string::String, vec::Vec};
 
 use omni_types::{
     OmniError,
@@ -547,6 +543,8 @@ pub fn resolve_request(hostname: String) -> SocketRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "bare-metal")]
+    use alloc::vec;
     use omni_types::socket::{NetError, SocketInfo};
 
     // Convenience helper: loopback address.

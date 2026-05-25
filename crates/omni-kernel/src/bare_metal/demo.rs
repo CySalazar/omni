@@ -395,7 +395,7 @@ pub fn run_desktop(
                             );
 
                             // Execute through the shell pipeline (bare-metal only).
-                            #[cfg(feature = "bare-metal")]
+                            #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
                             if !cmd_str.is_empty() {
                                 let fs = KernelFsQuery;
                                 let (_exit_code, output) = omni_shell::repl::process_line(
@@ -1057,10 +1057,10 @@ fn render_sysinfo(
 ///
 /// This type is only meaningful inside a bare-metal build where the VFS
 /// global exists.
-#[cfg(feature = "bare-metal")]
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
 struct KernelFsQuery;
 
-#[cfg(feature = "bare-metal")]
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
 impl omni_shell::glob::FsQuery for KernelFsQuery {
     /// List the direct children of `path` by querying `SHELL_VFS`.
     ///
@@ -1221,7 +1221,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Phase    : ",
         11,
-        "2 - AI Runtime (Sprint 7 E2E)",
+        "2 - AI Runtime (Sprint 8)",
         graphics::WHITE,
     );
     row(
@@ -1245,7 +1245,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Active   : ",
         11,
-        "P2 E2E: transformer+GGUF+BPE",
+        "P2 Sprint 8: quantized inference",
         graphics::LIGHT_CYAN,
     );
     row(
@@ -1253,7 +1253,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Next     : ",
         11,
-        "P2 Sprint 8: quantized infer",
+        "P2 Sprint 9: KV cache+batching",
         graphics::WHITE,
     );
     row(
@@ -1261,7 +1261,7 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
         cx_r,
         "Tests    : ",
         11,
-        "2402 workspace pass",
+        "4585 workspace pass",
         graphics::WHITE,
     );
 

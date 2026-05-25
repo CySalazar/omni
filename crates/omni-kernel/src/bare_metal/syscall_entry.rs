@@ -2911,7 +2911,9 @@ mod shell_handlers {
             // Poll COM1 Line Status Register (0x3FD) bit 0 = Data Ready.
             let ready: u8;
             // SAFETY: port I/O is Ring 0 only; single-CPU.
-            unsafe { core::arch::asm!("in al, dx", out("al") ready, in("dx") 0x3FDu16, options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("in al, dx", out("al") ready, in("dx") 0x3FDu16, options(nomem, nostack));
+            }
             if ready & 1 == 0 {
                 if pos > 0 {
                     break; // Return what we have so far.
@@ -2922,7 +2924,9 @@ mod shell_handlers {
             // Read the byte from COM1 data port (0x3F8).
             let byte: u8;
             // SAFETY: same as above.
-            unsafe { core::arch::asm!("in al, dx", out("al") byte, in("dx") 0x3F8u16, options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("in al, dx", out("al") byte, in("dx") 0x3F8u16, options(nomem, nostack));
+            }
             // Echo the byte back to the serial console for user feedback.
             crate::bare_metal::early_console::emit(&[byte]);
             if byte == b'\r' {
@@ -3012,15 +3016,21 @@ mod shell_handlers {
                 while pos < max {
                     let ready: u8;
                     // SAFETY: port I/O; single-CPU Ring 0.
-                    unsafe { core::arch::asm!("in al, dx", out("al") ready, in("dx") 0x3FDu16, options(nomem, nostack)); }
+                    unsafe {
+                        core::arch::asm!("in al, dx", out("al") ready, in("dx") 0x3FDu16, options(nomem, nostack));
+                    }
                     if ready & 1 == 0 {
-                        if pos > 0 { break; }
+                        if pos > 0 {
+                            break;
+                        }
                         core::hint::spin_loop();
                         continue;
                     }
                     let byte: u8;
                     // SAFETY: same.
-                    unsafe { core::arch::asm!("in al, dx", out("al") byte, in("dx") 0x3F8u16, options(nomem, nostack)); }
+                    unsafe {
+                        core::arch::asm!("in al, dx", out("al") byte, in("dx") 0x3F8u16, options(nomem, nostack));
+                    }
                     crate::bare_metal::early_console::emit(&[byte]);
                     if byte == b'\r' {
                         crate::bare_metal::early_console::emit(b"\n");

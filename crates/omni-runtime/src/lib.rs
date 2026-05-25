@@ -1793,4 +1793,331 @@ mod tests {
             "error text must be populated for diagnostics"
         );
     }
+
+    // =========================================================================
+    // E2E: Quantized inference pipeline (Sprint 8)
+    //
+    // Exercises the full pipeline:
+    //   build synthetic Q8_0 GGUF → parse → load_all_tensors → dequantize →
+    //   build TransformerWeights → transformer_forward → non-zero logits
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // build_synthetic_q8_0_gguf — helper
+    // -------------------------------------------------------------------------
+
+    /// Build a minimal synthetic GGUF v3 binary with `Q8_0`-encoded weight
+    /// tensors for a tiny transformer (`n_layers=1`, `n_heads=1`, `d_model=4`,
+    /// `d_ff=8`, `vocab_size=8`, `max_seq_len=16`).
+    ///
+    /// All tensors use `Q8_0` encoding with scale = 1.0 (f16 0x3C00) and
+    /// non-zero quantized values so dequantization yields a non-zero F32 buffer.
+    ///
+    /// # Tensor layout
+    ///
+    /// | Name                       | Shape  | `n_elements` |
+    /// |----------------------------|--------|--------------|
+    /// | `token_embd.weight`        | [8, 4] | 32           |
+    /// | `blk.0.attn_q.weight`      | [4, 4] | 16           |
+    /// | `blk.0.attn_k.weight`      | [4, 4] | 16           |
+    /// | `blk.0.attn_v.weight`      | [4, 4] | 16           |
+    /// | `blk.0.attn_output.weight` | [4, 4] | 16           |
+    /// | `blk.0.ffn_gate.weight`    | [4, 8] | 32           |
+    /// | `blk.0.ffn_up.weight`      | [4, 8] | 32           |
+    /// | `blk.0.ffn_down.weight`    | [8, 4] | 32           |
+    /// | `blk.0.attn_norm.weight`   | [4]    | 4 (1 block)  |
+    /// | `blk.0.ffn_norm.weight`    | [4]    | 4 (1 block)  |
+    /// | `output.weight`            | [4, 8] | 32           |
+    /// | `output_norm.weight`       | [4]    | 4 (1 block)  |
+    ///
+    /// Tensors with `n_elements` < 32 are encoded in a single `Q8_0` block of 34
+    /// bytes (scale + 32 i8 values); only the first `n_elements` values are
+    /// semantically meaningful, the rest are zero-padded. This matches the
+    /// GGUF spec requirement that quantized data is written in complete blocks.
+    fn build_synthetic_q8_0_gguf() -> Vec<u8> {
+        use crate::gguf::{GGUF_DEFAULT_ALIGNMENT, GGUF_MAGIC, GGUF_VERSION_3};
+
+        // F16 bit pattern for 1.0:
+        //   sign=0, exponent = 15 (biased) = 0b01111, mantissa = 0
+        //   stored little-endian: [0x00, 0x3C]
+        const F16_ONE_LE: [u8; 2] = [0x00, 0x3C];
+        // Non-zero cycle values [1..=7]: all in i8 range, no truncation possible.
+        // CYCLE[i % 7] ∈ [1, 7] ⊂ i8::MIN..=i8::MAX.
+        const CYCLE: [i8; 7] = [1, 2, 3, 4, 5, 6, 7];
+        // Q8_0 dtype discriminant in the GGUF enum: GgufDtype::Q8_0 = 8.
+        const DTYPE_Q8_0: u32 = 8;
+
+        // Encode n_elements into Q8_0 blocks (34 bytes each).
+        // The first `n_elements` values cycle through 1..=7; the rest pad to 0.
+        let encode_q8_0 = |n_elements: usize| -> Vec<u8> {
+            let n_blocks = n_elements.div_ceil(32);
+            let mut data = Vec::with_capacity(n_blocks * 34);
+            for block in 0..n_blocks {
+                data.extend_from_slice(&F16_ONE_LE);
+                for j in 0..32usize {
+                    let elem_idx = block * 32 + j;
+                    let q: i8 = if elem_idx < n_elements {
+                        // elem_idx % 7 ∈ [0, 6]; CYCLE has 7 elements → always in bounds.
+                        *CYCLE
+                            .get(elem_idx % 7)
+                            .expect("elem_idx % 7 is always in [0, 6]")
+                    } else {
+                        0
+                    };
+                    // Reinterpret the i8 bit pattern as u8 for byte-level storage.
+                    // Values [1,7] share the same bit pattern in i8 and u8.
+                    data.push(q.to_le_bytes()[0]);
+                }
+            }
+            data
+        };
+
+        // Encode a GGUF length-prefixed string (u64 byte count + UTF-8 bytes).
+        let gguf_str = |s: &str| -> Vec<u8> {
+            let b = s.as_bytes();
+            let mut v = Vec::with_capacity(8 + b.len());
+            v.extend_from_slice(&(b.len() as u64).to_le_bytes());
+            v.extend_from_slice(b);
+            v
+        };
+
+        // Tensor table: (name, dims, n_elements).
+        // Shapes follow the conventions from transformer.rs:
+        //   ffn_gate/ffn_up: [d_model, d_ff]
+        //   output.weight:   [d_model, vocab_size] (maps to TransformerWeights::output_proj)
+        let tensors: &[(&str, &[u64], usize)] = &[
+            ("token_embd.weight", &[8, 4], 32),
+            ("blk.0.attn_q.weight", &[4, 4], 16),
+            ("blk.0.attn_k.weight", &[4, 4], 16),
+            ("blk.0.attn_v.weight", &[4, 4], 16),
+            ("blk.0.attn_output.weight", &[4, 4], 16),
+            ("blk.0.ffn_gate.weight", &[4, 8], 32),
+            ("blk.0.ffn_up.weight", &[4, 8], 32),
+            ("blk.0.ffn_down.weight", &[8, 4], 32),
+            ("blk.0.attn_norm.weight", &[4], 4),
+            ("blk.0.ffn_norm.weight", &[4], 4),
+            ("output.weight", &[4, 8], 32),
+            ("output_norm.weight", &[4], 4),
+        ];
+
+        // Pre-encode all tensor data blobs.
+        let data_blobs: Vec<Vec<u8>> = tensors.iter().map(|(_, _, n)| encode_q8_0(*n)).collect();
+
+        // Pre-compute byte offsets within the data region (aligned to 32 bytes).
+        let mut offsets: Vec<u64> = Vec::with_capacity(tensors.len());
+        let mut running: u64 = 0;
+        for blob in &data_blobs {
+            offsets.push(running);
+            let next = running + blob.len() as u64;
+            running =
+                (next + GGUF_DEFAULT_ALIGNMENT as u64 - 1) & !(GGUF_DEFAULT_ALIGNMENT as u64 - 1);
+        }
+
+        let mut buf = Vec::new();
+
+        // GGUF header.
+        buf.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&GGUF_VERSION_3.to_le_bytes());
+        buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes()); // metadata_kv_count = 0
+
+        // Tensor info entries.
+        for ((name, dims, _), &offset) in tensors.iter().zip(&offsets) {
+            buf.extend_from_slice(&gguf_str(name));
+            buf.extend_from_slice(
+                &u32::try_from(dims.len())
+                    .expect("tensor rank ≤ 8 always fits in u32")
+                    .to_le_bytes(),
+            );
+            for &d in *dims {
+                buf.extend_from_slice(&d.to_le_bytes());
+            }
+            buf.extend_from_slice(&DTYPE_Q8_0.to_le_bytes());
+            buf.extend_from_slice(&offset.to_le_bytes());
+        }
+
+        // Alignment padding before data region.
+        while buf.len() % GGUF_DEFAULT_ALIGNMENT != 0 {
+            buf.push(0);
+        }
+
+        // Tensor data with inter-tensor alignment padding.
+        for (i, blob) in data_blobs.iter().enumerate() {
+            buf.extend_from_slice(blob);
+            if i + 1 < data_blobs.len() {
+                while buf.len() % GGUF_DEFAULT_ALIGNMENT != 0 {
+                    buf.push(0);
+                }
+            }
+        }
+
+        buf
+    }
+
+    // -------------------------------------------------------------------------
+    // quantized_inference_e2e_q8_0
+    // -------------------------------------------------------------------------
+
+    /// End-to-end test for the quantized inference pipeline.
+    ///
+    /// Builds a synthetic Q8_0 GGUF file in memory, loads it through the full
+    /// pipeline (`parse_gguf` → `load_all_tensors` → `TransformerWeights` →
+    /// `transformer_forward`), and verifies that the output logits are non-zero,
+    /// proving that real dequantization (not the old zero-filled stub) ran.
+    // The test body is long because it covers all seven pipeline stages plus
+    // assertions; splitting into helpers would obscure the end-to-end flow.
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test]
+    async fn quantized_inference_e2e_q8_0() {
+        use omni_hal::tensor::{CpuBackend, TensorBuffer, TensorDescriptor, TensorDtype};
+        use omni_hal::transformer::{
+            TransformerConfig, TransformerLayerWeights, TransformerWeights, transformer_forward,
+        };
+
+        // Step 1: build the synthetic GGUF binary.
+        let gguf_bytes = build_synthetic_q8_0_gguf();
+        assert!(
+            !gguf_bytes.is_empty(),
+            "GGUF builder must not produce empty blob"
+        );
+
+        // Step 2: parse the GGUF header.
+        let header =
+            crate::gguf::parse_gguf(&gguf_bytes).expect("synthetic GGUF must parse without error");
+        assert_eq!(
+            header.tensor_count, 12,
+            "expected 12 tensors in synthetic GGUF"
+        );
+
+        // Step 3: load and dequantize all tensors.
+        let loaded_tensors = crate::tensor_loader::load_all_tensors(&gguf_bytes, &header)
+            .expect("load_all_tensors must succeed on synthetic Q8_0 GGUF");
+
+        // Verify dequantization produced non-zero values — the old stub always
+        // returned zeros for Q8_0.
+        for lt in &loaded_tensors {
+            let has_nonzero = lt.buffer.as_bytes().chunks_exact(4).any(|b| {
+                // chunks_exact(4) guarantees b.len() == 4; try_into cannot fail.
+                let arr: [u8; 4] = b.try_into().expect("chunk is exactly 4 bytes");
+                f32::from_le_bytes(arr) != 0.0
+            });
+            assert!(
+                has_nonzero,
+                "tensor '{}' is all-zero after Q8_0 dequantization \
+                 — old zero-filled stub may still be active",
+                lt.name
+            );
+        }
+
+        // Helper: locate a dequantized tensor and reframe it with the given
+        // logical shape (the Q8_0 dequantization pads to full blocks; we
+        // truncate to the semantically meaningful element count).
+        let find_tensor = |name: &str, shape: Vec<usize>| -> TensorBuffer {
+            let lt = loaded_tensors
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("tensor '{name}' not found in loaded tensors"));
+            let n_logical: usize = shape.iter().product();
+            let byte_count = n_logical * 4;
+            let src = lt.buffer.as_bytes();
+            assert!(
+                src.len() >= byte_count,
+                "tensor '{}': buffer has {} bytes but shape {:?} needs {}",
+                name,
+                src.len(),
+                shape,
+                byte_count
+            );
+            let desc = TensorDescriptor::new(shape, TensorDtype::F32);
+            // The assert above guarantees src.len() >= byte_count.
+            let truncated = src
+                .get(..byte_count)
+                .expect("buffer length verified by assert above");
+            TensorBuffer::new(desc, truncated.to_vec())
+        };
+
+        // Step 4: build TransformerConfig and TransformerWeights.
+        //
+        // Shape conventions (verified from transformer.rs and decode.rs):
+        //   attn_q/k/v/o: [d_model, d_model]
+        //   ffn_gate/up:  [d_model, d_ff]
+        //   ffn_down:     [d_ff, d_model]
+        //   norm weights: [d_model]
+        //   token_embedding: [vocab_size, d_model]
+        //   output_proj:     [d_model, vocab_size]
+        let config = TransformerConfig {
+            n_layers: 1,
+            n_heads: 1,
+            d_model: 4,
+            d_ff: 8,
+            vocab_size: 8,
+            max_seq_len: 16,
+            rms_norm_eps: 1e-5,
+        };
+
+        let layer = TransformerLayerWeights {
+            attn_q: find_tensor("blk.0.attn_q.weight", vec![4, 4]),
+            attn_k: find_tensor("blk.0.attn_k.weight", vec![4, 4]),
+            attn_v: find_tensor("blk.0.attn_v.weight", vec![4, 4]),
+            attn_o: find_tensor("blk.0.attn_output.weight", vec![4, 4]),
+            ffn_gate: find_tensor("blk.0.ffn_gate.weight", vec![4, 8]),
+            ffn_up: find_tensor("blk.0.ffn_up.weight", vec![4, 8]),
+            ffn_down: find_tensor("blk.0.ffn_down.weight", vec![8, 4]),
+            attn_norm: find_tensor("blk.0.attn_norm.weight", vec![4]),
+            ffn_norm: find_tensor("blk.0.ffn_norm.weight", vec![4]),
+        };
+
+        let weights = TransformerWeights {
+            token_embedding: find_tensor("token_embd.weight", vec![8, 4]),
+            layers: vec![layer],
+            output_norm: find_tensor("output_norm.weight", vec![4]),
+            output_proj: find_tensor("output.weight", vec![4, 8]),
+        };
+
+        // Step 5: build the input token IDs tensor.
+        //
+        // CpuBackend EmbeddingLookup requires U8 indices; vocab_size=8 so all
+        // test IDs [1, 2] fit in u8 without truncation.
+        let prompt_ids: &[u8] = &[1u8, 2u8];
+        let seq_len = prompt_ids.len();
+        let input_desc = TensorDescriptor::new(vec![seq_len], TensorDtype::U8);
+        let input_ids = TensorBuffer::new(input_desc, prompt_ids.to_vec());
+
+        // Step 6: run the transformer forward pass.
+        let backend = CpuBackend::new();
+        let logits = transformer_forward(&backend, &config, &weights, &input_ids)
+            .await
+            .expect("transformer_forward must not error on valid synthetic inputs");
+
+        // Step 7: verify the logits are non-zero and finite.
+        //
+        // Shape: [seq_len, vocab_size] = [2, 8].
+        assert_eq!(
+            logits.descriptor.shape,
+            vec![seq_len, config.vocab_size],
+            "logits shape must be [seq_len, vocab_size]"
+        );
+
+        let logit_values: Vec<f32> = logits
+            .as_bytes()
+            .chunks_exact(4)
+            .map(|b| {
+                // chunks_exact(4) guarantees b.len() == 4; try_into cannot fail.
+                let arr: [u8; 4] = b.try_into().expect("chunk is exactly 4 bytes");
+                f32::from_le_bytes(arr)
+            })
+            .collect();
+
+        assert!(
+            logit_values.iter().any(|&v| v != 0.0),
+            "transformer_forward produced all-zero logits — \
+             quantized weights did not propagate. logits: {logit_values:?}"
+        );
+
+        assert!(
+            logit_values.iter().all(|v| v.is_finite()),
+            "transformer_forward output contains non-finite values — \
+             NaN/Inf propagated from weights. logits: {logit_values:?}"
+        );
+    }
 }
