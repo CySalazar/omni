@@ -10,9 +10,9 @@
 //! ```text
 //! ┌──────────────────────────────────────────────────────────────┐
 //! │ System Info (W=484)       │ Terminal (W=480)                 │
-//! │ • kernel version          │ OMNI OS Shell v0.1-alpha         │
-//! │ • memory regions          │ hint text                        │
-//! │ • display resolution      │ omni@kernel:~$ _                 │
+//! │ • kernel version          │ [output lines scrolling...]      │
+//! │ • memory regions          │ ...                              │
+//! │ • display resolution      │ omni$ _                          │
 //! │ • serial port             │                                  │
 //! │ [ Power Off ]             │                                  │
 //! ├──────────────────────────────────────────────────────────────┤
@@ -55,6 +55,20 @@ use super::{arch, cpuinfo, font, graphics, input, vga, virtio_tablet, widget, wm
 // =============================================================================
 
 const TOTAL_SECS: usize = 300;
+
+/// Maximum number of output lines kept in the terminal's circular history buffer.
+///
+/// When this limit is reached the oldest line is silently overwritten.  The
+/// value is chosen to fill the Terminal window (height 300 px, 12 px per line,
+/// minus the input row) without scrollbar infrastructure.
+const TERM_MAX_LINES: usize = 20;
+
+/// Maximum number of bytes per terminal output line.
+///
+/// The Terminal window is 480 px wide with 8 px margins on each side, leaving
+/// 464 usable pixels.  At 8 px per character the visible column count is 58;
+/// we use 56 to keep a comfortable right margin and avoid right-edge clipping.
+const TERM_LINE_WIDTH: usize = 56;
 
 /// "Power Off" button in the System Info window content area.
 const POWEROFF_BTN: widget::Button = widget::Button {
@@ -134,6 +148,49 @@ pub fn run_desktop(
     let mut echo_buf = [0u8; 40];
     let mut echo_len: usize = 0;
 
+    // ── Terminal output history ───────────────────────────────────────────────
+    // Circular buffer that accumulates command output lines for the terminal
+    // window. Each slot is padded to TERM_LINE_WIDTH bytes so render_terminal
+    // can read directly into font::render_str without extra allocation.
+    let mut term_lines: [[u8; TERM_LINE_WIDTH]; TERM_MAX_LINES] =
+        [[b' '; TERM_LINE_WIDTH]; TERM_MAX_LINES];
+    let mut term_line_lens: [usize; TERM_MAX_LINES] = [0; TERM_MAX_LINES];
+    // Index of the *next* slot to write; wraps modulo TERM_MAX_LINES.
+    let mut term_next_line: usize = 0;
+
+    // Push a one-line welcome message into the circular buffer so the
+    // terminal is not blank on first render.
+    term_push_line(
+        &mut term_lines,
+        &mut term_line_lens,
+        &mut term_next_line,
+        b"OMNI OS Shell v0.1-alpha",
+    );
+    term_push_line(
+        &mut term_lines,
+        &mut term_line_lens,
+        &mut term_next_line,
+        b"Type 'echo hello' to test",
+    );
+
+    // ── Shell interpreter state ───────────────────────────────────────────────
+    // Lives for the duration of the desktop demo; every Enter keystroke in the
+    // Terminal window runs `process_line` against these.
+    #[cfg(feature = "bare-metal")]
+    let mut shell_env = {
+        let mut e = omni_shell::env::ShellEnv::new();
+        e.set("PATH", "/bin");
+        e.set("HOME", "/");
+        e.set("USER", "root");
+        e.set("HOSTNAME", "omni");
+        e.set("SHELL", "/bin/omni-shell");
+        e.set("TERM", "framebuffer");
+        e.set("OMNI_AGENT", "1");
+        e
+    };
+    #[cfg(feature = "bare-metal")]
+    let mut shell_cwd = alloc::string::String::from("/");
+
     // ── Initial render ────────────────────────────────────────────────────────
     if let Some(fb) = fb_opt {
         fb.clear(graphics::DARK_NAVY);
@@ -150,8 +207,15 @@ pub fn run_desktop(
             cpu_total,
             cpu_bsp_apic_id,
         );
-        render_terminal_static(fb, &wm_state);
-        render_echo(fb, &wm_state, &echo_buf, echo_len);
+        render_terminal(
+            fb,
+            &wm_state,
+            &term_lines,
+            &term_line_lens,
+            term_next_line,
+            &echo_buf,
+            echo_len,
+        );
         render_buildinfo(fb, &wm_state);
     } else {
         render_vga_fallback(region_count, free_mib, total_mib);
@@ -287,7 +351,7 @@ pub fn run_desktop(
                     }
                 }
 
-                // ── Enter: title-bar focus / button activation ───────────────
+                // ── Enter: title-bar focus / button activation / command exec ─
                 input::Key::Enter => {
                     if let Some(fb) = fb_opt {
                         let (px, py) = cursor_state
@@ -310,9 +374,62 @@ pub fn run_desktop(
                             break 'event;
                         }
 
-                        // Terminal Enter → execute (clear echo line).
+                        // ── Terminal Enter: execute the typed command ─────────
+                        // Build command string from the echo buffer.
+                        let cmd_bytes = &echo_buf[..echo_len];
+                        if let Ok(cmd_str) = core::str::from_utf8(cmd_bytes) {
+                            // Echo the prompt + command into the output history.
+                            let mut prompt_line = [0u8; TERM_LINE_WIDTH];
+                            let prompt = b"$ ";
+                            let pl = prompt.len();
+                            prompt_line[..pl].copy_from_slice(prompt);
+                            let cmd_len = cmd_str.len().min(TERM_LINE_WIDTH - pl);
+                            prompt_line[pl..pl + cmd_len].copy_from_slice(&cmd_bytes[..cmd_len]);
+                            term_push_line(
+                                &mut term_lines,
+                                &mut term_line_lens,
+                                &mut term_next_line,
+                                &prompt_line[..pl + cmd_len],
+                            );
+
+                            // Execute through the shell pipeline (bare-metal only).
+                            #[cfg(feature = "bare-metal")]
+                            if !cmd_str.is_empty() {
+                                let fs = KernelFsQuery;
+                                let (_exit_code, output) = omni_shell::repl::process_line(
+                                    cmd_str,
+                                    &mut shell_env,
+                                    &mut shell_cwd,
+                                    &fs,
+                                );
+                                // Push each line of the command output into the
+                                // terminal history.  Empty trailing lines are
+                                // skipped so a command that ends with '\n' does not
+                                // waste a history slot.
+                                for line in output.split(|&b| b == b'\n') {
+                                    if !line.is_empty() {
+                                        term_push_line(
+                                            &mut term_lines,
+                                            &mut term_line_lens,
+                                            &mut term_next_line,
+                                            line,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        // Clear the input buffer and redraw.
                         echo_len = 0;
-                        render_echo(fb, &wm_state, &echo_buf, echo_len);
+                        render_terminal(
+                            fb,
+                            &wm_state,
+                            &term_lines,
+                            &term_line_lens,
+                            term_next_line,
+                            &echo_buf,
+                            echo_len,
+                        );
 
                         if let Some(c) = &mut cursor_state {
                             c.show(fb);
@@ -333,7 +450,15 @@ pub fn run_desktop(
                         if echo_len > 0 {
                             echo_len -= 1;
                         }
-                        render_echo(fb, &wm_state, &echo_buf, echo_len);
+                        render_terminal(
+                            fb,
+                            &wm_state,
+                            &term_lines,
+                            &term_line_lens,
+                            term_next_line,
+                            &echo_buf,
+                            echo_len,
+                        );
                         if let Some(c) = &mut cursor_state {
                             c.show(fb);
                         }
@@ -356,7 +481,15 @@ pub fn run_desktop(
                             }
                             echo_len += 1;
                         }
-                        render_echo(fb, &wm_state, &echo_buf, echo_len);
+                        render_terminal(
+                            fb,
+                            &wm_state,
+                            &term_lines,
+                            &term_line_lens,
+                            term_next_line,
+                            &echo_buf,
+                            echo_len,
+                        );
                         if let Some(c) = &mut cursor_state {
                             c.show(fb);
                         }
@@ -922,27 +1055,81 @@ fn render_sysinfo(
     widget::draw_button(fb, w.x + 1, w.y + wm::TITLEBAR_H, &POWEROFF_BTN, false);
 }
 
-/// Render the static content of the Terminal window (title + hint).
-fn render_terminal_static(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
-    let Some(w) = wm_state.get(1) else { return };
-    let tx = w.x + 8;
-    let ty = w.y + wm::TITLEBAR_H + 8;
-    font::render_str(
-        fb,
-        tx,
-        ty,
-        "OMNI OS Shell  v0.1-alpha",
-        graphics::LIGHT_CYAN,
-        w.bg_color,
-    );
-    font::render_str(
-        fb,
-        tx,
-        ty + 14,
-        "Tab/Enter: focus | Mouse/Arrows: cursor | ESC: off",
-        graphics::DARK_GRAY,
-        w.bg_color,
-    );
+/// Kernel VFS adapter for the omni-shell `FsQuery` trait.
+///
+/// Reads directory listings directly from the global `SHELL_VFS` that was
+/// initialised in `kmain` before the desktop demo was entered.
+///
+/// This type is only meaningful inside a bare-metal build where the VFS
+/// global exists.
+#[cfg(feature = "bare-metal")]
+struct KernelFsQuery;
+
+#[cfg(feature = "bare-metal")]
+impl omni_shell::glob::FsQuery for KernelFsQuery {
+    /// List the direct children of `path` by querying `SHELL_VFS`.
+    ///
+    /// # Safety invariant
+    ///
+    /// Single-CPU, no-preemption: the bare-metal kernel runs on one logical
+    /// core with maskable interrupts disabled during the desktop event loop.
+    /// `SHELL_VFS` is never written after `kmain` finishes initialisation,
+    /// so reading it here is free of data races.
+    fn list_dir(
+        &self,
+        path: &str,
+    ) -> Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String> {
+        // SAFETY: single-CPU bare-metal; SHELL_VFS is not aliased here.
+        // We only read (shared reference) from the VFS; no mutation occurs.
+        #[allow(unsafe_code, reason = "single-CPU VFS read; SAFETY comment above")]
+        unsafe {
+            match (*core::ptr::addr_of!(crate::SHELL_VFS)).as_ref() {
+                Some(vfs) => match vfs.list_directory(path) {
+                    Ok(entries) => Ok(entries.iter().map(|e| e.name.clone()).collect()),
+                    Err(_) => Err(alloc::string::String::from("not found")),
+                },
+                None => Err(alloc::string::String::from("no VFS")),
+            }
+        }
+    }
+}
+
+/// Append one line of text into the circular terminal-output buffer.
+///
+/// - `lines` — the 2-D array of line bytes (`[TERM_MAX_LINES][TERM_LINE_WIDTH]`).
+/// - `lens` — corresponding length of each used slot.
+/// - `next` — index of the next slot to fill; updated to `(*next + 1) %
+///   TERM_MAX_LINES` after the write.
+/// - `text` — raw bytes to store; silently truncated to `TERM_LINE_WIDTH`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // This is a bare-metal function; not callable in host doctests.
+/// // Usage:
+/// // term_push_line(&mut lines, &mut lens, &mut next, b"hello world");
+/// ```
+fn term_push_line(
+    lines: &mut [[u8; TERM_LINE_WIDTH]; TERM_MAX_LINES],
+    lens: &mut [usize; TERM_MAX_LINES],
+    next: &mut usize,
+    text: &[u8],
+) {
+    let len = text.len().min(TERM_LINE_WIDTH);
+    // Copy the text bytes into the current slot.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "len <= TERM_LINE_WIDTH; *next < TERM_MAX_LINES by modulo invariant"
+    )]
+    {
+        lines[*next][..len].copy_from_slice(&text[..len]);
+        // Clear the remainder of the slot so old data does not bleed through.
+        for i in len..TERM_LINE_WIDTH {
+            lines[*next][i] = b' ';
+        }
+        lens[*next] = len;
+    }
+    *next = (*next + 1) % TERM_MAX_LINES;
 }
 
 /// Render the Build Info window content.
@@ -1131,32 +1318,76 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
     row(7, cx_r, "Author   : ", 11, "cySalazar", graphics::WHITE);
 }
 
-/// Render the terminal input line: prompt + echo buffer + cursor indicator.
-fn render_echo(fb: &FrameBuffer, wm_state: &wm::WindowManager, echo: &[u8; 40], len: usize) {
+/// Render the terminal window: scrolling output history followed by the input line.
+///
+/// Clears the entire terminal content area, paints up to `TERM_MAX_LINES` lines
+/// of output history (oldest-first), then paints the `omni$ ` prompt and the
+/// current echo buffer at the bottom.
+///
+/// The circular buffer is read starting from `next_line` (the oldest unwritten
+/// slot) and wrapping around, so the most recent output always appears
+/// immediately above the input line.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "render_terminal mirrors render_sysinfo in passing every visible datum as a distinct argument"
+)]
+fn render_terminal(
+    fb: &FrameBuffer,
+    wm_state: &wm::WindowManager,
+    lines: &[[u8; TERM_LINE_WIDTH]; TERM_MAX_LINES],
+    lens: &[usize; TERM_MAX_LINES],
+    next_line: usize,
+    echo: &[u8; 40],
+    echo_len: usize,
+) {
     let Some(w) = wm_state.get(1) else { return };
     let tx = w.x + 8;
-    let ty = w.y + wm::TITLEBAR_H + 8 + 32;
+    let ty_base = w.y + wm::TITLEBAR_H + 8;
+    let line_height: u32 = 12;
     let x_end = w.x + w.width - 1;
 
-    // Clear input row.
-    fb.draw_rect_filled(tx, ty, x_end, ty + 8, w.bg_color);
+    // Clear the full terminal content area so no stale pixels remain.
+    let term_height = TERM_MAX_LINES as u32 * line_height + 20;
+    fb.draw_rect_filled(tx, ty_base, x_end, ty_base + term_height, w.bg_color);
 
-    // Prompt.
-    font::render_str(fb, tx, ty, "omni@kernel:~$ ", graphics::CYAN, w.bg_color);
-
-    // Typed chars.
-    let echo_x = tx + 15 * 8;
-    let visible = echo.get(..len).unwrap_or(&[]);
-    if let Ok(echo_str) = core::str::from_utf8(visible) {
-        font::render_str(fb, echo_x, ty, echo_str, graphics::WHITE, w.bg_color);
+    // Paint history lines oldest-first.  The circular buffer stores entries in
+    // insertion order; `next_line` is the next *write* slot, so reading from
+    // `next_line` gives the oldest entry and wrapping around gives the newest.
+    for i in 0..TERM_MAX_LINES {
+        let idx = (next_line + i) % TERM_MAX_LINES;
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "idx < TERM_MAX_LINES by modulo; i < TERM_MAX_LINES by loop bound"
+        )]
+        let len = lens[idx];
+        if len == 0 {
+            continue;
+        }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "idx < TERM_MAX_LINES; len <= TERM_LINE_WIDTH by invariant"
+        )]
+        if let Ok(s) = core::str::from_utf8(&lines[idx][..len]) {
+            let ty = ty_base + i as u32 * line_height;
+            font::render_str(fb, tx, ty, s, graphics::WHITE, w.bg_color);
+        }
     }
 
-    // Cursor indicator.
-    if len < 40 {
+    // Input line: prompt + typed chars + cursor.
+    let input_y = ty_base + TERM_MAX_LINES as u32 * line_height + 4;
+    font::render_str(fb, tx, input_y, "omni$ ", graphics::CYAN, w.bg_color);
+    // Prompt is 6 characters × 8 px/char = 48 px.
+    let echo_x = tx + 6 * 8;
+    let visible = echo.get(..echo_len).unwrap_or(&[]);
+    if let Ok(echo_str) = core::str::from_utf8(visible) {
+        font::render_str(fb, echo_x, input_y, echo_str, graphics::WHITE, w.bg_color);
+    }
+    // Cursor indicator one position past the last character.
+    if echo_len < 40 {
         font::render_str(
             fb,
-            echo_x + len as u32 * 8,
-            ty,
+            echo_x + echo_len as u32 * 8,
+            input_y,
             "|",
             graphics::LIGHT_CYAN,
             w.bg_color,

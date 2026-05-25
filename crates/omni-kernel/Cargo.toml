@@ -97,6 +97,10 @@ rand_chacha    = { version = "0.3", default-features = false }
 # wrapper. The `mutex` + `spin_mutex` features are enabled explicitly
 # (default would also bring `lazy`/`barrier` which we do not need).
 spin           = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
+# `omni-shell` provides `process_line` and `ShellEnv` for the bare-metal
+# desktop terminal. Compiled without `std` so it uses the kernel's `alloc`
+# heap. Gated behind `bare-metal` so host builds are unaffected.
+omni-shell     = { path = "../omni-shell", version = "0.2.0", default-features = false, optional = true }
 
 [features]
 default     = []
@@ -105,7 +109,7 @@ default     = []
 # `bootloader_api`-dependent surface (`kmain`, `pick_region`) and the
 # `font8x8` bitmap renderer used by the GOP framebuffer banner.
 # OIP-Kernel-012 § S5 K3.a; OIP-Kernel-005 § S3 K4.b (updated 0.11).
-bare-metal  = ["dep:bootloader_api", "dep:font8x8"]
+bare-metal  = ["dep:bootloader_api", "dep:font8x8", "dep:omni-shell"]
 # `mb8-smoke` enables the two-task preemption smoke (Track B MB8):
 # spawns Task A and Task B that print 'A' and 'B' in tight loops and
 # never yield, so any interleaved output on serial proves that the
