@@ -199,6 +199,7 @@ impl<'a> Iterator for SegIter<'a> {
 pub struct Elf64<'a> {
     data: &'a [u8],
     entry: u64,
+    e_type: u16,
     phoff: usize,
     phentsize: usize,
     phnum: usize,
@@ -255,17 +256,30 @@ impl<'a> Elf64<'a> {
         Ok(Self {
             data,
             entry,
+            e_type,
             phoff,
             phentsize,
             phnum,
         })
     }
 
-    /// Returns the virtual entry-point address from the ELF header.
+    /// Returns the virtual entry-point address from the ELF header,
+    /// adjusted for the load bias when the ELF is a PIE (`ET_DYN`).
     #[inline]
     #[must_use]
     pub fn entry_point(&self) -> u64 {
-        self.entry
+        self.entry + self.load_bias()
+    }
+
+    /// Load bias applied to PIE (`ET_DYN`) executables.
+    ///
+    /// `ET_EXEC` binaries have absolute addresses and no bias.
+    /// `ET_DYN` binaries have relative addresses starting near zero;
+    /// the kernel maps them at this fixed base address.
+    #[inline]
+    #[must_use]
+    pub fn load_bias(&self) -> u64 {
+        if self.e_type == ET_DYN { 0x40_0000 } else { 0 }
     }
 
     /// Returns an iterator over the `PT_LOAD` program-header entries.
@@ -323,10 +337,12 @@ impl<'a> Elf64<'a> {
     ) -> Result<u64, ElfError> {
         use core::ptr;
 
+        let bias = self.load_bias();
+
         for seg_result in self.load_segments() {
             let seg = seg_result?;
 
-            let page_base = seg.virt_addr & !0xFFF;
+            let page_base = (seg.virt_addr + bias) & !0xFFF;
             let page_intra = (seg.virt_addr & 0xFFF) as usize;
             let total_mem = page_intra + seg.mem_size;
             let num_pages = (total_mem + 4095) / 4096;
@@ -363,7 +379,105 @@ impl<'a> Elf64<'a> {
             }
         }
 
-        Ok(self.entry)
+        // Process R_X86_64_RELATIVE relocations for PIE (ET_DYN) binaries.
+        // Each entry in the RELA table stores an offset where the load bias
+        // must be added to the stored value. Without this step, GOT entries
+        // and other absolute references resolve to addresses near zero,
+        // causing immediate page faults.
+        if bias != 0 {
+            self.apply_relative_relocs(root_phys, mapper, bias, phys_offset);
+        }
+
+        Ok(self.entry + bias)
+    }
+
+    /// Scan the ELF for PT_DYNAMIC, find the RELA table, and process all
+    /// `R_X86_64_RELATIVE` entries by adding `bias` to the stored addend.
+    #[cfg(target_arch = "x86_64")]
+    fn apply_relative_relocs(
+        &self,
+        root_phys: crate::memory::PhysAddr,
+        mapper: &super::paging::PageMapper,
+        bias: u64,
+        phys_offset: u64,
+    ) {
+        const PT_DYNAMIC: u32 = 2;
+        const DT_RELA: u64 = 7;
+        const DT_RELASZ: u64 = 8;
+        const R_X86_64_RELATIVE: u32 = 8;
+
+        // Find PT_DYNAMIC segment.
+        let mut dyn_offset = 0usize;
+        let mut dyn_size = 0usize;
+        for i in 0..self.phnum {
+            let base = self.phoff + i * self.phentsize;
+            if let Some(p_type) = r_u32(self.data, base) {
+                if p_type == PT_DYNAMIC {
+                    dyn_offset = r_u64(self.data, base + 8).unwrap_or(0) as usize;
+                    dyn_size = r_u64(self.data, base + 32).unwrap_or(0) as usize;
+                    break;
+                }
+            }
+        }
+        if dyn_offset == 0 || dyn_size == 0 {
+            return;
+        }
+
+        // Parse DYNAMIC entries to find RELA offset and size.
+        let mut rela_off = 0u64;
+        let mut rela_sz = 0u64;
+        let mut pos = dyn_offset;
+        while pos + 16 <= dyn_offset + dyn_size {
+            let tag = r_u64(self.data, pos).unwrap_or(0);
+            let val = r_u64(self.data, pos + 8).unwrap_or(0);
+            if tag == 0 { break; } // DT_NULL
+            if tag == DT_RELA { rela_off = val; }
+            if tag == DT_RELASZ { rela_sz = val; }
+            pos += 16;
+        }
+        if rela_off == 0 || rela_sz == 0 {
+            return;
+        }
+
+        // The RELA entries are at file offset = rela_off (for PIE, this
+        // is the same as the virt_addr since the base is 0).
+        let rela_file_off = rela_off as usize;
+        let num_entries = rela_sz as usize / 24;
+
+        for i in 0..num_entries {
+            let ent_off = rela_file_off + i * 24;
+            let r_offset = match r_u64(self.data, ent_off) {
+                Some(v) => v,
+                None => continue,
+            };
+            let r_info = match r_u64(self.data, ent_off + 8) {
+                Some(v) => v,
+                None => continue,
+            };
+            let r_addend = match r_u64(self.data, ent_off + 16) {
+                Some(v) => v,
+                None => continue,
+            };
+
+            let r_type = (r_info & 0xFFFF_FFFF) as u32;
+            if r_type != R_X86_64_RELATIVE {
+                continue;
+            }
+
+            // Write (bias + addend) at virtual address (bias + r_offset).
+            let target_va = bias + r_offset;
+            let value = bias + r_addend;
+
+            // Translate VA → physical via the page table we just built.
+            if let Some(phys) = mapper.translate_in(root_phys, crate::memory::VirtAddr(target_va))
+            {
+                let dst = (phys.0 + phys_offset) as *mut u64;
+                // SAFETY: the page was just mapped and allocated by us;
+                // writing the relocation value is required for the binary
+                // to function correctly at the biased address.
+                unsafe { core::ptr::write(dst, value); }
+            }
+        }
     }
 }
 

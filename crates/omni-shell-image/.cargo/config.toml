@@ -1,11 +1,16 @@
 # =============================================================================
 # omni-shell-image — cargo target configuration
 # =============================================================================
-# Mirrors the `omni-driver-net-virtio-image/.cargo/config.toml` rationale:
-# the `x86_64-unknown-none` target spec produces ET_DYN/PIE ELFs by default,
-# which is what the kernel's `spawn_from_elf` expects. No relocation-model
-# overrides are required; the file is intentionally minimal so the workspace
-# `.cargo/config.toml` rustflags (force-soft SIMD cfgs) merge cleanly.
+# Sets the image base to 0x400000 via lld's --image-base flag. This makes
+# all addresses in the PIE ELF absolute, starting from 0x400000 instead
+# of 0x0. The kernel's ELF loader applies a load_bias of 0x400000 for
+# ET_DYN ELFs, so the effective address after loading is 0x800000. To
+# avoid double-biasing, we also disable the kernel's bias by making the
+# virt_addr start above zero (the loader only biases when virt_addr == 0).
 # =============================================================================
 
-# This file is intentionally empty for the `x86_64-unknown-none` target.
+[build]
+target = "x86_64-unknown-none"
+
+[target.x86_64-unknown-none]
+rustflags = ["-C", "link-arg=--image-base=0x400000"]

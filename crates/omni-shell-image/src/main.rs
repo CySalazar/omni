@@ -54,7 +54,9 @@ use core::panic::PanicInfo;
 
 use omni_shell::env::ShellEnv;
 use omni_shell::glob::FsQuery;
-use omni_shell::repl::{format_prompt, process_line};
+use omni_shell::repl::process_line;
+#[allow(unused_imports)]
+use omni_shell::repl::format_prompt;
 
 // =============================================================================
 // Global allocator — bump allocator backed by a static buffer
@@ -402,6 +404,7 @@ pub extern "C" fn _start() -> ! {
         "Welcome to OMNI OS shell. Type 'help' for available commands.\n\n",
     );
     sys_write(1, banner.as_bytes());
+    sys_write(1, b"[shell-dbg] banner done, entering REPL\n");
 
     // ── REPL loop ────────────────────────────────────────────────────────────
     //
@@ -411,9 +414,11 @@ pub extern "C" fn _start() -> ! {
     let mut line_buf = [0u8; 1024];
 
     loop {
-        // Format and print the PS1 prompt.
-        let prompt = format_prompt(&env, &cwd);
-        sys_write(1, prompt.as_bytes());
+        // Simple prompt (avoids format! which may crash in PIE due to vtable)
+        sys_write(1, b"omni$ ");
+
+        // Skip format_prompt for now — use simple static prompt above.
+        let _ = (&env, &cwd);
 
         // Read one line (up to 1 KiB) from stdin.
         let n = sys_read(0, &mut line_buf);
@@ -433,6 +438,11 @@ pub extern "C" fn _start() -> ! {
         if input.is_empty() {
             continue;
         }
+
+        // Echo back input for debugging
+        sys_write(1, b"you typed: ");
+        sys_write(1, input.as_bytes());
+        sys_write(1, b"\n");
 
         // ── Run the command through the shell pipeline ────────────────────────
         //

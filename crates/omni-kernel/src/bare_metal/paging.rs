@@ -248,6 +248,30 @@ impl PageMapper {
         clippy::similar_names,
         reason = "page-table level variable names are intentionally terse"
     )]
+    /// Translate a VA using an explicit page-table root (e.g. a per-process PML4).
+    pub fn translate_in(&self, root: PhysAddr, virt: VirtAddr) -> Option<PhysAddr> {
+        let pml4 = self.table_ptr(root);
+        let pml4e = unsafe { (*pml4).entry(virt_index(virt, PageLevel::Pml4)) };
+        if !pml4e.is_present() { return None; }
+        let pdpt = self.table_ptr(pml4e.phys_addr());
+        let pdpte = unsafe { (*pdpt).entry(virt_index(virt, PageLevel::Pdpt)) };
+        if !pdpte.is_present() { return None; }
+        if pdpte.0 & PTE_HUGE != 0 {
+            return Some(PhysAddr((pdpte.0 & HUGE_1G_FRAME_MASK) + (virt.0 & HUGE_1G_OFFSET_MASK)));
+        }
+        let pd = self.table_ptr(pdpte.phys_addr());
+        let pde = unsafe { (*pd).entry(virt_index(virt, PageLevel::Pd)) };
+        if !pde.is_present() { return None; }
+        if pde.0 & PTE_HUGE != 0 {
+            return Some(PhysAddr((pde.0 & HUGE_2M_FRAME_MASK) + (virt.0 & HUGE_2M_OFFSET_MASK)));
+        }
+        let pt = self.table_ptr(pde.phys_addr());
+        let pte = unsafe { (*pt).entry(virt_index(virt, PageLevel::Pt)) };
+        if !pte.is_present() { return None; }
+        Some(PhysAddr(pte.phys_addr().0 + (virt.0 & 0xFFF)))
+    }
+
+    /// Translate a VA through the mapper's own root page table.
     pub fn translate(&self, virt: VirtAddr) -> Option<PhysAddr> {
         let pml4 = self.table_ptr(self.root_phys);
         let pml4e = unsafe { (*pml4).entry(virt_index(virt, PageLevel::Pml4)) };
@@ -333,11 +357,28 @@ impl PageMapper {
         let pd_idx = virt_index(virt, PageLevel::Pd);
         let pt_idx = virt_index(virt, PageLevel::Pt);
 
+        // Intermediate page-table entries (PML4E, PDPTE, PDE) must carry
+        // PTE_USER when the leaf PTE is user-accessible, otherwise the CPU
+        // raises #PF on any Ring 3 access regardless of the leaf flags.
+        let intermediate_flags = if flags & PTE_USER != 0 {
+            PTE_PRESENT | PTE_WRITABLE | PTE_USER
+        } else {
+            PTE_PRESENT | PTE_WRITABLE
+        };
+
         // PML4 → PDPT
         let pml4 = self.table_ptr_mut(root_phys);
         let pdpt_phys = {
             let e = unsafe { (*pml4).entry(pml4_idx) };
             if e.is_present() {
+                // If the entry exists but lacks USER and we need it, upgrade.
+                if flags & PTE_USER != 0 && e.0 & PTE_USER == 0 {
+                    unsafe {
+                        (*pml4)
+                            .entry_mut(pml4_idx)
+                            .set_frame(e.phys_addr(), intermediate_flags);
+                    }
+                }
                 e.phys_addr()
             } else {
                 let Some(f) = alloc.alloc_frame() else {
@@ -349,7 +390,7 @@ impl PageMapper {
                 unsafe {
                     (*pml4)
                         .entry_mut(pml4_idx)
-                        .set_frame(f, PTE_PRESENT | PTE_WRITABLE);
+                        .set_frame(f, intermediate_flags);
                 }
                 f
             }
@@ -360,6 +401,13 @@ impl PageMapper {
         let pd_phys = {
             let e = unsafe { (*pdpt).entry(pdpt_idx) };
             if e.is_present() {
+                if flags & PTE_USER != 0 && e.0 & PTE_USER == 0 {
+                    unsafe {
+                        (*pdpt)
+                            .entry_mut(pdpt_idx)
+                            .set_frame(e.phys_addr(), intermediate_flags);
+                    }
+                }
                 e.phys_addr()
             } else {
                 let Some(f) = alloc.alloc_frame() else {
@@ -371,7 +419,7 @@ impl PageMapper {
                 unsafe {
                     (*pdpt)
                         .entry_mut(pdpt_idx)
-                        .set_frame(f, PTE_PRESENT | PTE_WRITABLE);
+                        .set_frame(f, intermediate_flags);
                 }
                 f
             }
@@ -382,6 +430,13 @@ impl PageMapper {
         let pt_phys = {
             let e = unsafe { (*pd).entry(pd_idx) };
             if e.is_present() {
+                if flags & PTE_USER != 0 && e.0 & PTE_USER == 0 {
+                    unsafe {
+                        (*pd)
+                            .entry_mut(pd_idx)
+                            .set_frame(e.phys_addr(), intermediate_flags);
+                    }
+                }
                 e.phys_addr()
             } else {
                 let Some(f) = alloc.alloc_frame() else {
@@ -393,7 +448,7 @@ impl PageMapper {
                 unsafe {
                     (*pd)
                         .entry_mut(pd_idx)
-                        .set_frame(f, PTE_PRESENT | PTE_WRITABLE);
+                        .set_frame(f, intermediate_flags);
                 }
                 f
             }

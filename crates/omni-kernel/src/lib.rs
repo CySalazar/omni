@@ -1706,6 +1706,25 @@ pub fn kmain(
             early_console::write_str("[OMNI OS] shell boot: /bin/omni-shell not found in VFS\n");
             early_console::write_str("[OMNI OS] shell boot: falling through to desktop demo\n");
         }
+
+        // If shell spawned, park the bootstrap task so the scheduler
+        // dispatches the shell process. The bootstrap task (kmain) runs
+        // at System priority; if we don't park it, pick_next always
+        // re-selects it over the Interactive-priority shell.
+        if shell_found {
+            early_console::write_str("[OMNI OS] shell boot: parking bootstrap task\n");
+            #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+            #[allow(unsafe_code, reason = "single-CPU static deref for scheduler")]
+            unsafe {
+                use scheduling::{Scheduler, TaskState};
+                let sched = &mut *core::ptr::addr_of_mut!(SCHEDULER);
+                if let Some(cur) = sched.current_task_id() {
+                    let _ = sched.yield_current(cur, TaskState::Sleeping);
+                }
+            }
+            // After waking (if ever), halt the bootstrap.
+            bare_metal::arch::halt_forever();
+        }
     }
 
     // -------------------------------------------------------------------------
