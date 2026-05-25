@@ -389,23 +389,42 @@ pub fn acpi_poweroff() {
     // All attempts exhausted; caller falls through to halt_forever.
 }
 
-/// Trigger a system reset via port 0xCF9 (PCI reset control register)
-/// with 8042 keyboard controller fallback.
+/// Trigger a system reset. Tries three paths in order; at least one
+/// is guaranteed to reset any x86_64 machine.
 ///
-/// Tries two reset paths in order:
-///
-/// 1. **Port 0xCF9 full reset**: Intel ICH/PCH reset control register.
-///    Writing `0x06` (system reset + full reset) triggers a platform-wide
-///    reset on real hardware and QEMU q35/i440fx.
-/// 2. **8042 keyboard reset**: writing `0xFE` to port `0x64` pulses the
-///    CPU reset line. Works on virtually all x86 platforms.
+/// 1. **8042 keyboard controller** (`0xFE` → port `0x64`): pulses the
+///    CPU RESET line. Works on QEMU (all machine types) and virtually
+///    all physical hardware.
+/// 2. **Port 0xCF9 full reset** (Intel ICH/PCH reset control register):
+///    read-modify-write sequence per the Linux kernel's reboot.c —
+///    clear RST_CPU+SYS_RST, assert RST_CPU, short spin, assert both.
+/// 3. **Triple fault**: load a zero-length IDT and trigger `int3`.
+///    The CPU cannot find an exception handler, faults again, and the
+///    resulting triple fault resets the platform unconditionally.
 pub fn acpi_reboot() {
-    // Step 1: clear the reset register, then assert full system reset.
-    unsafe { outb(0xCF9, 0x00) };
-    unsafe { outb(0xCF9, 0x06) };
-    // Step 2: 8042 keyboard controller fallback.
+    // Attempt 1: 8042 keyboard controller reset.
     unsafe { outb(0x64, 0xFE) };
-    // If both fail, caller falls through to halt_forever.
+
+    // Attempt 2: port 0xCF9 (ICH/PCH reset control register).
+    // Sequence from Linux arch/x86/kernel/reboot.c: clear bits 1-2,
+    // write back with bit 1 (RST_CPU), spin, then set bits 1+2.
+    let cf9 = unsafe { inb(0xCF9) } & !0x06;
+    unsafe { outb(0xCF9, cf9 | 0x02) };
+    for _ in 0..1_000_000 {
+        core::hint::spin_loop();
+    }
+    unsafe { outb(0xCF9, cf9 | 0x06) };
+
+    // Attempt 3: triple fault — guaranteed reset on all x86_64 CPUs.
+    #[allow(unsafe_code, reason = "intentional triple-fault to force CPU reset")]
+    unsafe {
+        asm!(
+            "lidt [{}]",
+            "int3",
+            in(reg) &[0u16; 5] as *const _ as u64,
+            options(noreturn, nomem, nostack),
+        );
+    }
 }
 
 /// Scan PCI bus 0 for the PIIX4 PM controller and return its `PMBASE`.
