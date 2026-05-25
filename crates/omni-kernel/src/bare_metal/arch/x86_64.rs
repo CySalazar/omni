@@ -389,6 +389,25 @@ pub fn acpi_poweroff() {
     // All attempts exhausted; caller falls through to halt_forever.
 }
 
+/// Trigger a system reset via port 0xCF9 (PCI reset control register)
+/// with 8042 keyboard controller fallback.
+///
+/// Tries two reset paths in order:
+///
+/// 1. **Port 0xCF9 full reset**: Intel ICH/PCH reset control register.
+///    Writing `0x06` (system reset + full reset) triggers a platform-wide
+///    reset on real hardware and QEMU q35/i440fx.
+/// 2. **8042 keyboard reset**: writing `0xFE` to port `0x64` pulses the
+///    CPU reset line. Works on virtually all x86 platforms.
+pub fn acpi_reboot() {
+    // Step 1: clear the reset register, then assert full system reset.
+    unsafe { outb(0xCF9, 0x00) };
+    unsafe { outb(0xCF9, 0x06) };
+    // Step 2: 8042 keyboard controller fallback.
+    unsafe { outb(0x64, 0xFE) };
+    // If both fail, caller falls through to halt_forever.
+}
+
 /// Scan PCI bus 0 for the PIIX4 PM controller and return its `PMBASE`.
 ///
 /// `VirtualBox` places the PIIX4 at bus=0, device=1 (or device=7 in some

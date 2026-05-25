@@ -71,6 +71,15 @@ const TERM_MAX_LINES: usize = 20;
 /// we use 56 to keep a comfortable right margin and avoid right-edge clipping.
 const TERM_LINE_WIDTH: usize = 56;
 
+/// User's choice when exiting the desktop event loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopExitAction {
+    /// ACPI S5 — full power off.
+    PowerOff,
+    /// System reset (ACPI reset register / port 0xCF9 / triple-fault).
+    Reboot,
+}
+
 /// "Power Off" button in the System Info window content area.
 const POWEROFF_BTN: widget::Button = widget::Button {
     rel_x: 8,
@@ -80,14 +89,25 @@ const POWEROFF_BTN: widget::Button = widget::Button {
     label: "Power Off",
 };
 
+/// "Reboot" button placed to the right of the Power Off button.
+const REBOOT_BTN: widget::Button = widget::Button {
+    rel_x: 8 + 96 + 12, // POWEROFF_BTN.rel_x + width + gap
+    rel_y: 268,
+    width: 80,
+    height: 22,
+    label: "Reboot",
+};
+
 // =============================================================================
 // Public entry point
 // =============================================================================
 
-/// Initialise and run the graphical desktop until the user requests power-off.
+/// Initialise and run the graphical desktop until the user requests power-off
+/// or reboot.
 ///
 /// Blocks in the PS/2 + RTC event loop. Before returning it draws the
-/// "Powering off…" overlay so the caller can proceed directly to ACPI S5.
+/// appropriate overlay ("Powering off…" / "Rebooting…") so the caller can
+/// proceed directly to ACPI S5 or system reset.
 ///
 /// # Parameters
 ///
@@ -112,7 +132,7 @@ pub fn run_desktop(
     phys_offset: u64,
     cpu_total: usize,
     cpu_bsp_apic_id: u32,
-) {
+) -> DesktopExitAction {
     let fb_opt: Option<&FrameBuffer> = framebuffer.as_ref();
 
     // ── Window manager ────────────────────────────────────────────────────────
@@ -244,6 +264,7 @@ pub fn run_desktop(
 
     // ── Event loop ────────────────────────────────────────────────────────────
     let mut last_rtc = arch::rtc_seconds();
+    let mut exit_action = DesktopExitAction::PowerOff;
 
     'event: loop {
         // ── Mouse input: VirtIO tablet (absolute) when present, else PS/2 ──
@@ -323,6 +344,12 @@ pub fn run_desktop(
                     let cy0 = wm_state.get(0).map_or(0, |w| w.y + wm::TITLEBAR_H);
                     if widget::button_hit_test(&POWEROFF_BTN, cx0, cy0, px, py) {
                         widget::draw_button(fb, cx0, cy0, &POWEROFF_BTN, true);
+                        exit_action = DesktopExitAction::PowerOff;
+                        break 'event;
+                    }
+                    if widget::button_hit_test(&REBOOT_BTN, cx0, cy0, px, py) {
+                        widget::draw_button(fb, cx0, cy0, &REBOOT_BTN, true);
+                        exit_action = DesktopExitAction::Reboot;
                         break 'event;
                     }
 
@@ -368,11 +395,17 @@ pub fn run_desktop(
                         // Title bar → shift keyboard focus.
                         wm_state.click_hit_test(fb, px, py);
 
-                        // Power Off button → highlight + exit.
+                        // Power Off / Reboot button → highlight + exit.
                         let cx0 = wm_state.get(0).map_or(0, |w| w.x + 1);
                         let cy0 = wm_state.get(0).map_or(0, |w| w.y + wm::TITLEBAR_H);
                         if widget::button_hit_test(&POWEROFF_BTN, cx0, cy0, px, py) {
                             widget::draw_button(fb, cx0, cy0, &POWEROFF_BTN, true);
+                            exit_action = DesktopExitAction::PowerOff;
+                            break 'event;
+                        }
+                        if widget::button_hit_test(&REBOOT_BTN, cx0, cy0, px, py) {
+                            widget::draw_button(fb, cx0, cy0, &REBOOT_BTN, true);
+                            exit_action = DesktopExitAction::Reboot;
                             break 'event;
                         }
 
@@ -555,21 +588,24 @@ pub fn run_desktop(
         core::hint::spin_loop();
     }
 
-    // ── Power-off overlay ─────────────────────────────────────────────────────
+    // ── Exit overlay ──────────────────────────────────────────────────────────
     if let Some(fb) = fb_opt {
         if let Some(c) = &cursor_state {
             c.hide(fb);
         }
-        wm::show_poweroff_overlay(fb);
+        match exit_action {
+            DesktopExitAction::PowerOff => wm::show_poweroff_overlay(fb),
+            DesktopExitAction::Reboot => wm::show_reboot_overlay(fb),
+        }
     } else {
-        vga::write_at(
-            16,
-            4,
-            b"Powering off...              ",
-            vga::YELLOW,
-            vga::BLACK,
-        );
+        let msg = match exit_action {
+            DesktopExitAction::PowerOff => b"Powering off...              ",
+            DesktopExitAction::Reboot => b"Rebooting...                 ",
+        };
+        vga::write_at(16, 4, msg, vga::YELLOW, vga::BLACK);
     }
+
+    exit_action
 }
 
 // =============================================================================
@@ -1048,6 +1084,7 @@ fn render_sysinfo(
     }
 
     widget::draw_button(fb, w.x + 1, w.y + wm::TITLEBAR_H, &POWEROFF_BTN, false);
+    widget::draw_button(fb, w.x + 1, w.y + wm::TITLEBAR_H, &REBOOT_BTN, false);
 }
 
 /// Kernel VFS adapter for the omni-shell `FsQuery` trait.

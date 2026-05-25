@@ -278,3 +278,17 @@ pub fn show_poweroff_overlay(fb: &FrameBuffer) {
         graphics::DARK_NAVY,
     );
 }
+
+/// Display a "Rebooting…" overlay centred in the taskbar.
+pub fn show_reboot_overlay(fb: &FrameBuffer) {
+    let y0 = fb.height.saturating_sub(TASKBAR_H);
+    fb.draw_rect_filled(0, y0 + 1, fb.width, fb.height, graphics::DARK_NAVY);
+    font::render_str(
+        fb,
+        8,
+        y0 + 10,
+        "Rebooting...",
+        graphics::YELLOW,
+        graphics::DARK_NAVY,
+    );
+}

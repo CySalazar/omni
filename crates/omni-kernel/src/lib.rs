@@ -1973,7 +1973,7 @@ pub fn kmain(
         unreachable_code,
         reason = "mb12-userprobe path diverges before reaching the desktop"
     )]
-    demo::run_desktop(
+    let exit_action = demo::run_desktop(
         framebuffer,
         region_count,
         free_mib,
@@ -1983,26 +1983,31 @@ pub fn kmain(
         sysinfo_bsp_apic_id,
     );
 
-    // -------------------------------------------------------------------------
-    // ACPI S5 power-off. Use FADT path when RSDP + physical memory map are
-    // available (UEFI boot via bootloader 0.11); fall back to PCI scan +
-    // hardcoded ports if ACPI tables are unmapped.
-    // -------------------------------------------------------------------------
-    let rsdp = boot_info.rsdp_addr.into_option();
-    let phys_off = boot_info.physical_memory_offset.into_option();
-    match (rsdp, phys_off) {
-        (Some(rsdp_phys), Some(offset)) => {
-            // SAFETY: bootloader maps all physical memory at `offset`;
-            // RSDP and ACPI tables are within that window.
-            #[allow(
-                unsafe_code,
-                reason = "ACPI table walk via bootloader direct map; SAFETY above"
-            )]
-            unsafe {
-                arch::acpi_poweroff_from_fadt(rsdp_phys, offset);
+    match exit_action {
+        demo::DesktopExitAction::Reboot => {
+            arch::acpi_reboot();
+        }
+        demo::DesktopExitAction::PowerOff => {
+            // ACPI S5 power-off. Use FADT path when RSDP + physical memory
+            // map are available (UEFI boot via bootloader 0.11); fall back to
+            // PCI scan + hardcoded ports if ACPI tables are unmapped.
+            let rsdp = boot_info.rsdp_addr.into_option();
+            let phys_off = boot_info.physical_memory_offset.into_option();
+            match (rsdp, phys_off) {
+                (Some(rsdp_phys), Some(offset)) => {
+                    // SAFETY: bootloader maps all physical memory at `offset`;
+                    // RSDP and ACPI tables are within that window.
+                    #[allow(
+                        unsafe_code,
+                        reason = "ACPI table walk via bootloader direct map; SAFETY above"
+                    )]
+                    unsafe {
+                        arch::acpi_poweroff_from_fadt(rsdp_phys, offset);
+                    }
+                }
+                _ => arch::acpi_poweroff(),
             }
         }
-        _ => arch::acpi_poweroff(),
     }
     arch::halt_forever()
 }
