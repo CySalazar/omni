@@ -44,6 +44,11 @@ omni-tee    = { workspace = true }
 async-trait = { workspace = true }
 tracing     = { workspace = true }
 thiserror   = { workspace = true }
+# `tokio` is used by `transformer_forward_cached` to drive the async backend
+# from a synchronous context (block_on inside a new current-thread runtime).
+# The `rt` feature is the minimal subset needed; `full` features are NOT
+# required and are avoided to keep the dependency footprint small.
+tokio       = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
 # `tokio` is required in dev-only context to drive `#[tokio::test]` async

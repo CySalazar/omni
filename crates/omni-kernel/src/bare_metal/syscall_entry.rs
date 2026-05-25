@@ -1854,20 +1854,26 @@ mod irq_attach_handlers {
         }
     }
 
-    /// Rust-side IRQ dispatch: reads the in-service LAPIC vector, looks
-    /// up the slot, enqueues a notification on the bound channel (or
-    /// increments the missed-count if the channel is full), then issues
-    /// LAPIC EOI. Called from the asm trampoline.
+    /// Rust-side IRQ dispatch: looks up the slot, attempts to enqueue an
+    /// 8-byte IPC notification on the bound channel (via
+    /// [`crate::irq_table::irq_notify`]), increments the coalesced
+    /// missed-fire counter, then issues LAPIC EOI.
     ///
-    /// Phase 1 caveat: real channel-enqueue requires building an
-    /// `IrqNotification::Tick` payload + invoking the IPC registry
-    /// send path with the kernel-as-sender principal. The skeleton
-    /// here increments the `missed` counter unconditionally (so the
-    /// fire is observable to host-side smoke) and issues EOI; a
-    /// follow-up P6.7.8.x will wire the proper kernel-→-driver-channel
-    /// enqueue path.
+    /// The `note_fire` call keeps the per-vector `missed` atomic in sync
+    /// so that drivers polling the legacy `take_missed` path still observe
+    /// every fire, regardless of whether the IPC enqueue succeeded (the
+    /// queue could be full under `Drop` policy).
+    ///
+    /// EOI is always issued last so the LAPIC can accept the next IRQ on
+    /// the same vector regardless of whether the channel enqueue failed.
     pub(super) fn dispatch_fire(vector: u8) {
         note_fire(vector);
+        // SAFETY: single-CPU ISR context; IRQ_TABLE_GLOBAL and IPC_REGISTRY
+        // are not aliased. MP-SAFETY: upgrade to spinlock (P6.4+).
+        #[allow(unsafe_code, reason = "ISR context; SAFETY comment above")]
+        unsafe {
+            crate::irq_table::irq_notify(vector);
+        }
         bare_metal::lapic::lapic_eoi();
     }
 }

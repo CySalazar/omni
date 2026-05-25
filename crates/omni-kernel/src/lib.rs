@@ -120,6 +120,18 @@ pub mod init_process;
 /// Not gated behind `bare-metal`: fully testable on host builds.
 pub mod initramfs;
 pub mod ipc;
+/// IRQ-to-IPC routing table (OIP-013 § S4, P6.7 IRQ-attach wiring).
+///
+/// Provides [`irq_table::IrqTable`], [`irq_table::IrqBinding`], and
+/// [`irq_table::IrqBindError`] — a fixed-size, `no_std`-compatible table
+/// that maps hardware interrupt vectors to kernel IPC channels.
+///
+/// The `#[cfg(test)]` module inside `irq_table` is ungated so that host
+/// builds can exercise the bind / unbind / lookup / mask / unmask logic
+/// without the full `bare-metal` infrastructure. The kernel-global singletons
+/// (`IRQ_TABLE_GLOBAL`, `irq_notify`, `global_bind`, `global_unbind`) are
+/// gated behind `bare-metal + target_os = none`.
+pub mod irq_table;
 pub mod kaslr;
 pub mod known_issuers;
 pub mod memory;

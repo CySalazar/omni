@@ -310,6 +310,17 @@ pub struct OmniCapsHeader {
 // Capability lookup module
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// BLK channel wire types
+// ---------------------------------------------------------------------------
+
+/// Fixed-size wire types for the `omni.svc.blk.<diskN>` IPC channel.
+///
+/// Provides [`blk::BlkRequest`], [`blk::BlkResponse`], [`blk::BlkStatus`],
+/// [`blk::BlkCapacity`], [`blk::BlkDecodeError`], and the associated
+/// encode/decode routines per OIP-Driver-NVMe-014 § S4 wire format.
+pub mod blk;
+
 /// Helpers for locating capability tokens in the kernel-deposited window.
 ///
 /// This module is the primary API surface that driver `_start` functions
