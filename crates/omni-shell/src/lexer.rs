@@ -30,6 +30,9 @@
 //! The lexer returns the first [`LexError`] it encounters and stops. Partial
 //! token vectors are discarded.
 
+#[cfg(not(feature = "std"))]
+use alloc::{string::String, vec::Vec};
+
 use thiserror::Error;
 
 // ── Token ────────────────────────────────────────────────────────────────────
@@ -162,7 +165,7 @@ impl<'a> LexState<'a> {
     fn flush_word(&mut self) {
         if !self.word_buf.is_empty() {
             self.tokens
-                .push(Token::Word(std::mem::take(&mut self.word_buf)));
+                .push(Token::Word(core::mem::take(&mut self.word_buf)));
         }
     }
 

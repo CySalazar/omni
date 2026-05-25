@@ -7,7 +7,13 @@
 //! process table header / signal acknowledgement and return exit code `0`.
 //! Full kernel process-table integration arrives in Layer 6.
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+#[cfg(not(feature = "std"))]
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 use crate::executor::{BuiltinFn, ExecContext};
 
@@ -72,6 +78,7 @@ pub fn register(map: &mut BTreeMap<String, BuiltinFn>) {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::sys_cmds::cmd_uname_pub(
 ///     &["uname".into()], &mut ctx,
@@ -158,6 +165,7 @@ fn cmd_uname(args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::sys_cmds::cmd_whoami_pub(
 ///     &["whoami".into()], &mut ctx,
@@ -202,6 +210,7 @@ fn cmd_whoami(_args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::sys_cmds::cmd_hostname_pub(
 ///     &["hostname".into()], &mut ctx,
@@ -246,6 +255,7 @@ fn cmd_hostname(_args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::sys_cmds::cmd_ps_pub(
 ///     &["ps".into()], &mut ctx,
@@ -290,6 +300,7 @@ fn cmd_ps(_args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::sys_cmds::cmd_kill_pub(
 ///     &["kill".into(), "1234".into()], &mut ctx,
@@ -336,6 +347,7 @@ mod tests {
             cwd: "/".to_string(),
             fs: &NoFs,
             output: Vec::new(),
+            audit_log: crate::audit::AuditLog::new(),
         }
     }
 

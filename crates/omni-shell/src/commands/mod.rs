@@ -22,7 +22,9 @@ pub mod fs_info;
 pub mod sys_cmds;
 pub mod text_cmds;
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
 
 use crate::executor::BuiltinFn;
 

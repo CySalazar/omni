@@ -17,12 +17,18 @@
 //!
 //! ## Ordering
 //!
-//! Internal collections use [`std::collections::BTreeMap`] /
-//! [`std::collections::BTreeSet`] so that iteration order is deterministic
+//! Internal collections use [`alloc::collections::BTreeMap`] /
+//! [`alloc::collections::BTreeSet`] so that iteration order is deterministic
 //! (alphabetical). This makes tests and serialised output reproducible
 //! without sorting.
 
-use std::collections::{BTreeMap, BTreeSet};
+use alloc::collections::{BTreeMap, BTreeSet};
+#[cfg(not(feature = "std"))]
+use alloc::{
+    borrow::ToOwned,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 // ── ShellEnv ──────────────────────────────────────────────────────────────────
 

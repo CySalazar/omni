@@ -1316,10 +1316,7 @@ dependencies = [
 name = "omni-shell"
 version = "0.2.0"
 dependencies = [
- "anyhow",
- "omni-sdk",
  "thiserror 2.0.18",
- "tokio",
  "tracing",
 ]
 

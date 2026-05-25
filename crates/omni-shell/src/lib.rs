@@ -33,6 +33,7 @@
 //!   ──► [`executor`]             →  process / built-in dispatch
 //! ```
 
+#![cfg_attr(not(feature = "std"), no_std)]
 #![doc(html_root_url = "https://docs.omni-os.org/omni-shell")]
 #![warn(missing_docs)]
 #![cfg_attr(
@@ -45,6 +46,8 @@
         clippy::indexing_slicing,
     )
 )]
+
+extern crate alloc;
 
 /// Built-in command registry.
 pub mod command;
@@ -66,3 +69,8 @@ pub mod line_editor;
 pub mod parser;
 /// Read-eval-print loop.
 pub mod repl;
+
+/// Per-session audit trail.
+pub mod audit;
+/// Intent classification — lightweight agent integration.
+pub mod intent;

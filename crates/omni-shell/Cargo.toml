@@ -26,8 +26,12 @@ readme.workspace       = true
 workspace = true
 
 [dependencies]
-omni-sdk  = { workspace = true }
-tokio     = { workspace = true }
-tracing   = { workspace = true }
-thiserror = { workspace = true }
-anyhow    = { workspace = true }
+thiserror = { workspace = true, default-features = false }
+tracing   = { workspace = true, optional = true }
+
+[features]
+# `std` is the default: enables tracing and the `print!` output path in the
+# REPL. When disabled the crate compiles for `no_std + alloc` targets such as
+# `x86_64-unknown-none`, where output is handled by the kernel via syscalls.
+default = ["std"]
+std = ["tracing"]

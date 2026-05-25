@@ -23,6 +23,9 @@
 //! - [`Token::EnvVar`] tokens are preserved as the string `"$NAME"` inside
 //!   `argv`; actual substitution is deferred to [`crate::env::ShellEnv::expand`].
 
+#[cfg(not(feature = "std"))]
+use alloc::{borrow::ToOwned, format, string::String, vec::Vec};
+
 use crate::lexer::Token;
 
 // ── AST node types ────────────────────────────────────────────────────────────
@@ -182,7 +185,7 @@ impl core::fmt::Display for ParseError {
     }
 }
 
-impl std::error::Error for ParseError {}
+impl core::error::Error for ParseError {}
 
 // ── Public entry point ────────────────────────────────────────────────────────
 

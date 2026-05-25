@@ -8,7 +8,9 @@
 //! disk-usage data requires the kernel VFS mount table, which is not yet
 //! exposed.
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+#[cfg(not(feature = "std"))]
+use alloc::{format, string::String};
 
 use crate::executor::{BuiltinFn, ExecContext};
 
@@ -57,6 +59,7 @@ pub fn register(map: &mut BTreeMap<String, BuiltinFn>) {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::fs_info::cmd_df_pub(
 ///     &["df".into()], &mut ctx,
@@ -116,6 +119,7 @@ fn cmd_df(_args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::fs_info::cmd_find_pub(
 ///     &["find".into(), "/".into()], &mut ctx,
@@ -226,6 +230,7 @@ mod tests {
             cwd: "/".to_string(),
             fs: &TestFs,
             output: Vec::new(),
+            audit_log: crate::audit::AuditLog::new(),
         }
     }
 

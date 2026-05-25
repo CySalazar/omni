@@ -26,6 +26,14 @@
 //! When no files match the pattern, the original pattern string is returned
 //! unchanged (bash / POSIX "nullglob disabled" mode).
 
+#[cfg(not(feature = "std"))]
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+
 // ── FsQuery ───────────────────────────────────────────────────────────────────
 
 /// Trait for filesystem queries, enabling testing without a real kernel.

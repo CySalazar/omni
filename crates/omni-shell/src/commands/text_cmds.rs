@@ -8,7 +8,9 @@
 //! replaced with real implementations without changing command names or
 //! registration.
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+#[cfg(not(feature = "std"))]
+use alloc::{format, string::String};
 
 use crate::executor::{BuiltinFn, ExecContext};
 
@@ -61,6 +63,7 @@ pub fn register(map: &mut BTreeMap<String, BuiltinFn>) {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::text_cmds::cmd_grep_pub(
 ///     &["grep".into(), "pattern".into(), "file.txt".into()], &mut ctx,
@@ -101,6 +104,7 @@ fn cmd_grep(args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::text_cmds::cmd_head_pub(
 ///     &["head".into(), "file.txt".into()], &mut ctx,
@@ -141,6 +145,7 @@ fn cmd_head(args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::text_cmds::cmd_tail_pub(
 ///     &["tail".into(), "file.txt".into()], &mut ctx,
@@ -181,6 +186,7 @@ fn cmd_tail(args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::text_cmds::cmd_wc_pub(
 ///     &["wc".into(), "file.txt".into()], &mut ctx,
@@ -237,6 +243,7 @@ mod tests {
             cwd: "/".to_string(),
             fs,
             output: Vec::new(),
+            audit_log: crate::audit::AuditLog::new(),
         }
     }
 

@@ -2725,6 +2725,1543 @@ mod blk_handlers {
     }
 }
 
+// -----------------------------------------------------------------------
+// Shell terminal syscall handlers (Phase C wiring, T0.1–T0.5 / T6.2–T6.4)
+//
+// This module is the bare-metal dispatch shim for the 18 shell-terminal
+// syscalls. It accesses the five `SHELL_*` global statics directly (same
+// single-CPU, no-preemption invariant as every other bare-metal handler
+// in this file) and replicates the logic from
+// `crate::syscall_handlers::KernelState` without constructing that struct
+// (which would require moving ownership of the globals per syscall).
+//
+// The module is cfg-gated identically to `ipc_handlers` / `mmio_map_handlers`
+// so it is invisible on host test builds and never compiled for non-bare-metal
+// targets.
+// -----------------------------------------------------------------------
+
+#[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+mod shell_handlers {
+    use crate::fd::{FdFlags, FdKind, FileDescriptor, OpenFlags, RawFd};
+    use crate::pipe::PipeId;
+    use crate::scheduling::TaskId;
+    use crate::syscall::{SyscallReturn, syscall_errno};
+    use crate::vfs::{FileType, VfsError};
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    // -----------------------------------------------------------------------
+    // User-memory validation helpers
+    // -----------------------------------------------------------------------
+
+    /// Validate that `[ptr, ptr + len)` lies entirely within the canonical
+    /// user half (`< 0x0000_8000_0000_0000`).  Length zero always passes.
+    ///
+    /// This is the same check applied by every other handler module in this
+    /// file; duplicated here so the shell module has no dependency on the
+    /// sibling modules' private items.
+    fn user_range_ok(ptr: u64, len: u64) -> bool {
+        if len == 0 {
+            return true;
+        }
+        let Some(end) = ptr.checked_add(len) else {
+            return false;
+        };
+        end <= crate::bare_metal::usermode::USER_HALF_END
+    }
+
+    /// Copy a UTF-8 string out of user memory into a kernel-side
+    /// `alloc::string::String`.
+    ///
+    /// Returns `None` when:
+    /// - `ptr` is null or the range fails [`user_range_ok`],
+    /// - `len` exceeds 4 096 bytes (path-length cap),
+    /// - the bytes are not valid UTF-8.
+    fn user_str(ptr: u64, len: u64) -> Option<String> {
+        if ptr == 0 || len == 0 || len > 4096 {
+            return None;
+        }
+        if !user_range_ok(ptr, len) {
+            return None;
+        }
+        // SAFETY: user_range_ok verified `[ptr, ptr+len)` lies in the user
+        // half; the active CR3 is the caller's own AS, so the hardware PT walk
+        // faults on any non-present or non-user-flagged page before this copy
+        // returns garbage.  `len` ≤ 4096 so the cast to `usize` is lossless on
+        // all current targets (usize ≥ u16).
+        let slice = unsafe {
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "len ≤ 4096 fits usize on every supported target"
+            )]
+            core::slice::from_raw_parts(ptr as *const u8, len as usize)
+        };
+        core::str::from_utf8(slice).ok().map(String::from)
+    }
+
+    /// Obtain a mutable reference into user memory for a copy-out
+    /// destination buffer.
+    ///
+    /// Returns `None` when `ptr` is null, `len` is zero, the range exceeds
+    /// 1 MiB (a generous upper bound for single-syscall I/O), or the range
+    /// fails [`user_range_ok`].
+    ///
+    /// # Safety contract for callers
+    ///
+    /// The returned reference has `'static` lifetime purely to avoid
+    /// the lifetime-across-unsafe-block restriction. The caller must
+    /// not store it past the end of the current syscall invocation, and
+    /// must not call any other function that could also produce a reference
+    /// into the user AS while the returned slice is live.
+    fn user_slice_mut(ptr: u64, len: u64) -> Option<&'static mut [u8]> {
+        if ptr == 0 || len == 0 || len > 0x10_0000 {
+            return None;
+        }
+        if !user_range_ok(ptr, len) {
+            return None;
+        }
+        // SAFETY: user_range_ok verified the range lies in the user half;
+        // single-CPU syscall path — no concurrent access to this AS.
+        // The `'static` lifetime is a deliberate local-use-only fiction; see
+        // the doc comment above.
+        Some(unsafe {
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "len ≤ 0x10_0000 fits usize on every supported target"
+            )]
+            core::slice::from_raw_parts_mut(ptr as *mut u8, len as usize)
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Current-task helper
+    // -----------------------------------------------------------------------
+
+    /// Return the `TaskId` of the currently-executing process.
+    ///
+    /// Falls back to `TaskId(0)` for the idle / bootstrap task, which has no
+    /// registered entry in `SHELL_PROCESS_TABLE`.
+    unsafe fn current_task() -> TaskId {
+        // SAFETY: single-core; SCHEDULER is not otherwise aliased during the
+        // synchronous syscall path.
+        unsafe {
+            let sched = &*core::ptr::addr_of!(crate::SCHEDULER);
+            sched.current_task_id().unwrap_or(TaskId(0))
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Path resolution helper
+    // -----------------------------------------------------------------------
+
+    /// Resolve `path` against the current task's cwd if it is relative.
+    ///
+    /// Uses `crate::vfs::InMemoryVfs::normalize_path` for `.` / `..`
+    /// canonicalization — the same logic `KernelState::resolve_path` uses.
+    unsafe fn resolve_path(path: &str) -> String {
+        // SAFETY: single-CPU; SHELL_PROCESS_TABLE read-only here.
+        let cwd = unsafe {
+            match (*core::ptr::addr_of!(crate::SHELL_PROCESS_TABLE)).as_ref() {
+                Some(pt) => {
+                    let task = current_task();
+                    pt.get_cwd(task).unwrap_or("/").to_string()
+                }
+                None => String::from("/"),
+            }
+        };
+        crate::vfs::InMemoryVfs::normalize_path(&cwd, path)
+    }
+
+    // -----------------------------------------------------------------------
+    // ReadConsole (61)
+    // -----------------------------------------------------------------------
+
+    /// `ReadConsole (61)` — drain the console input ring buffer into a user
+    /// buffer (line-buffered mode).
+    ///
+    /// ## ABI
+    ///
+    /// | Slot | Reg | Role                          |
+    /// |------|-----|-------------------------------|
+    /// | a0   | RDI | `buf_ptr`: user write buffer  |
+    /// | a1   | RSI | `buf_len`: max bytes to drain |
+    ///
+    /// Returns `(rax = bytes_read, rdx = 0)` on success, or `err(EFAULT)` when
+    /// the user buffer fails range validation.  Returns `ok(0)` when the ring
+    /// is empty (caller should reschedule and retry after new input arrives).
+    pub(super) fn read_console(args: [u64; 6]) -> SyscallReturn {
+        let buf_ptr = args[0];
+        let buf_len = args[1];
+
+        // Empty-read fast-path — callers may poll with len=0.
+        if buf_len == 0 {
+            return SyscallReturn::ok(0);
+        }
+
+        let dest = match user_slice_mut(buf_ptr, buf_len) {
+            Some(s) => s,
+            None => return SyscallReturn::err(syscall_errno::EFAULT),
+        };
+
+        // SAFETY: single-CPU; SHELL_CONSOLE_INPUT not otherwise aliased.
+        let console = unsafe {
+            match (*core::ptr::addr_of_mut!(crate::SHELL_CONSOLE_INPUT)).as_mut() {
+                Some(c) => c,
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "buf_len ≤ 0x10_0000 by user_slice_mut; fits usize"
+        )]
+        let data = console.read_bytes(buf_len as usize, true);
+        let n = data.len().min(dest.len());
+        dest[..n].copy_from_slice(&data[..n]);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "n ≤ buf_len ≤ 0x10_0000; fits u64"
+        )]
+        SyscallReturn::ok(n as u64)
+    }
+
+    // -----------------------------------------------------------------------
+    // FdRead (63)
+    // -----------------------------------------------------------------------
+
+    /// `FdRead (63)` — read from a file descriptor into a user buffer.
+    ///
+    /// ## ABI
+    ///
+    /// | Slot | Reg | Role                          |
+    /// |------|-----|-------------------------------|
+    /// | a0   | RDI | `fd`: file descriptor number  |
+    /// | a1   | RSI | `buf_ptr`: user write buffer  |
+    /// | a2   | RDX | `buf_len`: max bytes to read  |
+    ///
+    /// Dispatches on [`FdKind`]:
+    /// - `Console { readable: true }` → drains the console input buffer.
+    /// - `Pipe { is_read_end: true }` → reads from the pipe ring.
+    /// - `FsFile` → reads from the VFS at the current offset; advances offset.
+    /// - Any other combination → `err(EBADF)`.
+    pub(super) fn fd_read(args: [u64; 6]) -> SyscallReturn {
+        let fd_num = args[0] as u32;
+        let buf_ptr = args[1];
+        let buf_len = args[2];
+
+        if buf_len == 0 {
+            return SyscallReturn::ok(0);
+        }
+
+        let dest = match user_slice_mut(buf_ptr, buf_len) {
+            Some(s) => s,
+            None => return SyscallReturn::err(syscall_errno::EFAULT),
+        };
+
+        // Copy the FdKind into a local so we can drop the fd_table borrow
+        // before the mutable re-borrow needed to advance the FsFile offset.
+        // SAFETY: single-CPU; SHELL_FD_TABLE not otherwise aliased.
+        let kind = unsafe {
+            match (*core::ptr::addr_of!(crate::SHELL_FD_TABLE)).as_ref() {
+                Some(t) => match t.get(RawFd(fd_num)) {
+                    Some(desc) => desc.kind.clone(),
+                    None => return SyscallReturn::err(syscall_errno::EBADF),
+                },
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "buf_len ≤ 0x10_0000 by user_slice_mut; fits usize"
+        )]
+        let max = buf_len as usize;
+
+        match kind {
+            FdKind::Console { readable, .. } => {
+                if !readable {
+                    return SyscallReturn::err(syscall_errno::EBADF);
+                }
+                // SAFETY: single-CPU; SHELL_CONSOLE_INPUT not aliased.
+                let console = unsafe {
+                    match (*core::ptr::addr_of_mut!(crate::SHELL_CONSOLE_INPUT)).as_mut() {
+                        Some(c) => c,
+                        None => return SyscallReturn::err(syscall_errno::EIO),
+                    }
+                };
+                let data = console.read_bytes(max, true);
+                let n = data.len().min(dest.len());
+                dest[..n].copy_from_slice(&data[..n]);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "n ≤ max ≤ 0x10_0000; fits u64"
+                )]
+                SyscallReturn::ok(n as u64)
+            }
+
+            FdKind::Pipe {
+                pipe_id,
+                is_read_end,
+            } => {
+                if !is_read_end {
+                    return SyscallReturn::err(syscall_errno::EBADF);
+                }
+                // SAFETY: single-CPU; SHELL_PIPE_REGISTRY not aliased.
+                let registry = unsafe {
+                    match (*core::ptr::addr_of_mut!(crate::SHELL_PIPE_REGISTRY)).as_mut() {
+                        Some(r) => r,
+                        None => return SyscallReturn::err(syscall_errno::EIO),
+                    }
+                };
+                let ring = match registry.get_mut(PipeId(pipe_id)) {
+                    Some(r) => r,
+                    None => return SyscallReturn::err(syscall_errno::EBADF),
+                };
+                match ring.read(dest) {
+                    Ok(n) =>
+                    {
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "n ≤ dest.len() ≤ 0x10_0000; fits u64"
+                        )]
+                        SyscallReturn::ok(n as u64)
+                    }
+                    Err(_) => SyscallReturn::ok(0), // BrokenPipe → EOF
+                }
+            }
+
+            FdKind::FsFile {
+                inode,
+                offset,
+                flags,
+            } => {
+                if !flags.is_readable() {
+                    return SyscallReturn::err(syscall_errno::EBADF);
+                }
+                // SAFETY: single-CPU; SHELL_VFS immutable borrow ends here.
+                let read_result = unsafe {
+                    match (*core::ptr::addr_of!(crate::SHELL_VFS)).as_ref() {
+                        Some(v) => v.read_file(inode, offset, max),
+                        None => return SyscallReturn::err(syscall_errno::EIO),
+                    }
+                };
+                match read_result {
+                    Ok(data) => {
+                        let n = data.len().min(dest.len());
+                        dest[..n].copy_from_slice(&data[..n]);
+                        // Advance the fd offset. Immutable borrow above
+                        // is finished; safe to take a mutable borrow now.
+                        // SAFETY: single-CPU; SHELL_FD_TABLE not aliased.
+                        unsafe {
+                            if let Some(t) =
+                                (*core::ptr::addr_of_mut!(crate::SHELL_FD_TABLE)).as_mut()
+                            {
+                                if let Some(desc) = t.get_mut(RawFd(fd_num)) {
+                                    if let FdKind::FsFile {
+                                        offset: ref mut off,
+                                        ..
+                                    } = desc.kind
+                                    {
+                                        #[allow(
+                                            clippy::cast_possible_truncation,
+                                            reason = "n ≤ max ≤ 0x10_0000; fits u64"
+                                        )]
+                                        {
+                                            *off = offset.saturating_add(n as u64);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "n ≤ max ≤ 0x10_0000; fits u64"
+                        )]
+                        SyscallReturn::ok(n as u64)
+                    }
+                    Err(VfsError::NotFound) => SyscallReturn::err(syscall_errno::ENOENT),
+                    Err(_) => SyscallReturn::err(syscall_errno::EIO),
+                }
+            }
+
+            FdKind::IpcChannel(_) => SyscallReturn::err(syscall_errno::ENOSYS),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FdWrite (64)
+    // -----------------------------------------------------------------------
+
+    /// `FdWrite (64)` — write from a user buffer into a file descriptor.
+    ///
+    /// ## ABI
+    ///
+    /// | Slot | Reg | Role                          |
+    /// |------|-----|-------------------------------|
+    /// | a0   | RDI | `fd`: file descriptor number  |
+    /// | a1   | RSI | `buf_ptr`: user read buffer   |
+    /// | a2   | RDX | `buf_len`: bytes to write     |
+    ///
+    /// For `Console { writable: true }` fds the bytes are emitted via
+    /// `super::early_console::emit()` after being copied into a kernel-side
+    /// stack buffer (256-byte chunks). This matches the `write_console`
+    /// pattern used by `WriteConsole (60)`.
+    pub(super) fn fd_write(args: [u64; 6]) -> SyscallReturn {
+        let fd_num = args[0] as u32;
+        let buf_ptr = args[1];
+        let buf_len = args[2];
+
+        if buf_len == 0 {
+            return SyscallReturn::ok(0);
+        }
+
+        if !user_range_ok(buf_ptr, buf_len) {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+
+        // SAFETY: single-CPU; SHELL_FD_TABLE read-only here.
+        let kind = unsafe {
+            match (*core::ptr::addr_of!(crate::SHELL_FD_TABLE)).as_ref() {
+                Some(t) => match t.get(RawFd(fd_num)) {
+                    Some(desc) => desc.kind.clone(),
+                    None => return SyscallReturn::err(syscall_errno::EBADF),
+                },
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        match kind {
+            FdKind::Console { writable, .. } => {
+                if !writable {
+                    return SyscallReturn::err(syscall_errno::EBADF);
+                }
+                // Emit to the early console in 256-byte chunks — mirrors
+                // the write_console helper used by WriteConsole (60).
+                // SAFETY: user_range_ok verified the range; single-CPU.
+                unsafe {
+                    let mut emitted: u64 = 0;
+                    let mut chunk_buf = [0u8; 256];
+                    while emitted < buf_len {
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "chunk_buf.len() = 256 fits u64; remaining fits usize"
+                        )]
+                        let chunk = core::cmp::min(chunk_buf.len() as u64, buf_len - emitted);
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "chunk ≤ 256 fits usize on every target"
+                        )]
+                        let chunk_usize = chunk as usize;
+                        core::ptr::copy_nonoverlapping(
+                            (buf_ptr + emitted) as *const u8,
+                            chunk_buf.as_mut_ptr(),
+                            chunk_usize,
+                        );
+                        #[allow(
+                            clippy::indexing_slicing,
+                            reason = "chunk_usize ≤ 256 = chunk_buf.len() by min above"
+                        )]
+                        super::early_console::emit(&chunk_buf[..chunk_usize]);
+                        emitted += chunk;
+                    }
+                    SyscallReturn::ok(emitted)
+                }
+            }
+
+            FdKind::Pipe {
+                pipe_id,
+                is_read_end,
+            } => {
+                if is_read_end {
+                    return SyscallReturn::err(syscall_errno::EBADF);
+                }
+                // Copy the user data into a kernel Vec before entering the
+                // registry borrow so there is no live pointer into user space
+                // while the pipe state is mutated.
+                let data = copy_user_data(buf_ptr, buf_len);
+                // SAFETY: single-CPU; SHELL_PIPE_REGISTRY not aliased.
+                let registry = unsafe {
+                    match (*core::ptr::addr_of_mut!(crate::SHELL_PIPE_REGISTRY)).as_mut() {
+                        Some(r) => r,
+                        None => return SyscallReturn::err(syscall_errno::EIO),
+                    }
+                };
+                let ring = match registry.get_mut(PipeId(pipe_id)) {
+                    Some(r) => r,
+                    None => return SyscallReturn::err(syscall_errno::EBADF),
+                };
+                match ring.write(&data) {
+                    Ok(n) =>
+                    {
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "n ≤ data.len() ≤ 0x10_0000; fits u64"
+                        )]
+                        SyscallReturn::ok(n as u64)
+                    }
+                    Err(_) => SyscallReturn::err(syscall_errno::EPIPE),
+                }
+            }
+
+            FdKind::FsFile {
+                inode,
+                offset,
+                flags,
+            } => {
+                if !flags.is_writable() {
+                    return SyscallReturn::err(syscall_errno::EBADF);
+                }
+                let data = copy_user_data(buf_ptr, buf_len);
+                // In append mode the write position is always end-of-file.
+                // SAFETY: single-CPU; SHELL_VFS immutable borrow only.
+                let write_offset = if flags.has_append() {
+                    unsafe {
+                        match (*core::ptr::addr_of!(crate::SHELL_VFS)).as_ref() {
+                            Some(v) => v.file_size(inode).unwrap_or(offset),
+                            None => return SyscallReturn::err(syscall_errno::EIO),
+                        }
+                    }
+                } else {
+                    offset
+                };
+                // SAFETY: single-CPU; SHELL_VFS mutable borrow.
+                let write_result = unsafe {
+                    match (*core::ptr::addr_of_mut!(crate::SHELL_VFS)).as_mut() {
+                        Some(v) => v.write_file(inode, write_offset, &data),
+                        None => return SyscallReturn::err(syscall_errno::EIO),
+                    }
+                };
+                match write_result {
+                    Ok(n) => {
+                        // Advance the fd offset.
+                        // SAFETY: single-CPU; SHELL_FD_TABLE mutable borrow.
+                        unsafe {
+                            if let Some(t) =
+                                (*core::ptr::addr_of_mut!(crate::SHELL_FD_TABLE)).as_mut()
+                            {
+                                if let Some(desc) = t.get_mut(RawFd(fd_num)) {
+                                    if let FdKind::FsFile {
+                                        offset: ref mut off,
+                                        ..
+                                    } = desc.kind
+                                    {
+                                        #[allow(
+                                            clippy::cast_possible_truncation,
+                                            reason = "n ≤ data.len() ≤ 0x10_0000; fits u64"
+                                        )]
+                                        {
+                                            *off = write_offset.saturating_add(n as u64);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "n ≤ data.len() ≤ 0x10_0000; fits u64"
+                        )]
+                        SyscallReturn::ok(n as u64)
+                    }
+                    Err(VfsError::NotFound) => SyscallReturn::err(syscall_errno::ENOENT),
+                    Err(_) => SyscallReturn::err(syscall_errno::EIO),
+                }
+            }
+
+            FdKind::IpcChannel(_) => SyscallReturn::err(syscall_errno::ENOSYS),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FdClose (65)
+    // -----------------------------------------------------------------------
+
+    /// `FdClose (65)` — close a file descriptor.
+    ///
+    /// If the fd is a pipe end, the corresponding `close_read` or `close_write`
+    /// is called on the pipe ring so waiting tasks can be unblocked by the
+    /// scheduler on the next yield.
+    ///
+    /// Returns `ok(0)` on success, `err(EBADF)` if the fd is not open.
+    pub(super) fn fd_close(args: [u64; 6]) -> SyscallReturn {
+        let fd_num = args[0] as u32;
+
+        // Capture the kind before closing so we can perform pipe cleanup.
+        // SAFETY: single-CPU; SHELL_FD_TABLE read-only here.
+        let kind = unsafe {
+            match (*core::ptr::addr_of!(crate::SHELL_FD_TABLE)).as_ref() {
+                Some(t) => match t.get(RawFd(fd_num)) {
+                    Some(desc) => desc.kind.clone(),
+                    None => return SyscallReturn::err(syscall_errno::EBADF),
+                },
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        // If this is a pipe end, notify the ring before removing the fd.
+        if let FdKind::Pipe {
+            pipe_id,
+            is_read_end,
+        } = kind
+        {
+            // SAFETY: single-CPU; SHELL_PIPE_REGISTRY mutable borrow.
+            unsafe {
+                if let Some(reg) = (*core::ptr::addr_of_mut!(crate::SHELL_PIPE_REGISTRY)).as_mut() {
+                    if let Some(ring) = reg.get_mut(PipeId(pipe_id)) {
+                        if is_read_end {
+                            let _ = ring.close_read();
+                        } else {
+                            let _ = ring.close_write();
+                        }
+                    }
+                }
+            }
+        }
+
+        // SAFETY: single-CPU; SHELL_FD_TABLE mutable borrow.
+        unsafe {
+            match (*core::ptr::addr_of_mut!(crate::SHELL_FD_TABLE)).as_mut() {
+                Some(t) => match t.close(RawFd(fd_num)) {
+                    Ok(()) => SyscallReturn::ok(0),
+                    Err(_) => SyscallReturn::err(syscall_errno::EBADF),
+                },
+                None => SyscallReturn::err(syscall_errno::EIO),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FdDup (66)
+    // -----------------------------------------------------------------------
+
+    /// `FdDup (66)` — duplicate a file descriptor to the lowest available
+    /// number.
+    ///
+    /// Returns `(rax = new_fd, rdx = 0)` on success, `err(EBADF)` if `fd` is
+    /// not open.
+    pub(super) fn fd_dup(args: [u64; 6]) -> SyscallReturn {
+        let fd_num = args[0] as u32;
+        // SAFETY: single-CPU; SHELL_FD_TABLE mutable borrow.
+        unsafe {
+            match (*core::ptr::addr_of_mut!(crate::SHELL_FD_TABLE)).as_mut() {
+                Some(t) => t.dup(RawFd(fd_num)).map_or_else(
+                    |_| SyscallReturn::err(syscall_errno::EBADF),
+                    |new_fd| SyscallReturn::ok(u64::from(new_fd.0)),
+                ),
+                None => SyscallReturn::err(syscall_errno::EIO),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FdSeek (68)
+    // -----------------------------------------------------------------------
+
+    /// `FdSeek (68)` — reposition the file offset for an `FsFile` descriptor.
+    ///
+    /// ## ABI
+    ///
+    /// | Slot | Reg | Role                              |
+    /// |------|-----|-----------------------------------|
+    /// | a0   | RDI | `fd`                              |
+    /// | a1   | RSI | `offset` (i64 passed as u64 bits) |
+    /// | a2   | RDX | `whence` (0=SET, 1=CUR, 2=END)   |
+    ///
+    /// Only `FsFile` descriptors are seekable. Console, pipe, and IPC-channel
+    /// fds return `err(ESPIPE)`.
+    pub(super) fn fd_seek(args: [u64; 6]) -> SyscallReturn {
+        let fd_num = args[0] as u32;
+        // `offset` is passed as raw u64 bits but represents a signed value.
+        let offset = args[1] as i64;
+        let whence = args[2] as u32;
+
+        // Clone the kind to avoid holding the fd_table borrow across the vfs
+        // borrow below.
+        // SAFETY: single-CPU; SHELL_FD_TABLE read-only here.
+        let kind = unsafe {
+            match (*core::ptr::addr_of!(crate::SHELL_FD_TABLE)).as_ref() {
+                Some(t) => match t.get(RawFd(fd_num)) {
+                    Some(desc) => desc.kind.clone(),
+                    None => return SyscallReturn::err(syscall_errno::EBADF),
+                },
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        const SEEK_SET: u32 = 0;
+        const SEEK_CUR: u32 = 1;
+        const SEEK_END: u32 = 2;
+
+        match kind {
+            FdKind::FsFile {
+                inode,
+                offset: current_offset,
+                ..
+            } => {
+                let new_offset: Option<u64> = match whence {
+                    SEEK_SET => {
+                        if offset < 0 {
+                            None
+                        } else {
+                            u64::try_from(offset).ok()
+                        }
+                    }
+                    SEEK_CUR => {
+                        let cur = i64::try_from(current_offset).unwrap_or(i64::MAX);
+                        cur.checked_add(offset).and_then(|v| u64::try_from(v).ok())
+                    }
+                    SEEK_END => {
+                        // SAFETY: single-CPU; SHELL_VFS read-only.
+                        let file_size = unsafe {
+                            match (*core::ptr::addr_of!(crate::SHELL_VFS)).as_ref() {
+                                Some(v) => match v.file_size(inode) {
+                                    Ok(s) => s,
+                                    Err(_) => return SyscallReturn::err(syscall_errno::EIO),
+                                },
+                                None => return SyscallReturn::err(syscall_errno::EIO),
+                            }
+                        };
+                        let size_i64 = i64::try_from(file_size).unwrap_or(i64::MAX);
+                        size_i64
+                            .checked_add(offset)
+                            .and_then(|v| u64::try_from(v).ok())
+                    }
+                    _ => return SyscallReturn::err(syscall_errno::EINVAL),
+                };
+
+                match new_offset {
+                    Some(pos) => {
+                        // SAFETY: single-CPU; SHELL_FD_TABLE mutable borrow.
+                        unsafe {
+                            if let Some(t) =
+                                (*core::ptr::addr_of_mut!(crate::SHELL_FD_TABLE)).as_mut()
+                            {
+                                if let Some(desc) = t.get_mut(RawFd(fd_num)) {
+                                    if let FdKind::FsFile {
+                                        offset: ref mut off,
+                                        ..
+                                    } = desc.kind
+                                    {
+                                        *off = pos;
+                                    }
+                                }
+                            }
+                        }
+                        SyscallReturn::ok(pos)
+                    }
+                    None => SyscallReturn::err(syscall_errno::EINVAL),
+                }
+            }
+            // Console, pipe, and IPC-channel fds are not seekable.
+            FdKind::Console { .. } | FdKind::Pipe { .. } | FdKind::IpcChannel(_) => {
+                SyscallReturn::err(syscall_errno::ESPIPE)
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // PipeCreate (62) — two-register return
+    // -----------------------------------------------------------------------
+
+    /// `PipeCreate (62)` — create an anonymous pipe and return both ends as
+    /// file descriptors.
+    ///
+    /// Returns `(rax = read_fd, rdx = write_fd)` on success, or
+    /// `err(ENOSPC)` when the fd table is exhausted.
+    pub(super) fn pipe_create(_args: [u64; 6]) -> SyscallReturn {
+        // SAFETY: single-CPU; SHELL_PIPE_REGISTRY mutable borrow.
+        let pipe_id = unsafe {
+            match (*core::ptr::addr_of_mut!(crate::SHELL_PIPE_REGISTRY)).as_mut() {
+                Some(r) => r.create(),
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        // Open the read end.
+        // SAFETY: single-CPU; SHELL_FD_TABLE mutable borrow.
+        let rfd = unsafe {
+            match (*core::ptr::addr_of_mut!(crate::SHELL_FD_TABLE)).as_mut() {
+                Some(t) => match t.open(FileDescriptor {
+                    kind: FdKind::Pipe {
+                        pipe_id: pipe_id.0,
+                        is_read_end: true,
+                    },
+                    flags: FdFlags::default(),
+                }) {
+                    Ok(fd) => fd,
+                    Err(_) => {
+                        // Roll back the pipe we just created.
+                        if let Some(r) =
+                            (*core::ptr::addr_of_mut!(crate::SHELL_PIPE_REGISTRY)).as_mut()
+                        {
+                            r.remove(pipe_id);
+                        }
+                        return SyscallReturn::err(syscall_errno::ENOSPC);
+                    }
+                },
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        // Open the write end.
+        // SAFETY: single-CPU; SHELL_FD_TABLE + SHELL_PIPE_REGISTRY not aliased.
+        let wfd = unsafe {
+            match (*core::ptr::addr_of_mut!(crate::SHELL_FD_TABLE)).as_mut() {
+                Some(t) => match t.open(FileDescriptor {
+                    kind: FdKind::Pipe {
+                        pipe_id: pipe_id.0,
+                        is_read_end: false,
+                    },
+                    flags: FdFlags::default(),
+                }) {
+                    Ok(fd) => fd,
+                    Err(_) => {
+                        // Roll back both the read fd and the pipe.
+                        let _ = t.close(rfd);
+                        if let Some(r) =
+                            (*core::ptr::addr_of_mut!(crate::SHELL_PIPE_REGISTRY)).as_mut()
+                        {
+                            r.remove(pipe_id);
+                        }
+                        return SyscallReturn::err(syscall_errno::ENOSPC);
+                    }
+                },
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        SyscallReturn {
+            rax: u64::from(rfd.0),
+            rdx: u64::from(wfd.0),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FdDup2 (67) — two-register return
+    // -----------------------------------------------------------------------
+
+    /// `FdDup2 (67)` — duplicate `old_fd` to the specific number `new_fd`.
+    ///
+    /// If `new_fd` is a live pipe end the pipe is closed first (POSIX `dup2`
+    /// semantics). Returns `(rax = new_fd, rdx = 0)` on success,
+    /// `err(EBADF)` if `old_fd` is not open.
+    pub(super) fn fd_dup2(args: [u64; 6]) -> SyscallReturn {
+        let old_fd = args[0] as u32;
+        let new_fd = args[1] as u32;
+
+        // If new_fd is currently a pipe end, close that pipe end before dup2
+        // displaces the entry — matching POSIX dup2 semantics.
+        // SAFETY: single-CPU; SHELL_FD_TABLE read-only in this block.
+        let existing_pipe = unsafe {
+            (*core::ptr::addr_of!(crate::SHELL_FD_TABLE))
+                .as_ref()
+                .and_then(|t| t.get(RawFd(new_fd)))
+                .and_then(|desc| {
+                    if let FdKind::Pipe {
+                        pipe_id,
+                        is_read_end,
+                    } = desc.kind
+                    {
+                        Some((pipe_id, is_read_end))
+                    } else {
+                        None
+                    }
+                })
+        };
+
+        if let Some((pipe_id, is_read_end)) = existing_pipe {
+            // SAFETY: single-CPU; SHELL_PIPE_REGISTRY mutable borrow.
+            unsafe {
+                if let Some(reg) = (*core::ptr::addr_of_mut!(crate::SHELL_PIPE_REGISTRY)).as_mut() {
+                    if let Some(ring) = reg.get_mut(PipeId(pipe_id)) {
+                        if is_read_end {
+                            let _ = ring.close_read();
+                        } else {
+                            let _ = ring.close_write();
+                        }
+                    }
+                }
+            }
+        }
+
+        // SAFETY: single-CPU; SHELL_FD_TABLE mutable borrow.
+        unsafe {
+            match (*core::ptr::addr_of_mut!(crate::SHELL_FD_TABLE)).as_mut() {
+                Some(t) => t.dup2(RawFd(old_fd), RawFd(new_fd)).map_or_else(
+                    |_| SyscallReturn::err(syscall_errno::EBADF),
+                    |result_fd| SyscallReturn::ok(u64::from(result_fd.0)),
+                ),
+                None => SyscallReturn::err(syscall_errno::EIO),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FsOpen (90)
+    // -----------------------------------------------------------------------
+
+    /// `FsOpen (90)` — open or create a file in the VFS.
+    ///
+    /// ## ABI
+    ///
+    /// | Slot | Reg | Role                          |
+    /// |------|-----|-------------------------------|
+    /// | a0   | RDI | `path_ptr`                    |
+    /// | a1   | RSI | `path_len`                    |
+    /// | a2   | RDX | `flags` (OpenFlags bitmask)   |
+    ///
+    /// Returns `(rax = fd, rdx = 0)` on success, or `err(errno)` on failure.
+    pub(super) fn fs_open(args: [u64; 6]) -> SyscallReturn {
+        let path_ptr = args[0];
+        let path_len = args[1];
+        let flags_raw = args[2] as u32;
+
+        let path = match user_str(path_ptr, path_len) {
+            Some(p) => p,
+            None => return SyscallReturn::err(syscall_errno::EFAULT),
+        };
+
+        // SAFETY: single-CPU; resolve_path accesses SHELL_PROCESS_TABLE
+        // and SCHEDULER read-only.
+        let abs = unsafe { resolve_path(&path) };
+        let open_flags = OpenFlags(flags_raw);
+
+        // stat the path to see if it exists.
+        // SAFETY: single-CPU; SHELL_VFS read-only.
+        let stat_result = unsafe {
+            match (*core::ptr::addr_of!(crate::SHELL_VFS)).as_ref() {
+                Some(v) => v.stat(&abs),
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        let inode = match stat_result {
+            Ok(stat) => {
+                if stat.file_type == FileType::Directory
+                    && (open_flags.is_writable() || open_flags.has_trunc())
+                {
+                    return SyscallReturn::err(syscall_errno::EINVAL);
+                }
+                // Truncate: delete + recreate.
+                if open_flags.has_trunc() && open_flags.is_writable() {
+                    // SAFETY: single-CPU; SHELL_VFS mutable borrow.
+                    unsafe {
+                        if let Some(v) = (*core::ptr::addr_of_mut!(crate::SHELL_VFS)).as_mut() {
+                            let _ = v.delete(&abs);
+                            match v.create_file(&abs) {
+                                Ok(ino) => ino,
+                                Err(_) => return SyscallReturn::err(syscall_errno::EIO),
+                            }
+                        } else {
+                            return SyscallReturn::err(syscall_errno::EIO);
+                        }
+                    }
+                } else {
+                    stat.inode
+                }
+            }
+            Err(VfsError::NotFound) => {
+                if open_flags.has_create() {
+                    // SAFETY: single-CPU; SHELL_VFS mutable borrow.
+                    unsafe {
+                        match (*core::ptr::addr_of_mut!(crate::SHELL_VFS)).as_mut() {
+                            Some(v) => match v.create_file(&abs) {
+                                Ok(ino) => ino,
+                                Err(VfsError::AlreadyExists) => {
+                                    // Created between stat and create.
+                                    match (*core::ptr::addr_of!(crate::SHELL_VFS))
+                                        .as_ref()
+                                        .and_then(|v| v.stat(&abs).ok())
+                                    {
+                                        Some(s) => s.inode,
+                                        None => return SyscallReturn::err(syscall_errno::EIO),
+                                    }
+                                }
+                                Err(VfsError::NotADirectory | VfsError::InvalidPath) => {
+                                    return SyscallReturn::err(syscall_errno::EINVAL);
+                                }
+                                Err(_) => return SyscallReturn::err(syscall_errno::EIO),
+                            },
+                            None => return SyscallReturn::err(syscall_errno::EIO),
+                        }
+                    }
+                } else {
+                    return SyscallReturn::err(syscall_errno::ENOENT);
+                }
+            }
+            Err(VfsError::NotADirectory) => return SyscallReturn::err(syscall_errno::EINVAL),
+            Err(_) => return SyscallReturn::err(syscall_errno::EIO),
+        };
+
+        // Open an fd for the resolved inode.
+        // SAFETY: single-CPU; SHELL_FD_TABLE mutable borrow.
+        unsafe {
+            match (*core::ptr::addr_of_mut!(crate::SHELL_FD_TABLE)).as_mut() {
+                Some(t) => {
+                    match t.open(FileDescriptor {
+                        kind: FdKind::FsFile {
+                            inode,
+                            offset: 0,
+                            flags: open_flags,
+                        },
+                        flags: FdFlags::default(),
+                    }) {
+                        Ok(fd) => SyscallReturn::ok(u64::from(fd.0)),
+                        Err(_) => SyscallReturn::err(syscall_errno::ENOSPC),
+                    }
+                }
+                None => SyscallReturn::err(syscall_errno::EIO),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FsStat (91)
+    // -----------------------------------------------------------------------
+
+    /// `FsStat (91)` — stat a file or directory.
+    ///
+    /// ## ABI
+    ///
+    /// | Slot | Reg | Role                                      |
+    /// |------|-----|-------------------------------------------|
+    /// | a0   | RDI | `path_ptr`                                |
+    /// | a1   | RSI | `path_len`                                |
+    /// | a2   | RDX | `stat_buf_ptr` — user buffer (17 bytes)   |
+    ///
+    /// The 17-byte stat layout written to `stat_buf_ptr`:
+    /// - bytes `[0..8]`  : inode (u64 LE)
+    /// - bytes `[8..16]` : size  (u64 LE)
+    /// - byte  `[16]`    : file type (0 = regular file, 1 = directory)
+    ///
+    /// Returns `ok(0)` on success, `err(ENOENT)` if not found.
+    pub(super) fn fs_stat(args: [u64; 6]) -> SyscallReturn {
+        let path_ptr = args[0];
+        let path_len = args[1];
+        let stat_buf = args[2];
+
+        let path = match user_str(path_ptr, path_len) {
+            Some(p) => p,
+            None => return SyscallReturn::err(syscall_errno::EFAULT),
+        };
+
+        // Validate the output buffer: 17 bytes.
+        if !user_range_ok(stat_buf, 17) || stat_buf == 0 {
+            return SyscallReturn::err(syscall_errno::EFAULT);
+        }
+
+        // SAFETY: single-CPU; resolve_path is read-only.
+        let abs = unsafe { resolve_path(&path) };
+
+        // SAFETY: single-CPU; SHELL_VFS read-only.
+        let stat = unsafe {
+            match (*core::ptr::addr_of!(crate::SHELL_VFS)).as_ref() {
+                Some(v) => match v.stat(&abs) {
+                    Ok(s) => s,
+                    Err(VfsError::NotFound) => return SyscallReturn::err(syscall_errno::ENOENT),
+                    Err(_) => return SyscallReturn::err(syscall_errno::EIO),
+                },
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        let type_byte: u8 = match stat.file_type {
+            FileType::RegularFile => 0,
+            FileType::Directory => 1,
+        };
+
+        // Write the 17-byte struct into user memory.
+        // SAFETY: user_range_ok(stat_buf, 17) verified above; single-CPU.
+        unsafe {
+            let dst = stat_buf as *mut u8;
+            core::ptr::copy_nonoverlapping(stat.inode.to_le_bytes().as_ptr(), dst, 8);
+            core::ptr::copy_nonoverlapping(stat.size.to_le_bytes().as_ptr(), dst.add(8), 8);
+            dst.add(16).write(type_byte);
+        }
+
+        SyscallReturn::ok(0)
+    }
+
+    // -----------------------------------------------------------------------
+    // FsListDir (92)
+    // -----------------------------------------------------------------------
+
+    /// `FsListDir (92)` — list directory entries as newline-separated names.
+    ///
+    /// ## ABI
+    ///
+    /// | Slot | Reg | Role                                   |
+    /// |------|-----|----------------------------------------|
+    /// | a0   | RDI | `path_ptr`                             |
+    /// | a1   | RSI | `path_len`                             |
+    /// | a2   | RDX | `out_ptr`  — user output buffer        |
+    /// | a3   | R10 | `out_len`  — capacity of output buffer |
+    ///
+    /// Returns `(rax = bytes_written, rdx = 0)` on success. Returns
+    /// `err(ENOENT)` if the path does not exist, `err(EINVAL)` if it is not
+    /// a directory.  If the serialised names would overflow `out_len`, the
+    /// write is truncated and `rax` reflects the actual bytes written.
+    pub(super) fn fs_list_dir(args: [u64; 6]) -> SyscallReturn {
+        let path_ptr = args[0];
+        let path_len = args[1];
+        let out_ptr = args[2];
+        let out_len = args[3];
+
+        let path = match user_str(path_ptr, path_len) {
+            Some(p) => p,
+            None => return SyscallReturn::err(syscall_errno::EFAULT),
+        };
+
+        let dest = match user_slice_mut(out_ptr, out_len) {
+            Some(s) => s,
+            None => return SyscallReturn::err(syscall_errno::EFAULT),
+        };
+
+        // SAFETY: single-CPU; resolve_path is read-only.
+        let abs = unsafe { resolve_path(&path) };
+
+        // SAFETY: single-CPU; SHELL_VFS read-only.
+        let entries: Vec<String> = unsafe {
+            match (*core::ptr::addr_of!(crate::SHELL_VFS)).as_ref() {
+                Some(v) => match v.list_directory(&abs) {
+                    Ok(list) => list.into_iter().map(|e| e.name).collect(),
+                    Err(VfsError::NotFound) => return SyscallReturn::err(syscall_errno::ENOENT),
+                    Err(VfsError::NotADirectory) => {
+                        return SyscallReturn::err(syscall_errno::EINVAL);
+                    }
+                    Err(_) => return SyscallReturn::err(syscall_errno::EIO),
+                },
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        // Serialise as "name1\nname2\n..." into the user buffer.
+        let mut written = 0usize;
+        for name in &entries {
+            let bytes = name.as_bytes();
+            // Write name bytes.
+            for &b in bytes {
+                if written >= dest.len() {
+                    break;
+                }
+                dest[written] = b;
+                written += 1;
+            }
+            // Write newline separator.
+            if written < dest.len() {
+                dest[written] = b'\n';
+                written += 1;
+            }
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "written ≤ dest.len() ≤ 0x10_0000; fits u64"
+        )]
+        SyscallReturn::ok(written as u64)
+    }
+
+    // -----------------------------------------------------------------------
+    // FsCreate (93)
+    // -----------------------------------------------------------------------
+
+    /// `FsCreate (93)` — create an empty regular file.
+    ///
+    /// Returns `ok(0)` on success, `err(EEXIST)` if the path already exists,
+    /// `err(ENOENT)` if a parent component does not exist.
+    pub(super) fn fs_create(args: [u64; 6]) -> SyscallReturn {
+        let path_ptr = args[0];
+        let path_len = args[1];
+
+        let path = match user_str(path_ptr, path_len) {
+            Some(p) => p,
+            None => return SyscallReturn::err(syscall_errno::EFAULT),
+        };
+
+        // SAFETY: single-CPU; resolve_path is read-only.
+        let abs = unsafe { resolve_path(&path) };
+
+        // SAFETY: single-CPU; SHELL_VFS mutable borrow.
+        unsafe {
+            match (*core::ptr::addr_of_mut!(crate::SHELL_VFS)).as_mut() {
+                Some(v) => match v.create_file(&abs) {
+                    Ok(_) => SyscallReturn::ok(0),
+                    Err(VfsError::AlreadyExists) => SyscallReturn::err(syscall_errno::EEXIST),
+                    Err(VfsError::NotFound) => SyscallReturn::err(syscall_errno::ENOENT),
+                    Err(VfsError::NotADirectory | VfsError::InvalidPath) => {
+                        SyscallReturn::err(syscall_errno::EINVAL)
+                    }
+                    Err(_) => SyscallReturn::err(syscall_errno::EIO),
+                },
+                None => SyscallReturn::err(syscall_errno::EIO),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FsDelete (94)
+    // -----------------------------------------------------------------------
+
+    /// `FsDelete (94)` — delete a file or empty directory.
+    ///
+    /// Returns `ok(0)` on success, `err(ENOENT)` if not found,
+    /// `err(ENOTEMPTY)` for a non-empty directory.
+    pub(super) fn fs_delete(args: [u64; 6]) -> SyscallReturn {
+        let path_ptr = args[0];
+        let path_len = args[1];
+
+        let path = match user_str(path_ptr, path_len) {
+            Some(p) => p,
+            None => return SyscallReturn::err(syscall_errno::EFAULT),
+        };
+
+        // SAFETY: single-CPU; resolve_path is read-only.
+        let abs = unsafe { resolve_path(&path) };
+
+        // SAFETY: single-CPU; SHELL_VFS mutable borrow.
+        unsafe {
+            match (*core::ptr::addr_of_mut!(crate::SHELL_VFS)).as_mut() {
+                Some(v) => match v.delete(&abs) {
+                    Ok(()) => SyscallReturn::ok(0),
+                    Err(VfsError::NotFound) => SyscallReturn::err(syscall_errno::ENOENT),
+                    Err(VfsError::NotEmpty) => SyscallReturn::err(syscall_errno::ENOTEMPTY),
+                    Err(VfsError::InvalidPath) => SyscallReturn::err(syscall_errno::EINVAL),
+                    Err(_) => SyscallReturn::err(syscall_errno::EIO),
+                },
+                None => SyscallReturn::err(syscall_errno::EIO),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FsMkdir (95)
+    // -----------------------------------------------------------------------
+
+    /// `FsMkdir (95)` — create a directory.
+    ///
+    /// Returns `ok(0)` on success, `err(EEXIST)` if the path already exists,
+    /// `err(ENOENT)` if a parent component does not exist.
+    pub(super) fn fs_mkdir(args: [u64; 6]) -> SyscallReturn {
+        let path_ptr = args[0];
+        let path_len = args[1];
+
+        let path = match user_str(path_ptr, path_len) {
+            Some(p) => p,
+            None => return SyscallReturn::err(syscall_errno::EFAULT),
+        };
+
+        // SAFETY: single-CPU; resolve_path is read-only.
+        let abs = unsafe { resolve_path(&path) };
+
+        // SAFETY: single-CPU; SHELL_VFS mutable borrow.
+        unsafe {
+            match (*core::ptr::addr_of_mut!(crate::SHELL_VFS)).as_mut() {
+                Some(v) => match v.create_directory(&abs) {
+                    Ok(_) => SyscallReturn::ok(0),
+                    Err(VfsError::AlreadyExists) => SyscallReturn::err(syscall_errno::EEXIST),
+                    Err(VfsError::NotFound) => SyscallReturn::err(syscall_errno::ENOENT),
+                    Err(VfsError::NotADirectory | VfsError::InvalidPath) => {
+                        SyscallReturn::err(syscall_errno::EINVAL)
+                    }
+                    Err(_) => SyscallReturn::err(syscall_errno::EIO),
+                },
+                None => SyscallReturn::err(syscall_errno::EIO),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // GetCwd (16)
+    // -----------------------------------------------------------------------
+
+    /// `GetCwd (16)` — write the current working directory into a user buffer.
+    ///
+    /// ## ABI
+    ///
+    /// | Slot | Reg | Role                          |
+    /// |------|-----|-------------------------------|
+    /// | a0   | RDI | `buf_ptr` — user write buffer |
+    /// | a1   | RSI | `buf_len` — capacity          |
+    ///
+    /// Returns `(rax = bytes_written, rdx = 0)` on success, or `err(EFAULT)`
+    /// if the buffer fails validation.  Truncates silently when the cwd is
+    /// longer than `buf_len` (unlikely given the 4 096-byte path cap).
+    pub(super) fn get_cwd(args: [u64; 6]) -> SyscallReturn {
+        let buf_ptr = args[0];
+        let buf_len = args[1];
+
+        let dest = match user_slice_mut(buf_ptr, buf_len) {
+            Some(s) => s,
+            None => return SyscallReturn::err(syscall_errno::EFAULT),
+        };
+
+        // SAFETY: single-CPU; SHELL_PROCESS_TABLE + SCHEDULER read-only.
+        let cwd: String = unsafe {
+            let task = current_task();
+            match (*core::ptr::addr_of!(crate::SHELL_PROCESS_TABLE)).as_ref() {
+                Some(pt) => pt.get_cwd(task).unwrap_or("/").to_string(),
+                None => String::from("/"),
+            }
+        };
+
+        let src = cwd.as_bytes();
+        let n = src.len().min(dest.len());
+        dest[..n].copy_from_slice(&src[..n]);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "n ≤ dest.len() ≤ 0x10_0000; fits u64"
+        )]
+        SyscallReturn::ok(n as u64)
+    }
+
+    // -----------------------------------------------------------------------
+    // SetCwd (17)
+    // -----------------------------------------------------------------------
+
+    /// `SetCwd (17)` — change the current working directory.
+    ///
+    /// The path must resolve to an existing directory in the VFS. Returns
+    /// `ok(0)` on success, `err(ENOENT)` if not found, `err(EINVAL)` if the
+    /// path resolves to a regular file.
+    pub(super) fn set_cwd(args: [u64; 6]) -> SyscallReturn {
+        let path_ptr = args[0];
+        let path_len = args[1];
+
+        let path = match user_str(path_ptr, path_len) {
+            Some(p) => p,
+            None => return SyscallReturn::err(syscall_errno::EFAULT),
+        };
+
+        // SAFETY: single-CPU; resolve_path is read-only.
+        let abs = unsafe { resolve_path(&path) };
+
+        // Verify the path exists and is a directory.
+        // SAFETY: single-CPU; SHELL_VFS read-only.
+        let is_dir = unsafe {
+            match (*core::ptr::addr_of!(crate::SHELL_VFS)).as_ref() {
+                Some(v) => match v.stat(&abs) {
+                    Ok(s) => s.file_type == FileType::Directory,
+                    Err(VfsError::NotFound) => return SyscallReturn::err(syscall_errno::ENOENT),
+                    Err(_) => return SyscallReturn::err(syscall_errno::EIO),
+                },
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        if !is_dir {
+            return SyscallReturn::err(syscall_errno::EINVAL);
+        }
+
+        // Update the process table cwd.
+        // SAFETY: single-CPU; SHELL_PROCESS_TABLE + SCHEDULER mutable borrow.
+        unsafe {
+            let task = current_task();
+            if let Some(pt) = (*core::ptr::addr_of_mut!(crate::SHELL_PROCESS_TABLE)).as_mut() {
+                pt.set_cwd(task, abs);
+            }
+        }
+
+        SyscallReturn::ok(0)
+    }
+
+    // -----------------------------------------------------------------------
+    // ProcessList (96)
+    // -----------------------------------------------------------------------
+
+    /// `ProcessList (96)` — write a snapshot of all registered processes into
+    /// a user buffer.
+    ///
+    /// ## ABI
+    ///
+    /// | Slot | Reg | Role                          |
+    /// |------|-----|-------------------------------|
+    /// | a0   | RDI | `buf_ptr` — user write buffer |
+    /// | a1   | RSI | `buf_len` — capacity in bytes |
+    ///
+    /// ### Wire format
+    ///
+    /// Each entry is a fixed-size 16-byte record:
+    /// - bytes `[0..8]`  : pid (u64 LE)
+    /// - bytes `[8..15]` : process name, NUL-padded to 7 bytes
+    /// - byte  `[15]`    : flags (bit 0 = has_exited)
+    ///
+    /// Returns `(rax = records_written, rdx = 0)`. Stops when the buffer is
+    /// full; records beyond capacity are silently dropped.
+    pub(super) fn process_list(args: [u64; 6]) -> SyscallReturn {
+        let buf_ptr = args[0];
+        let buf_len = args[1];
+
+        let dest = match user_slice_mut(buf_ptr, buf_len) {
+            Some(s) => s,
+            None => return SyscallReturn::err(syscall_errno::EFAULT),
+        };
+
+        // SAFETY: single-CPU; SHELL_PROCESS_TABLE read-only.
+        let entries: Vec<(u64, String, bool)> = unsafe {
+            match (*core::ptr::addr_of!(crate::SHELL_PROCESS_TABLE)).as_ref() {
+                Some(pt) => pt
+                    .list()
+                    .into_iter()
+                    .map(|e| (e.id.0, e.name.clone(), e.exit_code.is_some()))
+                    .collect(),
+                None => return SyscallReturn::err(syscall_errno::EIO),
+            }
+        };
+
+        const RECORD_SIZE: usize = 16;
+        let mut records_written: u64 = 0;
+        let mut offset = 0usize;
+
+        for (pid, name, exited) in &entries {
+            if offset + RECORD_SIZE > dest.len() {
+                break;
+            }
+            // pid (8 bytes LE).
+            let pid_bytes = pid.to_le_bytes();
+            dest[offset..offset + 8].copy_from_slice(&pid_bytes);
+            // name (7 bytes, NUL-padded).
+            let name_bytes = name.as_bytes();
+            let name_len = name_bytes.len().min(7);
+            dest[offset + 8..offset + 8 + name_len].copy_from_slice(&name_bytes[..name_len]);
+            // NUL-pad remainder of the name field.
+            for b in &mut dest[offset + 8 + name_len..offset + 15] {
+                *b = 0;
+            }
+            // flags byte.
+            dest[offset + 15] = if *exited { 1 } else { 0 };
+            offset += RECORD_SIZE;
+            records_written += 1;
+        }
+
+        SyscallReturn::ok(records_written)
+    }
+
+    // -----------------------------------------------------------------------
+    // ProcessKill (97)
+    // -----------------------------------------------------------------------
+
+    /// `ProcessKill (97)` — record a SIGKILL-equivalent exit for a process.
+    ///
+    /// This does not remove the task from the scheduler run queue; the
+    /// bare-metal layer must perform that step after this call. The handler
+    /// only records the exit in the process table so a waiting parent can reap
+    /// the child.
+    ///
+    /// Returns `ok(0)` on success, `err(ESRCH)` if the PID is not registered.
+    pub(super) fn process_kill(args: [u64; 6]) -> SyscallReturn {
+        let target_pid = args[0];
+
+        // SAFETY: single-CPU; SHELL_PROCESS_TABLE mutable borrow.
+        unsafe {
+            match (*core::ptr::addr_of_mut!(crate::SHELL_PROCESS_TABLE)).as_mut() {
+                Some(pt) => {
+                    if pt.get(crate::scheduling::TaskId(target_pid)).is_none() {
+                        return SyscallReturn::err(syscall_errno::ESRCH);
+                    }
+                    // 137 = 128 + SIGKILL(9): conventional Unix exit-status.
+                    pt.record_exit(crate::scheduling::TaskId(target_pid), 137);
+                    SyscallReturn::ok(0)
+                }
+                None => SyscallReturn::err(syscall_errno::EIO),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ProcessWait (15) — two-register return
+    // -----------------------------------------------------------------------
+
+    /// `ProcessWait (15)` — reap an exited child process.
+    ///
+    /// ## ABI
+    ///
+    /// | Slot | Reg | Role                                              |
+    /// |------|-----|---------------------------------------------------|
+    /// | a0   | RDI | `child_pid` (0 = wait for any child)              |
+    /// | a1   | RSI | `flags` (bit 0 = WNOHANG)                         |
+    ///
+    /// Returns `(rax = exit_code, rdx = child_pid)` on success.
+    /// When `WNOHANG` is set and no child has exited returns `(0, 0)`.
+    pub(super) fn process_wait(args: [u64; 6]) -> SyscallReturn {
+        // SAFETY: single-CPU; SHELL_PROCESS_TABLE + SCHEDULER read.
+        let current = unsafe { current_task() };
+
+        // SAFETY: single-CPU; SHELL_PROCESS_TABLE mutable borrow.
+        unsafe {
+            match (*core::ptr::addr_of_mut!(crate::SHELL_PROCESS_TABLE)).as_mut() {
+                Some(pt) => {
+                    if let Some((child_id, exit_code)) = pt.reap_child(current) {
+                        SyscallReturn {
+                            rax: exit_code,
+                            rdx: child_id.0,
+                        }
+                    } else {
+                        SyscallReturn { rax: 0, rdx: 0 }
+                    }
+                }
+                None => SyscallReturn::err(syscall_errno::EIO),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ProcessSpawn (14) — Phase D stub
+    // -----------------------------------------------------------------------
+
+    /// `ProcessSpawn (14)` — spawn a new process from a VFS ELF binary.
+    ///
+    /// **Phase C stub**: returns `ENOSYS`. Full ELF loading and address-space
+    /// setup require the Phase D ELF-loader + per-process page-table wiring
+    /// which is tracked separately. The stub is present so the syscall number
+    /// is handled explicitly (no silent fall-through to `NotYetImplemented`)
+    /// and so the ABI contract is documented here for Phase D.
+    ///
+    /// ## ABI (Phase D target)
+    ///
+    /// | Slot | Reg | Role                            |
+    /// |------|-----|---------------------------------|
+    /// | a0   | RDI | `path_ptr` — ELF path in VFS    |
+    /// | a1   | RSI | `path_len`                      |
+    /// | a2   | RDX | `argv_ptr` — argument array     |
+    /// | a3   | R10 | `argv_len` — number of args     |
+    /// | a4   | R8  | `envp_ptr` — env-var array      |
+    /// | a5   | R9  | `envp_len` — number of env vars |
+    pub(super) fn process_spawn(_args: [u64; 6]) -> SyscallReturn {
+        // Full spawn requires Phase D work (ELF loading + address-space setup).
+        SyscallReturn::err(syscall_errno::ENOSYS)
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helper — copy user data into a kernel Vec
+    // -----------------------------------------------------------------------
+
+    /// Copy `len` bytes from user address `ptr` into a kernel-owned `Vec<u8>`.
+    ///
+    /// The resulting `Vec` is a snapshot: further user-space writes to the
+    /// source buffer after this call have no effect on the copy.  Called by
+    /// `fd_write` before entering any kernel-state borrow to eliminate live
+    /// user-memory references during mutation.
+    ///
+    /// # Precondition
+    ///
+    /// `user_range_ok(ptr, len)` must hold (caller verified).
+    fn copy_user_data(ptr: u64, len: u64) -> Vec<u8> {
+        if len == 0 {
+            return Vec::new();
+        }
+        // SAFETY: caller verified user_range_ok; single-CPU syscall path;
+        // no concurrent writes to the user AS.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "len ≤ 0x10_0000 by user_range_ok callers; fits usize"
+        )]
+        let len_usize = len as usize;
+        let mut buf = alloc::vec![0u8; len_usize];
+        unsafe {
+            core::ptr::copy_nonoverlapping(ptr as *const u8, buf.as_mut_ptr(), len_usize);
+        }
+        buf
+    }
+}
+
 struct KernelSyscallDispatcher;
 
 impl SyscallDispatcher for KernelSyscallDispatcher {
@@ -2896,34 +4433,221 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                 Err(KernelError::NotYetImplemented)
             }
 
-            // Shell terminal syscalls. On bare-metal these will route to the
-            // global KernelState instances (SHELL_FD_TABLE, etc.) once the
-            // full handler wiring lands. For now — and on host test builds —
-            // they report `NotYetImplemented` (ENOSYS equivalent) so that:
-            //   a) the compiler forces every variant to be named (no silent
-            //      catch-all swallowing them), and
-            //   b) the handler logic tested via `syscall_handlers::tests`
-            //      uses a local `KernelState` rather than the bare-metal
-            //      global, keeping test isolation intact.
-            SyscallNumber::ReadConsole
-            | SyscallNumber::FdRead
-            | SyscallNumber::FdWrite
-            | SyscallNumber::FdClose
-            | SyscallNumber::FdDup
-            | SyscallNumber::FdSeek
-            | SyscallNumber::FsOpen
-            | SyscallNumber::FsStat
-            | SyscallNumber::FsListDir
-            | SyscallNumber::FsCreate
-            | SyscallNumber::FsDelete
-            | SyscallNumber::FsMkdir
-            | SyscallNumber::GetCwd
-            | SyscallNumber::SetCwd
-            | SyscallNumber::ProcessList
-            | SyscallNumber::ProcessKill
-            | SyscallNumber::ProcessSpawn => {
-                let _ = args;
-                Err(KernelError::NotYetImplemented)
+            // Shell terminal syscalls — single-register return path.
+            //
+            // On bare-metal each arm delegates to `shell_handlers::*` which
+            // accesses the five `SHELL_*` global statics directly (same
+            // single-CPU, no-preemption invariant as `ipc_handlers`).
+            //
+            // Host test builds do not link the bare-metal singletons, so the
+            // `#[cfg(not(...))]` branches keep the existing `NotYetImplemented`
+            // contract.  The handler logic exercised by `syscall_handlers::tests`
+            // uses a local `KernelState` for full isolation.
+            SyscallNumber::ReadConsole => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::read_console(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::FdRead => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::fd_read(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::FdWrite => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::fd_write(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::FdClose => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::fd_close(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::FdDup => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::fd_dup(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::FdSeek => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::fd_seek(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::FsOpen => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::fs_open(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::FsStat => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::fs_stat(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::FsListDir => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::fs_list_dir(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::FsCreate => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::fs_create(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::FsDelete => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::fs_delete(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::FsMkdir => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::fs_mkdir(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::GetCwd => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::get_cwd(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::SetCwd => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::set_cwd(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::ProcessList => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::process_list(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::ProcessKill => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::process_kill(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
+            }
+
+            SyscallNumber::ProcessSpawn => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    // Phase D stub: full ELF spawn requires address-space
+                    // setup not yet wired. Return ENOSYS via the rax field so
+                    // the single-register Ok() wrapping propagates cleanly.
+                    Ok(shell_handlers::process_spawn(args).rax)
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Err(KernelError::NotYetImplemented)
+                }
             }
 
             // These syscalls use the two-register return path (`dispatch_full`);
@@ -3055,16 +4779,48 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
             }
             // Shell terminal syscalls that natively return two registers.
             // `PipeCreate` returns `(rax=read_fd, rdx=write_fd)`;
-            // `FdDup2` returns `(rax=new_fd, rdx=errno)`;
+            // `FdDup2` returns `(rax=new_fd, rdx=0)`;
             // `ProcessWait` returns `(rax=exit_code, rdx=child_pid)`.
-            // Until the full handler wiring lands these return ENOSYS via the
-            // rich two-register path so callers using `dispatch_full` (the
-            // canonical path per the OIP-013 dispatcher convention) get a
-            // clean `(rax=0, rdx=ENOSYS)` rather than the legacy
+            //
+            // On bare-metal each arm delegates to `shell_handlers::*`.
+            // Host test builds return ENOSYS via the rich two-register path
+            // so callers using `dispatch_full` get a clean
+            // `(rax=0, rdx=ENOSYS)` rather than the legacy
             // `(rax=SYSCALL_ERROR, rdx=0)` sentinel.
-            SyscallNumber::PipeCreate | SyscallNumber::FdDup2 | SyscallNumber::ProcessWait => {
-                let _ = args;
-                Ok(SyscallReturn::err(crate::syscall::syscall_errno::ENOSYS))
+            SyscallNumber::PipeCreate => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::pipe_create(args))
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Ok(SyscallReturn::err(crate::syscall::syscall_errno::ENOSYS))
+                }
+            }
+
+            SyscallNumber::FdDup2 => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::fd_dup2(args))
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Ok(SyscallReturn::err(crate::syscall::syscall_errno::ENOSYS))
+                }
+            }
+
+            SyscallNumber::ProcessWait => {
+                #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+                {
+                    Ok(shell_handlers::process_wait(args))
+                }
+                #[cfg(not(all(feature = "bare-metal", target_os = "none", not(test))))]
+                {
+                    let _ = args;
+                    Ok(SyscallReturn::err(crate::syscall::syscall_errno::ENOSYS))
+                }
             }
 
             // Shell terminal single-register syscalls — route through the

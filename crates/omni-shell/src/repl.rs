@@ -28,6 +28,9 @@
 //! Lines that are empty (after trimming) or that begin with `#` are treated as
 //! no-ops and return exit code `0` immediately.
 
+#[cfg(not(feature = "std"))]
+use alloc::{format, string::String, vec::Vec};
+
 use crate::command;
 use crate::env::ShellEnv;
 use crate::executor::{self, ExecContext};
@@ -132,7 +135,11 @@ pub fn process_line(input: &str, env: &mut ShellEnv, cwd: &mut String, fs: &dyn 
     let tokens = match lexer::tokenize(trimmed) {
         Ok(t) => t,
         Err(e) => {
+            // Tracing is only available when the `std` feature is enabled.
+            // On bare-metal targets the REPL caller handles error reporting.
+            #[cfg(feature = "std")]
             tracing::warn!(error = %e, "omni-shell: syntax error");
+            let _ = e;
             return 1;
         }
     };
@@ -144,13 +151,19 @@ pub fn process_line(input: &str, env: &mut ShellEnv, cwd: &mut String, fs: &dyn 
     let ast = match parser::parse(&tokens) {
         Ok(a) => a,
         Err(e) => {
+            #[cfg(feature = "std")]
             tracing::warn!(error = %e, "omni-shell: parse error");
+            let _ = e;
             return 1;
         }
     };
     if ast.entries.is_empty() {
         return 0;
     }
+
+    // Classify intent before execution so the label can be prepended to output
+    // and the class is available for the audit record.
+    let intent = crate::intent::classify_intent(trimmed);
 
     // Execute.
     let builtins = command::register_builtins();
@@ -160,16 +173,49 @@ pub fn process_line(input: &str, env: &mut ShellEnv, cwd: &mut String, fs: &dyn 
         cwd: cwd.clone(),
         fs,
         output: Vec::new(),
+        audit_log: crate::audit::AuditLog::new(),
     };
     let code = executor::execute_command_list(&ast, &mut ctx, &builtins);
 
     // Propagate cwd changes (the `cd` builtin updates ctx.cwd).
     *cwd = ctx.cwd;
 
-    // Flush captured output.
+    // Flush captured output to stdout when running on a host with std.
+    // On bare-metal targets the caller reads `ctx.output` directly and
+    // dispatches it via the kernel console/syscall layer.
+    #[cfg(feature = "std")]
     if !ctx.output.is_empty() {
-        print!("{}", String::from_utf8_lossy(&ctx.output));
+        // When OMNI_AGENT=1 is set in the shell environment, prepend the
+        // intent label so the user can see which agent handled the request.
+        if ctx.env.get("OMNI_AGENT") == Some("1") {
+            print!(
+                "{} {}",
+                crate::intent::agent_label(intent),
+                String::from_utf8_lossy(&ctx.output)
+            );
+        } else {
+            print!("{}", String::from_utf8_lossy(&ctx.output));
+        }
     }
+
+    // When OMNI_MODE=high-risk is set and the intent is sensitive, emit a
+    // structured warning via tracing so the operator is aware of potentially
+    // dangerous operations before execution completes.
+    #[cfg(feature = "std")]
+    if ctx.env.get("OMNI_MODE") == Some("high-risk") {
+        match intent {
+            crate::intent::IntentClass::Administration | crate::intent::IntentClass::Security => {
+                tracing::warn!(
+                    intent = crate::intent::agent_label(intent),
+                    "high-risk mode: sensitive intent detected — review before proceeding"
+                );
+            }
+            _ => {}
+        }
+    }
+
+    // Record in audit log. Timestamp is 0 in Phase 1 (no HAL clock yet).
+    ctx.audit_log.record(trimmed.into(), intent, code, 0);
 
     code
 }

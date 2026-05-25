@@ -36,6 +36,9 @@
 //! This approach avoids tracking the previous line's length and is safe for
 //! terminals that support ANSI escape sequences (VT100+).
 
+#[cfg(not(feature = "std"))]
+use alloc::{borrow::ToOwned, format, string::String, vec::Vec};
+
 // ── LineResult ────────────────────────────────────────────────────────────────
 
 /// Result returned by [`LineEditor::apply_action`].
@@ -183,7 +186,7 @@ pub fn map_key(raw: &[u8]) -> EditAction {
             // Attempt to decode the bytes as a UTF-8 string. If decoding
             // succeeds and the result is a single codepoint that is not a
             // control character, emit Insert.
-            if let Ok(s) = std::str::from_utf8(bytes) {
+            if let Ok(s) = core::str::from_utf8(bytes) {
                 let mut chars = s.chars();
                 if let Some(ch) = chars.next() {
                     if chars.next().is_none() && !ch.is_control() {

@@ -12,7 +12,9 @@
 //! replaced with real implementations without changing the command names or
 //! signatures visible to callers.
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+#[cfg(not(feature = "std"))]
+use alloc::{format, string::String, vec::Vec};
 
 use crate::executor::{BuiltinFn, ExecContext};
 
@@ -85,6 +87,7 @@ pub fn register(map: &mut BTreeMap<String, BuiltinFn>) {
 ///     cwd: "/home".into(),
 ///     fs: &fs,
 ///     output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::fs_cmds::cmd_ls_pub(&["ls".into()], &mut ctx);
 /// assert_eq!(code, 0);
@@ -189,6 +192,7 @@ fn cmd_ls(args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::fs_cmds::cmd_cat_pub(
 ///     &["cat".into(), "file.txt".into()], &mut ctx,
@@ -229,6 +233,7 @@ fn cmd_cat(args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::fs_cmds::cmd_cp_pub(
 ///     &["cp".into(), "src".into(), "dst".into()], &mut ctx,
@@ -269,6 +274,7 @@ fn cmd_cp(args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::fs_cmds::cmd_mv_pub(
 ///     &["mv".into(), "old".into(), "new".into()], &mut ctx,
@@ -309,6 +315,7 @@ fn cmd_mv(args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::fs_cmds::cmd_rm_pub(
 ///     &["rm".into(), "file.txt".into()], &mut ctx,
@@ -349,6 +356,7 @@ fn cmd_rm(args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::fs_cmds::cmd_mkdir_pub(
 ///     &["mkdir".into(), "newdir".into()], &mut ctx,
@@ -389,6 +397,7 @@ fn cmd_mkdir(args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 /// let mut ctx = ExecContext {
 ///     env: &mut env, last_exit_code: 0, cwd: "/".into(),
 ///     fs: &fs, output: Vec::new(),
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = omni_shell::commands::fs_cmds::cmd_touch_pub(
 ///     &["touch".into(), "newfile".into()], &mut ctx,
@@ -496,6 +505,7 @@ mod tests {
             cwd: "/home/root".to_string(),
             fs,
             output: Vec::new(),
+            audit_log: crate::audit::AuditLog::new(),
         }
     }
 

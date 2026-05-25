@@ -18,7 +18,13 @@
 //! [`ExecContext::output`] and is available for the next stage to consume.
 //! Full OS-level piping will be added with the kernel process layer.
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+#[cfg(not(feature = "std"))]
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 use crate::env::ShellEnv;
 use crate::glob::{self, FsQuery};
@@ -64,6 +70,12 @@ pub struct ExecContext<'a> {
     /// bytes written by the active builtin handler. The REPL prints this after
     /// every pipeline completes.
     pub output: Vec<u8>,
+    /// Per-session audit log.
+    ///
+    /// Populated by [`crate::repl::process_line`] after every pipeline
+    /// completes. Builtins do not write to this directly; the REPL owns the
+    /// record step.
+    pub audit_log: crate::audit::AuditLog,
 }
 
 // ── BuiltinFn ─────────────────────────────────────────────────────────────────
@@ -194,6 +206,7 @@ pub fn resolve_command(
 ///     fs: &EmptyFs,
 ///     output: Vec::new(),
 ///     env: &mut env,
+///     audit_log: omni_shell::audit::AuditLog::new(),
 /// };
 /// let code = execute_command_list(&ast, &mut ctx, &builtins);
 /// assert_eq!(code, 0);
@@ -382,6 +395,7 @@ mod tests {
             cwd: "/".to_string(),
             fs,
             output: Vec::new(),
+            audit_log: crate::audit::AuditLog::new(),
         }
     }
 

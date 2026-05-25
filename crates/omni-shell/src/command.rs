@@ -5,7 +5,7 @@
 //! command name) and a mutable [`crate::executor::ExecContext`], and it
 //! returns an integer exit code.
 //!
-//! Built-ins are registered into a [`std::collections::BTreeMap`] by
+//! Built-ins are registered into a [`alloc::collections::BTreeMap`] by
 //! [`register_builtins`], which is called by the executor before each
 //! pipeline run. Using `BTreeMap` ensures deterministic iteration order for
 //! commands like `help` and `alias` that print all known names.
@@ -30,7 +30,12 @@
 //! | `true`    | yes | Returns exit code 0. |
 //! | `false`   | yes | Returns exit code 1. |
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+#[cfg(not(feature = "std"))]
+use alloc::{
+    format,
+    string::{String, ToString},
+};
 
 use crate::executor::{BuiltinFn, ExecContext};
 
@@ -103,7 +108,7 @@ fn builtin_cd(args: &[String], ctx: &mut ExecContext<'_>) -> i32 {
 
     let new_cwd = crate::glob::normalize_path_simple(&ctx.cwd, &target);
     // Save and replace cwd in one move to avoid a redundant clone.
-    let old_cwd = std::mem::replace(&mut ctx.cwd, new_cwd);
+    let old_cwd = core::mem::replace(&mut ctx.cwd, new_cwd);
     ctx.env.set("OLDPWD", &old_cwd);
     ctx.env.set("PWD", &ctx.cwd.clone());
     0
@@ -399,6 +404,7 @@ mod tests {
             cwd: "/home/root".to_string(),
             fs: &NoFs,
             output: Vec::new(),
+            audit_log: crate::audit::AuditLog::new(),
         }
     }
 

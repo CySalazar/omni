@@ -26,6 +26,13 @@
 //!    - **Variable**: iterate environment variable names, filter by prefix.
 //! 3. Candidates are sorted and deduplicated before being returned.
 
+#[cfg(not(feature = "std"))]
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
+
 use crate::env::ShellEnv;
 use crate::glob::FsQuery;
 
