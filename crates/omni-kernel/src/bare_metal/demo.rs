@@ -306,6 +306,12 @@ pub fn run_desktop(
                         let cy0 = wm_state.get(0).map_or(0, |w| w.y + wm::TITLEBAR_H);
                         if widget::button_hit_test(&POWEROFF_BTN, cx0, cy0, cpx, cpy) {
                             widget::draw_button(fb, cx0, cy0, &POWEROFF_BTN, true);
+                            exit_action = DesktopExitAction::PowerOff;
+                            break 'event;
+                        }
+                        if widget::button_hit_test(&REBOOT_BTN, cx0, cy0, cpx, cpy) {
+                            widget::draw_button(fb, cx0, cy0, &REBOOT_BTN, true);
+                            exit_action = DesktopExitAction::Reboot;
                             break 'event;
                         }
                         if let Some(c) = &mut cursor_state {
