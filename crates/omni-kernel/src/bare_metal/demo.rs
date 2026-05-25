@@ -16,9 +16,12 @@
 //! │ • serial port             │                                  │
 //! │ [ Power Off ]             │                                  │
 //! ├──────────────────────────────────────────────────────────────┤
-//! │ OMNI OS │     HH:MM:SS     │              ESC=off  Xs        │
+//! │ OMNI OS │              HH:MM:SS                              │
 //! └──────────────────────────────────────────────────────────────┘
 //! ```
+//!
+//! Shutdown is exclusively user-driven via the "Power Off" button in the
+//! System Info window — no auto-off timer, no keyboard shortcut.
 
 #![allow(
     clippy::doc_markdown,
@@ -53,8 +56,6 @@ use super::{arch, cpuinfo, font, graphics, input, vga, virtio_tablet, widget, wm
 // =============================================================================
 // Constants
 // =============================================================================
-
-const TOTAL_SECS: usize = 300;
 
 /// Maximum number of output lines kept in the terminal's circular history buffer.
 ///
@@ -194,7 +195,7 @@ pub fn run_desktop(
     // ── Initial render ────────────────────────────────────────────────────────
     if let Some(fb) = fb_opt {
         fb.clear(graphics::DARK_NAVY);
-        wm::draw_taskbar(fb, TOTAL_SECS);
+        wm::draw_taskbar(fb);
         let (h, m, s) = arch::rtc_time();
         render_clock(fb, h, m, s);
         wm_state.draw_all(fb);
@@ -242,7 +243,6 @@ pub fn run_desktop(
     let mut cursor_state: Option<Cursor> = fb_opt.map(|fb| Cursor::new(fb, 0, 0));
 
     // ── Event loop ────────────────────────────────────────────────────────────
-    let mut remaining = TOTAL_SECS;
     let mut last_rtc = arch::rtc_seconds();
 
     'event: loop {
@@ -335,8 +335,10 @@ pub fn run_desktop(
 
         if let Some(key) = input::ps2_poll() {
             match key {
-                // ── Power off ────────────────────────────────────────────────
-                input::Key::Escape => break 'event,
+                // ── Escape: intentionally ignored ────────────────────────────
+                // Shutdown is only allowed via the "Power Off" button so the
+                // user cannot terminate the session by accident.
+                input::Key::Escape => {}
 
                 // ── Window focus (Tab) ───────────────────────────────────────
                 input::Key::Tab => {
@@ -529,6 +531,7 @@ pub fn run_desktop(
         }
 
         // ── RTC tick ──────────────────────────────────────────────────────────
+        // Refresh the clock once per second; no countdown / auto-shutdown.
         let curr = arch::rtc_seconds();
         let delta = if curr >= last_rtc {
             curr - last_rtc
@@ -537,23 +540,15 @@ pub fn run_desktop(
         };
         if delta >= 1 {
             last_rtc = curr;
-            remaining = remaining.saturating_sub(delta as usize);
             if let Some(fb) = fb_opt {
                 if let Some(c) = &cursor_state {
                     c.hide(fb);
                 }
-                wm::update_taskbar_time(fb, remaining);
                 let (h, m, s) = arch::rtc_time();
                 render_clock(fb, h, m, s);
                 if let Some(c) = &mut cursor_state {
                     c.show(fb);
                 }
-            } else {
-                vga::write_at(16, 21, b"  ", vga::YELLOW, vga::BLACK);
-                vga::write_usize_at(16, 21, remaining, vga::YELLOW, vga::BLACK);
-            }
-            if remaining == 0 {
-                break 'event;
             }
         }
 

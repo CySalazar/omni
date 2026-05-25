@@ -5,8 +5,9 @@
 //! highlight. A [`WindowManager`] tracks focus state and handles Tab-cycling.
 //!
 //! The taskbar is a fixed 28-pixel strip at the bottom of the framebuffer,
-//! showing the OMNI OS label on the left and an auto-off countdown on the
-//! right.
+//! showing the OMNI OS label on the left and the RTC clock in the centre.
+//! Shutdown is exclusively user-driven via the "Power Off" button in the
+//! System Info window — no auto-off timer.
 
 use super::graphics::FrameBuffer;
 use super::{font, graphics};
@@ -235,8 +236,10 @@ pub fn draw_window(fb: &FrameBuffer, window: &Window, focused: bool) {
 
 /// Draw the full taskbar strip at the bottom of the framebuffer.
 ///
-/// Layout: `[OMNI OS | v…]  ···  [ESC=off  Xs]`
-pub fn draw_taskbar(fb: &FrameBuffer, remaining_secs: usize) {
+/// Layout: `[OMNI OS | HH:MM:SS ]`. The right portion of the strip is left
+/// blank — shutdown is exclusively triggered by the "Power Off" button in the
+/// System Info window.
+pub fn draw_taskbar(fb: &FrameBuffer) {
     let y0 = fb.height.saturating_sub(TASKBAR_H);
 
     // Background + top separator.
@@ -260,59 +263,6 @@ pub fn draw_taskbar(fb: &FrameBuffer, remaining_secs: usize) {
         fb.height.saturating_sub(4),
         graphics::DARK_GRAY,
     );
-
-    update_taskbar_time(fb, remaining_secs);
-}
-
-/// Overwrite only the countdown area in the taskbar (called on every RTC tick).
-pub fn update_taskbar_time(fb: &FrameBuffer, remaining_secs: usize) {
-    let y0 = fb.height.saturating_sub(TASKBAR_H);
-    // Clear the right portion of the taskbar.
-    let right_start = fb.width.saturating_sub(120);
-    fb.draw_rect_filled(
-        right_start,
-        y0 + 1,
-        fb.width,
-        fb.height,
-        graphics::DARK_NAVY,
-    );
-
-    // "ESC=off  Xs" — only show when countdown is active.
-    if remaining_secs > 0 {
-        let label = "ESC=off  ";
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "static label length fits u32 trivially"
-        )]
-        let label_px = label.len() as u32 * 8;
-        let x0 = right_start + 4;
-        font::render_str(
-            fb,
-            x0,
-            y0 + 10,
-            label,
-            graphics::DARK_GRAY,
-            graphics::DARK_NAVY,
-        );
-        font::render_usize_scaled(
-            fb,
-            x0 + label_px,
-            y0 + 10,
-            remaining_secs,
-            graphics::YELLOW,
-            graphics::DARK_NAVY,
-            1,
-        );
-        let dw = font::digit_width(remaining_secs, 1);
-        font::render_str(
-            fb,
-            x0 + label_px + dw,
-            y0 + 10,
-            "s",
-            graphics::YELLOW,
-            graphics::DARK_NAVY,
-        );
-    }
 }
 
 /// Display a "Powering off…" overlay centred in the taskbar.
