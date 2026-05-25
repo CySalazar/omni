@@ -808,6 +808,83 @@ pub fn kmain(
     }
 
     // -------------------------------------------------------------------------
+    // Shell infrastructure initialization — global statics for the syscall
+    // handler bridge (fd table, pipe registry, console input, VFS, process
+    // table). Placed BEFORE the LAPIC timer / sti so the init runs with
+    // interrupts disabled — no timer preemption possible.
+    // -------------------------------------------------------------------------
+    #[cfg(target_arch = "x86_64")]
+    #[allow(
+        unsafe_code,
+        reason = "single-CPU static-mut init for shell globals; same invariant as SCHEDULER"
+    )]
+    unsafe {
+        // write_volatile prevents LTO from eliminating these stores as
+        // dead — the shell_handlers module reads them via addr_of_mut
+        // in the syscall dispatch path which LTO cannot prove reachable
+        // from kmain's linear flow.
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!(SHELL_VFS),
+            Some(vfs::InMemoryVfs::new()),
+        );
+        if let Some(ref mut v) = *core::ptr::addr_of_mut!(SHELL_VFS) {
+            let _ = v.create_directory("/bin");
+        }
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!(SHELL_FD_TABLE),
+            Some(fd::FileDescriptorTable::new_with_stdio()),
+        );
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!(SHELL_PIPE_REGISTRY),
+            Some(pipe::PipeRegistry::new()),
+        );
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!(SHELL_CONSOLE_INPUT),
+            Some(console_input::ConsoleInputBuffer::new()),
+        );
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!(SHELL_PROCESS_TABLE),
+            Some(process_table::ProcessTable::new()),
+        );
+        if let Some(ref mut pt) = *core::ptr::addr_of_mut!(SHELL_PROCESS_TABLE) {
+            pt.register(
+                scheduling::TaskId(1),
+                None,
+                alloc::string::String::from("omni-shell"),
+            );
+        }
+        early_console::write_str("[OMNI OS] shell infrastructure initialized.\n");
+
+        #[cfg(target_os = "none")]
+        {
+            const EMBEDDED_INITRAMFS: &[u8] = include_bytes!("embedded_initramfs.bin");
+            if !EMBEDDED_INITRAMFS.is_empty() {
+                match initramfs::parse_initramfs(EMBEDDED_INITRAMFS) {
+                    Ok(entries) => {
+                        if let Some(ref mut v) = *core::ptr::addr_of_mut!(SHELL_VFS) {
+                            match initramfs::load_into_vfs(&entries, v) {
+                                Ok(count) => {
+                                    early_console::write_str("[OMNI OS] initramfs: loaded ");
+                                    early_console::write_usize(count);
+                                    early_console::write_str(" binaries into /bin/\n");
+                                }
+                                Err(_) => {
+                                    early_console::write_str(
+                                        "[OMNI OS] initramfs: VFS load failed\n",
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        early_console::write_str("[OMNI OS] initramfs: parse failed\n");
+                    }
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // LAPIC (MB7): disable legacy 8259 PIC, enable xAPIC, start periodic timer
     // at IDT vector 0x20. Issues `sti` to enable maskable interrupts.
     // -------------------------------------------------------------------------
@@ -1491,78 +1568,6 @@ pub fn kmain(
             }
         } else {
             early_console::write_str("[lapic] LAPIC init FAILED — running without timer\n");
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Shell infrastructure initialization — global statics for the syscall
-    // handler bridge (fd table, pipe registry, console input, VFS, process table).
-    // -------------------------------------------------------------------------
-    #[cfg(target_arch = "x86_64")]
-    #[allow(
-        unsafe_code,
-        reason = "single-CPU static-mut init for shell globals; same invariant as SCHEDULER"
-    )]
-    unsafe {
-        // Initialize the in-kernel VFS with a root directory and /bin.
-        let vfs = vfs::InMemoryVfs::new();
-        // /bin is created by initramfs::load_into_vfs; pre-create here
-        // so early boot can stat("/bin") without error.
-        SHELL_VFS = Some(vfs);
-        if let Some(ref mut v) = *core::ptr::addr_of_mut!(SHELL_VFS) {
-            let _ = v.create_directory("/bin");
-        }
-
-        // File descriptor table with stdin/stdout/stderr on the console.
-        SHELL_FD_TABLE = Some(fd::FileDescriptorTable::new_with_stdio());
-
-        // Pipe and process tables.
-        SHELL_PIPE_REGISTRY = Some(pipe::PipeRegistry::new());
-        SHELL_CONSOLE_INPUT = Some(console_input::ConsoleInputBuffer::new());
-        SHELL_PROCESS_TABLE = Some(process_table::ProcessTable::new());
-
-        // Register init process (PID 1) in the process table.
-        if let Some(ref mut pt) = *core::ptr::addr_of_mut!(SHELL_PROCESS_TABLE) {
-            pt.register(
-                scheduling::TaskId(1),
-                None,
-                alloc::string::String::from("omni-shell"),
-            );
-        }
-
-        early_console::write_str("[OMNI OS] shell infrastructure initialized.\n");
-
-        // Load embedded initramfs into VFS. The archive is generated by
-        // scripts/build-shell-initramfs.sh and placed at compile time via
-        // include_bytes. Contains the omni-shell ELF at /bin/omni-shell.
-        #[cfg(target_os = "none")]
-        {
-            const EMBEDDED_INITRAMFS: &[u8] =
-                include_bytes!("embedded_initramfs.bin");
-
-            if !EMBEDDED_INITRAMFS.is_empty() {
-                match initramfs::parse_initramfs(EMBEDDED_INITRAMFS) {
-                    Ok(entries) => {
-                        if let Some(ref mut v) = *core::ptr::addr_of_mut!(SHELL_VFS) {
-                            match initramfs::load_into_vfs(&entries, v) {
-                                Ok(count) => {
-                                    early_console::write_str("[OMNI OS] initramfs: loaded ");
-                                    early_console::write_usize(count);
-                                    early_console::write_str(" binaries into /bin/\n");
-                                }
-                                Err(_) => {
-                                    early_console::write_str(
-                                        "[OMNI OS] initramfs: VFS load failed\n",
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        early_console::write_str("[OMNI OS] initramfs: parse failed\n");
-                    }
-                }
-            }
         }
     }
 

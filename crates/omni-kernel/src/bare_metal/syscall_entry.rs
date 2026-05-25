@@ -372,7 +372,7 @@ fn write_console(ptr: u64, len: u64) -> KernelResult<u64> {
                     reason = "chunk_usize ≤ 256 = buf.len() by min above"
                 )]
                 {
-                    super::early_console::emit(&buf[..chunk_usize]);
+                    crate::bare_metal::early_console::emit(&buf[..chunk_usize]);
                 }
                 copied += chunk;
             }
@@ -2747,7 +2747,7 @@ mod shell_handlers {
     use crate::scheduling::TaskId;
     use crate::syscall::{SyscallReturn, syscall_errno};
     use crate::vfs::{FileType, VfsError};
-    use alloc::string::String;
+    use alloc::string::{String, ToString};
     use alloc::vec::Vec;
 
     // -----------------------------------------------------------------------
@@ -3103,7 +3103,7 @@ mod shell_handlers {
     /// | a2   | RDX | `buf_len`: bytes to write     |
     ///
     /// For `Console { writable: true }` fds the bytes are emitted via
-    /// `super::early_console::emit()` after being copied into a kernel-side
+    /// `crate::bare_metal::early_console::emit()` after being copied into a kernel-side
     /// stack buffer (256-byte chunks). This matches the `write_console`
     /// pattern used by `WriteConsole (60)`.
     pub(super) fn fd_write(args: [u64; 6]) -> SyscallReturn {
@@ -3161,7 +3161,7 @@ mod shell_handlers {
                             clippy::indexing_slicing,
                             reason = "chunk_usize ≤ 256 = chunk_buf.len() by min above"
                         )]
-                        super::early_console::emit(&chunk_buf[..chunk_usize]);
+                        crate::bare_metal::early_console::emit(&chunk_buf[..chunk_usize]);
                         emitted += chunk;
                     }
                     SyscallReturn::ok(emitted)
