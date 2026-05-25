@@ -1243,6 +1243,7 @@ dependencies = [
  "font8x8",
  "omni-capability",
  "omni-crypto",
+ "omni-shell",
  "omni-types",
  "proptest",
  "rand_chacha 0.3.1",
