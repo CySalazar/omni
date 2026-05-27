@@ -92,7 +92,7 @@ font8x8        = { version = "0.3", optional = true, default-features = false }
 # slot disabled, so on bare-metal the only `rand_core` consumer is the
 # kernel itself.
 rand_core      = { version = "0.6", default-features = false }
-rand_chacha    = { version = "0.3", default-features = false }
+rand_chacha    = { version = "0.9", default-features = false }
 # `spin` provides the no_std `Mutex` used by the global `KERNEL_CSPRNG`
 # wrapper. The `mutex` + `spin_mutex` features are enabled explicitly
 # (default would also bring `lazy`/`barrier` which we do not need).
