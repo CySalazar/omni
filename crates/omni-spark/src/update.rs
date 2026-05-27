@@ -42,7 +42,7 @@ pub async fn check() -> UpdateStatus {
     // TODO(oip-025-phase-5): Implement update check.
     //
     // Steps:
-    // 1. GET https://updates.omni-os.org/mesh-bridge/latest.json
+    // 1. GET https://updates.omni-os.org/spark/latest.json
     //    (certificate-pinned, timeout 10s).
     // 2. Parse response: { version, sha256, signature, download_url }.
     // 3. Compare version with env!("CARGO_PKG_VERSION").
@@ -65,7 +65,7 @@ pub async fn apply(_status: &UpdateStatus) -> crate::Result<()> {
     // 1. Download new binary to a temporary file.
     // 2. Verify Ed25519 signature against the Stichting OMNI release key.
     // 3. Verify SHA-256 matches the manifest.
-    // 4. Rename current binary to `omni-mesh-bridge.prev` (rollback).
+    // 4. Rename current binary to `omni-spark.prev` (rollback).
     // 5. Move new binary to the current binary's path.
     // 6. Request application restart.
 

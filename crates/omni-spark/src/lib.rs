@@ -1,14 +1,14 @@
-//! # `omni-mesh-bridge`
+//! # `omni-spark`
 //!
-//! Cross-platform desktop application that enables Linux, Windows, and
-//! macOS users to participate in the OMNI OS mesh at the highest trust
-//! tier their hardware supports.
+//! **OMNI Spark** — cross-platform desktop application that enables
+//! Linux, Windows, and macOS users to participate in the OMNI OS mesh
+//! at the highest trust tier their hardware supports.
 //!
 //! ## Architecture (OIP-025)
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────────┐
-//! │                     OMNI Mesh Bridge                         │
+//! │                       OMNI Spark                             │
 //! │                                                              │
 //! │  ┌────────────┐  ┌──────────────┐  ┌──────────────────────┐ │
 //! │  │  Platform   │  │  Tier        │  │  Mesh Protocol       │ │
@@ -40,7 +40,7 @@
 //! - [`config`] — user configuration and persistence.
 //! - [`update`] — signed auto-update mechanism.
 
-#![doc(html_root_url = "https://docs.omni-os.org/omni-mesh-bridge")]
+#![doc(html_root_url = "https://docs.omni-os.org/omni-spark")]
 #![warn(missing_docs)]
 
 pub mod platform;
@@ -54,7 +54,7 @@ pub mod update;
 /// Application-wide result type.
 pub type Result<T> = std::result::Result<T, BridgeError>;
 
-/// Top-level error type for the mesh bridge application.
+/// Top-level error type for OMNI Spark.
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
     /// Platform detection failed.
@@ -87,7 +87,7 @@ pub enum BridgeError {
     Tee(#[from] omni_tee::TeeError),
 }
 
-/// Initializes the mesh bridge application.
+/// Initializes OMNI Spark.
 ///
 /// This is the main entry point called from `main.rs`. It:
 /// 1. Detects the host platform and available security primitives.

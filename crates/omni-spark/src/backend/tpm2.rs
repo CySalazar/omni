@@ -13,7 +13,7 @@
 //! ## PCR selection (OIP-024 § S4.3)
 //!
 //! PCRs 0–7 cover firmware through boot loader. PCR 8–9 cover the
-//! OMNI Mesh Bridge binary (via IMA on Linux, Measured Boot on
+//! OMNI Spark binary (via IMA on Linux, Measured Boot on
 //! Windows).
 
 #[cfg(feature = "tpm2")]

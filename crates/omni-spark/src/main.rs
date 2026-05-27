@@ -1,7 +1,7 @@
-//! OMNI Mesh Bridge — entry point.
+//! OMNI Spark — entry point.
 //!
-//! Launches the cross-platform mesh bridge application. See `lib.rs`
-//! for the full architecture overview and OIP-025 for the specification.
+//! Launches OMNI Spark. See `lib.rs` for the full architecture
+//! overview and OIP-025 for the specification.
 
 fn main() {
     // Initialize tracing (structured logging).
@@ -12,7 +12,7 @@ fn main() {
         )
         .init();
 
-    tracing::info!("OMNI Mesh Bridge starting");
+    tracing::info!("OMNI Spark starting");
 
     // Build the async runtime and run the application.
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -20,7 +20,7 @@ fn main() {
         .build()
         .expect("failed to build tokio runtime");
 
-    if let Err(e) = rt.block_on(omni_mesh_bridge::run()) {
+    if let Err(e) = rt.block_on(omni_spark::run()) {
         tracing::error!(error = %e, "fatal error");
         std::process::exit(1);
     }

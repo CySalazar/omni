@@ -1,6 +1,6 @@
 //! System tray and status interface.
 //!
-//! The bridge runs as a system tray application:
+//! OMNI Spark runs as a system tray application:
 //! - **Linux**: tray icon via `libappindicator` / StatusNotifierItem.
 //! - **Windows**: notification area icon.
 //! - **macOS**: menu bar extra.

@@ -1360,32 +1360,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "omni-mesh-bridge"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "blake3",
- "ed25519-dalek",
- "futures",
- "hkdf",
- "mockall",
- "omni-capability",
- "omni-crypto",
- "omni-mesh",
- "omni-tee",
- "omni-types",
- "proptest",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "omni-net"
 version = "0.2.0"
 dependencies = [
@@ -1433,6 +1407,32 @@ version = "0.2.0"
 dependencies = [
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "omni-spark"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "blake3",
+ "ed25519-dalek",
+ "futures",
+ "hkdf",
+ "mockall",
+ "omni-capability",
+ "omni-crypto",
+ "omni-mesh",
+ "omni-tee",
+ "omni-types",
+ "proptest",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -5,9 +5,9 @@
 //!
 //! | Platform | Path                                                |
 //! |----------|-----------------------------------------------------|
-//! | Linux    | `$XDG_CONFIG_HOME/omni-mesh-bridge/config.toml`     |
-//! | macOS    | `~/Library/Application Support/omni-mesh-bridge/config.toml` |
-//! | Windows  | `%APPDATA%\omni-mesh-bridge\config.toml`            |
+//! | Linux    | `$XDG_CONFIG_HOME/omni-spark/config.toml`     |
+//! | macOS    | `~/Library/Application Support/omni-spark/config.toml` |
+//! | Windows  | `%APPDATA%\omni-spark\config.toml`            |
 
 use std::path::PathBuf;
 
@@ -72,7 +72,7 @@ impl Default for BridgeConfig {
 #[must_use]
 pub fn config_dir() -> PathBuf {
     let base = dirs_path();
-    base.join("omni-mesh-bridge")
+    base.join("omni-spark")
 }
 
 /// Returns the path to the configuration file.

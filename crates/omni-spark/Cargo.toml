@@ -1,6 +1,6 @@
 # =============================================================================
-# omni-mesh-bridge — Cross-platform desktop application for tiered mesh
-#                     participation on conventional operating systems
+# omni-spark — OMNI Spark: cross-platform desktop application for tiered
+#               mesh participation on conventional operating systems
 # =============================================================================
 # OIP-025 specifies this crate. It enables Linux, Windows, and macOS users
 # to join the OMNI OS mesh at the highest trust tier their hardware supports:
@@ -18,8 +18,8 @@
 # =============================================================================
 
 [package]
-name             = "omni-mesh-bridge"
-description      = "Cross-platform mesh bridge for OMNI OS — join the mesh from Linux, Windows, or macOS."
+name             = "omni-spark"
+description      = "OMNI Spark — join the OMNI OS mesh from Linux, Windows, or macOS."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -55,7 +55,7 @@ cvm            = []
 all-backends   = ["software-mpc", "tpm2", "apple-se", "cvm"]
 
 [[bin]]
-name = "omni-mesh-bridge"
+name = "omni-spark"
 path = "src/main.rs"
 
 [dependencies]

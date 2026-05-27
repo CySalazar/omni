@@ -12,7 +12,7 @@
 //!
 //! ## Image
 //!
-//! The CVM runs `omni-mesh-bridge-cvm.img`, a minimal OMNI OS image
+//! The CVM runs `omni-spark-cvm.img`, a minimal OMNI OS image
 //! containing only the microkernel, `omni-tee` driver (TDX or SEV-SNP),
 //! `omni-mesh` client, and a virtio-vsock driver. Target size: ≤ 64 MiB.
 
@@ -24,7 +24,7 @@ use crate::platform::DetectedPlatform;
 use crate::BridgeError;
 
 /// Path to the CVM image, relative to the application data directory.
-pub const CVM_IMAGE_FILENAME: &str = "omni-mesh-bridge-cvm.img";
+pub const CVM_IMAGE_FILENAME: &str = "omni-spark-cvm.img";
 
 /// Default memory allocation for the CVM in MiB.
 pub const CVM_DEFAULT_MEMORY_MIB: u32 = 512;
