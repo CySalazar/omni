@@ -1,0 +1,94 @@
+# =============================================================================
+# omni-mesh-bridge — Cross-platform desktop application for tiered mesh
+#                     participation on conventional operating systems
+# =============================================================================
+# OIP-025 specifies this crate. It enables Linux, Windows, and macOS users
+# to join the OMNI OS mesh at the highest trust tier their hardware supports:
+#
+#   Tier 0 — Confidential MicroVM (SEV-SNP / TDX on host)
+#   Tier 1 — Apple Secure Enclave (macOS Apple Silicon)
+#   Tier 2 — TPM 2.0 measured boot (any modern PC)
+#   Tier 3 — Software-only MPC (any machine)
+#
+# The crate is `std`-enabled (it runs on conventional OSes, not bare-metal).
+# Platform-specific backends are gated behind feature flags and conditional
+# compilation (`cfg(target_os)`).
+#
+# See /oips/oip-mesh-bridge-025.md for the full specification.
+# =============================================================================
+
+[package]
+name             = "omni-mesh-bridge"
+description      = "Cross-platform mesh bridge for OMNI OS — join the mesh from Linux, Windows, or macOS."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+authors.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+readme.workspace       = true
+
+[lints]
+workspace = true
+
+# -----------------------------------------------------------------------------
+# Feature flags
+# -----------------------------------------------------------------------------
+# `default` enables the software-only backend so the app compiles and runs
+# on any platform. Hardware backends are opt-in per platform:
+#
+#   - `tpm2`      — TPM 2.0 backend (Linux, Windows). Requires `tss-esapi`.
+#   - `apple-se`  — Apple Secure Enclave backend (macOS only).
+#   - `cvm`       — Confidential MicroVM backend (Linux, Windows with TEE).
+#
+# `all-backends` is a convenience aggregate for CI and audit builds.
+# -----------------------------------------------------------------------------
+[features]
+default = ["software-mpc"]
+software-mpc   = []
+tpm2           = []
+apple-se       = []
+cvm            = []
+all-backends   = ["software-mpc", "tpm2", "apple-se", "cvm"]
+
+[[bin]]
+name = "omni-mesh-bridge"
+path = "src/main.rs"
+
+[dependencies]
+# --- Internal crates ---
+omni-types      = { workspace = true }
+omni-crypto     = { workspace = true }
+omni-capability = { workspace = true }
+omni-tee        = { workspace = true }
+omni-mesh       = { workspace = true }
+
+# --- Async runtime ---
+tokio        = { workspace = true }
+async-trait  = { workspace = true }
+futures      = { workspace = true }
+
+# --- Serialization ---
+serde        = { workspace = true, features = ["std"] }
+serde_json   = { workspace = true }
+
+# --- Cryptography ---
+ed25519-dalek      = { workspace = true }
+blake3             = { workspace = true }
+hkdf               = { workspace = true }
+rand_core          = { workspace = true }
+
+# --- Observability ---
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# --- Error handling ---
+thiserror   = { workspace = true }
+anyhow      = { workspace = true }
+
+[dev-dependencies]
+mockall  = { workspace = true }
+proptest = { workspace = true }

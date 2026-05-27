@@ -42,6 +42,14 @@ pub enum TeeFamily {
     /// `ARMv9` Confidential Compute Architecture Realms. Planned for v1.2+.
     /// Reserved variant.
     ArmCca = 4,
+    /// TPM 2.0 measured-boot attestation. Tier 2 per OIP-024: attests
+    /// boot chain via PCR quotes but provides no runtime memory
+    /// encryption. Nodes are restricted to opaque-relay roles.
+    Tpm2 = 5,
+    /// Software-only MPC backend. Tier 3 per OIP-024: no hardware root
+    /// of trust. Identity is an Ed25519 keypair; Sybil resistance via
+    /// compute-credit bootstrapping and network-age weighting.
+    SoftwareMpc = 6,
     /// In-process deterministic mock. Only valid for the `mock` feature
     /// or for explicit test contexts. Production builds MUST reject
     /// quotes whose family is `Mock`.
@@ -49,13 +57,37 @@ pub enum TeeFamily {
 }
 
 impl TeeFamily {
-    /// Returns `true` if the family represents real hardware that can be
-    /// trusted in production. The `Mock` family is excluded; reserved
-    /// variants (`AppleSecureEnclave`, `ArmCca`) are excluded until their
-    /// respective enabling OIPs are ratified.
+    /// Returns `true` if the family is accepted in production builds
+    /// at any tier. Only the `Mock` family is excluded.
+    ///
+    /// **Migration note (OIP-024):** prior to OIP-024 this method
+    /// returned `true` only for `IntelTdx` and `AmdSevSnp`. Code
+    /// that relied on `is_production()` to mean "full TEE" MUST
+    /// migrate to `trust_tier() == 0` or `has_memory_encryption()`.
     #[must_use]
     pub const fn is_production(self) -> bool {
-        matches!(self, Self::IntelTdx | Self::AmdSevSnp)
+        !matches!(self, Self::Mock)
+    }
+
+    /// Returns the trust tier (0–3) for this family per OIP-024 § S1.
+    /// Lower is more trusted. The `Mock` family returns `u8::MAX` and
+    /// MUST be rejected in production.
+    #[must_use]
+    pub const fn trust_tier(self) -> u8 {
+        match self {
+            Self::IntelTdx | Self::AmdSevSnp => 0,
+            Self::AppleSecureEnclave | Self::ArmCca => 1,
+            Self::Tpm2 => 2,
+            Self::SoftwareMpc => 3,
+            Self::Mock => u8::MAX,
+        }
+    }
+
+    /// Returns `true` if this family provides runtime memory encryption
+    /// (i.e., the host OS cannot read TEE-resident RAM).
+    #[must_use]
+    pub const fn has_memory_encryption(self) -> bool {
+        matches!(self, Self::IntelTdx | Self::AmdSevSnp | Self::ArmCca)
     }
 }
 

@@ -112,6 +112,10 @@ members = [
     # `omni-cmd-nc` is the `nc` (netcat) command (N7.11).
     # `no_std + alloc`; connect/listen mode types and argument parsing.
     "crates/omni-cmd-nc",
+    # `omni-mesh-bridge` is the cross-platform desktop application for mesh
+    # participation on conventional OSes (Linux, Windows, macOS). `std`-enabled.
+    # Specified by OIP-025; depends on OIP-024 tiered trust model.
+    "crates/omni-mesh-bridge",
 ]
 
 # Fuzz harnesses live in their own ephemeral packages outside the
@@ -243,6 +247,8 @@ omni-cmd-ssh        = { path = "crates/omni-cmd-ssh",        version = "0.2.0" }
 omni-cmd-scp        = { path = "crates/omni-cmd-scp",        version = "0.2.0" }
 # `nc` (netcat) command (N7.11): no_std + alloc.
 omni-cmd-nc         = { path = "crates/omni-cmd-nc",         version = "0.2.0" }
+# Cross-platform mesh bridge (OIP-025): std-enabled desktop app.
+omni-mesh-bridge    = { path = "crates/omni-mesh-bridge",    version = "0.2.0" }
 
 # --- Async runtime ---
 tokio        = { version = "1.52", features = ["full"] }
