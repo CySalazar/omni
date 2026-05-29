@@ -1,0 +1,40 @@
+# =============================================================================
+# OMNI OS — OIP structural linter (Gitea Actions)
+# =============================================================================
+# Validates every file under /oips/ against OIP-Process-001 and
+# oips/oip-template.md. Port of `.github/workflows/oip-lint.yml`.
+# =============================================================================
+
+name: oip-lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "oips/**"
+      - "scripts/lint-oips.py"
+      - ".gitea/workflows/oip-lint.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "oips/**"
+      - "scripts/lint-oips.py"
+      - ".gitea/workflows/oip-lint.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: oip-lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  oip-lint:
+    name: oip-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Run OIP linter
+        run: python3 scripts/lint-oips.py "${{ github.workspace }}"
