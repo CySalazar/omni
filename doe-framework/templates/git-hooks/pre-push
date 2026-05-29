@@ -11,28 +11,30 @@
 #   regressions are caught immediately. Mirrors the blocking checks of
 #   `.github/workflows/ci.yml`.
 #
-# CHECKS (in order):
-#   1. cargo fmt --all -- --check          (BLOCKING — matches the CI fmt job,
-#                                           which uses STABLE rustfmt)
-#   2. cargo clippy (workspace)            (REPORT-ONLY until the clippy debt is
-#                                           cleared; then flip to strict — see
-#                                           the marked block below)
-#   3. cargo test --workspace              (BLOCKING; omni-kernel excluded, its
-#                                           --lib tests SIGSEGV on x86_64 Linux
-#                                           dev hosts — a known host-only issue)
-#   4. cargo deny: bans/licenses/sources   (BLOCKING if cargo-deny installed;
-#      advisories                            advisories REPORT-ONLY — stale
-#                                            advisory-db CVSS-4.0 parse issue)
+# CHECKS (all BLOCKING):
+#   1. cargo fmt --all -- --check                  (stable rustfmt — matches CI)
+#   2. cargo clippy --workspace --all-targets
+#      --all-features -- -D warnings               (debt cleared 2026-05-29)
+#   3. cargo test --workspace --exclude omni-kernel (omni-kernel --lib tests
+#                                                    SIGSEGV on x86_64 Linux dev
+#                                                    hosts — known host issue)
+#   4. cargo deny check                            (advisories+bans+licenses+
+#                                                    sources; needs cargo-deny)
 #
 # ESCAPE HATCHES:
 #   - `git push --no-verify`        → skip this hook entirely (one-off)
 #   - `OMNI_SKIP_PREPUSH=1 git push`→ skip this hook entirely
 #   - `OMNI_PREPUSH_FAST=1 git push`→ skip the (slow) test + deny steps
 #
-# NOTE: the CI fmt job uses STABLE rustfmt; rustfmt.toml's nightly-only options
-# (imports_granularity, group_imports, format_code_in_doc_comments) are ignored
-# on stable, so the canonical format is stable-rustfmt output. Use plain
-# `cargo fmt` here (NOT `+nightly`) to match CI.
+# NOTES:
+#   - The CI fmt job uses STABLE rustfmt; rustfmt.toml's nightly-only options
+#     (imports_granularity, group_imports, format_code_in_doc_comments) are
+#     ignored on stable, so the canonical format is stable-rustfmt output. Use
+#     plain `cargo fmt` (NOT `+nightly`) to match CI.
+#   - cargo-deny must be a build that parses CVSS-4.0 RUSTSEC entries
+#     (>= the rustsec bump in cargo-deny 0.19; build via a recent toolchain,
+#     e.g. `cargo +nightly install cargo-deny --locked`). Older builds choke on
+#     advisory-db entries with `cvss = "CVSS:4.0/..."`.
 # =============================================================================
 
 set -uo pipefail
@@ -63,24 +65,15 @@ fi
 ok "formatting clean"
 
 # ---------------------------------------------------------------------------
-# 2. Clippy (REPORT-ONLY until the clippy debt is cleared)
+# 2. Clippy (BLOCKING — -D warnings, matches CI)
 # ---------------------------------------------------------------------------
-log "cargo clippy --workspace --all-targets --all-features (report-only) ..."
-cargo clippy --workspace --all-targets --all-features >/tmp/omni-prepush-clippy.log 2>&1 || true
-CLIPPY_ERR="$(grep -cE '^error' /tmp/omni-prepush-clippy.log || true)"
-CLIPPY_WARN="$(grep -cE '^warning' /tmp/omni-prepush-clippy.log || true)"
-if [[ "$CLIPPY_ERR" -gt 0 || "$CLIPPY_WARN" -gt 0 ]]; then
-    log "⚠ clippy: ${CLIPPY_ERR} errors / ${CLIPPY_WARN} warnings (not blocking — see /tmp/omni-prepush-clippy.log)"
-else
-    ok "clippy clean"
+log "cargo clippy --workspace --all-targets --all-features -- -D warnings ..."
+if ! cargo clippy --workspace --all-targets --all-features -- -D warnings \
+      >/tmp/omni-prepush-clippy.log 2>&1; then
+    grep -E '^(error|warning)' /tmp/omni-prepush-clippy.log | head -40 >&2
+    fail "clippy -D warnings failed (full log: /tmp/omni-prepush-clippy.log)."
 fi
-# --- Strict mode (enable when clippy debt == 0): -----------------------------
-# if ! cargo clippy --workspace --all-targets --all-features -- -D warnings \
-#       >/tmp/omni-prepush-clippy.log 2>&1; then
-#     grep -E '^(error|warning)' /tmp/omni-prepush-clippy.log >&2
-#     fail "clippy -D warnings failed."
-# fi
-# -----------------------------------------------------------------------------
+ok "clippy clean (-D warnings)"
 
 if [[ "${OMNI_PREPUSH_FAST:-0}" == "1" ]]; then
     log "OMNI_PREPUSH_FAST=1 — skipping test + deny steps."
@@ -100,20 +93,17 @@ fi
 ok "tests pass (omni-kernel --lib excluded: known host SIGSEGV)"
 
 # ---------------------------------------------------------------------------
-# 4. Dependency policy
+# 4. Dependency policy (BLOCKING — advisories + bans + licenses + sources)
 # ---------------------------------------------------------------------------
 if command -v cargo-deny >/dev/null 2>&1; then
-    log "cargo deny check advisories (report-only) ..."
-    cargo deny check advisories >/tmp/omni-prepush-deny-adv.log 2>&1 || \
-        log "⚠ advisories non-clean (see /tmp/omni-prepush-deny-adv.log; often stale cargo-deny)"
-    log "cargo deny check bans licenses sources ..."
-    if ! cargo deny check bans licenses sources >/tmp/omni-prepush-deny.log 2>&1; then
+    log "cargo deny check ..."
+    if ! cargo deny check >/tmp/omni-prepush-deny.log 2>&1; then
         tail -40 /tmp/omni-prepush-deny.log >&2
-        fail "cargo deny (bans/licenses/sources) failed (full log: /tmp/omni-prepush-deny.log)."
+        fail "cargo deny check failed (full log: /tmp/omni-prepush-deny.log)."
     fi
-    ok "cargo deny bans/licenses/sources clean"
+    ok "cargo deny check clean (advisories/bans/licenses/sources)"
 else
-    log "cargo-deny not installed — skipping (install: cargo install cargo-deny)"
+    log "cargo-deny not installed — skipping (install: cargo +nightly install cargo-deny --locked)"
 fi
 
 echo "  ── all local gates passed ──────────────────────────────────"
