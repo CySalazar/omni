@@ -1,4 +1,4 @@
-//! Shell lexer — converts raw input text into a flat sequence of [`Token`]s.
+//! Shell lexer — converts raw input text into a flat sequence of [`crate::lexer::Token`]s.
 //!
 //! This is the first stage of the shell's parsing pipeline:
 //!
@@ -27,7 +27,7 @@
 //!
 //! ## Error handling
 //!
-//! The lexer returns the first [`LexError`] it encounters and stops. Partial
+//! The lexer returns the first [`crate::lexer::LexError`] it encounters and stops. Partial
 //! token vectors are discarded.
 
 #[cfg(not(feature = "std"))]

@@ -3,7 +3,7 @@
 //! This module bridges [`omni_fs::InMemoryFs`] and the GGUF tensor loader
 //! ([`crate::tensor_loader`]). It provides a single-call API that reads a
 //! GGUF file from the filesystem, parses the GGUF header, and extracts all
-//! tensor weights into [`TensorBuffer`]s.
+//! tensor weights into [`omni_hal::tensor::TensorBuffer`]s.
 //!
 //! # Typical usage
 //!

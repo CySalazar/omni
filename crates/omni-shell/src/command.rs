@@ -6,7 +6,7 @@
 //! returns an integer exit code.
 //!
 //! Built-ins are registered into a [`alloc::collections::BTreeMap`] by
-//! [`register_builtins`], which is called by the executor before each
+//! [`crate::command::register_builtins`], which is called by the executor before each
 //! pipeline run. Using `BTreeMap` ensures deterministic iteration order for
 //! commands like `help` and `alias` that print all known names.
 //!

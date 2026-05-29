@@ -2,7 +2,7 @@
 //!
 //! This module provides a keyword-based heuristic that mirrors the OIP-022
 //! Orchestrator's routing logic. Given a raw command or natural-language
-//! string, [`classify_intent`] returns the most appropriate [`IntentClass`],
+//! string, [`crate::intent::classify_intent`] returns the most appropriate [`crate::intent::IntentClass`],
 //! which the REPL uses to:
 //!
 //! - Display an agent label prefix when `OMNI_AGENT=1` is set.
@@ -12,8 +12,8 @@
 //! ## Classification algorithm
 //!
 //! 1. Lower-case the input once.
-//! 2. Count keyword matches for each category (see [`GUIDANCE_KEYWORDS`],
-//!    [`ADMIN_KEYWORDS`], [`SECURITY_KEYWORDS`], [`TASK_KEYWORDS`]).
+//! 2. Count keyword matches for each category (see `GUIDANCE_KEYWORDS`,
+//!    `ADMIN_KEYWORDS`, `SECURITY_KEYWORDS`, `TASK_KEYWORDS`).
 //! 3. The category with the highest count wins.
 //! 4. If two or more categories are tied at the top (and count > 0), the
 //!    result is `IntentClass::Composite`.

@@ -1,11 +1,11 @@
 //! Per-process file descriptor table.
 //!
 //! This module provides the kernel-internal representation of open file
-//! descriptors. Every process owns a [`FileDescriptorTable`] stored inside
-//! its [`crate::process::ProcessControlBlock`]. The table is indexed by
-//! [`RawFd`] — a monotonically-assigned `u32` — and each entry records
-//! what kind of resource is open ([`FdKind`]) together with per-fd
-//! behaviour flags ([`FdFlags`]).
+//! descriptors. Every process owns a [`crate::fd::FileDescriptorTable`] stored
+//! inside its `ProcessControlBlock`. The table is indexed by
+//! [`crate::fd::RawFd`] — a monotonically-assigned `u32` — and each entry
+//! records what kind of resource is open ([`crate::fd::FdKind`]) together with
+//! per-fd behaviour flags ([`crate::fd::FdFlags`]).
 //!
 //! ## Design constraints
 //!
@@ -17,10 +17,11 @@
 //!
 //! fd numbers are assigned from a per-table `next_fd` cursor.  When the
 //! cursor slot is already occupied (e.g. after a `dup2` that filled it),
-//! [`FileDescriptorTable::open`] scans forward until it finds a free slot,
-//! then advances `next_fd` past that slot.  This guarantees lowest-available
-//! assignment without wrapping the cursor back to zero (which would cause
-//! surprising re-use of low fd numbers that were explicitly closed).
+//! [`crate::fd::FileDescriptorTable::open`] scans forward until it finds a
+//! free slot, then advances `next_fd` past that slot.  This guarantees
+//! lowest-available assignment without wrapping the cursor back to zero
+//! (which would cause surprising re-use of low fd numbers that were
+//! explicitly closed).
 //!
 //! If no free slot exists below [`u32::MAX`] the call returns
 //! `Err(KernelError::ResourceExhausted)`.  In practice a process would

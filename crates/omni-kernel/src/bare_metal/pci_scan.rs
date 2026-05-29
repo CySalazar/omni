@@ -54,13 +54,13 @@ pub struct PciDevice {
     pub device: u8,
     /// PCI function number (0..7).
     pub function: u8,
-    /// Vendor ID from config register 0x00[15:0].
+    /// Vendor ID from config register 0x00\[15:0\].
     pub vendor_id: u16,
-    /// Device ID from config register 0x00[31:16].
+    /// Device ID from config register 0x00\[31:16\].
     pub device_id: u16,
-    /// Class code from config register 0x08[31:24].
+    /// Class code from config register 0x08\[31:24\].
     pub class_code: u8,
-    /// Sub-class code from config register 0x08[23:16].
+    /// Sub-class code from config register 0x08\[23:16\].
     pub subclass: u8,
     /// BAR0 raw value from config register 0x10.
     pub bar0: u32,
@@ -70,7 +70,7 @@ pub struct PciDevice {
     pub bar4: u32,
     /// BAR5 raw value from config register 0x24.
     pub bar5: u32,
-    /// Interrupt line from config register 0x3C[7:0].
+    /// Interrupt line from config register 0x3C\[7:0\].
     pub irq_line: u8,
     /// Header type (0 = endpoint, 1 = PCI-to-PCI bridge).
     pub header_type: u8,
@@ -206,7 +206,7 @@ impl ScanResult {
 /// Scan all reachable PCI buses, traversing PCI-to-PCI bridges.
 ///
 /// Starts at bus 0 and recursively follows every bridge's secondary bus.
-/// A depth limit of [`MAX_BRIDGE_DEPTH`] prevents runaway recursion on
+/// A depth limit of `MAX_BRIDGE_DEPTH` prevents runaway recursion on
 /// misconfigured topologies.
 ///
 /// # Safety

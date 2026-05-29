@@ -3,7 +3,7 @@
 //! This module defines the vendor-neutral types and traits that the rest of
 //! OMNI OS uses to run tensor workloads. Callers never see whether inference
 //! runs on CPU AVX-512, NVIDIA CUDA, or an Apple Neural Engine — they just
-//! call [`TensorBackend::execute`].
+//! call [`crate::tensor::TensorBackend::execute`].
 //!
 //! # Design overview
 //!
@@ -32,7 +32,7 @@
 //!
 //! # Async overhead
 //!
-//! [`TensorBackend`] is decorated with `#[async_trait]`, which boxes the
+//! [`crate::tensor::TensorBackend`] is decorated with `#[async_trait]`, which boxes the
 //! returned future (`Box<dyn Future>`).  This allocation is intentional:
 //! Phase 2 targets correctness, not peak throughput.  A zero-copy,
 //! poll-based version is planned for Phase 4 after the SIMD dispatch layer

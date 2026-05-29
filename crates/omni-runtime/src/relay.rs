@@ -1,19 +1,19 @@
 //! AI Syscall IPC Relay.
 //!
 //! This module bridges kernel AI syscalls (numbers 80–84) to the
-//! [`InferencePipeline`][crate::inference::InferencePipeline]. When the kernel
+//! [`crate::inference::InferencePipeline`]. When the kernel
 //! receives an `AiInvoke`, `AiStream`, `AiEmbed`, `AiClassify`, or
-//! `AiTranscribe` syscall it packages it into an [`AiSyscallRequest`] and
+//! `AiTranscribe` syscall it packages it into an [`crate::relay::AiSyscallRequest`] and
 //! hands it to the user-space runtime via IPC. The runtime calls
-//! [`AiIpcRelay::dispatch`] which routes the request through the pipeline and
-//! returns an [`AiSyscallResponse`] to be written back to the calling process.
+//! [`crate::relay::AiIpcRelay::dispatch`] which routes the request through the pipeline and
+//! returns an [`crate::relay::AiSyscallResponse`] to be written back to the calling process.
 //!
 //! ## Design notes
 //!
 //! - The relay never panics on malformed input: every error path returns a
 //!   structured error response so the kernel can surface `EINVAL` or
 //!   `EIO` instead of crashing.
-//! - `model_id_bytes` in [`AiSyscallRequest`] carries only 16 bytes because
+//! - `model_id_bytes` in [`crate::relay::AiSyscallRequest`] carries only 16 bytes because
 //!   the kernel ABI uses a compact form. The relay zero-extends them to the
 //!   32-byte [`ModelId`][omni_types::ModelId] by placing the 16 bytes in the
 //!   high half and zeroing the low half. This mapping is deterministic and
@@ -281,7 +281,7 @@ impl AiIpcRelay {
     /// 2. Zero-extends `model_id_bytes` (16 bytes) to a 32-byte
     ///    [`ModelId`] by copying the compact bytes into the high half.
     /// 3. Builds an [`InferenceRequest`] and calls `pipeline.infer`.
-    /// 4. Converts the [`InferenceResponse`] into an [`AiSyscallResponse`].
+    /// 4. Converts the [`crate::inference::InferenceResponse`] into an [`AiSyscallResponse`].
     /// 5. On any error, returns a structured error response (never panics).
     ///
     /// # Syscall routing

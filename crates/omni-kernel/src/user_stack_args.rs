@@ -27,7 +27,7 @@
 //!
 //! All pointers are absolute virtual addresses calculated from `stack_top`.
 //! The layout is fully determined at construction time; no runtime patching
-//! is needed after [`build_stack_args`] returns.
+//! is needed after [`crate::user_stack_args::build_stack_args`] returns.
 //!
 //! ## ABI reference
 //!

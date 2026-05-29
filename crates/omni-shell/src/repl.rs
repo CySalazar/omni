@@ -3,13 +3,13 @@
 //! This module drives the interactive shell session. It provides two public
 //! entry points:
 //!
-//! - [`format_prompt`]: formats the shell prompt string by expanding `PS1`
+//! - [`crate::repl::format_prompt`]: formats the shell prompt string by expanding `PS1`
 //!   escape sequences.
-//! - [`process_line`]: runs a single input line through the full shell
+//! - [`crate::repl::process_line`]: runs a single input line through the full shell
 //!   pipeline — tokenise → expand aliases → parse → execute.
 //!
-//! The [`Shell`] struct bundles the environment, line editor, and current
-//! working directory. In a live session the REPL owner calls [`process_line`]
+//! The [`crate::repl::Shell`] struct bundles the environment, line editor, and current
+//! working directory. In a live session the REPL owner calls [`crate::repl::process_line`]
 //! for every line obtained from the line editor, destructures the returned
 //! `(exit_code, output)` tuple, writes `output` to the console, and uses
 //! `exit_code` to update `$?`.
@@ -241,8 +241,8 @@ pub fn process_line(
 /// The interactive shell instance.
 ///
 /// Bundles together:
-/// - The runtime environment ([`ShellEnv`]).
-/// - The interactive line editor ([`LineEditor`]).
+/// - The runtime environment ([`crate::env::ShellEnv`]).
+/// - The interactive line editor ([`crate::line_editor::LineEditor`]).
 /// - The current working directory.
 ///
 /// # Examples

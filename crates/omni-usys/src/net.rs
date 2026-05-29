@@ -9,16 +9,16 @@
 //! # Design
 //!
 //! Every public item in this module is either:
-//! - A syscall number constant in [`syscall_nr`], or
+//! - A syscall number constant in [`crate::net::syscall_nr`], or
 //! - A *request builder* — a free function that constructs a
-//!   [`SocketRequest`] variant. Builders are deliberately trivial (one
+//!   `SocketRequest` variant. Builders are deliberately trivial (one
 //!   line each) so that callers never have to name the internal struct
 //!   fields and so that the call site reads like a real POSIX function.
-//! - [`encode_socket_request`] / [`decode_socket_response`] — canonical
+//! - [`crate::net::encode_socket_request`] / [`crate::net::decode_socket_response`] — canonical
 //!   wire encoding wrappers that go through [`omni_types::wire`] (the
 //!   single audit point for postcard encoding in this workspace).
-//! - [`errno_from_raw`] — maps raw `u64` errno codes from the kernel's
-//!   two-register return path to the typed [`NetErrno`] enum.
+//! - [`crate::net::errno_from_raw`] — maps raw `u64` errno codes from the kernel's
+//!   two-register return path to the typed [`crate::net::NetErrno`] enum.
 //!
 //! # Feature flags
 //!
@@ -32,10 +32,10 @@
 //!
 //! Kernel syscalls 103–113 are *thin capability-checked relays*: the kernel
 //! validates that the caller holds the `Net` capability token, serialises
-//! the arguments into a [`SocketRequest`] (using the same postcard encoding
-//! defined in [`encode_socket_request`]), and forwards the message to the
+//! the arguments into a `SocketRequest` (using the same postcard encoding
+//! defined in [`crate::net::encode_socket_request`]), and forwards the message to the
 //! `omni-net` user-space network service over the `omni.svc.net.stack` IPC
-//! channel. The service replies with a [`SocketResponse`] that the kernel
+//! channel. The service replies with a `SocketResponse` that the kernel
 //! deserialises and surfaces to the calling process.
 //!
 //! # Examples

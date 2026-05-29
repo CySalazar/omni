@@ -1,6 +1,6 @@
 //! Inter-agent communication protocol.
 //!
-//! All communication between agents uses a structured [`AgentMessage`]
+//! All communication between agents uses a structured [`crate::message::AgentMessage`]
 //! envelope that carries sender identity, capability tokens, and the
 //! current operational mode. Messages are validated by the receiver
 //! before processing.

@@ -3,22 +3,22 @@
 //! This module is the primary **external** interface through which application
 //! code drives the OMNI OS AI runtime.  It provides:
 //!
-//! - [`InferenceSession`] — a state-machine record representing one client
+//! - [`crate::serving::InferenceSession`] — a state-machine record representing one client
 //!   session over its lifetime (`Open` → `Active` → `Closing` → `Closed`).
-//! - [`SessionManager`] — owns the live session map and integrates with the
+//! - [`crate::serving::SessionManager`] — owns the live session map and integrates with the
 //!   [`crate::batch::BatchScheduler`] to enqueue and drain inference work.
-//! - [`ServingRequest`] / [`ServingResponse`] / [`StreamChunk`] — wire types
+//! - [`crate::serving::ServingRequest`] / [`crate::serving::ServingResponse`] / [`crate::serving::StreamChunk`] — wire types
 //!   distinct from the lower-level [`crate::inference`] types; serializable
 //!   with `postcard` via [`omni_types::wire`].
-//! - [`SessionCapability`] — a minimal opaque token used to gate every entry
+//! - [`crate::serving::SessionCapability`] — a minimal opaque token used to gate every entry
 //!   point.  See the [Capability gating](#capability-gating) section below.
 //!
 //! # Capability gating
 //!
 //! Every public entry point checks that the caller supplies a
-//! [`SessionCapability`] that is *well-formed*: its inner byte slice is
+//! [`crate::serving::SessionCapability`] that is *well-formed*: its inner byte slice is
 //! non-empty, the first byte is non-zero, and the total length is in the range
-//! `[`[`SessionCapability::MIN_LEN`]`, `[`SessionCapability::MAX_LEN`]`]`.
+//! `[`[`crate::serving::SessionCapability::MIN_LEN`]`, `[`crate::serving::SessionCapability::MAX_LEN`]`]`.
 //!
 //! ## Simplification notice (Sprint 11.a)
 //!
@@ -50,12 +50,12 @@
 //!
 //! # Integration with `BatchScheduler`
 //!
-//! [`SessionManager::submit`] converts a [`ServingRequest`] into a
+//! [`crate::serving::SessionManager::submit`] converts a [`crate::serving::ServingRequest`] into a
 //! [`crate::batch::InferenceRequest`] and enqueues it into the owned
 //! [`crate::batch::BatchScheduler`].  After a caller drives the scheduler
-//! forward via [`SessionManager::step`], completed tokens are routed back to
+//! forward via [`crate::serving::SessionManager::step`], completed tokens are routed back to
 //! the originating session's token buffer so that
-//! [`SessionManager::stream_tokens`] can deliver them.
+//! [`crate::serving::SessionManager::stream_tokens`] can deliver them.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 

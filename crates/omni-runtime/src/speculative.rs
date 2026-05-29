@@ -28,7 +28,7 @@
 //! Sampling uses the same xorshift32 seeding strategy as [`crate::decode`]:
 //! the seed is derived from the bit pattern of the first element of the
 //! probability vector.  This makes sampling reproducible for identical inputs,
-//! which is desirable for testing.  See [`sample_from_distribution`] for
+//! which is desirable for testing.  See `sample_from_distribution` for
 //! details.
 //!
 //! # Usage

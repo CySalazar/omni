@@ -18,7 +18,7 @@
 //! determined by the order of fields in each struct — changing field
 //! order is a breaking wire-format change and requires an OIP update.
 //!
-//! ### `BlkRequest` wire layout ([`BLK_REQUEST_WIRE_SIZE`] = 29 bytes)
+//! ### `BlkRequest` wire layout ([`crate::blk::BLK_REQUEST_WIRE_SIZE`] = 29 bytes)
 //!
 //! ```text
 //! Offset   Size   Field
@@ -30,7 +30,7 @@
 //! 21        8 B   request_id    (u64 LE — caller correlation ID)
 //! ```
 //!
-//! ### `BlkResponse` wire layout ([`BLK_RESPONSE_WIRE_SIZE`] = 13 bytes)
+//! ### `BlkResponse` wire layout ([`crate::blk::BLK_RESPONSE_WIRE_SIZE`] = 13 bytes)
 //!
 //! ```text
 //! Offset   Size   Field

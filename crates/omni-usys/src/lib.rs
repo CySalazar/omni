@@ -66,7 +66,7 @@ use alloc::{string::String, vec::Vec};
 /// Socket API wrappers for the OMNI OS userspace network ABI (N4.1).
 ///
 /// Provides encoding helpers, request builder functions, and the
-/// [`net::syscall_nr`] constants that map to kernel syscalls 103–113.
+/// [`crate::net::syscall_nr`] constants that map to kernel syscalls 103–113.
 pub mod net;
 
 // ---------------------------------------------------------------------------

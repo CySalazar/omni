@@ -6,7 +6,7 @@
 //!
 //! ## Design rationale
 //!
-//! The [`ProcessTable`] is a flat `BTreeMap<u64, ProcessEntry>` keyed on
+//! The [`crate::process_table::ProcessTable`] is a flat `BTreeMap<u64, ProcessEntry>` keyed on
 //! `TaskId.0`. A `BTreeMap` is chosen over `HashMap` because:
 //!
 //! - It is available from `alloc` with no additional dependencies and

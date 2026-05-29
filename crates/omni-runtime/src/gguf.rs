@@ -17,7 +17,7 @@
 //! 3. **Tensor info entries**: one entry per tensor carrying name, shape,
 //!    data type, and byte offset within the data region.
 //! 4. **Alignment padding**: the data region starts at the next multiple of
-//!    [`GGUF_DEFAULT_ALIGNMENT`] after the last tensor info entry.
+//!    [`GGUF_DEFAULT_ALIGNMENT`](crate::gguf::GGUF_DEFAULT_ALIGNMENT) after the last tensor info entry.
 //! 5. **Tensor data**: contiguous raw bytes for all tensors, each individually
 //!    aligned within this region.
 //!
@@ -27,9 +27,9 @@
 //!
 //! ## Security properties
 //!
-//! - String lengths are capped at [`MAX_STRING_LEN`] (1 MiB) to prevent
+//! - String lengths are capped at `MAX_STRING_LEN` (1 MiB) to prevent
 //!   allocation exhaustion from a malicious file.
-//! - Tensor count and metadata KV count are capped at [`MAX_TENSOR_COUNT`]
+//! - Tensor count and metadata KV count are capped at `MAX_TENSOR_COUNT`
 //!   (100 000) for the same reason.
 //! - No `unsafe` code is used. All slice accesses go through bounds-checked
 //!   helpers that return `Err` rather than panic on out-of-bounds.
@@ -401,8 +401,8 @@ pub struct GgufHeader {
 ///
 /// # Security
 ///
-/// - String lengths are capped at 1 MiB ([`MAX_STRING_LEN`]).
-/// - Tensor count and metadata KV count are capped at 100 000 ([`MAX_TENSOR_COUNT`]).
+/// - String lengths are capped at 1 MiB (`MAX_STRING_LEN`).
+/// - Tensor count and metadata KV count are capped at 100 000 (`MAX_TENSOR_COUNT`).
 /// - All reads are bounds-checked; the function never panics on malformed input.
 ///
 /// # Errors
@@ -411,7 +411,7 @@ pub struct GgufHeader {
 /// - `data` is too short to contain even the fixed-size header fields.
 /// - The magic number does not equal [`GGUF_MAGIC`].
 /// - The version is not 2 or 3.
-/// - Tensor count or metadata count exceeds [`MAX_TENSOR_COUNT`].
+/// - Tensor count or metadata count exceeds `MAX_TENSOR_COUNT`.
 /// - Any metadata or tensor field cannot be decoded (truncated data, unknown
 ///   type discriminant, invalid UTF-8, etc.).
 ///

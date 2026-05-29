@@ -9,18 +9,18 @@
 //!
 //! | Context | Triggered when |
 //! |---|---|
-//! | [`CompletionContext::Command`] | The word under the cursor is the first token on the line. |
-//! | [`CompletionContext::FilePath`] | Any subsequent word position. |
-//! | [`CompletionContext::Variable`] | The word starts with `$`. |
+//! | [`crate::completion::CompletionContext::Command`] | The word under the cursor is the first token on the line. |
+//! | [`crate::completion::CompletionContext::FilePath`] | Any subsequent word position. |
+//! | [`crate::completion::CompletionContext::Variable`] | The word starts with `$`. |
 //!
 //! ## Algorithm
 //!
-//! 1. [`detect_context`] scans backwards from `cursor` to find the current
+//! 1. [`crate::completion::detect_context`] scans backwards from `cursor` to find the current
 //!    word and classify it.
-//! 2. [`complete`] dispatches to the appropriate completion strategy and
+//! 2. [`crate::completion::complete`] dispatches to the appropriate completion strategy and
 //!    collects candidates:
 //!    - **Command**: built-ins list + each directory on `$PATH` (via
-//!      [`FsQuery::list_dir`]).
+//!      [`crate::glob::FsQuery::list_dir`]).
 //!    - **FilePath**: split `partial` into directory/prefix, list the
 //!      directory, filter by prefix.
 //!    - **Variable**: iterate environment variable names, filter by prefix.

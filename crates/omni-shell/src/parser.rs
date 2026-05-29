@@ -12,7 +12,7 @@
 //!
 //! ## Design decisions
 //!
-//! - [`Token::Newline`] is treated identically to [`Token::Semicolon`].
+//! - [`crate::lexer::Token::Newline`] is treated identically to [`crate::lexer::Token::Semicolon`].
 //! - Consecutive separators (e.g. `; ;`) are collapsed: empty segments are
 //!   silently skipped rather than returned as errors.
 //! - A `Word` token is classified as an environment override (`VAR=val`) only
@@ -20,7 +20,7 @@
 //!   identifier (`[A-Za-z_][A-Za-z0-9_]*`), **and** (c) the immediately
 //!   following token is a word-class token — ensuring that `VAR=val` alone
 //!   on the command line is treated as a command, not a dangling override.
-//! - [`Token::EnvVar`] tokens are preserved as the string `"$NAME"` inside
+//! - [`crate::lexer::Token::EnvVar`] tokens are preserved as the string `"$NAME"` inside
 //!   `argv`; actual substitution is deferred to [`crate::env::ShellEnv::expand`].
 
 #[cfg(not(feature = "std"))]

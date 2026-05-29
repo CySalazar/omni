@@ -5,7 +5,7 @@
 //!
 //! 1. Verify `/bin/omni-shell` exists in the VFS (placed by
 //!    [`crate::initramfs::load_into_vfs`]).
-//! 2. Build an [`InitProcessArgs`] with the canonical argv and envp.
+//! 2. Build an [`crate::init_process::InitProcessArgs`] with the canonical argv and envp.
 //! 3. Hand the args to the process-spawner, which creates PID 1.
 //!
 //! The module is **not** gated behind `bare-metal` — the argument

@@ -9,12 +9,12 @@
 //!
 //! - **`f64` for epsilon**: Standard in the DP literature (e.g. Dwork & Roth
 //!   2014).  Floating-point accumulation error is mitigated by the exhaustion
-//!   guard in [`PrivacyBudgetAccountant::consume`], which uses `>=` rather than
+//!   guard in [`crate::privacy::PrivacyBudgetAccountant::consume`], which uses `>=` rather than
 //!   exact equality.
 //! - **Per-agent sub-budgets**: Each agent receives an explicit epsilon
 //!   allocation.  The sum of all allocations MUST NOT exceed `epsilon_max`;
-//!   [`PrivacyBudgetAccountant::allocate_agent`] enforces this invariant.
-//! - **Immutable ledger**: [`PrivacyEvent`] entries are append-only and are
+//!   [`crate::privacy::PrivacyBudgetAccountant::allocate_agent`] enforces this invariant.
+//! - **Immutable ledger**: [`crate::privacy::PrivacyEvent`] entries are append-only and are
 //!   never removed.  This gives a full audit trail for the lifetime of the
 //!   accountant.
 //! - **No `Mutex`**: `PrivacyBudgetAccountant` is intentionally `!Send +

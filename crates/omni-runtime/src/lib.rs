@@ -719,7 +719,7 @@ pub mod model {
 
 /// Inference orchestration on the local node.
 ///
-/// This module provides the [`InferencePipeline`] which dispatches inference
+/// This module provides the [`crate::inference::InferencePipeline`] which dispatches inference
 /// requests to the appropriate loaded model. The tensor backend is a stub in
 /// Phase 2 Stream 1; it returns an empty output vector and records the
 /// round-trip latency. A real backend (candle or tch) will replace the stub
@@ -926,16 +926,16 @@ pub mod inference {
 ///
 /// ## Phase 2 policy engine
 ///
-/// Sprint 11.a introduces [`RoutingPolicy`], [`TierDecision`], and
-/// [`TierError`] alongside the new [`TierRouter::route_decision`] method.
+/// Sprint 11.a introduces [`crate::router::RoutingPolicy`], [`crate::router::TierDecision`], and
+/// [`crate::router::TierError`] alongside the new [`crate::router::TierRouter::route_decision`] method.
 /// The Phase 2 contract (OIP-Phase2-Entry-021 § S2.1) mandates that the
-/// router **only** successfully routes to [`ExecutionTier::Local`] (Tier 0).
+/// router **only** successfully routes to [`crate::router::ExecutionTier::Local`] (Tier 0).
 /// Tier 1 and Tier 2 are structurally reserved but not yet implemented;
 /// any workload that would require escalation is rejected with
-/// [`TierError::TierUnavailable`] so the caller can apply graceful
+/// [`crate::router::TierError::TierUnavailable`] so the caller can apply graceful
 /// degradation logic.
 ///
-/// The legacy [`TierRouter::route`] method remains unchanged and is kept for
+/// The legacy [`crate::router::TierRouter::route`] method remains unchanged and is kept for
 /// backward compatibility with all existing callers.
 pub mod router {
     use thiserror::Error;
@@ -1372,7 +1372,7 @@ pub mod router {
 
 /// Workload scheduling across accelerators.
 ///
-/// This module provides a stub [`WorkloadScheduler`] that will grow into a
+/// This module provides a stub [`crate::scheduler::WorkloadScheduler`] that will grow into a
 /// full cost-model-driven accelerator scheduler in a later Phase 2 stream.
 /// For now it is a placeholder to establish the public API shape so other
 /// modules can depend on it without needing implementation-level changes.

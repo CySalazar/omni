@@ -1,16 +1,16 @@
 //! Continuous batching inference scheduler for concurrent LLM request serving.
 //!
 //! This module implements a priority-aware batch scheduler that serves multiple
-//! inference requests concurrently.  Each call to [`BatchScheduler::step`] runs
+//! inference requests concurrently.  Each call to [`crate::batch::BatchScheduler::step`] runs
 //! one decode step across all active requests, advancing every request by one
 //! token.  Requests are promoted from a pending queue to the active batch by
-//! [`BatchScheduler::schedule`], which respects `max_batch_size`, a total-token
+//! `BatchScheduler::schedule`, which respects `max_batch_size`, a total-token
 //! memory budget, and optional priority-based preemption.
 //!
 //! # Sampling
 //!
 //! Per-request token sampling replicates the temperature + top-k + xorshift32
-//! strategy from [`crate::decode`].  See [`sample_token`] for the full
+//! strategy from [`crate::decode`].  See `sample_token` for the full
 //! procedure.
 //!
 //! # Usage
@@ -390,7 +390,7 @@ impl BatchScheduler {
     /// Run one decode step across all active requests.
     ///
     /// Steps performed:
-    /// 1. Call [`schedule`][Self::schedule] to promote queued → active.
+    /// 1. Call `schedule` to promote queued → active.
     /// 2. Gather each active request's full token sequence (prompt + generated).
     /// 3. Invoke `forward_fn` with the batch; receive per-request logit vectors.
     /// 4. Sample one token per request using temperature + top-k.

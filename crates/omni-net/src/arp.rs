@@ -29,7 +29,7 @@
 //!
 //! [`Ipv4Addr`] does not implement [`Ord`], so the internal table uses
 //! `u32` keys (big-endian representation of the address) via the private
-//! helper [`ip_key`].
+//! helper `ip_key`.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;

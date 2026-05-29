@@ -1,6 +1,6 @@
 //! Environment variable resolution and expansion for the OMNI shell.
 //!
-//! This module provides [`ShellEnv`], the runtime variable store for an
+//! This module provides [`crate::env::ShellEnv`], the runtime variable store for an
 //! interactive shell session. It tracks:
 //!
 //! - Named shell variables (exported or not).
@@ -10,7 +10,7 @@
 //!
 //! ## Variable expansion
 //!
-//! [`ShellEnv::expand`] performs `$VAR`, `${VAR}`, and `${VAR:-default}`
+//! [`crate::env::ShellEnv::expand`] performs `$VAR`, `${VAR}`, and `${VAR:-default}`
 //! substitution on arbitrary strings. It is intentionally simple: it does not
 //! support arithmetic expansion, command substitution, or nested braces.
 //! Those features will be added in later sprint tasks.

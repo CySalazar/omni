@@ -1,6 +1,6 @@
 //! Per-session audit log for shell commands.
 //!
-//! This module provides [`AuditLog`], a lightweight append-only log that
+//! This module provides [`crate::audit::AuditLog`], a lightweight append-only log that
 //! records every command processed by the REPL along with its classified
 //! intent, exit code, and a caller-supplied monotonic timestamp.
 //!

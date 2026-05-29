@@ -20,8 +20,8 @@
 //!
 //! ## Sequence number arithmetic
 //!
-//! All comparisons use wrapping arithmetic.  Helper functions [`seq_lt`] and
-//! [`seq_le`] encapsulate this to prevent off-by-one or comparison errors.
+//! All comparisons use wrapping arithmetic.  Helper functions `seq_lt` and
+//! `seq_le` encapsulate this to prevent off-by-one or comparison errors.
 //!
 //! ## Limitations (v0.2)
 //!
@@ -173,7 +173,7 @@ pub struct TcpControlBlock {
 /// a [`BTreeMap`] key (since [`SocketApiAddr`] itself does not implement
 /// [`Ord`]).
 ///
-/// Use [`encode_addr_key`] and [`decode_addr_key`] to convert.
+/// Use `encode_addr_key` and `decode_addr_key` to convert.
 pub type TcpConnectionKey = (SocketApiAddr, SocketApiAddr);
 
 /// Encode a [`SocketApiAddr`] as a sortable `u64`.
@@ -348,7 +348,7 @@ impl TcpControlBlock {
 /// The TCP socket layer: connection table, listeners, and the state machine.
 ///
 /// Internally connections are stored in a `BTreeMap<(u64, u64), TcpControlBlock>` where
-/// the key is the encoded `(local, remote)` pair (see [`encode_conn_key`]), because
+/// the key is the encoded `(local, remote)` pair (see `encode_conn_key`), because
 /// [`SocketApiAddr`] does not implement [`Ord`].
 ///
 /// # Examples

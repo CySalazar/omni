@@ -1,4 +1,4 @@
-//! GGUF tensor weight extraction into HAL [`TensorBuffer`]s.
+//! GGUF tensor weight extraction into HAL [`omni_hal::tensor::TensorBuffer`]s.
 //!
 //! This module bridges the GGUF parser ([`crate::gguf`]) and the HAL tensor
 //! abstraction ([`omni_hal::tensor`]). It extracts raw bytes for each tensor
@@ -10,7 +10,7 @@
 //! - **F32**: passed through as-is (zero-copy byte slice → owned `Vec`).
 //! - **F16**: each 16-bit half-precision value is expanded to `f32`.
 //! - **BF16**: each 16-bit bfloat16 value is expanded to `f32`.
-//! - **I8**: stored as [`TensorDtype::I8`] without conversion.
+//! - **I8**: stored as [`omni_hal::tensor::TensorDtype::I8`] without conversion.
 //! - **Q8_0**: real dequantization (Sprint 8). Block layout: 2-byte f16 scale
 //!   + 32 × i8 quantized values = 34 bytes/block.
 //!   Output formula: `x[i] = q[i] * scale`.

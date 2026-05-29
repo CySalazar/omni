@@ -1,21 +1,21 @@
 //! Orchestrator → Runtime dispatch bridge.
 //!
-//! This module provides [`OrchestratorBridge`], which sits between the
+//! This module provides [`crate::orchestrator_bridge::OrchestratorBridge`], which sits between the
 //! five-agent Orchestrator (in `omni-agent`) and the inference pipeline.
 //! When the Orchestrator classifies an intent as requiring AI inference it
-//! calls [`OrchestratorBridge::process_intent`], which:
+//! calls [`crate::orchestrator_bridge::OrchestratorBridge::process_intent`], which:
 //!
-//! 1. Pre-processes the intent text through [`PreprocessingPipeline`] to
+//! 1. Pre-processes the intent text through [`crate::preprocessing::PreprocessingPipeline`] to
 //!    remove PII before it reaches the model.
-//! 2. Packages the sanitised text as an [`AiSyscallRequest`] and forwards
-//!    it to the [`AiIpcRelay`].
+//! 2. Packages the sanitised text as an [`crate::relay::AiSyscallRequest`] and forwards
+//!    it to the [`crate::relay::AiIpcRelay`].
 //! 3. Post-processes the response by calling
-//!    [`PreprocessingPipeline::detokenize_pii`] on the raw output bytes.
-//! 4. Returns a structured [`IntentResult`] to the caller.
+//!    [`crate::preprocessing::PreprocessingPipeline::detokenize_pii`] on the raw output bytes.
+//! 4. Returns a structured [`crate::orchestrator_bridge::IntentResult`] to the caller.
 //!
 //! ## Intent keyword matching
 //!
-//! [`OrchestratorBridge::requires_inference`] uses a static keyword list to
+//! [`crate::orchestrator_bridge::OrchestratorBridge::requires_inference`] uses a static keyword list to
 //! decide whether an intent warrants an AI call. This avoids a circular
 //! dependency (calling the model to decide whether to call the model). The
 //! keywords are chosen to cover the dominant intent categories from
@@ -172,7 +172,7 @@ impl OrchestratorBridge {
     /// Determine whether an intent string requires AI inference.
     ///
     /// Returns `true` if `intent` contains any keyword from the
-    /// [`INFERENCE_KEYWORDS`] list (case-insensitive match). Returns `false`
+    /// `INFERENCE_KEYWORDS` list (case-insensitive match). Returns `false`
     /// for simple system commands that can be handled deterministically.
     ///
     /// # Example

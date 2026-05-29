@@ -13,13 +13,13 @@
 //!   audit layer never sees the original text.
 //! - **Monotone insertion.**  Records are appended in call order.  The ring
 //!   buffer evicts the *oldest* record when full, preserving the most recent
-//!   [`MAX_AUDIT_RECORDS`] entries.
+//!   [`crate::audit::MAX_AUDIT_RECORDS`] entries.
 //! - **No `unsafe` code.**  The ring buffer is implemented entirely in safe
 //!   Rust.
 //!
 //! # Wire format
 //!
-//! [`AuditRecord`] derives `serde::Serialize` / `serde::Deserialize` and
+//! [`crate::audit::AuditRecord`] derives `serde::Serialize` / `serde::Deserialize` and
 //! round-trips through the workspace canonical wire encoding
 //! ([`omni_types::wire::encode_canonical`] / [`omni_types::wire::decode_canonical`]).
 //! The encoding is `postcard` 1.x with default options (LEB128 length

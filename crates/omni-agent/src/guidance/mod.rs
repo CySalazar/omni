@@ -5,13 +5,13 @@
 //!
 //! | OIP-007 component | Module |
 //! |--------------------|--------|
-//! | Trigger sources (§1) | [`triggers`] |
-//! | Autonomy levels (§2) | [`autonomy`] |
-//! | Mandatory-escalation taxonomy (§3) | [`escalation`] |
-//! | Impact Dashboard (§4) | [`impact`] |
-//! | Plain-Language Explanation Engine (§5) | [`explanation`] |
-//! | Undo window (§6) | [`undo`] |
-//! | Audit log (§7) | [`audit`] |
+//! | Trigger sources (§1) | [`crate::guidance::triggers`] |
+//! | Autonomy levels (§2) | [`crate::guidance::autonomy`] |
+//! | Mandatory-escalation taxonomy (§3) | [`crate::guidance::escalation`] |
+//! | Impact Dashboard (§4) | [`crate::guidance::impact`] |
+//! | Plain-Language Explanation Engine (§5) | [`crate::guidance::explanation`] |
+//! | Undo window (§6) | [`crate::guidance::undo`] |
+//! | Audit log (§7) | [`crate::guidance::audit`] |
 //!
 //! The Guidance Agent extends OIP-007 with:
 //! - **Veto explanation**: plain-language rendering of Security Agent veto

@@ -8,10 +8,10 @@
 //!
 //! ## Registry
 //!
-//! [`CapabilityForwardRegistry`] contains the static per-command scope
-//! table. The shell queries it with the bare command name (no path) before
-//! spawning. Unknown commands are denied by the shell layer until an
-//! explicit scope entry is added.
+//! [`crate::capability_forward::CapabilityForwardRegistry`] contains the
+//! static per-command scope table. The shell queries it with the bare
+//! command name (no path) before spawning. Unknown commands are denied by
+//! the shell layer until an explicit scope entry is added.
 //!
 //! ## Phase 1 scope
 //!

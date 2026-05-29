@@ -7,19 +7,20 @@
 //!
 //! ## Architecture
 //!
-//! [`KernelState`] bundles every subsystem reference a syscall handler needs.
-//! Each `handle_*` method is a pure function of that state: given the syscall
-//! arguments it mutates the relevant subsystem and returns a [`SyscallReturn`].
-//! The bare-metal entry path constructs a `KernelState` view over the
-//! per-process globals and calls the appropriate handler; the test suite
-//! constructs isolated instances via [`KernelState::new_for_test`].
+//! [`crate::syscall_handlers::KernelState`] bundles every subsystem reference a
+//! syscall handler needs. Each `handle_*` method is a pure function of that
+//! state: given the syscall arguments it mutates the relevant subsystem and
+//! returns a [`crate::syscall::SyscallReturn`]. The bare-metal entry path
+//! constructs a `KernelState` view over the per-process globals and calls the
+//! appropriate handler; the test suite constructs isolated instances via
+//! [`crate::syscall_handlers::KernelState::new_for_test`].
 //!
 //! ## Error mapping
 //!
 //! Errors from the subsystem layer (e.g. [`crate::vfs::VfsError`],
 //! [`crate::pipe::PipeError`]) are mapped to POSIX errno codes defined in
 //! [`crate::syscall::syscall_errno`] and returned in the `rdx` field of
-//! [`SyscallReturn`].
+//! [`crate::syscall::SyscallReturn`].
 //!
 //! ## `no_std` compatibility
 //!

@@ -15,7 +15,7 @@
 //! ## Pipeline model
 //!
 //! Pipelines are executed left-to-right. The output of each stage is held in
-//! [`ExecContext::output`] and is available for the next stage to consume.
+//! [`crate::executor::ExecContext::output`] and is available for the next stage to consume.
 //! Full OS-level piping will be added with the kernel process layer.
 
 use alloc::collections::BTreeMap;

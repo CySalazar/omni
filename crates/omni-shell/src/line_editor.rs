@@ -1,32 +1,32 @@
 //! Interactive line editor with cursor movement, history, and ANSI rendering.
 //!
-//! This module provides [`LineEditor`], the line-editing layer consumed by the
-//! REPL. It accepts raw byte input, maps byte sequences to [`EditAction`]
-//! values via [`map_key`], and maintains a character buffer with a logical
+//! This module provides [`crate::line_editor::LineEditor`], the line-editing layer consumed by the
+//! REPL. It accepts raw byte input, maps byte sequences to [`crate::line_editor::EditAction`]
+//! values via [`crate::line_editor::map_key`], and maintains a character buffer with a logical
 //! cursor position.
 //!
 //! ## Key bindings
 //!
 //! | Byte sequence | Action |
 //! |---|---|
-//! | Printable ASCII / UTF-8 | [`EditAction::Insert`] |
-//! | `\x7f` or `\x08` | [`EditAction::Backspace`] |
-//! | `\x1b[A` | [`EditAction::HistoryUp`] |
-//! | `\x1b[B` | [`EditAction::HistoryDown`] |
-//! | `\x1b[C` | [`EditAction::MoveRight`] |
-//! | `\x1b[D` | [`EditAction::MoveLeft`] |
-//! | `\x1b[H` or `\x1b[1~` | [`EditAction::Home`] |
-//! | `\x1b[F` or `\x1b[4~` | [`EditAction::End`] |
-//! | `\x1b[3~` | [`EditAction::Delete`] |
-//! | `\x03` | [`EditAction::Interrupt`] |
-//! | `\x04` | [`EditAction::Eof`] |
-//! | `\x09` | [`EditAction::Complete`] |
-//! | `\x0c` | [`EditAction::ClearScreen`] |
-//! | `\r` or `\n` | [`EditAction::Submit`] |
+//! | Printable ASCII / UTF-8 | [`crate::line_editor::EditAction::Insert`] |
+//! | `\x7f` or `\x08` | [`crate::line_editor::EditAction::Backspace`] |
+//! | `\x1b[A` | [`crate::line_editor::EditAction::HistoryUp`] |
+//! | `\x1b[B` | [`crate::line_editor::EditAction::HistoryDown`] |
+//! | `\x1b[C` | [`crate::line_editor::EditAction::MoveRight`] |
+//! | `\x1b[D` | [`crate::line_editor::EditAction::MoveLeft`] |
+//! | `\x1b[H` or `\x1b[1~` | [`crate::line_editor::EditAction::Home`] |
+//! | `\x1b[F` or `\x1b[4~` | [`crate::line_editor::EditAction::End`] |
+//! | `\x1b[3~` | [`crate::line_editor::EditAction::Delete`] |
+//! | `\x03` | [`crate::line_editor::EditAction::Interrupt`] |
+//! | `\x04` | [`crate::line_editor::EditAction::Eof`] |
+//! | `\x09` | [`crate::line_editor::EditAction::Complete`] |
+//! | `\x0c` | [`crate::line_editor::EditAction::ClearScreen`] |
+//! | `\r` or `\n` | [`crate::line_editor::EditAction::Submit`] |
 //!
 //! ## Rendering
 //!
-//! [`LineEditor::render_line`] produces a sequence of ANSI bytes that:
+//! [`crate::line_editor::LineEditor::render_line`] produces a sequence of ANSI bytes that:
 //! 1. Moves the cursor to column 0 (`\r`).
 //! 2. Erases from cursor to end of line (`\x1b[K`).
 //! 3. Writes the prompt.

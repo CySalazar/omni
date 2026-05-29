@@ -21,8 +21,8 @@
 //!
 //! # Streaming
 //!
-//! [`streaming_decode`] returns a synchronous [`Iterator`].  Each call to
-//! `next()` runs one transformer forward pass and yields one [`DecodeToken`].
+//! [`crate::decode::streaming_decode`] returns a synchronous [`Iterator`].  Each call to
+//! `next()` runs one transformer forward pass and yields one [`crate::decode::DecodeToken`].
 //!
 //! The loop terminates when any of the following conditions is met:
 //! - `max_new_tokens` have been generated.

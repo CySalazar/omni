@@ -26,7 +26,7 @@
 //!
 //! RFC 1035 §4.1.4 allows name pointers (top 2 bits = `11`). This
 //! implementation follows pointers but limits the hop count to
-//! [`MAX_POINTER_HOPS`] to avoid infinite loops on malformed responses.
+//! `MAX_POINTER_HOPS` to avoid infinite loops on malformed responses.
 //!
 //! ## Cache
 //!
@@ -87,7 +87,7 @@ pub struct DnsCacheEntry {
 pub enum DnsError {
     /// The response packet was shorter than expected.
     Truncated,
-    /// An answer section label pointer exceeded [`MAX_POINTER_HOPS`].
+    /// An answer section label pointer exceeded `MAX_POINTER_HOPS`.
     PointerLoop,
     /// The DNS server returned a non-zero response code (RCODE).
     ServerError(u8),

@@ -268,7 +268,7 @@ struct ContainerState {
 /// `KvmEngine` implements the [`ContainerEngine`] trait with actual per-
 /// container lifecycle tracking. All container state is stored in an in-process
 /// `parking_lot::Mutex<HashMap>`, and all hypervisor operations are dispatched
-/// through the [`Hypervisor`](crate::hypervisor::Hypervisor) trait.
+/// through the [`crate::hypervisor::Hypervisor`] trait.
 ///
 /// For production use, supply a real KVM hypervisor implementation:
 /// ```rust,ignore

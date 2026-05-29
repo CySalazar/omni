@@ -12,10 +12,10 @@
 //!
 //! | Module | Commands |
 //! |--------|---------|
-//! | [`fs_cmds`] | `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `touch` |
-//! | [`text_cmds`] | `grep`, `head`, `tail`, `wc` |
-//! | [`sys_cmds`] | `uname`, `whoami`, `hostname`, `ps`, `kill` |
-//! | [`fs_info`] | `df`, `find` |
+//! | [`crate::commands::fs_cmds`] | `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `touch` |
+//! | [`crate::commands::text_cmds`] | `grep`, `head`, `tail`, `wc` |
+//! | [`crate::commands::sys_cmds`] | `uname`, `whoami`, `hostname`, `ps`, `kill` |
+//! | [`crate::commands::fs_info`] | `df`, `find` |
 
 pub mod fs_cmds;
 pub mod fs_info;

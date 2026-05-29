@@ -193,7 +193,7 @@ pub enum FsError {
 /// - `version` MUST equal [`OMNI_FS_VERSION`] (currently `1`).
 /// - `block_size` MUST equal [`BLOCK_SIZE_BYTES`] (`4096`).
 /// - `free_blocks` MUST be ≤ `total_blocks`.
-/// - `root_inode` is always [`ROOT_INODE_NUMBER`] (`1`) for new volumes.
+/// - `root_inode` is always `ROOT_INODE_NUMBER` (`1`) for new volumes.
 ///
 /// # Example
 ///
@@ -228,7 +228,7 @@ pub struct Superblock {
     pub free_blocks: u64,
     /// Total number of inodes allocated on this volume (including root).
     pub inode_count: u64,
-    /// Inode number of the root directory; always [`ROOT_INODE_NUMBER`] for
+    /// Inode number of the root directory; always `ROOT_INODE_NUMBER` for
     /// volumes formatted by [`InMemoryFs::format`].
     pub root_inode: u64,
     /// Creation timestamp in seconds since the OMNI OS HAL epoch.
@@ -264,7 +264,7 @@ pub enum FileType {
 /// An inode — the metadata record for a single file or directory.
 ///
 /// In the in-memory filesystem each inode is stored in
-/// [`InMemoryFs::inodes`] keyed by `inode_number`. The name is the
+/// `InMemoryFs::inodes` keyed by `inode_number`. The name is the
 /// basename component of the path; the full path is reconstructed via the
 /// `path_map`. On NVMe-backed volumes (Phase 3) inodes will be serialised
 /// and written to dedicated inode table blocks.
@@ -1007,7 +1007,7 @@ pub struct InMemoryFs {
     inodes: BTreeMap<u64, Inode>,
     /// Map from absolute path to inode number.
     ///
-    /// The root directory `"/"` always maps to [`ROOT_INODE_NUMBER`].
+    /// The root directory `"/"` always maps to `ROOT_INODE_NUMBER`.
     path_map: BTreeMap<String, u64>,
     /// Map from block number to a 4 KiB byte vector.
     ///
@@ -1025,7 +1025,7 @@ impl InMemoryFs {
     /// 4 KiB blocks.
     ///
     /// The root directory `"/"` is pre-created at inode
-    /// [`ROOT_INODE_NUMBER`] (`1`). Block 0 is reserved for the conceptual
+    /// `ROOT_INODE_NUMBER` (`1`). Block 0 is reserved for the conceptual
     /// superblock, so `free_blocks` starts at `total_blocks - 1`. The
     /// minimum sensible value is `total_blocks >= 2`; callers MAY pass `0`
     /// or `1`, in which case writes that require block allocation will

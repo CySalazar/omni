@@ -2,21 +2,23 @@
 //!
 //! ## Design
 //!
-//! Each pipe is a fixed-capacity ring buffer ([`PipeRing`]) identified by a
-//! [`PipeId`]. The buffer is backed by [`alloc::collections::VecDeque<u8>`]
-//! so allocation is deferred to first use and not charged at kernel-init time.
+//! Each pipe is a fixed-capacity ring buffer ([`crate::pipe::PipeRing`])
+//! identified by a [`crate::pipe::PipeId`]. The buffer is backed by
+//! [`alloc::collections::VecDeque<u8>`] so allocation is deferred to first
+//! use and not charged at kernel-init time.
 //!
-//! **Capacity:** 64 KiB per pipe ([`PIPE_CAPACITY`]).
+//! **Capacity:** 64 KiB per pipe ([`crate::pipe::PIPE_CAPACITY`]).
 //!
 //! **Blocking contract (kernel-level):**
-//! - A [`PipeRing::write`] that finds the buffer full returns `Ok(0)`. The
-//!   caller must call [`PipeRing::park_writer`] and yield the CPU; the
-//!   scheduler will wake it after a reader drains space.
-//! - A [`PipeRing::read`] that finds the buffer empty AND the write end still
-//!   open returns `Ok(0)`. The caller must call [`PipeRing::park_reader`] and
-//!   yield; the scheduler wakes it after a writer pushes data.
-//! - A [`PipeRing::read`] on an empty buffer whose write end is closed returns
-//!   `Ok(0)` — EOF signal.
+//! - A [`crate::pipe::PipeRing::write`] that finds the buffer full returns
+//!   `Ok(0)`. The caller must call [`crate::pipe::PipeRing::park_writer`] and
+//!   yield the CPU; the scheduler will wake it after a reader drains space.
+//! - A [`crate::pipe::PipeRing::read`] that finds the buffer empty AND the
+//!   write end still open returns `Ok(0)`. The caller must call
+//!   [`crate::pipe::PipeRing::park_reader`] and yield; the scheduler wakes it
+//!   after a writer pushes data.
+//! - A [`crate::pipe::PipeRing::read`] on an empty buffer whose write end is
+//!   closed returns `Ok(0)` — EOF signal.
 //!
 //! Wait-queue management is intentionally separated from the ring-buffer
 //! logic so the kernel scheduler can remain the sole authority over which
@@ -24,7 +26,8 @@
 //!
 //! ## Registry
 //!
-//! [`PipeRegistry`] is the global table mapping [`PipeId`] → [`PipeRing`].
+//! [`crate::pipe::PipeRegistry`] is the global table mapping
+//! [`crate::pipe::PipeId`] → [`crate::pipe::PipeRing`].
 //! The kernel holds a single registry instance in a static. Pipe IDs are
 //! monotonically incrementing u64 values; they are never recycled within a
 //! boot session to avoid PID/FD-aliasing bugs at the capability layer.

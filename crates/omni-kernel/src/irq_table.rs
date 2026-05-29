@@ -2,9 +2,9 @@
 //!
 //! Maintains a fixed-size `[Option<IrqBinding>; MAX_IRQ_VECTORS]` that maps
 //! hardware interrupt vectors to kernel IPC channels. When a hardware IRQ
-//! fires, the ISR trampoline calls [`irq_notify`] which looks up the binding
-//! and enqueues an 8-byte notification payload (the vector number as `u64` LE)
-//! on the bound IPC channel.
+//! fires, the ISR trampoline calls [`crate::irq_table::irq_notify`] which looks
+//! up the binding and enqueues an 8-byte notification payload (the vector
+//! number as `u64` LE) on the bound IPC channel.
 //!
 //! ## Design notes
 //!
@@ -17,7 +17,7 @@
 //!   need a spinlock when SMP lands (P6.4+).
 //! - **Vectors 0–31** are x86_64 CPU exceptions; they cannot be bound by
 //!   drivers. Only vectors `IRQ_VECTOR_DEVICE_BASE` (32) through
-//!   `MAX_IRQ_VECTORS - 1` (255) are valid for [`IrqTable::bind`].
+//!   `MAX_IRQ_VECTORS - 1` (255) are valid for [`crate::irq_table::IrqTable::bind`].
 
 /// Total number of interrupt vectors on `x86_64`.
 pub const MAX_IRQ_VECTORS: usize = 256;

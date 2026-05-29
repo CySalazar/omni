@@ -13,10 +13,11 @@
 //!
 //! ## Boot integration
 //!
-//! At boot the kernel calls [`parse_initramfs`] on the raw archive blob,
-//! then [`load_into_vfs`] to populate [`crate::vfs::InMemoryVfs`] under
-//! `/bin/`. The shell binary is expected at `/bin/omni-shell` and is
-//! located by [`crate::init_process`] during PID-1 setup.
+//! At boot the kernel calls [`crate::initramfs::parse_initramfs`] on the raw
+//! archive blob, then [`crate::initramfs::load_into_vfs`] to populate
+//! [`crate::vfs::InMemoryVfs`] under `/bin/`. The shell binary is expected at
+//! `/bin/omni-shell` and is located by [`crate::init_process`] during PID-1
+//! setup.
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
