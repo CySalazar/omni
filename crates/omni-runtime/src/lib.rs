@@ -1217,6 +1217,33 @@ pub mod speculative;
 pub mod batch;
 
 // =============================================================================
+// serving — Inference session lifecycle + request/response API (Sprint 11.a)
+// =============================================================================
+
+/// Client-facing inference serving surface.
+///
+/// Provides [`serving::InferenceSession`] (a state machine over the lifetime of
+/// a client inference session) and [`serving::SessionManager`] (open/close
+/// sessions, submit requests, stream tokens).  This is the external API that
+/// applications use to drive the runtime; every entry point is capability-gated.
+///
+/// Implemented by TASK-S11.A (development plan 2026-05-29).
+pub mod serving;
+
+// =============================================================================
+// audit — Structured inference audit log (Sprint 11.a)
+// =============================================================================
+
+/// Durable, structured audit records for inference activity.
+///
+/// Provides [`audit::AuditRecord`] (metadata only — no PII) and the
+/// [`audit::AuditLog`] trait with an in-memory ring-buffer implementation.
+/// Required by `docs/04-security-model.md` ("Audit log").
+///
+/// Implemented by TASK-S11.B (development plan 2026-05-29).
+pub mod audit;
+
+// =============================================================================
 // Unit tests
 // =============================================================================
 
