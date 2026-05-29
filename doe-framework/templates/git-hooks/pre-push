@@ -1,44 +1,38 @@
 #!/usr/bin/env bash
 
 # =============================================================================
-# pre-push hook — Local CI gate (stand-in while remote CI is unavailable)
+# pre-push hook — Local CI gate
 # =============================================================================
 #
 # Part of the D.O.E. Framework (Direttiva, Orchestrazione, Esecuzione)
 #
 # PURPOSE:
 #   Run the deterministic quality gates locally before every `git push`, so
-#   regressions are caught even when the remote CI (GitHub Actions / Gitea
-#   Actions) is not running. Mirrors the blocking checks of `.gitea/workflows/
-#   ci.yml` / `.github/workflows/ci.yml`.
+#   regressions are caught immediately. Mirrors the blocking checks of
+#   `.github/workflows/ci.yml`.
 #
 # CHECKS (in order):
-#   1. cargo +nightly fmt --all --check    (REPORT-ONLY; see "Known debt")
-#   2. cargo clippy (workspace)            (REPORT-ONLY on warnings; BLOCKS only
-#                                           on real compile errors — see debt)
+#   1. cargo fmt --all -- --check          (BLOCKING — matches the CI fmt job,
+#                                           which uses STABLE rustfmt)
+#   2. cargo clippy (workspace)            (REPORT-ONLY until the clippy debt is
+#                                           cleared; then flip to strict — see
+#                                           the marked block below)
 #   3. cargo test --workspace              (BLOCKING; omni-kernel excluded, its
 #                                           --lib tests SIGSEGV on x86_64 Linux
 #                                           dev hosts — a known host-only issue)
 #   4. cargo deny: bans/licenses/sources   (BLOCKING if cargo-deny installed;
 #      advisories                            advisories REPORT-ONLY — stale
-#                                            advisory-db parse issue, see below)
+#                                            advisory-db CVSS-4.0 parse issue)
 #
 # ESCAPE HATCHES:
 #   - `git push --no-verify`        → skip this hook entirely (one-off)
 #   - `OMNI_SKIP_PREPUSH=1 git push`→ skip this hook entirely
 #   - `OMNI_PREPUSH_FAST=1 git push`→ skip the (slow) test + deny steps
 #
-# Known debt (2026-05-29, accumulated while remote CI was down):
-#   - `cargo +nightly fmt --all --check` reports ~692 diffs across many crates
-#     (omni-agent et al.). The canonical formatter is NIGHTLY rustfmt
-#     (rustfmt.toml uses nightly-only options: imports_granularity,
-#     group_imports, format_code_in_doc_comments). Until a repo-wide
-#     `cargo +nightly fmt --all` cleanup commit lands, fmt here is REPORT-ONLY.
-#   - `cargo clippy --workspace -- -D warnings` reports ~82 pre-existing
-#     violations in Sprint-10 files. Until cleared, clippy is REPORT-ONLY
-#     (blocks only on real compile errors).
-# Re-enable strict mode for each (uncomment the marked blocks) once its debt
-# is zero, to make this hook a true equivalent of the CI gate.
+# NOTE: the CI fmt job uses STABLE rustfmt; rustfmt.toml's nightly-only options
+# (imports_granularity, group_imports, format_code_in_doc_comments) are ignored
+# on stable, so the canonical format is stable-rustfmt output. Use plain
+# `cargo fmt` here (NOT `+nightly`) to match CI.
 # =============================================================================
 
 set -uo pipefail
@@ -59,46 +53,31 @@ echo ""
 echo "  ── OMNI OS local CI gate ───────────────────────────────────"
 
 # ---------------------------------------------------------------------------
-# 1. Formatting (REPORT-ONLY — canonical formatter is nightly rustfmt)
+# 1. Formatting (BLOCKING — stable rustfmt, matches CI)
 # ---------------------------------------------------------------------------
-FMT="cargo fmt"
-if rustup component list --toolchain nightly 2>/dev/null | grep -q 'rustfmt.*(installed)'; then
-    FMT="cargo +nightly fmt"
+log "cargo fmt --all -- --check ..."
+if ! cargo fmt --all -- --check >/tmp/omni-prepush-fmt.log 2>&1; then
+    grep "Diff in" /tmp/omni-prepush-fmt.log >&2 || cat /tmp/omni-prepush-fmt.log >&2
+    fail "formatting check failed — run 'cargo fmt --all'."
 fi
-log "${FMT} --all -- --check (report-only) ..."
-$FMT --all -- --check >/tmp/omni-prepush-fmt.log 2>&1 || true
-FMT_DIFFS="$(grep -c 'Diff in' /tmp/omni-prepush-fmt.log || true)"
-if [[ "$FMT_DIFFS" -gt 0 ]]; then
-    log "⚠ formatting: ${FMT_DIFFS} file-region diffs (pre-existing debt — not blocking)"
-    log "  to normalize: ${FMT} --all   (see /tmp/omni-prepush-fmt.log)"
-else
-    ok "formatting clean"
-fi
-# --- Strict mode (enable when fmt debt == 0): --------------------------------
-# if ! $FMT --all -- --check >/tmp/omni-prepush-fmt.log 2>&1; then
-#     cat /tmp/omni-prepush-fmt.log >&2
-#     fail "formatting check failed — run '${FMT} --all'."
-# fi
-# -----------------------------------------------------------------------------
+ok "formatting clean"
 
 # ---------------------------------------------------------------------------
-# 2. Clippy (REPORT-ONLY — pre-existing deny-level errors in omni-hal + ~82
-#    -D-warnings violations across Sprint-10 files; see "Known debt")
+# 2. Clippy (REPORT-ONLY until the clippy debt is cleared)
 # ---------------------------------------------------------------------------
 log "cargo clippy --workspace --all-targets --all-features (report-only) ..."
 cargo clippy --workspace --all-targets --all-features >/tmp/omni-prepush-clippy.log 2>&1 || true
 CLIPPY_ERR="$(grep -cE '^error' /tmp/omni-prepush-clippy.log || true)"
 CLIPPY_WARN="$(grep -cE '^warning' /tmp/omni-prepush-clippy.log || true)"
-if [[ "$CLIPPY_ERR" -gt 0 ]]; then
-    log "⚠ clippy: ${CLIPPY_ERR} errors / ${CLIPPY_WARN} warnings (pre-existing debt — not blocking)"
-    log "  details: /tmp/omni-prepush-clippy.log"
+if [[ "$CLIPPY_ERR" -gt 0 || "$CLIPPY_WARN" -gt 0 ]]; then
+    log "⚠ clippy: ${CLIPPY_ERR} errors / ${CLIPPY_WARN} warnings (not blocking — see /tmp/omni-prepush-clippy.log)"
 else
-    ok "clippy clean (warnings: ${CLIPPY_WARN})"
+    ok "clippy clean"
 fi
 # --- Strict mode (enable when clippy debt == 0): -----------------------------
 # if ! cargo clippy --workspace --all-targets --all-features -- -D warnings \
 #       >/tmp/omni-prepush-clippy.log 2>&1; then
-#     cat /tmp/omni-prepush-clippy.log >&2
+#     grep -E '^(error|warning)' /tmp/omni-prepush-clippy.log >&2
 #     fail "clippy -D warnings failed."
 # fi
 # -----------------------------------------------------------------------------
@@ -111,7 +90,7 @@ if [[ "${OMNI_PREPUSH_FAST:-0}" == "1" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Tests (blocking; omni-kernel excluded — see header)
+# 3. Tests (BLOCKING; omni-kernel excluded — see header)
 # ---------------------------------------------------------------------------
 log "cargo test --workspace --exclude omni-kernel ..."
 if ! cargo test --workspace --exclude omni-kernel >/tmp/omni-prepush-test.log 2>&1; then
@@ -121,18 +100,12 @@ fi
 ok "tests pass (omni-kernel --lib excluded: known host SIGSEGV)"
 
 # ---------------------------------------------------------------------------
-# 4. Dependency policy (blocking if cargo-deny present)
+# 4. Dependency policy
 # ---------------------------------------------------------------------------
 if command -v cargo-deny >/dev/null 2>&1; then
-    # `advisories` is REPORT-ONLY: the local advisory-db may contain newer
-    # RUSTSEC entries (CVSS 4.0) that an older cargo-deny cannot parse — a
-    # tooling-version issue, not a project vulnerability. Upgrade with
-    # `cargo install cargo-deny` to make advisories enforceable again.
     log "cargo deny check advisories (report-only) ..."
     cargo deny check advisories >/tmp/omni-prepush-deny-adv.log 2>&1 || \
-        log "⚠ advisories check non-clean (see /tmp/omni-prepush-deny-adv.log; often stale cargo-deny)"
-
-    # bans / licenses / sources are project-controlled → BLOCKING.
+        log "⚠ advisories non-clean (see /tmp/omni-prepush-deny-adv.log; often stale cargo-deny)"
     log "cargo deny check bans licenses sources ..."
     if ! cargo deny check bans licenses sources >/tmp/omni-prepush-deny.log 2>&1; then
         tail -40 /tmp/omni-prepush-deny.log >&2

@@ -13,7 +13,7 @@
 
 #[test]
 fn speculative_decode_e2e_identity_models() {
-    use omni_runtime::speculative::{speculative_decode, SpeculativeConfig};
+    use omni_runtime::speculative::{SpeculativeConfig, speculative_decode};
 
     let vocab = 8;
     let draft_forward = |tokens: &[usize]| -> Vec<f32> {
@@ -52,7 +52,7 @@ fn speculative_decode_e2e_identity_models() {
 
 #[test]
 fn speculative_decode_e2e_eos_stops() {
-    use omni_runtime::speculative::{speculative_decode, SpeculativeConfig};
+    use omni_runtime::speculative::{SpeculativeConfig, speculative_decode};
 
     let vocab = 8;
     let eos = 5;

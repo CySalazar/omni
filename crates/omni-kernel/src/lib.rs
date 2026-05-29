@@ -2003,20 +2003,15 @@ pub fn kmain(
                 _ => arch::acpi_reboot(),
             }
         }
-        demo::DesktopExitAction::PowerOff => {
-            match (rsdp, phys_off) {
-                (Some(rsdp_phys), Some(offset)) => {
-                    #[allow(
-                        unsafe_code,
-                        reason = "ACPI table walk via bootloader direct map"
-                    )]
-                    unsafe {
-                        arch::acpi_poweroff_from_fadt(rsdp_phys, offset);
-                    }
+        demo::DesktopExitAction::PowerOff => match (rsdp, phys_off) {
+            (Some(rsdp_phys), Some(offset)) => {
+                #[allow(unsafe_code, reason = "ACPI table walk via bootloader direct map")]
+                unsafe {
+                    arch::acpi_poweroff_from_fadt(rsdp_phys, offset);
                 }
-                _ => arch::acpi_poweroff(),
             }
-        }
+            _ => arch::acpi_poweroff(),
+        },
     }
     arch::halt_forever()
 }

@@ -425,10 +425,7 @@ impl BatchScheduler {
     /// });
     /// assert_eq!(completed.len(), 1);
     /// ```
-    pub fn step(
-        &mut self,
-        forward_fn: &mut ForwardFn<'_>,
-    ) -> Vec<CompletedRequest> {
+    pub fn step(&mut self, forward_fn: &mut ForwardFn<'_>) -> Vec<CompletedRequest> {
         self.schedule();
 
         if self.active.is_empty() {
@@ -468,9 +465,7 @@ impl BatchScheduler {
                     id,
                     prompt_tokens: ar.request.prompt_tokens,
                     generated_tokens: ar.generated_tokens,
-                    finish_reason: FinishReason::Error(
-                        "forward_fn did not return logits".into(),
-                    ),
+                    finish_reason: FinishReason::Error("forward_fn did not return logits".into()),
                 };
                 self.states.insert(
                     id,

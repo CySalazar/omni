@@ -353,15 +353,21 @@ pub unsafe fn acpi_poweroff_from_fadt(rsdp_phys: u64, phys_offset: u64) {
             // SLP_EN = bit 13 = 0x2000. Combined with SLP_TYP in bits [12:10].
             // Attempt A: QEMU q35 + OVMF (SLP_TYP = 0).
             unsafe { outw(pm1a_cnt, 0x2000) };
-            for _ in 0..10_000 { core::hint::spin_loop(); }
+            for _ in 0..10_000 {
+                core::hint::spin_loop();
+            }
 
             // Attempt B: VirtualBox / QEMU i440fx (SLP_TYP = 5).
             unsafe { outw(pm1a_cnt, 0x2000 | (5 << 10)) };
-            for _ in 0..10_000 { core::hint::spin_loop(); }
+            for _ in 0..10_000 {
+                core::hint::spin_loop();
+            }
 
             // Attempt C: Bochs / alternative (SLP_TYP = 1).
             unsafe { outw(pm1a_cnt, 0x2000 | (1 << 10)) };
-            for _ in 0..10_000 { core::hint::spin_loop(); }
+            for _ in 0..10_000 {
+                core::hint::spin_loop();
+            }
         }
     }
     // FADT path failed; fall back to PCI/hardcoded scan.

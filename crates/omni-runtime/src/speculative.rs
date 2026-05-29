@@ -304,11 +304,7 @@ fn position_rand(position: usize) -> f32 {
     // Derive a non-zero seed from the position.
     #[allow(clippy::cast_possible_truncation)]
     let pos_u32 = position as u32;
-    let seed = xorshift32(
-        pos_u32
-            .wrapping_add(1)
-            .wrapping_mul(2_654_435_761),
-    );
+    let seed = xorshift32(pos_u32.wrapping_add(1).wrapping_mul(2_654_435_761));
     (seed as f32) / (u32::MAX as f32)
 }
 
