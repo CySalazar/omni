@@ -957,6 +957,10 @@ impl SessionManager {
     /// });
     /// assert_eq!(n, 1);
     /// ```
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "drains scheduler completions and routes chunks per session state"
+    )]
     pub fn step(&mut self, forward_fn: &mut crate::batch::ForwardFn<'_>) -> usize {
         let completed = self.scheduler.step(forward_fn);
         let n = completed.len();

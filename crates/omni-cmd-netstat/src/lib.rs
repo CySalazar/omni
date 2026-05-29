@@ -252,7 +252,7 @@ mod tests {
                 protocol: String::from("UDP"),
                 local_addr: String::from("0.0.0.0:53"),
                 remote_addr: String::from("0.0.0.0:0"),
-                state: String::from(""),
+                state: String::new(),
             },
         ];
         let out = format_netstat(&conns);

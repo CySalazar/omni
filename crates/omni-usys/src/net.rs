@@ -53,7 +53,7 @@
 //! ```
 
 #[cfg(feature = "bare-metal")]
-use alloc::{string::String, string::ToString, vec::Vec};
+use alloc::{string::String, vec::Vec};
 #[cfg(not(feature = "bare-metal"))]
 use std::{string::String, vec::Vec};
 
@@ -545,6 +545,10 @@ mod tests {
     use super::*;
     #[cfg(feature = "bare-metal")]
     use alloc::vec;
+    // In bare-metal mode the std prelude is absent; `.to_string()` requires
+    // `ToString` to be explicitly in scope.
+    #[cfg(feature = "bare-metal")]
+    use alloc::string::ToString;
     use omni_types::socket::{NetError, SocketInfo};
 
     // Convenience helper: loopback address.

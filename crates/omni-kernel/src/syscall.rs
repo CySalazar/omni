@@ -129,7 +129,7 @@ pub enum SyscallNumber {
     FdDup2 = 67,
     /// Seek on a file descriptor.
     /// ABI: `(fd, offset_i64, whence, 0, 0, 0) -> new_offset`.
-    /// Whence: 0 = SEEK_SET, 1 = SEEK_CUR, 2 = SEEK_END.
+    /// Whence: 0 = `SEEK_SET`, 1 = `SEEK_CUR`, 2 = `SEEK_END`.
     FdSeek = 68,
 
     // ----- Driver framework (OIP-013, P6.7.3 skeleton) -----
@@ -203,16 +203,16 @@ pub enum SyscallNumber {
     // `omni-fs` userspace service.
     /// Open a file and return a file descriptor.
     /// ABI: `(path_ptr, path_len, flags, 0, 0, 0) -> fd`.
-    /// Flags follow the `OpenFlags` bitfield (O_RDONLY, O_WRONLY, O_RDWR,
-    /// O_CREAT, O_TRUNC, O_APPEND).
+    /// Flags follow the `OpenFlags` bitfield (`O_RDONLY`, `O_WRONLY`, `O_RDWR`,
+    /// `O_CREAT`, `O_TRUNC`, `O_APPEND`).
     FsOpen = 90,
     /// Stat a file or directory.
     /// ABI: `(path_ptr, path_len, stat_buf_ptr, 0, 0, 0) -> (rax=0, rdx=errno)`.
-    /// Writes `FileStat` (inode: u64, size: u64, file_type: u8) to stat_buf_ptr.
+    /// Writes `FileStat` (inode: u64, size: u64, `file_type`: u8) to `stat_buf_ptr`.
     FsStat = 91,
     /// List the entries in a directory.
     /// ABI: `(path_ptr, path_len, buf_ptr, buf_len, 0, 0) -> entry_count`.
-    /// Writes `\n`-separated entry names to buf_ptr.
+    /// Writes `\n`-separated entry names to `buf_ptr`.
     FsListDir = 92,
     /// Create an empty regular file.
     /// ABI: `(path_ptr, path_len, 0, 0, 0, 0) -> (rax=0, rdx=errno)`.

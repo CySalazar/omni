@@ -1737,14 +1737,14 @@ mod tests {
     use super::*;
     use crate::tensor::{TensorBuffer, TensorDescriptor, TensorDtype};
 
-    /// Build a zero-filled F32 TensorBuffer of the given shape.
+    /// Build a zero-filled F32 [`TensorBuffer`] of the given shape.
     fn zeros(shape: Vec<usize>) -> TensorBuffer {
         let desc = TensorDescriptor::new(shape, TensorDtype::F32);
         let bytes = vec![0u8; desc.byte_size()];
         TensorBuffer::new(desc, bytes)
     }
 
-    /// Build a minimal TransformerConfig for use in tests.
+    /// Build a minimal [`TransformerConfig`] for use in tests.
     fn tiny_config() -> TransformerConfig {
         TransformerConfig {
             n_layers: 2,
@@ -1757,7 +1757,7 @@ mod tests {
         }
     }
 
-    /// Build TransformerWeights matching `tiny_config`.
+    /// Build [`TransformerWeights`] matching `tiny_config`.
     fn tiny_weights() -> TransformerWeights {
         let layer = || TransformerLayerWeights {
             attn_q: zeros(vec![8, 8]),
@@ -1923,7 +1923,7 @@ mod tests {
     // GQA tests
     // -------------------------------------------------------------------------
 
-    /// When n_kv_heads == n_heads, GQA output must match standard MHA output.
+    /// When `n_kv_heads` == `n_heads`, GQA output must match standard MHA output.
     #[test]
     fn gqa_mha_equivalence() {
         let seq_len = 3;
@@ -1948,7 +1948,7 @@ mod tests {
         }
     }
 
-    /// n_kv_heads=1: all query heads broadcast from the single KV head; output shape correct.
+    /// `n_kv_heads=1`: all query heads broadcast from the single KV head; output shape correct.
     #[test]
     fn gqa_single_kv_head() {
         let seq_len = 2;
@@ -2017,7 +2017,7 @@ mod tests {
         }
     }
 
-    /// n_heads=5, n_kv_heads=3 is not evenly divisible — must panic.
+    /// `n_heads=5`, `n_kv_heads=3` is not evenly divisible — must panic.
     #[test]
     #[should_panic(expected = "n_heads (5) must be evenly divisible by n_kv_heads (3)")]
     fn gqa_panics_on_bad_ratio() {
@@ -2090,7 +2090,7 @@ mod tests {
         );
     }
 
-    /// RoPE is an orthogonal transformation; it must preserve the L2 norm.
+    /// `RoPE` is an orthogonal transformation; it must preserve the L2 norm.
     #[test]
     fn rope_preserves_norm() {
         let input: Vec<f32> = vec![3.0, 4.0, 1.0, 2.0]; // seq=1, heads=1, head_dim=4
@@ -2110,7 +2110,7 @@ mod tests {
     // Causal mask tests
     // -------------------------------------------------------------------------
 
-    /// Upper-triangle entries must be NEG_INFINITY after masking.
+    /// Upper-triangle entries must be `NEG_INFINITY` after masking.
     #[test]
     fn causal_mask_blocks_future() {
         let mut scores = vec![1.0f32; 9]; // 3×3

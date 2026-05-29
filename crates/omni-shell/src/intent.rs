@@ -16,8 +16,8 @@
 //!    [`ADMIN_KEYWORDS`], [`SECURITY_KEYWORDS`], [`TASK_KEYWORDS`]).
 //! 3. The category with the highest count wins.
 //! 4. If two or more categories are tied at the top (and count > 0), the
-//!    result is [`IntentClass::Composite`].
-//! 5. If no keyword matches at all, the default is [`IntentClass::Task`].
+//!    result is `IntentClass::Composite`.
+//! 5. If no keyword matches at all, the default is `IntentClass::Task`.
 
 use alloc::string::String;
 
@@ -135,8 +135,8 @@ pub enum IntentClass {
 ///
 /// Each of the four keyword tables is scanned; a running match count is
 /// accumulated per category. The category with the highest count wins. A tie
-/// among the leading categories (count > 0) yields [`IntentClass::Composite`].
-/// Zero total matches defaults to [`IntentClass::Task`].
+/// among the leading categories (count > 0) yields `IntentClass::Composite`.
+/// Zero total matches defaults to `IntentClass::Task`.
 ///
 /// # Examples
 ///

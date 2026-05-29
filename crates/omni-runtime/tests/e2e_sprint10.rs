@@ -2,10 +2,25 @@
 //!
 //! Validates the three new subsystems added in Sprint 10:
 //! 1. Speculative decoding (draft + verify loop).
-//! 2. Grouped-Query Attention with RoPE and causal masking.
+//! 2. Grouped-Query Attention with `RoPE` and causal masking.
 //! 3. Continuous batching scheduler serving concurrent requests.
 
-#![allow(clippy::float_arithmetic)]
+// Integration tests are separate compilation units not covered by the crate-root
+// cfg_attr(test, allow(...)). The lints below are intentional in test code:
+//   - unwrap_used: test failures should panic; propagating errors adds no value.
+//   - indexing_slicing: bounds are established by the test's own construction.
+//   - float_cmp: NEG_INFINITY comparison is exact by definition; epsilon check
+//     would be semantically wrong.
+//   - similar_names: `id1`/`ids` are the clearest names for these test bindings.
+//   - doc_markdown: prose comments need not use code-style backticks.
+#![allow(
+    clippy::float_arithmetic,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::doc_markdown
+)]
 
 // ---------------------------------------------------------------------------
 // 1. Speculative decode — end-to-end

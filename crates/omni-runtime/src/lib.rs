@@ -55,6 +55,19 @@
         clippy::expect_used,
         clippy::panic,
         clippy::unnecessary_wraps,
+        // Indexing/slicing in test helpers: bounds are known by construction.
+        clippy::indexing_slicing,
+        // Float equality in tests: comparing exact bit-pattern results is intentional.
+        clippy::float_cmp,
+        // Cast in test helpers: values are known to fit; no precision loss possible.
+        clippy::cast_possible_truncation,
+        clippy::cast_lossless,
+        // Names in test helpers: `id1`/`ids` naming is deliberate test-scope style.
+        clippy::similar_names,
+        // Single-element array iter in test helpers: clear intent outweighs iterator style.
+        clippy::iter_on_single_items,
+        // doc_markdown in private test fn docs: Inf/NaN without backticks is readable prose.
+        clippy::doc_markdown,
     )
 )]
 
@@ -1288,6 +1301,10 @@ pub mod router {
         ///     .unwrap_err();
         /// assert!(matches!(err, TierError::TierUnavailable { .. }));
         /// ```
+        #[allow(
+            clippy::cognitive_complexity,
+            reason = "tier policy evaluation: branches enumerate the Phase-2 routing rules"
+        )]
         pub fn route_decision(
             &self,
             request: &InferenceRequest,

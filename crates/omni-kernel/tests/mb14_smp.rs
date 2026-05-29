@@ -45,7 +45,19 @@
     clippy::missing_docs_in_private_items,
     clippy::indexing_slicing,
     clippy::cast_possible_truncation,
-    clippy::doc_markdown
+    clippy::doc_markdown,
+    // Test-only: `if bool { 1 } else { 0 }` is clear for ICR flag construction.
+    clippy::bool_to_int_with_if,
+    // Test-only: compile-time constant assertions are always-true by design.
+    clippy::assertions_on_constants,
+    // Test-only: `use` after statements in test helper functions.
+    clippy::items_after_statements,
+    // Test-only: cognitive complexity of end-to-end integration test.
+    clippy::cognitive_complexity,
+    // Test-only: `<= u64::from(u32::MAX)` bound check is intentionally readable.
+    clippy::checked_conversions,
+    // Test-only: `u32` values promoted to `u64` via From.
+    clippy::cast_lossless
 )]
 
 extern crate alloc;

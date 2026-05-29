@@ -463,7 +463,7 @@ pub fn acpi_reboot() -> ! {
         asm!(
             "lidt [{ptr}]",
             "ud2",
-            ptr = in(reg) &null_idt as *const _ as u64,
+            ptr = in(reg) (&raw const null_idt) as u64,
             options(noreturn),
         );
     }

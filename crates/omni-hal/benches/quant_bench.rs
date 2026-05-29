@@ -7,13 +7,26 @@
 //! Measures:
 //! - Quantize throughput (FP32 → INT8) at various tensor sizes.
 //! - Dequantize throughput (INT8 → FP32) at various tensor sizes.
-//! - FP32 MatMul vs QuantizedMatMul latency for square matrices.
+//! - FP32 `MatMul` vs `QuantizedMatMul` latency for square matrices.
 //! - Memory footprint: INT8 vs FP32 element counts per byte.
 //!
 //! Run with:
 //! ```bash
 //! cargo bench -p omni-hal --bench quant_bench
 //! ```
+//
+// Benchmark helpers perform quantization math and synthetic data generation
+// that intentionally use float arithmetic and casts — narrowly allowed here.
+#![allow(
+    clippy::float_arithmetic,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::tuple_array_conversions,
+    clippy::semicolon_if_nothing_returned,
+    clippy::suboptimal_flops
+)]
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use omni_hal::tensor::{
@@ -25,14 +38,14 @@ use omni_hal::tensor::{
 // Helpers
 // =============================================================================
 
-/// Build an F32 TensorBuffer from a flat slice of values.
+/// Build an F32 [`TensorBuffer`] from a flat slice of values.
 fn make_f32_buf(shape: Vec<usize>, values: &[f32]) -> TensorBuffer {
     let desc = TensorDescriptor::new(shape, TensorDtype::F32);
     let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     TensorBuffer::new(desc, bytes)
 }
 
-/// Build an INT8 TensorBuffer by quantizing a slice of f32 values.
+/// Build an INT8 [`TensorBuffer`] by quantizing a slice of f32 values.
 fn make_i8_buf_from_f32(shape: Vec<usize>, values: &[f32]) -> TensorBuffer {
     let params = symmetric_quant_params(values);
     let desc = TensorDescriptor::new(shape, TensorDtype::I8);
@@ -52,8 +65,10 @@ fn synthetic_data(n: usize) -> Vec<f32> {
     (0..n)
         .map(|i| {
             // Deterministic values in [-1.0, 1.0] using a simple modular pattern.
-            let x = (i % 1000) as f32 / 500.0_f32 - 1.0_f32;
-            x
+            // i % 1000 always fits in u16; cast to u16 first to satisfy
+            // cast_precision_loss (u16 <= 999 < 2^10, within f32 mantissa range).
+            let v = (i % 1000) as u16;
+            f32::from(v) / 500.0_f32 - 1.0_f32
         })
         .collect()
 }
@@ -89,7 +104,7 @@ fn bench_quantize(c: &mut Criterion) {
                     },
                     &[buf],
                 ))
-                .expect("quantize bench error")
+                .expect("quantize bench error");
             });
         });
     }
@@ -114,7 +129,7 @@ fn bench_dequantize(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(n_elems), &buf, |b, buf| {
             b.iter(|| {
                 block_on(backend.execute(TensorOp::Dequantize { params }, &[buf]))
-                    .expect("dequantize bench error")
+                    .expect("dequantize bench error");
             });
         });
     }
@@ -126,7 +141,7 @@ fn bench_dequantize(c: &mut Criterion) {
 // FP32 MatMul vs QuantizedMatMul latency benchmark
 // =============================================================================
 
-/// Compare FP32 MatMul vs QuantizedMatMul for square matrices.
+/// Compare FP32 `MatMul` vs `QuantizedMatMul` for square matrices.
 ///
 /// Sizes tested: 16×16, 32×32, 64×64.
 fn bench_matmul_comparison(c: &mut Criterion) {
@@ -163,7 +178,7 @@ fn bench_matmul_comparison(c: &mut Criterion) {
                         },
                         &[a, bmat],
                     ))
-                    .expect("fp32 matmul bench error")
+                    .expect("fp32 matmul bench error");
                 });
             },
         );
@@ -182,7 +197,7 @@ fn bench_matmul_comparison(c: &mut Criterion) {
                         },
                         &[a, bmat],
                     ))
-                    .expect("quant matmul bench error")
+                    .expect("quant matmul bench error");
                 });
             },
         );
@@ -220,8 +235,8 @@ fn bench_memory_savings(c: &mut Criterion) {
                 },
                 &[&fp32_buf],
             ))
-            .expect("quantize bench error")
-        })
+            .expect("quantize bench error");
+        });
     });
 
     // INT8 bytes: n_elems * 1 (4× smaller).
@@ -234,8 +249,8 @@ fn bench_memory_savings(c: &mut Criterion) {
     group.bench_function("dequantize_65k", |b| {
         b.iter(|| {
             block_on(backend.execute(TensorOp::Dequantize { params }, &[&i8_buf]))
-                .expect("dequantize bench error")
-        })
+                .expect("dequantize bench error");
+        });
     });
 
     group.finish();

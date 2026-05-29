@@ -57,7 +57,7 @@ extern crate alloc;
 use std::{string::String, vec::Vec};
 
 #[cfg(feature = "bare-metal")]
-use alloc::{string::String, string::ToString, vec::Vec};
+use alloc::{string::String, vec::Vec};
 
 // ---------------------------------------------------------------------------
 // Modules
@@ -631,7 +631,13 @@ pub trait Syscall {
 #[cfg(feature = "bare-metal")]
 pub struct KernelSyscall;
 
+// justification: rax/rdx are x86-64 register names used verbatim throughout
+// the SysV AMD64 syscall ABI; renaming them (e.g. to reg_a/reg_d) would make
+// the code harder to verify against the ABI specification and processor manual.
+// unsafe_code: every unsafe block in this impl has a SAFETY comment that
+// proves the invariants required by the OMNI OS kernel ABI.
 #[cfg(feature = "bare-metal")]
+#[allow(clippy::similar_names, unsafe_code)]
 impl KernelSyscall {
     /// Issue a one-register-return syscall.
     ///
@@ -649,25 +655,32 @@ impl KernelSyscall {
     ///
     /// Violating these invariants is undefined behaviour from the kernel's
     /// perspective and may cause EFAULT or EINVAL termination.
-    #[allow(unsafe_code)]
+    // justification: `&self` is not used here; the method lives on KernelSyscall
+    // for logical grouping — it is the building-block called by every Syscall
+    // trait method that needs the real `syscall` instruction.
+    #[allow(clippy::unused_self)]
     unsafe fn raw_syscall(&self, number: u64, a0: u64, a1: u64, a2: u64) -> u64 {
         // SAFETY: Caller has verified the syscall number and arguments satisfy
         // the OMNI OS kernel ABI (SysV AMD64: rax=number, rdi=a0, rsi=a1,
         // rdx=a2).  The `syscall` instruction transitions to Ring 0 and back;
         // no memory outside the described buffers is touched by the kernel.
+        // Rust 2024: unsafe operations inside `unsafe fn` still require an
+        // explicit `unsafe {}` block; `asm!` is an unsafe operation.
         let result: u64;
-        core::arch::asm!(
-            "syscall",
-            inlateout("rax") number => result,
-            in("rdi") a0,
-            in("rsi") a1,
-            in("rdx") a2,
-            // rcx and r11 are clobbered by the syscall instruction per the
-            // SysV AMD64 ABI.
-            out("rcx") _,
-            out("r11") _,
-            options(nostack),
-        );
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                inlateout("rax") number => result,
+                in("rdi") a0,
+                in("rsi") a1,
+                in("rdx") a2,
+                // rcx and r11 are clobbered by the syscall instruction per the
+                // SysV AMD64 ABI.
+                out("rcx") _,
+                out("r11") _,
+                options(nostack),
+            );
+        }
         result
     }
 
@@ -680,7 +693,11 @@ impl KernelSyscall {
     /// Same contract as [`Self::raw_syscall`]; additionally, the kernel ABI
     /// for the specific syscall number must use the two-register return
     /// convention documented in `crates/omni-kernel/src/syscall.rs`.
-    #[allow(unsafe_code)]
+    // justification: `&self` is unused — see raw_syscall rationale.
+    // justification: 8 arguments are unavoidable; the SysV AMD64 ABI maps
+    // syscall number + 6 argument registers (rdi, rsi, rdx, r10, r8, r9)
+    // directly onto function parameters to keep the call-site readable.
+    #[allow(clippy::unused_self, clippy::too_many_arguments)]
     unsafe fn raw_syscall2(
         &self,
         number: u64,
@@ -694,21 +711,24 @@ impl KernelSyscall {
         // SAFETY: See `raw_syscall` — same ABI contract applies. Additional
         // registers r10, r8, r9 carry a3..a5 per the extended SysV AMD64
         // convention documented in `crates/omni-kernel/src/syscall.rs`.
+        // Rust 2024: explicit `unsafe {}` required even inside `unsafe fn`.
         let rax: u64;
         let rdx: u64;
-        core::arch::asm!(
-            "syscall",
-            inlateout("rax") number => rax,
-            in("rdi") a0,
-            in("rsi") a1,
-            inlateout("rdx") a2 => rdx,
-            in("r10") a3,
-            in("r8")  a4,
-            in("r9")  a5,
-            out("rcx") _,
-            out("r11") _,
-            options(nostack),
-        );
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                inlateout("rax") number => rax,
+                in("rdi") a0,
+                in("rsi") a1,
+                inlateout("rdx") a2 => rdx,
+                in("r10") a3,
+                in("r8")  a4,
+                in("r9")  a5,
+                out("rcx") _,
+                out("r11") _,
+                options(nostack),
+            );
+        }
         (rax, rdx)
     }
 
@@ -725,7 +745,12 @@ impl KernelSyscall {
     }
 }
 
+// justification: rax/rdx are x86-64 register names used verbatim throughout
+// the SysV AMD64 syscall ABI; renaming them would impair ABI verification.
+// unsafe_code: every unsafe block in this impl wraps a call to raw_syscall /
+// raw_syscall2, each of which documents its SAFETY contract above.
 #[cfg(feature = "bare-metal")]
+#[allow(clippy::similar_names, unsafe_code)]
 impl Syscall for KernelSyscall {
     fn write(&self, fd: u32, buf: &[u8]) -> SysResult<usize> {
         // SAFETY: buf is a valid Rust slice; ptr and len are correct by construction.
@@ -740,6 +765,9 @@ impl Syscall for KernelSyscall {
                 0,
             )
         };
+        // justification: this crate targets x86_64-unknown-none where usize ==
+        // u64; truncation is structurally impossible on the supported target.
+        #[allow(clippy::cast_possible_truncation)]
         Self::decode2(rax, rdx, |n| n as usize)
     }
 
@@ -756,6 +784,8 @@ impl Syscall for KernelSyscall {
                 0,
             )
         };
+        // justification: x86_64-unknown-none target; usize == u64, no truncation.
+        #[allow(clippy::cast_possible_truncation)]
         Self::decode2(rax, rdx, |n| n as usize)
     }
 
@@ -780,6 +810,9 @@ impl Syscall for KernelSyscall {
                 0,
             )
         };
+        // justification: the kernel guarantees that FsOpen returns a 32-bit fd
+        // value; the upper 32 bits of rax are always zero on success.
+        #[allow(clippy::cast_possible_truncation)]
         Self::decode2(rax, rdx, |n| n as u32)
     }
 
@@ -830,6 +863,10 @@ impl Syscall for KernelSyscall {
         if rdx != 0 {
             return Err(Errno::from_raw(rdx));
         }
+        // justification: x86_64-unknown-none target; usize == u64, no truncation.
+        // The kernel-returned byte count is bounded by the 4 KiB buffer passed
+        // above, so even on hypothetical 32-bit targets the value fits in usize.
+        #[allow(clippy::cast_possible_truncation)]
         let filled = rax as usize;
         let slice = buf.get(..filled).ok_or(Errno::Fault)?;
         let text = core::str::from_utf8(slice).map_err(|_| Errno::Io)?;
@@ -872,6 +909,9 @@ impl Syscall for KernelSyscall {
         if rdx != 0 {
             return Err(Errno::from_raw(rdx));
         }
+        // justification: x86_64-unknown-none target; usize == u64, no truncation.
+        // The returned length is bounded by the 4 KiB buffer above.
+        #[allow(clippy::cast_possible_truncation)]
         let len = rax as usize;
         let slice = buf.get(..len).ok_or(Errno::Fault)?;
         core::str::from_utf8(slice)
@@ -943,6 +983,9 @@ impl Syscall for KernelSyscall {
         if rax == 0 && rdx != 0 {
             Err(Errno::from_raw(rdx))
         } else {
+            // justification: the kernel ProcessWait ABI defines exit_status as
+            // a 32-bit value; the upper 32 bits of rdx are always zero.
+            #[allow(clippy::cast_possible_truncation)]
             Ok((rax, rdx as u32))
         }
     }
@@ -962,6 +1005,9 @@ impl Syscall for KernelSyscall {
                 0,
             )
         };
+        // justification: the kernel PipeCreate ABI guarantees fd values fit in
+        // u32; the upper 32 bits of each output are always zero.
+        #[allow(clippy::cast_possible_truncation)]
         Self::decode2(rax, rdx, |_| (read_fd as u32, write_fd as u32))
     }
 
@@ -978,6 +1024,8 @@ impl Syscall for KernelSyscall {
                 0,
             )
         };
+        // justification: FdDup2 returns a 32-bit fd; upper 32 bits are zero.
+        #[allow(clippy::cast_possible_truncation)]
         Self::decode2(rax, rdx, |n| n as u32)
     }
 
@@ -985,6 +1033,9 @@ impl Syscall for KernelSyscall {
         // SAFETY: fd, offset (cast to u64 for the register), and whence are scalars.
         // The kernel receives the signed offset as its bit-pattern in rdx and
         // interprets it as i64 internally.
+        // justification: passing i64 as u64 bit-pattern is the documented OMNI
+        // OS syscall ABI for FdSeek; the kernel re-interprets the bits as i64.
+        #[allow(clippy::cast_sign_loss)]
         let (rax, rdx) = unsafe {
             self.raw_syscall2(
                 68, // FdSeek
@@ -1014,6 +1065,10 @@ mod tests {
     use super::*;
     #[cfg(feature = "bare-metal")]
     use alloc::vec;
+    // In bare-metal mode the std prelude is absent; `.to_string()` requires
+    // `ToString` to be explicitly in scope.
+    #[cfg(feature = "bare-metal")]
+    use alloc::string::ToString;
 
     // ---- Errno::from_raw ---------------------------------------------------
 

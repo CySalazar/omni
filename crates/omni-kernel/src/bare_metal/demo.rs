@@ -197,7 +197,10 @@ pub fn run_desktop(
     // ── Shell interpreter state ───────────────────────────────────────────────
     // Lives for the duration of the desktop demo; every Enter keystroke in the
     // Terminal window runs `process_line` against these.
-    #[cfg(feature = "bare-metal")]
+    // Only declared when the shell pipeline is actually compiled in (bare-metal,
+    // target_os = none, non-test). The narrower cfg matches the usage site to
+    // prevent unused-variable warnings in host builds.
+    #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
     let mut shell_env = {
         let mut e = omni_shell::env::ShellEnv::new();
         e.set("PATH", "/bin");
@@ -209,7 +212,7 @@ pub fn run_desktop(
         e.set("OMNI_AGENT", "1");
         e
     };
-    #[cfg(feature = "bare-metal")]
+    #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
     let mut shell_cwd = alloc::string::String::from("/");
 
     // ── Initial render ────────────────────────────────────────────────────────
@@ -264,9 +267,8 @@ pub fn run_desktop(
 
     // ── Event loop ────────────────────────────────────────────────────────────
     let mut last_rtc = arch::rtc_seconds();
-    let mut exit_action = DesktopExitAction::PowerOff;
 
-    'event: loop {
+    let exit_action = 'event: loop {
         // ── Mouse input: VirtIO tablet (absolute) when present, else PS/2 ──
         if let Some(ref mut tablet) = vtablet {
             if let Some(state) = tablet.poll() {
@@ -306,13 +308,11 @@ pub fn run_desktop(
                         let cy0 = wm_state.get(0).map_or(0, |w| w.y + wm::TITLEBAR_H);
                         if widget::button_hit_test(&POWEROFF_BTN, cx0, cy0, cpx, cpy) {
                             widget::draw_button(fb, cx0, cy0, &POWEROFF_BTN, true);
-                            exit_action = DesktopExitAction::PowerOff;
-                            break 'event;
+                            break 'event DesktopExitAction::PowerOff;
                         }
                         if widget::button_hit_test(&REBOOT_BTN, cx0, cy0, cpx, cpy) {
                             widget::draw_button(fb, cx0, cy0, &REBOOT_BTN, true);
-                            exit_action = DesktopExitAction::Reboot;
-                            break 'event;
+                            break 'event DesktopExitAction::Reboot;
                         }
                         if let Some(c) = &mut cursor_state {
                             c.show(fb);
@@ -350,13 +350,11 @@ pub fn run_desktop(
                     let cy0 = wm_state.get(0).map_or(0, |w| w.y + wm::TITLEBAR_H);
                     if widget::button_hit_test(&POWEROFF_BTN, cx0, cy0, px, py) {
                         widget::draw_button(fb, cx0, cy0, &POWEROFF_BTN, true);
-                        exit_action = DesktopExitAction::PowerOff;
-                        break 'event;
+                        break 'event DesktopExitAction::PowerOff;
                     }
                     if widget::button_hit_test(&REBOOT_BTN, cx0, cy0, px, py) {
                         widget::draw_button(fb, cx0, cy0, &REBOOT_BTN, true);
-                        exit_action = DesktopExitAction::Reboot;
-                        break 'event;
+                        break 'event DesktopExitAction::Reboot;
                     }
 
                     if let Some(c) = &mut cursor_state {
@@ -406,32 +404,40 @@ pub fn run_desktop(
                         let cy0 = wm_state.get(0).map_or(0, |w| w.y + wm::TITLEBAR_H);
                         if widget::button_hit_test(&POWEROFF_BTN, cx0, cy0, px, py) {
                             widget::draw_button(fb, cx0, cy0, &POWEROFF_BTN, true);
-                            exit_action = DesktopExitAction::PowerOff;
-                            break 'event;
+                            break 'event DesktopExitAction::PowerOff;
                         }
                         if widget::button_hit_test(&REBOOT_BTN, cx0, cy0, px, py) {
                             widget::draw_button(fb, cx0, cy0, &REBOOT_BTN, true);
-                            exit_action = DesktopExitAction::Reboot;
-                            break 'event;
+                            break 'event DesktopExitAction::Reboot;
                         }
 
                         // ── Terminal Enter: execute the typed command ─────────
                         // Build command string from the echo buffer.
+                        // justification: echo_len is guarded to <= echo_buf.len();
+                        // prompt + cmd are sliced within TERM_LINE_WIDTH by min().
+                        #[allow(clippy::indexing_slicing)]
                         let cmd_bytes = &echo_buf[..echo_len];
                         if let Ok(cmd_str) = core::str::from_utf8(cmd_bytes) {
                             // Echo the prompt + command into the output history.
                             let mut prompt_line = [0u8; TERM_LINE_WIDTH];
                             let prompt = b"$ ";
                             let pl = prompt.len();
-                            prompt_line[..pl].copy_from_slice(prompt);
-                            let cmd_len = cmd_str.len().min(TERM_LINE_WIDTH - pl);
-                            prompt_line[pl..pl + cmd_len].copy_from_slice(&cmd_bytes[..cmd_len]);
-                            term_push_line(
-                                &mut term_lines,
-                                &mut term_line_lens,
-                                &mut term_next_line,
-                                &prompt_line[..pl + cmd_len],
-                            );
+                            // justification: prompt is 2 bytes, pl < TERM_LINE_WIDTH;
+                            // cmd_len = min(cmd_str.len(), TERM_LINE_WIDTH - pl) keeps
+                            // pl + cmd_len <= TERM_LINE_WIDTH == prompt_line.len().
+                            #[allow(clippy::indexing_slicing)]
+                            {
+                                prompt_line[..pl].copy_from_slice(prompt);
+                                let cmd_len = cmd_str.len().min(TERM_LINE_WIDTH - pl);
+                                prompt_line[pl..pl + cmd_len]
+                                    .copy_from_slice(&cmd_bytes[..cmd_len]);
+                                term_push_line(
+                                    &mut term_lines,
+                                    &mut term_line_lens,
+                                    &mut term_next_line,
+                                    &prompt_line[..pl + cmd_len],
+                                );
+                            }
 
                             // Execute through the shell pipeline (bare-metal only).
                             #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
@@ -592,7 +598,7 @@ pub fn run_desktop(
         }
 
         core::hint::spin_loop();
-    }
+    };
 
     // ── Exit overlay ──────────────────────────────────────────────────────────
     if let Some(fb) = fb_opt {
@@ -1075,7 +1081,7 @@ fn render_sysinfo(
                 let (l, r) = remaining.split_at(cut);
                 (l, r.trim_start())
             };
-            let x_off = if row_off == 0 { label_px } else { label_px };
+            let x_off = label_px;
             font::render_str(
                 fb,
                 cx + x_off,
@@ -1121,13 +1127,17 @@ impl omni_shell::glob::FsQuery for KernelFsQuery {
         // We only read (shared reference) from the VFS; no mutation occurs.
         #[allow(unsafe_code, reason = "single-CPU VFS read; SAFETY comment above")]
         unsafe {
-            match (*core::ptr::addr_of!(crate::SHELL_VFS)).as_ref() {
-                Some(vfs) => match vfs.list_directory(path) {
-                    Ok(entries) => Ok(entries.iter().map(|e| e.name.clone()).collect()),
-                    Err(_) => Err(alloc::string::String::from("not found")),
-                },
-                None => Err(alloc::string::String::from("no VFS")),
-            }
+            (*core::ptr::addr_of!(crate::SHELL_VFS))
+                .as_ref()
+                .map_or_else(
+                    || Err(alloc::string::String::from("no VFS")),
+                    |vfs| {
+                        vfs.list_directory(path).map_or_else(
+                            |_| Err(alloc::string::String::from("not found")),
+                            |entries| Ok(entries.iter().map(|e| e.name.clone()).collect()),
+                        )
+                    },
+                )
         }
     }
 }
@@ -1176,6 +1186,8 @@ fn term_push_line(
 /// by `crates/omni-kernel/build.rs`, plus static milestone status so the
 /// running image is self-describing without consulting the host repo.
 fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
+    use super::driver_loader::{E1000E_LIVE, E1000E_MAC};
+    use core::sync::atomic::Ordering;
     let Some(w) = wm_state.get(2) else { return };
     let cx_l = w.x + 8;
     #[allow(
@@ -1309,8 +1321,10 @@ fn render_buildinfo(fb: &FrameBuffer, wm_state: &wm::WindowManager) {
     );
 
     // e1000e live status — show MAC if bring-up succeeded.
-    use super::driver_loader::{E1000E_LIVE, E1000E_MAC};
-    use core::sync::atomic::Ordering;
+    // justification: buf has 32 bytes; pos starts at 13 and advances at most
+    // 6*3-1 = 17 more bytes (< 32). hex is a 16-byte const; nibbles are 4-bit
+    // values (0..=15). E1000E_MAC has exactly 6 elements accessed by literal index.
+    #[allow(clippy::indexing_slicing)]
     if E1000E_LIVE.load(Ordering::Relaxed) {
         let m = [
             E1000E_MAC[0].load(Ordering::Relaxed),

@@ -356,6 +356,10 @@ static mut IRQ_TABLE_GLOBAL: IrqTable = IrqTable::new();
 ///
 /// Propagates [`IrqBindError`] from the underlying [`IrqTable::bind`].
 #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+#[allow(
+    unsafe_code,
+    reason = "accesses kernel-global IRQ table; SAFETY at call site"
+)]
 pub unsafe fn global_bind(
     irq_vector: u8,
     channel_id: u64,
@@ -382,6 +386,10 @@ pub unsafe fn global_bind(
 ///
 /// Propagates [`IrqBindError`] from the underlying [`IrqTable::unbind`].
 #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+#[allow(
+    unsafe_code,
+    reason = "accesses kernel-global IRQ table; SAFETY at call site"
+)]
 pub unsafe fn global_unbind(irq_vector: u8, owner_task_id: u64) -> Result<(), IrqBindError> {
     // SAFETY: single-CPU Phase 1; IRQ_TABLE_GLOBAL not aliased.
     // MP-SAFETY: upgrade to spinlock when SMP lands (P6.4+).
@@ -421,7 +429,12 @@ pub unsafe fn global_unbind(irq_vector: u8, owner_task_id: u64) -> Result<(), Ir
 /// trampoline guarantees this for Phase 1. MP-SAFETY: requires the IRQ
 /// spinlock when SMP is active (P6.4+).
 #[cfg(all(feature = "bare-metal", target_os = "none", not(test)))]
+#[allow(unsafe_code, reason = "ISR path; SAFETY comments at each site")]
 pub unsafe fn irq_notify(vector: u8) {
+    use crate::capabilities::KernelPrincipal;
+    use crate::ipc::{ChannelId, MessageEnvelope, MessageKind};
+    use crate::scheduling::TaskId;
+
     // SAFETY: single-CPU Phase 1; IRQ_TABLE_GLOBAL not aliased while
     // this function runs. MP-SAFETY: upgrade to spinlock (P6.4+).
     let binding = unsafe {
@@ -441,9 +454,6 @@ pub unsafe fn irq_notify(vector: u8) {
     // Build the 8-byte notification payload: vector as u64 LE.
     let payload_bytes = u64::from(vector).to_le_bytes();
 
-    use crate::ipc::{ChannelId, MessageEnvelope, MessageKind};
-    use crate::scheduling::TaskId;
-
     let envelope = MessageEnvelope {
         // Kernel is the sender (sentinel task id 0).
         sender: TaskId(0),
@@ -460,8 +470,6 @@ pub unsafe fn irq_notify(vector: u8) {
             payload_bytes[7],
         ],
     };
-
-    use crate::capabilities::KernelPrincipal;
 
     // SAFETY: IPC_REGISTRY not aliased; single-CPU ISR context.
     // MP-SAFETY: upgrade to spinlock (P6.4+).

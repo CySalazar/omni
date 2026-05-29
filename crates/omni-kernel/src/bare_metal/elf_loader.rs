@@ -413,8 +413,14 @@ impl<'a> Elf64<'a> {
             let base = self.phoff + i * self.phentsize;
             if let Some(p_type) = r_u32(self.data, base) {
                 if p_type == PT_DYNAMIC {
-                    dyn_offset = r_u64(self.data, base + 8).unwrap_or(0) as usize;
-                    dyn_size = r_u64(self.data, base + 32).unwrap_or(0) as usize;
+                    // justification: bare-metal x86_64 only; usize == u64.
+                    // On any 32-bit host the cast may truncate but this code is
+                    // gated to target_arch = "x86_64" via the module cfg.
+                    #[allow(clippy::cast_possible_truncation)]
+                    {
+                        dyn_offset = r_u64(self.data, base + 8).unwrap_or(0) as usize;
+                        dyn_size = r_u64(self.data, base + 32).unwrap_or(0) as usize;
+                    }
                     break;
                 }
             }
@@ -447,22 +453,22 @@ impl<'a> Elf64<'a> {
 
         // The RELA entries are at file offset = rela_off (for PIE, this
         // is the same as the virt_addr since the base is 0).
+        // justification: bare-metal x86_64 only; usize == u64.
+        #[allow(clippy::cast_possible_truncation)]
         let rela_file_off = rela_off as usize;
+        #[allow(clippy::cast_possible_truncation)]
         let num_entries = rela_sz as usize / 24;
 
         for i in 0..num_entries {
             let ent_off = rela_file_off + i * 24;
-            let r_offset = match r_u64(self.data, ent_off) {
-                Some(v) => v,
-                None => continue,
+            let Some(r_offset) = r_u64(self.data, ent_off) else {
+                continue;
             };
-            let r_info = match r_u64(self.data, ent_off + 8) {
-                Some(v) => v,
-                None => continue,
+            let Some(r_info) = r_u64(self.data, ent_off + 8) else {
+                continue;
             };
-            let r_addend = match r_u64(self.data, ent_off + 16) {
-                Some(v) => v,
-                None => continue,
+            let Some(r_addend) = r_u64(self.data, ent_off + 16) else {
+                continue;
             };
 
             let r_type = (r_info & 0xFFFF_FFFF) as u32;

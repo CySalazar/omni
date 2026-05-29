@@ -428,6 +428,10 @@ impl KvmEngine {
     /// run loop to avoid contention with concurrent `state()` calls; it is
     /// acquired only at the start (to read the VM handle) and at the end (to
     /// write back console bytes).
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "guest run loop: branches mirror VM lifecycle + console I/O states"
+    )]
     fn run_guest(&self, id: ContainerId) -> ContainerResult<()> {
         // Step 1: retrieve the VM handle under the lock, then release it.
         let vm_handle = {

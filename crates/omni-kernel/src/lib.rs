@@ -68,7 +68,11 @@
         clippy::unwrap_used,
         clippy::expect_used,
         clippy::panic,
-        clippy::doc_markdown
+        clippy::doc_markdown,
+        // Test code in known_issuers uses direct indexing on a known-length static slice.
+        clippy::indexing_slicing,
+        // Test assertions in services/net use {:?} with a trailing arg instead of inline fmt.
+        clippy::uninlined_format_args
     )
 )]
 // NOTE: per ADR-0003 (no blanket #![allow] in production crates), every
@@ -870,6 +874,10 @@ pub fn kmain(
         #[cfg(target_os = "none")]
         {
             const EMBEDDED_INITRAMFS: &[u8] = include_bytes!("embedded_initramfs.bin");
+            // justification: EMBEDDED_INITRAMFS is a const whose emptiness is
+            // determined at compile time; the branch is intentionally a
+            // compile-time guard to skip parsing a zero-byte blob.
+            #[allow(clippy::const_is_empty)]
             if !EMBEDDED_INITRAMFS.is_empty() {
                 match initramfs::parse_initramfs(EMBEDDED_INITRAMFS) {
                     Ok(entries) => {
@@ -1609,7 +1617,7 @@ pub fn kmain(
         let shell_found = unsafe {
             (*core::ptr::addr_of!(SHELL_VFS))
                 .as_ref()
-                .map_or(false, |v| v.exists("/bin/omni-shell"))
+                .is_some_and(|v| v.exists("/bin/omni-shell"))
         };
 
         if shell_found {
@@ -1618,26 +1626,21 @@ pub fn kmain(
             // Read the ELF stat and bytes from the VFS.
             // SAFETY: single-CPU; SHELL_VFS read-only in this block.
             let spawn_result: Result<scheduling::TaskId, &'static str> = unsafe {
-                let vfs_ref = match (*core::ptr::addr_of!(SHELL_VFS)).as_ref() {
-                    Some(v) => v,
-                    None => {
-                        early_console::write_str("[OMNI OS] shell boot: VFS vanished\n");
-                        return bare_metal::arch::halt_forever();
-                    }
+                let Some(vfs_ref) = (*core::ptr::addr_of!(SHELL_VFS)).as_ref() else {
+                    early_console::write_str("[OMNI OS] shell boot: VFS vanished\n");
+                    bare_metal::arch::halt_forever();
                 };
 
-                let stat = match vfs_ref.stat("/bin/omni-shell") {
-                    Ok(s) => s,
-                    Err(_) => return bare_metal::arch::halt_forever(),
+                let Ok(stat) = vfs_ref.stat("/bin/omni-shell") else {
+                    bare_metal::arch::halt_forever();
                 };
 
                 #[allow(
                     clippy::cast_possible_truncation,
                     reason = "ELF size is bounded by the VFS in-memory allocator; well under usize::MAX"
                 )]
-                let elf_bytes = match vfs_ref.read_file(stat.inode, 0, stat.size as usize) {
-                    Ok(b) => b,
-                    Err(_) => return bare_metal::arch::halt_forever(),
+                let Ok(elf_bytes) = vfs_ref.read_file(stat.inode, 0, stat.size as usize) else {
+                    bare_metal::arch::halt_forever();
                 };
 
                 let boot_cr3_val = bare_metal::boot_cr3();

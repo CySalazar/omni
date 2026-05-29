@@ -3,6 +3,15 @@
 //! These tests run against a tiny model to verify that the full pipeline
 //! produces non-trivial (non-zero) output.
 
+// Integration tests are not production library code; allow the same
+// test-helper lint waivers that the crate's cfg_attr(test, …) block applies
+// inside the crate.  These are narrowly-scoped to this integration-test file.
+#![allow(
+    clippy::indexing_slicing,
+    clippy::cast_precision_loss,
+    clippy::suboptimal_flops
+)]
+
 use omni_hal::tensor::{CpuBackend, TensorBuffer, TensorDescriptor, TensorDtype};
 use omni_hal::transformer::{
     TransformerConfig, TransformerLayerWeights, TransformerWeights, transformer_forward,

@@ -652,7 +652,7 @@ mod tests {
         assert!((probs[3]).abs() < 1e-9);
     }
 
-    /// Large logits must not produce NaN or Inf (numerical stability check).
+    /// Large logits must not produce `NaN` or Inf (numerical stability check).
     #[test]
     fn softmax_numerical_stability() {
         let logits = vec![1000.0f32, 1001.0, 999.0, 998.0];
@@ -726,8 +726,8 @@ mod tests {
     #[test]
     fn generate_draft_greedy_deterministic() {
         let draft_forward = |_: &[usize]| -> Vec<f32> { vec![0.1, 5.0, 0.3, 0.2] };
-        let r1 = generate_draft(&[1usize, 2], 4, &draft_forward, 0.0);
-        let r2 = generate_draft(&[1usize, 2], 4, &draft_forward, 0.0);
+        let r1 = generate_draft(&[1usize, 2], 4, draft_forward, 0.0);
+        let r2 = generate_draft(&[1usize, 2], 4, draft_forward, 0.0);
         assert_eq!(r1.tokens, r2.tokens, "greedy draft must be deterministic");
     }
 
@@ -743,7 +743,7 @@ mod tests {
         let logits = vec![0.1f32, 100.0, 0.3, 0.2];
         let draft = DraftResult {
             tokens: vec![1, 1, 1],
-            draft_logits: vec![logits.clone(), logits.clone(), logits.clone()],
+            draft_logits: vec![logits.clone(), logits.clone(), logits],
         };
         // Target returns the same logits.
         let target_forward = |ctx: &[usize]| -> Vec<Vec<f32>> {
@@ -768,11 +768,7 @@ mod tests {
         let draft_logits = vec![100.0f32, 0.1, 0.1, 0.1];
         let draft = DraftResult {
             tokens: vec![0, 0, 0],
-            draft_logits: vec![
-                draft_logits.clone(),
-                draft_logits.clone(),
-                draft_logits.clone(),
-            ],
+            draft_logits: vec![draft_logits.clone(), draft_logits.clone(), draft_logits],
         };
 
         // Target strongly prefers token 3 — disagrees at every position.
@@ -896,7 +892,7 @@ mod tests {
             move |_: &[usize]| -> Vec<f32> { l.clone() }
         };
         let target_forward = {
-            let l = logits.clone();
+            let l = logits;
             move |ctx: &[usize]| -> Vec<Vec<f32>> { ctx.iter().map(|_| l.clone()).collect() }
         };
 

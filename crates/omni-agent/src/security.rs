@@ -751,6 +751,10 @@ impl SecurityAgent {
     ///     .is_ok()
     /// );
     /// ```
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "privacy-budget gate: branches enumerate the budget decision states"
+    )]
     pub fn check_privacy_budget(
         accountant: &PrivacyBudgetAccountant,
         agent_id: &str,

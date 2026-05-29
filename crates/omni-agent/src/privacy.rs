@@ -429,6 +429,10 @@ impl PrivacyBudgetAccountant {
     /// assert!(remaining < 5.0);
     /// ```
     #[allow(clippy::float_arithmetic)]
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "DP budget accounting: branches over mechanism + composition states"
+    )]
     pub fn consume(
         &mut self,
         agent_id: &str,

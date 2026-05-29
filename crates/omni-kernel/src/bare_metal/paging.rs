@@ -284,6 +284,9 @@ impl PageMapper {
     }
 
     /// Translate a VA through the mapper's own root page table.
+    // justification: pml4e/pdpte/pde/pte are the canonical x86_64 page-table
+    // entry names from the Intel SDM Vol.3A Table 4-1; renaming hurts auditability.
+    #[allow(clippy::similar_names)]
     pub fn translate(&self, virt: VirtAddr) -> Option<PhysAddr> {
         let pml4 = self.table_ptr(self.root_phys);
         let pml4e = unsafe { (*pml4).entry(virt_index(virt, PageLevel::Pml4)) };

@@ -735,8 +735,7 @@ mod tests {
             assert_eq!(
                 err,
                 NetRegistryError::InterfaceNameInvalidChar,
-                "expected InterfaceNameInvalidChar for {:?}",
-                name
+                "expected InterfaceNameInvalidChar for {name:?}"
             );
         }
     }

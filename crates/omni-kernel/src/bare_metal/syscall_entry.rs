@@ -37,6 +37,34 @@
     clippy::cast_possible_truncation,
     reason = "RAX number is u64 by ABI but the dispatch enum tag fits u32"
 )]
+#![allow(
+    clippy::option_if_let_else,
+    reason = "match-on-Option in syscall handlers reads more clearly than map_or_else chains"
+)]
+#![allow(
+    clippy::manual_let_else,
+    reason = "syscall handlers use match-with-early-return for clarity on the success path"
+)]
+#![allow(
+    clippy::indexing_slicing,
+    reason = "syscall handlers index user-space buffers validated by user_slice_mut / bounds checks"
+)]
+#![allow(
+    clippy::items_after_statements,
+    reason = "use items inside bare-metal-gated handler fns are placed near their use sites"
+)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "fd_read and fd_write are exhaustive FD-type dispatch handlers; splitting obscures the protocol"
+)]
+#![allow(
+    clippy::match_single_binding,
+    reason = "single-pattern match is used intentionally for future extensibility in handler scaffolds"
+)]
+#![allow(
+    clippy::single_match_else,
+    reason = "nested match-on-Option with early-return in the else arm is clearer than if-let"
+)]
 
 use crate::syscall::{SyscallDispatcher, SyscallNumber, SyscallReturn};
 use crate::{KernelError, KernelResult};
@@ -2979,6 +3007,10 @@ mod shell_handlers {
     /// - `Pipe { is_read_end: true }` → reads from the pipe ring.
     /// - `FsFile` → reads from the VFS at the current offset; advances offset.
     /// - Any other combination → `err(EBADF)`.
+    // justification: `dest` is the output buffer slice; `desc` is the FD
+    // descriptor struct — different types, different roles, short names
+    // mandated by the POSIX FD convention.
+    #[allow(clippy::similar_names)]
     pub(super) fn fd_read(args: [u64; 6]) -> SyscallReturn {
         let fd_num = args[0] as u32;
         let buf_ptr = args[1];
@@ -3428,7 +3460,10 @@ mod shell_handlers {
     /// fds return `err(ESPIPE)`.
     pub(super) fn fd_seek(args: [u64; 6]) -> SyscallReturn {
         let fd_num = args[0] as u32;
-        // `offset` is passed as raw u64 bits but represents a signed value.
+        // justification: `offset` is transmitted as u64 via the syscall ABI
+        // register convention; it represents a signed i64 seek offset.
+        // The wrap is intentional — the ABI uses two's-complement reinterpretation.
+        #[allow(clippy::cast_possible_wrap)]
         let offset = args[1] as i64;
         let whence = args[2] as u32;
 
@@ -3665,7 +3700,7 @@ mod shell_handlers {
     /// |------|-----|-------------------------------|
     /// | a0   | RDI | `path_ptr`                    |
     /// | a1   | RSI | `path_len`                    |
-    /// | a2   | RDX | `flags` (OpenFlags bitmask)   |
+    /// | a2   | RDX | `flags` (`OpenFlags` bitmask)   |
     ///
     /// Returns `(rax = fd, rdx = 0)` on success, or `err(errno)` on failure.
     pub(super) fn fs_open(args: [u64; 6]) -> SyscallReturn {
@@ -4139,7 +4174,7 @@ mod shell_handlers {
     /// Each entry is a fixed-size 16-byte record:
     /// - bytes `[0..8]`  : pid (u64 LE)
     /// - bytes `[8..15]` : process name, NUL-padded to 7 bytes
-    /// - byte  `[15]`    : flags (bit 0 = has_exited)
+    /// - byte  `[15]`    : flags (bit 0 = `has_exited`)
     ///
     /// Returns `(rax = records_written, rdx = 0)`. Stops when the buffer is
     /// full; records beyond capacity are silently dropped.
@@ -4184,7 +4219,7 @@ mod shell_handlers {
                 *b = 0;
             }
             // flags byte.
-            dest[offset + 15] = if *exited { 1 } else { 0 };
+            dest[offset + 15] = u8::from(*exited);
             offset += RECORD_SIZE;
             records_written += 1;
         }
@@ -4238,7 +4273,7 @@ mod shell_handlers {
     ///
     /// Returns `(rax = exit_code, rdx = child_pid)` on success.
     /// When `WNOHANG` is set and no child has exited returns `(0, 0)`.
-    pub(super) fn process_wait(args: [u64; 6]) -> SyscallReturn {
+    pub(super) fn process_wait(_args: [u64; 6]) -> SyscallReturn {
         // SAFETY: single-CPU; SHELL_PROCESS_TABLE + SCHEDULER read.
         let current = unsafe { current_task() };
 
@@ -4451,6 +4486,9 @@ mod shell_handlers {
 struct KernelSyscallDispatcher;
 
 impl SyscallDispatcher for KernelSyscallDispatcher {
+    // justification: syscall dispatch is an exhaustive match over the ABI surface;
+    // splitting it across helper functions would obscure the stable numeric layout.
+    #[allow(clippy::too_many_lines)]
     fn dispatch(&mut self, number: SyscallNumber, args: [u64; 6]) -> KernelResult<u64> {
         match number {
             SyscallNumber::TimeMonotonicNanos => {
@@ -4586,15 +4624,6 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
                 let _ = args;
                 Err(KernelError::CapabilityDenied)
             }
-            // Remaining TEE syscalls are still scaffolded; landing in
-            // this arm rather than the catch-all forces a compiler
-            // error when a future commit forgets to re-route one of
-            // them.
-            SyscallNumber::TeeTdcall | SyscallNumber::TeeMsr => {
-                let _ = args;
-                Err(KernelError::NotYetImplemented)
-            }
-
             // OIP-Phase2-Entry-021 AI syscall surface (P2 Sprint 2).
             // These are capability-checked relay points that forward
             // requests to the `omni-runtime` IPC service. The kernel
@@ -4840,7 +4869,14 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
             // landing here from the single-register path is not expected in
             // normal operation. Report `NotYetImplemented` to be loud and
             // observable in host tests without the bare-metal singletons.
-            SyscallNumber::PipeCreate | SyscallNumber::FdDup2 | SyscallNumber::ProcessWait => {
+            // TeeTdcall/TeeMsr are scaffolded alongside PipeCreate/FdDup2/ProcessWait;
+            // explicit enumeration (rather than catch-all) ensures a compiler error
+            // when a future commit forgets to route a new syscall.
+            SyscallNumber::TeeTdcall
+            | SyscallNumber::TeeMsr
+            | SyscallNumber::PipeCreate
+            | SyscallNumber::FdDup2
+            | SyscallNumber::ProcessWait => {
                 let _ = args;
                 Err(KernelError::NotYetImplemented)
             }
@@ -4854,6 +4890,9 @@ impl SyscallDispatcher for KernelSyscallDispatcher {
     /// `DmaMap`, and `IrqAttach` to their rich handlers (which fill
     /// both `rax` and `rdx`); every other syscall keeps the default
     /// `SyscallReturn::ok` wrapping of the single-register path.
+    // justification: mirrors dispatch() — exhaustive ABI match; splitting
+    // obscures the stable numeric layout mandated by OIP-013.
+    #[allow(clippy::too_many_lines)]
     fn dispatch_full(
         &mut self,
         number: SyscallNumber,

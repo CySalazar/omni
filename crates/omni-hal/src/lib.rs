@@ -34,6 +34,28 @@
 
 #![doc(html_root_url = "https://docs.omni-os.org/omni-hal")]
 #![warn(missing_docs)]
+// Test helpers freely use indexing, float arithmetic, direct comparisons, and
+// other patterns that are intentionally forbidden in production code.  Allowing
+// them in the cfg(test) context is ADR-0003-compliant: it is NOT a blanket
+// group-allow at crate root but a narrowly-scoped test-only exemption.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unnecessary_wraps,
+        clippy::indexing_slicing,
+        clippy::float_arithmetic,
+        clippy::cast_precision_loss,
+        clippy::suboptimal_flops,
+        clippy::float_cmp,
+        clippy::identity_op,
+        clippy::erasing_op,
+        clippy::redundant_clone,
+        clippy::integer_division,
+    )
+)]
 
 /// Tensor HAL — uniform compute dispatch across CPU/GPU/NPU.
 ///

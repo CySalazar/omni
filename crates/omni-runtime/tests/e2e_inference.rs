@@ -2,12 +2,24 @@
 //!
 //! Exercises the full Phase 2 vertical slice:
 //! 1. BPE tokenizer encodes a prompt to token IDs.
-//! 2. OmniFS stores a synthetic GGUF model file.
-//! 3. Model loader reads the GGUF from OmniFS and extracts tensor weights.
+//! 2. `OmniFS` stores a synthetic GGUF model file.
+//! 3. Model loader reads the GGUF from `OmniFS` and extracts tensor weights.
 //! 4. Transformer forward pass runs on the loaded weights.
 //! 5. Output logits are decoded back to text via the BPE tokenizer.
 
-#![allow(clippy::float_arithmetic)]
+// Integration tests are separate compilation units not covered by the crate-root
+// cfg_attr(test, allow(...)). The lints below are intentional in test code:
+//   - unwrap_used: test failures should panic; propagating errors adds no value.
+//   - indexing_slicing: bounds are established by the test's own construction.
+//   - cast_possible_truncation: values are known-small in test fixtures.
+//   - doc_markdown: prose comments in test modules need not use code-style backticks.
+#![allow(
+    clippy::float_arithmetic,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::cast_possible_truncation,
+    clippy::doc_markdown
+)]
 
 use omni_fs::InMemoryFs;
 use omni_hal::tensor::{CpuBackend, TensorBuffer, TensorDescriptor, TensorDtype};

@@ -1,8 +1,9 @@
 //! Benchmark suite for streaming decode throughput (Sprint 8).
-// Allow missing_docs in benchmark crates: the criterion_group! / criterion_main!
-// macros generate functions that the workspace lint flags, but bench files are
-// not public library code and documentation is not required here.
-#![allow(missing_docs)]
+// Bench files are separate compilation units not covered by the crate-root
+// cfg_attr(test, allow(...)). The specific lints below are intentional here:
+//   - missing_docs: criterion macros generate undocumented functions by design.
+//   - expect_used: bench setup panics on bad fixture data; that is acceptable.
+#![allow(missing_docs, clippy::expect_used)]
 //!
 //! Measures:
 //! - Tokens per second for the streaming decode loop.
@@ -23,7 +24,7 @@ use omni_runtime::decode::{StreamDecodeConfig, streaming_decode};
 // Helpers
 // =============================================================================
 
-/// Build an F32 TensorBuffer.
+/// Build an F32 [`TensorBuffer`].
 fn make_f32_buf(shape: Vec<usize>, values: &[f32]) -> TensorBuffer {
     let desc = TensorDescriptor::new(shape, TensorDtype::F32);
     let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
@@ -149,8 +150,8 @@ fn bench_greedy_vs_sampled(c: &mut Criterion) {
                     eos_token_id: None,
                 },
             )
-            .count()
-        })
+            .count();
+        });
     });
 
     // Temperature sampling.
@@ -168,8 +169,8 @@ fn bench_greedy_vs_sampled(c: &mut Criterion) {
                     eos_token_id: None,
                 },
             )
-            .count()
-        })
+            .count();
+        });
     });
 
     group.finish();
@@ -190,7 +191,9 @@ fn bench_prompt_size_effect(c: &mut Criterion) {
     let weights = bench_weights(&cfg);
 
     for &prompt_len in &[1usize, 2, 4] {
-        let prompt: Vec<u32> = (0..prompt_len as u32).collect();
+        // prompt_len is always ≤ 4 in this benchmark; try_from never fails here.
+        let prompt_len_u32 = u32::try_from(prompt_len).expect("benchmark prompt_len fits in u32");
+        let prompt: Vec<u32> = (0..prompt_len_u32).collect();
         group.bench_with_input(
             BenchmarkId::new("prompt_len", prompt_len),
             &prompt,
@@ -205,7 +208,7 @@ fn bench_prompt_size_effect(c: &mut Criterion) {
                     };
                     streaming_decode(&backend, &cfg, &weights, p, decode_cfg)
                         .next()
-                        .and_then(|r| r.ok())
+                        .and_then(std::result::Result::ok)
                 });
             },
         );

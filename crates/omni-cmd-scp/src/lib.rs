@@ -271,7 +271,7 @@ mod tests {
                 assert_eq!(host, Ipv4Addr([10, 0, 0, 1]));
                 assert_eq!(path, "/tmp/out");
             }
-            _ => panic!("expected Remote"),
+            ScpPath::Local(_) => panic!("expected Remote"),
         }
     }
 

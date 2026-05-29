@@ -130,6 +130,10 @@ pub fn format_prompt(env: &ShellEnv, cwd: &str) -> String {
 /// let (code, _output) = process_line("echo hello", &mut env, &mut cwd, &EmptyFs);
 /// assert_eq!(code, 0);
 /// ```
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "REPL line dispatch: branch count mirrors the builtin command set"
+)]
 pub fn process_line(
     input: &str,
     env: &mut ShellEnv,

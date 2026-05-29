@@ -213,6 +213,13 @@ const DRIVER_PROBE_ELF: &[u8] = &[
 ///
 /// Caller must ensure single-CPU invariant holds and that
 /// `scheduler`, `mapper`, `alloc` are the live kernel singletons.
+// justification: u64→u32 casts print low/high halves of 64-bit BAR addresses
+// in diagnostic console output; truncation is intentional for readability.
+#[allow(clippy::cast_possible_truncation)]
+// justification: boot probe orchestrates NVMe + e1000e + virtio-net in a single
+// linear sequence; extracting sub-sequences into helpers would hide the boot
+// ordering dependency and scatter the Phase-1 scaffold across many functions.
+#[allow(clippy::too_many_lines)]
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn boot_load_driver_probe<const N: usize>(
     mapper: &mut crate::bare_metal::paging::PageMapper,
@@ -319,7 +326,9 @@ pub unsafe fn boot_load_driver_probe<const N: usize>(
         unsafe { pci_scan::enable_device_full(nvme) };
         early_console::write_str("[nvme] PCI cmd: IOSE+MSE+BME enabled\n");
 
-        if !pci_scan::PciDevice::bar_is_io(nvme.bar0) {
+        if pci_scan::PciDevice::bar_is_io(nvme.bar0) {
+            early_console::write_str("[nvme] BAR0 is I/O port — MMIO bringup skipped\n");
+        } else {
             let bar0_phys = nvme.bar0_phys();
             early_console::write_str("[nvme] BAR0 phys=");
             write_hex_u32((bar0_phys >> 32) as u32);
@@ -331,8 +340,6 @@ pub unsafe fn boot_load_driver_probe<const N: usize>(
             } else {
                 early_console::write_str("[nvme] BAR0 is zero — skipping\n");
             }
-        } else {
-            early_console::write_str("[nvme] BAR0 is I/O port — MMIO bringup skipped\n");
         }
     } else {
         early_console::write_str("[nvme] not found on any bus\n");
@@ -361,7 +368,9 @@ pub unsafe fn boot_load_driver_probe<const N: usize>(
         unsafe { pci_scan::enable_device_full(e1000e) };
         early_console::write_str("[e1000e] PCI cmd: IOSE+MSE+BME enabled\n");
 
-        if !pci_scan::PciDevice::bar_is_io(e1000e.bar0) {
+        if pci_scan::PciDevice::bar_is_io(e1000e.bar0) {
+            early_console::write_str("[e1000e] BAR0 is I/O port — MMIO bringup skipped\n");
+        } else {
             let bar0_phys = e1000e.bar0_phys();
             early_console::write_str("[e1000e] BAR0 phys=");
             write_hex_u32((bar0_phys >> 32) as u32);
@@ -373,8 +382,6 @@ pub unsafe fn boot_load_driver_probe<const N: usize>(
             } else {
                 early_console::write_str("[e1000e] BAR0 is zero — skipping\n");
             }
-        } else {
-            early_console::write_str("[e1000e] BAR0 is I/O port — MMIO bringup skipped\n");
         }
     } else {
         early_console::write_str("[e1000e] not found on any bus\n");
@@ -566,7 +573,7 @@ unsafe fn virtio_net_live_bringup(io_base: u16) {
         arch::outb(
             io_base + VIRTIO_IO_OFF_DEVICE_STATUS,
             VIRTIO_STATUS_ACKNOWLEDGE,
-        )
+        );
     };
     let status = unsafe { arch::inb(io_base + VIRTIO_IO_OFF_DEVICE_STATUS) };
     early_console::write_str("[virtio-net] ACK    status=");
@@ -578,7 +585,7 @@ unsafe fn virtio_net_live_bringup(io_base: u16) {
         arch::outb(
             io_base + VIRTIO_IO_OFF_DEVICE_STATUS,
             VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER,
-        )
+        );
     };
     let status = unsafe { arch::inb(io_base + VIRTIO_IO_OFF_DEVICE_STATUS) };
     early_console::write_str("[virtio-net] DRIVER status=");
@@ -592,14 +599,16 @@ unsafe fn virtio_net_live_bringup(io_base: u16) {
     early_console::write_str("\n");
 
     // Step 5: Write driver features (accept all device-offered).
-    unsafe { arch::outl(io_base + 0x04, features) };
+    unsafe {
+        arch::outl(io_base + 0x04, features);
+    };
 
     // Step 6: Set FEATURES_OK.
     unsafe {
         arch::outb(
             io_base + VIRTIO_IO_OFF_DEVICE_STATUS,
             VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK,
-        )
+        );
     };
     let status = unsafe { arch::inb(io_base + VIRTIO_IO_OFF_DEVICE_STATUS) };
     early_console::write_str("[virtio-net] FEAT   status=");
@@ -635,7 +644,7 @@ unsafe fn virtio_net_live_bringup(io_base: u16) {
                 | VIRTIO_STATUS_DRIVER
                 | VIRTIO_STATUS_FEATURES_OK
                 | VIRTIO_STATUS_DRIVER_OK,
-        )
+        );
     };
     let status = unsafe { arch::inb(io_base + VIRTIO_IO_OFF_DEVICE_STATUS) };
     early_console::write_str("[virtio-net] READY  status=");
@@ -679,6 +688,13 @@ const NVME_REG_CSTS: usize = 0x1C;
 /// # Safety
 ///
 /// Ring 0 only. `bar0_phys` must be the decoded MMIO base from BAR0.
+// justification: NVMe bring-up sequence (disable, configure CC, wait for
+// CSTS.RDY) is a linear protocol; splitting hides the hardware state machine.
+#[allow(clippy::too_many_lines)]
+// justification: u64→u32/usize casts used for MMIO debug output only; on
+// x86_64 (the only target) usize == u64 and the u32 casts intentionally
+// print the low/high halves of 64-bit addresses for human readability.
+#[allow(clippy::cast_possible_truncation)]
 #[cfg(target_arch = "x86_64")]
 unsafe fn nvme_live_bringup<const N: usize>(
     bar0_phys: u64,
@@ -772,7 +788,7 @@ unsafe fn nvme_live_bringup<const N: usize>(
     // Step 1: Disable controller (clear CC.EN).
     if en {
         let cc_disabled = cc & !1u32;
-        unsafe { core::ptr::write_volatile(base.byte_add(NVME_REG_CC) as *mut u32, cc_disabled) };
+        unsafe { core::ptr::write_volatile(base.byte_add(NVME_REG_CC).cast_mut(), cc_disabled) };
         early_console::write_str("[nvme] CC.EN cleared — waiting for CSTS.RDY=0...\n");
 
         let mut polls: u32 = 0;
@@ -796,11 +812,11 @@ unsafe fn nvme_live_bringup<const N: usize>(
 
     // Step 2: Program CC fields (MPS=0, IOSQES=6, IOCQES=4, CSS=0, AMS=0).
     let cc_init: u32 = (6u32 << 16) | (4u32 << 20); // IOSQES=6 (64B), IOCQES=4 (16B)
-    unsafe { core::ptr::write_volatile(base.byte_add(NVME_REG_CC) as *mut u32, cc_init) };
+    unsafe { core::ptr::write_volatile(base.byte_add(NVME_REG_CC).cast_mut(), cc_init) };
 
     // Step 3: Enable controller (set CC.EN).
     let cc_enable = cc_init | 1;
-    unsafe { core::ptr::write_volatile(base.byte_add(NVME_REG_CC) as *mut u32, cc_enable) };
+    unsafe { core::ptr::write_volatile(base.byte_add(NVME_REG_CC).cast_mut(), cc_enable) };
     early_console::write_str("[nvme] CC.EN set — waiting for CSTS.RDY=1...\n");
 
     let mut polls: u32 = 0;
@@ -882,6 +898,18 @@ const E1000E_IMS_ENABLED: u32 = (1 << 7) | (1 << 0) | (1 << 2);
 ///
 /// Caller must hold single-CPU invariant; `mapper` and `alloc` are
 /// the live kernel singletons.
+// justification: ral/rah are the Intel e1000e datasheet names for
+// Receive Address Low/High registers; tdh/tdt and rdh/rdt are the
+// Transmit/Receive Descriptor Head/Tail registers. All names are mandated
+// by the 82574L specification and must not be renamed for auditability.
+#[allow(clippy::similar_names)]
+// justification: 13-step MMIO bring-up sequence cannot be meaningfully
+// split without obscuring the hardware protocol ordering.
+#[allow(clippy::too_many_lines)]
+// justification: u64→u32/usize casts used for MMIO debug output only; on
+// x86_64 (the only target) usize == u64 and the u32 casts intentionally
+// print the low/high halves of 64-bit addresses for human readability.
+#[allow(clippy::cast_possible_truncation)]
 #[cfg(target_arch = "x86_64")]
 unsafe fn e1000e_live_bringup<const N: usize>(
     bar0_phys: u64,
@@ -923,16 +951,16 @@ unsafe fn e1000e_live_bringup<const N: usize>(
     let base = mmio_va as *const u32;
 
     // Step 1: Disable all interrupts (IMC = 0xFFFFFFFF).
-    unsafe { core::ptr::write_volatile(base.byte_add(E1000E_REG_IMC) as *mut u32, 0xFFFF_FFFF) };
+    unsafe { core::ptr::write_volatile(base.byte_add(E1000E_REG_IMC).cast_mut(), 0xFFFF_FFFF) };
     early_console::write_str("[e1000e] IMC=FFFFFFFF — interrupts disabled\n");
 
     // Step 2: Global reset (set CTRL.RST, poll until cleared).
     let ctrl = unsafe { core::ptr::read_volatile(base.byte_add(E1000E_REG_CTRL)) };
     unsafe {
         core::ptr::write_volatile(
-            base.byte_add(E1000E_REG_CTRL) as *mut u32,
+            base.byte_add(E1000E_REG_CTRL).cast_mut(),
             ctrl | E1000E_CTRL_RST,
-        )
+        );
     };
     early_console::write_str("[e1000e] CTRL.RST set — polling...\n");
 
@@ -953,7 +981,7 @@ unsafe fn e1000e_live_bringup<const N: usize>(
     early_console::write_str("\n");
 
     // Post-reset: re-disable interrupts.
-    unsafe { core::ptr::write_volatile(base.byte_add(E1000E_REG_IMC) as *mut u32, 0xFFFF_FFFF) };
+    unsafe { core::ptr::write_volatile(base.byte_add(E1000E_REG_IMC).cast_mut(), 0xFFFF_FFFF) };
 
     // Step 3: Read MAC address from RAL[0] / RAH[0].
     let ral = unsafe { core::ptr::read_volatile(base.byte_add(E1000E_REG_RAL0)) };
@@ -987,8 +1015,10 @@ unsafe fn e1000e_live_bringup<const N: usize>(
     E1000E_MAC[5].store(((rah >> 8) & 0xFF) as u8, Ordering::Relaxed);
 
     // Step 4: PHY Init — issue MDIC read of MII_CTRL (register 0, PHY addr 1).
-    let mdic_read = E1000E_MDIC_OP_READ | (1u32 << 21) | (0u32 << 16);
-    unsafe { core::ptr::write_volatile(base.byte_add(E1000E_REG_MDIC) as *mut u32, mdic_read) };
+    // PHY addr=1 (bits 20:16), register=0 (MII_CTRL, bits 15:11 = 0).
+    // The (0u32 << 16) term was removed — it contributes 0 to the OR.
+    let mdic_read = E1000E_MDIC_OP_READ | (1u32 << 21);
+    unsafe { core::ptr::write_volatile(base.byte_add(E1000E_REG_MDIC).cast_mut(), mdic_read) };
 
     polls = 0;
     let mut mdic_ok = false;
@@ -1013,40 +1043,37 @@ unsafe fn e1000e_live_bringup<const N: usize>(
 
     // Step 5: Setup RX ring (RDBAL/RDBAH/RDLEN/RDH/RDT = 0).
     unsafe {
-        core::ptr::write_volatile(base.byte_add(E1000E_REG_RDBAL) as *mut u32, 0);
-        core::ptr::write_volatile(base.byte_add(E1000E_REG_RDBAH) as *mut u32, 0);
-        core::ptr::write_volatile(base.byte_add(E1000E_REG_RDLEN) as *mut u32, 256 * 16);
-        core::ptr::write_volatile(base.byte_add(E1000E_REG_RDH) as *mut u32, 0);
-        core::ptr::write_volatile(base.byte_add(E1000E_REG_RDT) as *mut u32, 0);
+        core::ptr::write_volatile(base.byte_add(E1000E_REG_RDBAL).cast_mut(), 0);
+        core::ptr::write_volatile(base.byte_add(E1000E_REG_RDBAH).cast_mut(), 0);
+        core::ptr::write_volatile(base.byte_add(E1000E_REG_RDLEN).cast_mut(), 256 * 16);
+        core::ptr::write_volatile(base.byte_add(E1000E_REG_RDH).cast_mut(), 0);
+        core::ptr::write_volatile(base.byte_add(E1000E_REG_RDT).cast_mut(), 0);
     };
     early_console::write_str("[e1000e] RX ring programmed  RDLEN=4096\n");
 
     // Step 6: Setup TX ring (TDBAL/TDBAH/TDLEN/TDH/TDT = 0).
     unsafe {
-        core::ptr::write_volatile(base.byte_add(E1000E_REG_TDBAL) as *mut u32, 0);
-        core::ptr::write_volatile(base.byte_add(E1000E_REG_TDBAH) as *mut u32, 0);
-        core::ptr::write_volatile(base.byte_add(E1000E_REG_TDLEN) as *mut u32, 256 * 16);
-        core::ptr::write_volatile(base.byte_add(E1000E_REG_TDH) as *mut u32, 0);
-        core::ptr::write_volatile(base.byte_add(E1000E_REG_TDT) as *mut u32, 0);
+        core::ptr::write_volatile(base.byte_add(E1000E_REG_TDBAL).cast_mut(), 0);
+        core::ptr::write_volatile(base.byte_add(E1000E_REG_TDBAH).cast_mut(), 0);
+        core::ptr::write_volatile(base.byte_add(E1000E_REG_TDLEN).cast_mut(), 256 * 16);
+        core::ptr::write_volatile(base.byte_add(E1000E_REG_TDH).cast_mut(), 0);
+        core::ptr::write_volatile(base.byte_add(E1000E_REG_TDT).cast_mut(), 0);
     };
     early_console::write_str("[e1000e] TX ring programmed  TDLEN=4096\n");
 
     // Step 7: Configure RCTL (enable + broadcast accept + strip CRC).
     // RCTL: EN(bit1) | BAM(bit15) | SECRC(bit26), BSIZE=2KiB(00).
     let rctl: u32 = (1 << 1) | (1 << 15) | (1 << 26);
-    unsafe { core::ptr::write_volatile(base.byte_add(E1000E_REG_RCTL) as *mut u32, rctl) };
+    unsafe { core::ptr::write_volatile(base.byte_add(E1000E_REG_RCTL).cast_mut(), rctl) };
 
     // Step 8: Configure TCTL (enable + pad short + CT=0x0F + COLD=0x40).
     let tctl: u32 = (1 << 1) | (1 << 3) | (0x0F << 4) | (0x40 << 12);
-    unsafe { core::ptr::write_volatile(base.byte_add(E1000E_REG_TCTL) as *mut u32, tctl) };
+    unsafe { core::ptr::write_volatile(base.byte_add(E1000E_REG_TCTL).cast_mut(), tctl) };
     early_console::write_str("[e1000e] RCTL+TCTL configured\n");
 
     // Step 9: Enable interrupts (IMS = RXT0 | TXDW | LSC).
     unsafe {
-        core::ptr::write_volatile(
-            base.byte_add(E1000E_REG_IMS) as *mut u32,
-            E1000E_IMS_ENABLED,
-        )
+        core::ptr::write_volatile(base.byte_add(E1000E_REG_IMS).cast_mut(), E1000E_IMS_ENABLED);
     };
     early_console::write_str("[e1000e] IMS=0085 — interrupts enabled\n");
 
