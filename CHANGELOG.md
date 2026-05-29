@@ -17,6 +17,32 @@ Each entry below tracks the OS version. Protocol-version changes get their own b
 
 ### Added
 
+- **Phase 2 Sprint 11.a — Serving Foundations (parallel set, 2026-05-29).**
+  Four mutually-independent tasks implemented in parallel by the agent team
+  (development plan `docs/planning/2026-05-29-development-plan.md`):
+  - **S11.A `omni-runtime::serving`** — client-facing inference session
+    lifecycle: `InferenceSession` state machine (Open→Active→Closing→Closed),
+    `SessionManager` (open/close/submit/stream), wire types `ServingRequest`/
+    `ServingResponse`/`StreamChunk` (postcard via `omni_types::wire`),
+    `BatchScheduler` integration, capability-gated entry points, CSPRNG-backed
+    `SessionId`. 8 unit + 2 E2E tests.
+  - **S11.B `omni-runtime::audit`** — structured, metadata-only inference audit
+    log: `AuditRecord`, `AuditLog` trait, `InMemoryAuditLog` (16 384-entry
+    ring buffer, drop-oldest), postcard round-trip. 9 unit (incl. proptest) +
+    doc tests. No PII captured.
+  - **S11.C** — PII end-to-end integration test (`omni-tokenization/tests/
+    e2e_inference_pii.rs`): GDPR/HIPAA/PCI-DSS/strict presets prove no raw PII
+    crosses the inference boundary. 6 tests.
+  - **S11.D `omni-runtime::router`** — real `TierRouter` policy engine:
+    `RoutingPolicy`, `TierDecision`, `TierReason`, `TierError`, new
+    `route_decision` method enforcing the Phase 2 Tier-0-only contract
+    (OIP-Phase2-Entry-021 § S2.1). Existing `route()` kept backward-compatible.
+    8 unit tests.
+
+  +33 runnable tests (4791→4824). Proxmox VMID 103 smoke: clean boot to
+  `[virtio] tablet ready` (161 serial lines), Build Info panel renders
+  `Active=P2 Sprint 11.a: serving+audit`, zero #PF.
+
 - **Phase 2 Sprint 4+5+6 — Stream 1: Real Agent Logic (OIP-022)
   (2026-05-24).**
   Expanded all 5 agents from dispatch skeletons to operational logic.

@@ -909,11 +909,23 @@ pub mod inference {
 /// Execution tier routing decisions.
 ///
 /// This module implements the routing policy that decides which execution
-/// tier handles a given inference request. The Phase 2 Stream 1 stub
-/// always routes to [`ExecutionTier::Local`] (Tier 0). Future streams will
-/// add policy evaluation based on model size, user consent, and available
-/// cluster resources.
+/// tier handles a given inference request.
+///
+/// ## Phase 2 policy engine
+///
+/// Sprint 11.a introduces [`RoutingPolicy`], [`TierDecision`], and
+/// [`TierError`] alongside the new [`TierRouter::route_decision`] method.
+/// The Phase 2 contract (OIP-Phase2-Entry-021 § S2.1) mandates that the
+/// router **only** successfully routes to [`ExecutionTier::Local`] (Tier 0).
+/// Tier 1 and Tier 2 are structurally reserved but not yet implemented;
+/// any workload that would require escalation is rejected with
+/// [`TierError::TierUnavailable`] so the caller can apply graceful
+/// degradation logic.
+///
+/// The legacy [`TierRouter::route`] method remains unchanged and is kept for
+/// backward compatibility with all existing callers.
 pub mod router {
+    use thiserror::Error;
     use tracing::debug;
 
     use crate::inference::InferenceRequest;
@@ -946,15 +958,211 @@ pub mod router {
     }
 
     // -------------------------------------------------------------------------
+    // RoutingPolicy
+    // -------------------------------------------------------------------------
+
+    /// Policy parameters that govern which execution tiers the router may use.
+    ///
+    /// The default policy (see [`Default`] impl) reflects the Phase 2
+    /// contract: Tier 1 and Tier 2 escalation are **disabled**, no upper bound
+    /// on model size is enforced locally, and attestation is not required.
+    ///
+    /// Callers that need different behaviour must construct a custom policy and
+    /// pass it to [`TierRouter::route_decision`].
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use omni_runtime::router::RoutingPolicy;
+    ///
+    /// // Phase-2 default: tier 1/2 disallowed, attestation not required.
+    /// let policy = RoutingPolicy::new();
+    /// assert!(!policy.allow_tier_1);
+    /// assert!(!policy.allow_tier_2);
+    /// assert!(!policy.require_attestation);
+    /// ```
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct RoutingPolicy {
+        /// Whether escalation to Tier 1 (personal cluster) is permitted.
+        ///
+        /// Setting this to `true` does **not** guarantee escalation will
+        /// succeed in Phase 2; [`TierRouter::route_decision`] still rejects
+        /// Tier 1 dispatch with [`TierError::TierUnavailable`] because the
+        /// cluster backend is not yet implemented.
+        pub allow_tier_1: bool,
+
+        /// Whether escalation to Tier 2 (federated mesh) is permitted.
+        ///
+        /// Same caveat as [`allow_tier_1`](Self::allow_tier_1): not yet
+        /// implemented in Phase 2.
+        pub allow_tier_2: bool,
+
+        /// Maximum model size in bytes that may be served locally (Tier 0).
+        ///
+        /// If the model size reported by the caller exceeds this threshold
+        /// **and** no higher tier is available, [`TierRouter::route_decision`]
+        /// returns [`TierError::TierUnavailable`]. Set to [`u64::MAX`] (the
+        /// default) to impose no local-size limit.
+        pub max_model_size_bytes: u64,
+
+        /// Whether an attestation proof must accompany each routing request.
+        ///
+        /// When `true`, [`TierRouter::route_decision`] requires `attested ==
+        /// true`; otherwise it returns [`TierError::AttestationRequired`].
+        pub require_attestation: bool,
+    }
+
+    impl RoutingPolicy {
+        /// Create a new [`RoutingPolicy`] with the Phase 2 default values.
+        ///
+        /// - `allow_tier_1` = `false`
+        /// - `allow_tier_2` = `false`
+        /// - `max_model_size_bytes` = [`u64::MAX`] (no local-size cap)
+        /// - `require_attestation` = `false`
+        ///
+        /// ```rust
+        /// use omni_runtime::router::RoutingPolicy;
+        ///
+        /// let p = RoutingPolicy::new();
+        /// assert_eq!(p.max_model_size_bytes, u64::MAX);
+        /// ```
+        #[must_use]
+        pub fn new() -> Self {
+            Self::default()
+        }
+    }
+
+    impl Default for RoutingPolicy {
+        fn default() -> Self {
+            Self {
+                allow_tier_1: false,
+                allow_tier_2: false,
+                // No local-size ceiling by default; callers opt-in to a limit.
+                max_model_size_bytes: u64::MAX,
+                require_attestation: false,
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // TierReason
+    // -------------------------------------------------------------------------
+
+    /// The reason the router chose (or rejected) a particular execution tier.
+    ///
+    /// Carried inside [`TierDecision`] so callers can log, audit, or surface
+    /// the decision rationale without re-running the policy evaluation.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum TierReason {
+        /// The active policy allows only Tier 0 (local); no escalation was
+        /// attempted or needed.
+        LocalOnlyPolicy,
+
+        /// The model size exceeds [`RoutingPolicy::max_model_size_bytes`], but
+        /// escalation to a higher tier was not permitted by the policy.
+        ModelTooLarge,
+
+        /// The policy would allow a higher tier, but escalation was blocked
+        /// because the target tier is not yet implemented in Phase 2.
+        EscalationDenied,
+
+        /// Attestation was required by the policy but no proof was provided.
+        AttestationMissing,
+    }
+
+    // -------------------------------------------------------------------------
+    // TierDecision
+    // -------------------------------------------------------------------------
+
+    /// The outcome of a successful routing evaluation.
+    ///
+    /// Produced by [`TierRouter::route_decision`] on the `Ok` path. Carries
+    /// the chosen tier, the human-readable reason, and a caller-supplied
+    /// nanosecond timestamp so audit records can be produced without re-querying
+    /// a clock.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use omni_runtime::router::{
+    ///     ExecutionTier, RoutingPolicy, TierDecision, TierReason, TierRouter,
+    /// };
+    /// use omni_runtime::inference::InferenceRequest;
+    /// use omni_types::ModelId;
+    ///
+    /// let router = TierRouter::new();
+    /// let policy = RoutingPolicy::new();
+    /// let req = InferenceRequest {
+    ///     model_id: ModelId::from_bytes([0x00; 32]),
+    ///     input: vec![],
+    ///     request_id: 0,
+    /// };
+    /// let decision = router.route_decision(&req, &policy, 0, false, 42_000)
+    ///     .expect("default policy must succeed");
+    /// assert_eq!(decision.tier, ExecutionTier::Local);
+    /// assert_eq!(decision.reason, TierReason::LocalOnlyPolicy);
+    /// assert_eq!(decision.decided_at_ns, 42_000);
+    /// ```
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct TierDecision {
+        /// The execution tier selected by the router.
+        pub tier: ExecutionTier,
+
+        /// Why this tier was selected.
+        pub reason: TierReason,
+
+        /// Caller-supplied wall-clock timestamp in nanoseconds at which the
+        /// decision was made. The router does **not** read a clock internally;
+        /// the value is passed through unchanged so tests remain deterministic.
+        pub decided_at_ns: u64,
+    }
+
+    // -------------------------------------------------------------------------
+    // TierError
+    // -------------------------------------------------------------------------
+
+    /// Errors returned by [`TierRouter::route_decision`].
+    ///
+    /// All variants are non-exhaustive from a future-compatibility standpoint;
+    /// callers should match on them with a `_ =>` arm.
+    #[derive(Clone, Debug, PartialEq, Eq, Error)]
+    pub enum TierError {
+        /// The requested execution tier is not available.
+        ///
+        /// In Phase 2 this is returned whenever escalation beyond Tier 0 would
+        /// be required (either because the model is too large for local
+        /// execution or because a higher tier was requested) since Tier 1 and
+        /// Tier 2 backends are not yet implemented.
+        #[error("execution tier {requested:?} is not available in this runtime version")]
+        TierUnavailable {
+            /// The tier that would have been needed to serve the request.
+            requested: ExecutionTier,
+        },
+
+        /// An attestation proof was required by the active policy but the
+        /// caller indicated that the model has not been attested.
+        #[error("attestation proof required by policy but not provided")]
+        AttestationRequired,
+    }
+
+    // -------------------------------------------------------------------------
     // TierRouter
     // -------------------------------------------------------------------------
 
     /// Routes inference requests to the appropriate execution tier.
     ///
-    /// The current implementation is a Phase 2 Stream 1 stub that always
-    /// returns [`ExecutionTier::Local`]. The full policy engine (model size
-    /// heuristics, user consent flags, resource availability) will be added
-    /// in a later stream.
+    /// ## Backward-compatible stub method
+    ///
+    /// [`TierRouter::route`] is a Phase 2 Stream 1 stub that always returns
+    /// [`ExecutionTier::Local`]. It is kept unchanged for backward
+    /// compatibility.
+    ///
+    /// ## Policy-aware method (Sprint 11.a)
+    ///
+    /// [`TierRouter::route_decision`] evaluates a [`RoutingPolicy`] and the
+    /// caller-supplied model size and attestation state, returning a
+    /// [`TierDecision`] or a [`TierError`]. See the method documentation for
+    /// the full Phase 2 contract.
     ///
     /// # Example
     ///
@@ -1000,6 +1208,143 @@ pub mod router {
                 "tier router: routing to Local (Tier 0, stub)"
             );
             ExecutionTier::Local
+        }
+
+        /// Evaluate `policy` and produce a [`TierDecision`] for `request`.
+        ///
+        /// This is the Sprint 11.a policy engine entry point. It implements
+        /// the Phase 2 contract defined in OIP-Phase2-Entry-021 § S2.1:
+        ///
+        /// - Only [`ExecutionTier::Local`] (Tier 0) is a valid successful
+        ///   routing outcome in Phase 2. Any path that would require Tier 1
+        ///   or Tier 2 returns [`TierError::TierUnavailable`].
+        /// - If `policy.require_attestation` is `true` and `attested` is
+        ///   `false`, returns [`TierError::AttestationRequired`] **before**
+        ///   any tier-escalation evaluation (attestation failure is always
+        ///   the highest-priority rejection).
+        /// - If `model_size_bytes` exceeds `policy.max_model_size_bytes`, the
+        ///   router would need to escalate; since escalation is unavailable in
+        ///   Phase 2, it returns `Err(TierError::TierUnavailable { requested:
+        ///   ExecutionTier::PersonalCluster })`.
+        /// - Otherwise returns `Ok(TierDecision { tier: Local, reason:
+        ///   LocalOnlyPolicy, decided_at_ns })`.
+        ///
+        /// ## Determinism
+        ///
+        /// `decided_at_ns` is **passed in** by the caller; this method never
+        /// reads a wall-clock. This keeps unit tests fully deterministic and
+        /// matches the timestamp-passing convention used elsewhere in the
+        /// crate.
+        ///
+        /// ## Parameters
+        ///
+        /// - `request` — the inference request being routed (used for
+        ///   structured logging only; routing decisions do not depend on its
+        ///   payload in Phase 2).
+        /// - `policy` — the active [`RoutingPolicy`].
+        /// - `model_size_bytes` — the byte size of the model to be served.
+        /// - `attested` — `true` if the model has been successfully attested
+        ///   by the caller before this call; `false` otherwise.
+        /// - `decided_at_ns` — wall-clock nanoseconds supplied by the caller;
+        ///   stored verbatim in the returned [`TierDecision`].
+        ///
+        /// # Errors
+        ///
+        /// Returns [`TierError::AttestationRequired`] when attestation is
+        /// required by the policy but not provided.
+        ///
+        /// Returns [`TierError::TierUnavailable`] when the model would need
+        /// to be escalated to a tier that is not implemented in Phase 2.
+        ///
+        /// # Example
+        ///
+        /// ```rust
+        /// use omni_runtime::router::{
+        ///     ExecutionTier, RoutingPolicy, TierError, TierReason, TierRouter,
+        /// };
+        /// use omni_runtime::inference::InferenceRequest;
+        /// use omni_types::ModelId;
+        ///
+        /// let router = TierRouter::new();
+        /// let policy = RoutingPolicy::new();
+        /// let req = InferenceRequest {
+        ///     model_id: ModelId::from_bytes([0x00; 32]),
+        ///     input: vec![],
+        ///     request_id: 1,
+        /// };
+        ///
+        /// // Default policy, small model, not attested → Ok(Local).
+        /// let decision = router.route_decision(&req, &policy, 512, false, 1_000_000)
+        ///     .expect("default policy must succeed");
+        /// assert_eq!(decision.tier, ExecutionTier::Local);
+        /// assert_eq!(decision.reason, TierReason::LocalOnlyPolicy);
+        ///
+        /// // Model too large for local execution → Err(TierUnavailable).
+        /// let big_policy = RoutingPolicy {
+        ///     max_model_size_bytes: 100,
+        ///     ..RoutingPolicy::new()
+        /// };
+        /// let err = router.route_decision(&req, &big_policy, 200, false, 0)
+        ///     .unwrap_err();
+        /// assert!(matches!(err, TierError::TierUnavailable { .. }));
+        /// ```
+        pub fn route_decision(
+            &self,
+            request: &InferenceRequest,
+            policy: &RoutingPolicy,
+            model_size_bytes: u64,
+            attested: bool,
+            decided_at_ns: u64,
+        ) -> Result<TierDecision, TierError> {
+            // TierRouter is a unit struct; `self` carries no state in Phase 2.
+            // The receiver is kept so callers can upgrade to stateful routing
+            // (e.g., cached resource metrics) without a breaking API change.
+            let _ = self;
+
+            // Attestation check is highest priority: reject before any tier
+            // evaluation so that an un-attested model never receives routing
+            // consideration, even to Tier 0.
+            if policy.require_attestation && !attested {
+                debug!(
+                    request_id = request.request_id,
+                    model_id = ?request.model_id,
+                    "tier router: attestation required but not provided"
+                );
+                return Err(TierError::AttestationRequired);
+            }
+
+            // Size check: if the model exceeds the local-size cap we would need
+            // to escalate, but Phase 2 does not implement higher tiers.
+            if model_size_bytes > policy.max_model_size_bytes {
+                debug!(
+                    request_id = request.request_id,
+                    model_id = ?request.model_id,
+                    model_size_bytes,
+                    max_model_size_bytes = policy.max_model_size_bytes,
+                    "tier router: model too large for local execution; escalation \
+                     unavailable in Phase 2"
+                );
+                // PersonalCluster (Tier 1) is the first escalation target;
+                // report it as the unavailable requested tier.
+                return Err(TierError::TierUnavailable {
+                    requested: ExecutionTier::PersonalCluster,
+                });
+            }
+
+            // Phase 2 contract: always route locally regardless of
+            // allow_tier_1 / allow_tier_2 flags because higher tiers are not
+            // implemented yet.
+            debug!(
+                request_id = request.request_id,
+                model_id = ?request.model_id,
+                decided_at_ns,
+                "tier router: routing to Local (Tier 0, Phase 2 policy)"
+            );
+            Ok(TierDecision {
+                tier: ExecutionTier::Local,
+                reason: TierReason::LocalOnlyPolicy,
+                decided_at_ns,
+            })
         }
     }
 }
@@ -1259,7 +1604,7 @@ mod tests {
         attestation::verify_model_manifest,
         inference::{InferencePipeline, InferenceRequest},
         model::{ModelFormat, ModelManifest, ModelRegistry},
-        router::{ExecutionTier, TierRouter},
+        router::{ExecutionTier, RoutingPolicy, TierError, TierReason, TierRouter},
         scheduler::WorkloadScheduler,
     };
 
@@ -1521,6 +1866,173 @@ mod tests {
         assert_ne!(tier, ExecutionTier::Cloud);
         assert_ne!(tier, ExecutionTier::PersonalCluster);
         assert_ne!(tier, ExecutionTier::FederatedMesh);
+    }
+
+    // -------------------------------------------------------------------------
+    // TierRouter::route_decision — Sprint 11.a policy engine
+    // -------------------------------------------------------------------------
+
+    /// Helper: build a minimal [`InferenceRequest`] for routing tests.
+    fn make_routing_request(request_id: u64) -> InferenceRequest {
+        InferenceRequest {
+            model_id: ModelId::from_bytes([0xAB; 32]),
+            input: vec![],
+            request_id,
+        }
+    }
+
+    /// Default policy + small model + no attestation requirement → Ok(Local).
+    ///
+    /// This is the happy-path Phase 2 baseline: every request that fits
+    /// locally and does not require attestation must succeed with Tier 0.
+    #[test]
+    fn route_decision_default_policy_ok_local() {
+        let router = TierRouter::new();
+        let policy = RoutingPolicy::new();
+        let req = make_routing_request(1);
+        let result = router.route_decision(&req, &policy, 1024, false, 999);
+        let decision = result.expect("default policy with small model must succeed");
+        assert_eq!(
+            decision.tier,
+            ExecutionTier::Local,
+            "Phase 2: only Tier 0 is valid on the Ok path"
+        );
+    }
+
+    /// A model whose byte size exceeds `max_model_size_bytes` triggers
+    /// [`TierError::TierUnavailable`] because escalation is unavailable in
+    /// Phase 2.
+    #[test]
+    fn route_decision_large_model_escalation_denied() {
+        let router = TierRouter::new();
+        let policy = RoutingPolicy {
+            max_model_size_bytes: 100,
+            ..RoutingPolicy::new()
+        };
+        let req = make_routing_request(2);
+        let err = router
+            .route_decision(&req, &policy, 101, false, 0)
+            .unwrap_err();
+        assert!(
+            matches!(err, TierError::TierUnavailable { .. }),
+            "oversized model must return TierUnavailable, got {err:?}"
+        );
+    }
+
+    /// When `require_attestation = true` and `attested = false` the router
+    /// must reject with [`TierError::AttestationRequired`] before evaluating
+    /// any tier-escalation logic.
+    #[test]
+    fn route_decision_attestation_required_not_attested() {
+        let router = TierRouter::new();
+        let policy = RoutingPolicy {
+            require_attestation: true,
+            ..RoutingPolicy::new()
+        };
+        let req = make_routing_request(3);
+        let err = router
+            .route_decision(&req, &policy, 512, false, 0)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            TierError::AttestationRequired,
+            "un-attested model under require_attestation policy must error"
+        );
+    }
+
+    /// When `require_attestation = true` and `attested = true` the router
+    /// must succeed and return Tier 0.
+    #[test]
+    fn route_decision_attestation_required_and_provided() {
+        let router = TierRouter::new();
+        let policy = RoutingPolicy {
+            require_attestation: true,
+            ..RoutingPolicy::new()
+        };
+        let req = make_routing_request(4);
+        let decision = router
+            .route_decision(&req, &policy, 512, true, 7777)
+            .expect("attested model under require_attestation policy must succeed");
+        assert_eq!(decision.tier, ExecutionTier::Local);
+    }
+
+    /// Even with `allow_tier_1 = true`, if the model fits locally the router
+    /// must still return Tier 0 (Phase 2 prefers local when possible).
+    #[test]
+    fn route_decision_allow_tier1_but_fits_locally_stays_local() {
+        let router = TierRouter::new();
+        let policy = RoutingPolicy {
+            allow_tier_1: true,
+            ..RoutingPolicy::new()
+        };
+        let req = make_routing_request(5);
+        let decision = router
+            .route_decision(&req, &policy, 256, false, 0)
+            .expect("model fitting locally must succeed even with allow_tier_1");
+        assert_eq!(
+            decision.tier,
+            ExecutionTier::Local,
+            "Phase 2: local is always preferred over higher tiers when the \
+             model fits on the local node"
+        );
+    }
+
+    /// The `reason` field of a successful decision must be
+    /// [`TierReason::LocalOnlyPolicy`] in Phase 2.
+    #[test]
+    fn route_decision_reason_is_local_only_policy() {
+        let router = TierRouter::new();
+        let policy = RoutingPolicy::new();
+        let req = make_routing_request(6);
+        let decision = router
+            .route_decision(&req, &policy, 0, false, 0)
+            .expect("must succeed");
+        assert_eq!(
+            decision.reason,
+            TierReason::LocalOnlyPolicy,
+            "Phase 2 successful routing must carry LocalOnlyPolicy reason"
+        );
+    }
+
+    /// `decided_at_ns` must be propagated verbatim from the caller into the
+    /// returned [`TierDecision`].
+    #[test]
+    fn route_decision_decided_at_ns_propagated() {
+        let router = TierRouter::new();
+        let policy = RoutingPolicy::new();
+        let req = make_routing_request(7);
+        let timestamp: u64 = 1_234_567_890;
+        let decision = router
+            .route_decision(&req, &policy, 64, false, timestamp)
+            .expect("must succeed");
+        assert_eq!(
+            decision.decided_at_ns, timestamp,
+            "decided_at_ns must equal the caller-supplied timestamp"
+        );
+    }
+
+    /// The `requested` field inside [`TierError::TierUnavailable`] must
+    /// identify the first escalation tier (`PersonalCluster`) when the model
+    /// is too large for local execution.
+    #[test]
+    fn route_decision_tier_unavailable_requested_is_personal_cluster() {
+        let router = TierRouter::new();
+        let policy = RoutingPolicy {
+            max_model_size_bytes: 50,
+            ..RoutingPolicy::new()
+        };
+        let req = make_routing_request(8);
+        let err = router
+            .route_decision(&req, &policy, 51, false, 0)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            TierError::TierUnavailable {
+                requested: ExecutionTier::PersonalCluster,
+            },
+            "oversized-model error must name PersonalCluster as the \
+             first unavailable escalation target"
+        );
     }
 
     // -------------------------------------------------------------------------
