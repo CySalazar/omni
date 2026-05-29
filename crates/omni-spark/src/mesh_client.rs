@@ -24,6 +24,15 @@ pub const BOOTSTRAP_SEEDS: &[&str] = &[
 ];
 
 /// Roles this node can perform based on its trust tier.
+///
+/// Each field maps directly to an OIP-024 § S5 capability bit.
+/// The boolean representation is intentional: it mirrors the wire
+/// format and avoids a bitflags dependency for what is ultimately
+/// a simple role record.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Each bool is a distinct OIP-024 role capability; a bitflags type would obscure the role semantics"
+)]
 #[derive(Debug, Clone)]
 pub struct NodeRoles {
     /// Can relay encrypted packets without inspecting payloads.
@@ -50,14 +59,9 @@ impl NodeRoles {
                 expert_shard_host: true,
                 pii_inference: true,
             },
-            TrustTier::EnclaveLimited => Self {
-                relay: true,
-                reputation_witness: true,
-                bandwidth_contributor: true,
-                expert_shard_host: false,
-                pii_inference: false,
-            },
-            TrustTier::MeasuredBoot => Self {
+            // Tier 1 and Tier 2 have identical role sets: relay + witness +
+            // bandwidth, but no expert shard hosting or PII inference.
+            TrustTier::EnclaveLimited | TrustTier::MeasuredBoot => Self {
                 relay: true,
                 reputation_witness: true,
                 bandwidth_contributor: true,
@@ -115,6 +119,20 @@ pub struct MeshStats {
 ///
 /// This function runs until the application shuts down. It handles
 /// reconnection on transient failures.
+///
+/// # Errors
+///
+/// Returns [`crate::BridgeError::MeshProtocol`] if the mesh connection
+/// cannot be established after exhausting retries, or if a fatal
+/// protocol error occurs during operation.
+//
+// `unused_async`: intentionally async; the main connection loop
+// (QUIC bind, DHT bootstrap, peer handshake) will use `.await` in
+// OIP-025 Phase 1.
+#[allow(
+    clippy::unused_async,
+    reason = "QUIC/DHT loop will use .await in OIP-025 Phase 1"
+)]
 pub async fn connect(tier: TrustTier) -> crate::Result<()> {
     let roles = NodeRoles::for_tier(tier);
     tracing::info!(

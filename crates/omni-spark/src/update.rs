@@ -38,6 +38,13 @@ pub enum UpdateStatus {
 ///
 /// Contacts the update server over HTTPS and compares the latest
 /// published version with the currently running version.
+//
+// `unused_async`: intentionally async; HTTPS request will use `.await`
+// in OIP-025 Phase 5.
+#[allow(
+    clippy::unused_async,
+    reason = "HTTPS update check will use .await in OIP-025 Phase 5"
+)]
 pub async fn check() -> UpdateStatus {
     // TODO(oip-025-phase-5): Implement update check.
     //
@@ -58,6 +65,18 @@ pub async fn check() -> UpdateStatus {
 ///
 /// This replaces the running binary. The application must be restarted
 /// after a successful update.
+///
+/// # Errors
+///
+/// Returns [`crate::BridgeError::Config`] if the download or binary
+/// verification fails (bad signature, hash mismatch, or I/O error).
+//
+// `unused_async`: intentionally async; download + signature verify will
+// use `.await` in OIP-025 Phase 5.
+#[allow(
+    clippy::unused_async,
+    reason = "download and signature verification will use .await in OIP-025 Phase 5"
+)]
 pub async fn apply(_status: &UpdateStatus) -> crate::Result<()> {
     // TODO(oip-025-phase-5): Implement update download and apply.
     //
@@ -74,6 +93,18 @@ pub async fn apply(_status: &UpdateStatus) -> crate::Result<()> {
 }
 
 /// Rolls back to the previous version.
+///
+/// # Errors
+///
+/// Returns [`crate::BridgeError::Config`] if the previous binary cannot
+/// be found or the rename operation fails.
+//
+// `unnecessary_wraps`: Result is intentional API surface; file rename
+// operations (OIP-025 Phase 5) will return real I/O errors.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "Result is intentional API surface; rename(.prev) will return I/O errors"
+)]
 pub fn rollback() -> crate::Result<()> {
     // TODO(oip-025-phase-5): Rename `.prev` back to current.
     tracing::debug!("rollback: not yet implemented");
@@ -82,6 +113,18 @@ pub fn rollback() -> crate::Result<()> {
 
 /// Verifies the currently running binary against the Sigstore
 /// transparency log.
+///
+/// # Errors
+///
+/// Returns [`crate::BridgeError::Config`] if the binary hash cannot be
+/// computed or the Sigstore lookup fails.
+//
+// `unnecessary_wraps`: Result is intentional API surface; Sigstore
+// lookup (OIP-025 Phase 5) will return errors on failure.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "Result is intentional API surface; Sigstore CT log lookup will return errors"
+)]
 pub fn verify_binary() -> crate::Result<bool> {
     // TODO(oip-025-phase-5): Compute SHA-256 of the running binary
     // and check against Sigstore CT log entries.

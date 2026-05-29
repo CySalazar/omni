@@ -1,4 +1,4 @@
-//! Confidential MicroVM backend (Tier 0).
+//! Confidential `MicroVM` backend (Tier 0).
 //!
 //! Launches a minimal OMNI OS image inside a hardware-encrypted VM
 //! (SEV-SNP or TDX). Communication with the CVM is over virtio-vsock.
@@ -19,9 +19,9 @@
 #[cfg(feature = "cvm")]
 use super::DynBackend;
 #[cfg(feature = "cvm")]
-use crate::platform::DetectedPlatform;
-#[cfg(feature = "cvm")]
 use crate::BridgeError;
+#[cfg(feature = "cvm")]
+use crate::platform::DetectedPlatform;
 
 /// Path to the CVM image, relative to the application data directory.
 pub const CVM_IMAGE_FILENAME: &str = "omni-spark-cvm.img";
@@ -46,6 +46,11 @@ pub const VSOCK_MESH_PORT: u32 = 5101;
 /// 3. Launch the VMM with SEV-SNP or TDX enabled.
 /// 4. Wait for the CVM to boot and report attestation via vsock.
 /// 5. Return a `TeeBackend` proxy that delegates to the CVM.
+///
+/// # Errors
+///
+/// Returns [`crate::BridgeError::BackendInit`] if the CVM image is
+/// missing, its signature is invalid, or the VMM fails to start.
 #[cfg(feature = "cvm")]
 pub fn init(_platform: &DetectedPlatform) -> crate::Result<DynBackend> {
     // TODO(oip-025-phase-4): Full CVM launch implementation.

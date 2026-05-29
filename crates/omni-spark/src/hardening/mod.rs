@@ -23,6 +23,13 @@
 /// Returns an error only if a critical hardening measure fails (e.g.,
 /// seccomp installation denied). Non-critical failures (e.g., mlock
 /// limit too low) are logged as warnings but do not prevent startup.
+//
+// `unnecessary_wraps`: Result is intentional API surface; seccomp-bpf
+// installation (OIP-025 Phase 5) will return real errors on failure.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "Result is intentional API surface; seccomp/AppContainer installation will return errors"
+)]
 pub fn apply() -> crate::Result<()> {
     set_no_new_privs();
     lock_sensitive_memory();

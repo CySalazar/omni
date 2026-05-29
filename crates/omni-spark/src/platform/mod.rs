@@ -49,9 +49,9 @@ impl fmt::Display for TrustTier {
 /// Identifies which security backend to use.
 #[derive(Debug, Clone)]
 pub enum BackendKind {
-    /// Confidential MicroVM with SEV-SNP attestation.
+    /// Confidential `MicroVM` with SEV-SNP attestation.
     CvmSevSnp,
-    /// Confidential MicroVM with TDX attestation.
+    /// Confidential `MicroVM` with TDX attestation.
     CvmTdx,
     /// Apple Secure Enclave (macOS Apple Silicon).
     AppleSecureEnclave,
@@ -80,7 +80,7 @@ pub struct DetectedPlatform {
     pub max_tier: TrustTier,
     /// Which security backend to activate.
     pub backend: BackendKind,
-    /// Whether a confidential MicroVM can be launched (hardware TEE
+    /// Whether a confidential `MicroVM` can be launched (hardware TEE
     /// present on host, even if the user has not opted into CVM mode).
     pub cvm_available: bool,
     /// Human-readable description of the host platform.
@@ -104,10 +104,17 @@ impl DetectedPlatform {
 ///
 /// # Errors
 ///
-/// Returns [`BridgeError::PlatformDetection`] if a critical probe
+/// Returns [`crate::BridgeError::PlatformDetection`] if a critical probe
 /// fails (e.g., permission denied accessing `/dev/tpm0`). A probe
 /// that simply finds no hardware returns the next-lower tier, not an
 /// error.
+//
+// `unnecessary_wraps`: the `Result` return type is intentional API surface;
+// future probe implementations (tss-esapi, WHP) will return real errors.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "Result is intentional API surface; hardware backend probes will return errors"
+)]
 pub fn detect() -> crate::Result<DetectedPlatform> {
     // Tier 0: Confidential VM support
     #[cfg(feature = "cvm")]
@@ -143,23 +150,17 @@ pub fn detect() -> crate::Result<DetectedPlatform> {
 /// Probes for confidential VM launch capability (SEV-SNP or TDX on host).
 #[cfg(feature = "cvm")]
 fn probe_cvm_support() -> Option<DetectedPlatform> {
-    // Linux: check /dev/sev-guest or /dev/tdx-guest + KVM support
+    // Each platform branch is mutually exclusive via cfg; the active branch
+    // is the final expression of this function on that target.
     #[cfg(target_os = "linux")]
-    {
-        return linux::probe_cvm();
-    }
+    return linux::probe_cvm();
 
-    // Windows: check for Hyper-V + SEV-SNP/TDX passthrough
     #[cfg(target_os = "windows")]
-    {
-        return windows::probe_cvm();
-    }
+    return windows::probe_cvm();
 
     // macOS: no CVM support (no SEV-SNP/TDX on Apple Silicon)
     #[cfg(target_os = "macos")]
-    {
-        return None;
-    }
+    return None;
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     None
@@ -175,14 +176,10 @@ fn probe_secure_enclave() -> Option<DetectedPlatform> {
 #[cfg(feature = "tpm2")]
 fn probe_tpm2() -> Option<DetectedPlatform> {
     #[cfg(target_os = "linux")]
-    {
-        return linux::probe_tpm2();
-    }
+    return linux::probe_tpm2();
 
     #[cfg(target_os = "windows")]
-    {
-        return windows::probe_tpm2();
-    }
+    return windows::probe_tpm2();
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     None
@@ -223,7 +220,10 @@ mod tests {
             };
             let name = platform.backend_name();
             assert!(!name.is_empty());
-            assert!(!name.contains(' '), "backend name should be kebab-case: {name}");
+            assert!(
+                !name.contains(' '),
+                "backend name should be kebab-case: {name}"
+            );
         }
     }
 }

@@ -13,7 +13,6 @@
 //! - A local attacker with root/admin can extract all key material.
 
 use super::DynBackend;
-use crate::BridgeError;
 use omni_tee::attestation::{Measurement, Nonce, Quote, QuoteVersion};
 use omni_tee::sealed_keys::{SealPolicy, SealedBlob, TeeSharedKey};
 use omni_tee::traits::{TeeBackend, TeeError, TeeErrorKind, TeeFamily};
@@ -27,7 +26,9 @@ pub struct SoftwareMpcBackend {
 }
 
 impl SoftwareMpcBackend {
-    fn new() -> Result<Self, BridgeError> {
+    // Infallible constructor: all operations here are purely computational
+    // (key generation from OsRng, hashing) and cannot fail.
+    fn new() -> Self {
         // Generate a fresh identity key from OS entropy.
         let mut csprng = rand_core::OsRng;
         let identity_key = ed25519_dalek::SigningKey::generate(&mut csprng);
@@ -40,12 +41,14 @@ impl SoftwareMpcBackend {
         let hash_bytes = hash.as_bytes();
 
         let mut measurement_bytes = [0u8; 48];
+        // `hash_bytes` is always 32 bytes; `measurement_bytes[..32]` is
+        // a compile-time-known slice of length 32 — cannot panic.
         measurement_bytes[..32].copy_from_slice(hash_bytes);
 
-        Ok(Self {
+        Self {
             _identity_key: identity_key,
             measurement: Measurement(measurement_bytes),
-        })
+        }
     }
 }
 
@@ -67,6 +70,12 @@ impl TeeBackend for SoftwareMpcBackend {
         let rd_array = report_data.and_then(|rd| {
             if rd.len() <= 32 {
                 let mut arr = [0u8; 32];
+                // The `rd.len() <= 32` branch guard guarantees that
+                // `arr[..rd.len()]` is always within `arr`'s bounds (0..=32).
+                #[allow(
+                    clippy::indexing_slicing,
+                    reason = "rd.len() <= 32 branch guard guarantees the slice is in-bounds"
+                )]
                 arr[..rd.len()].copy_from_slice(rd);
                 Some(arr)
             } else {
@@ -119,6 +128,13 @@ impl TeeBackend for SoftwareMpcBackend {
 
         // XOR-based placeholder encryption. Real implementation will
         // use ChaCha20-Poly1305 with HKDF-derived key.
+        //
+        // `key_bytes[i % 32]`: `key_bytes` is `&[u8; 32]` (blake3 output is
+        // always 32 bytes), and `i % 32` is always in `0..32` — cannot panic.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "key_bytes is [u8; 32]; i % 32 is always 0..31"
+        )]
         let ciphertext: Vec<u8> = plaintext
             .iter()
             .enumerate()
@@ -133,7 +149,10 @@ impl TeeBackend for SoftwareMpcBackend {
     }
 
     fn unseal(&self, blob: &SealedBlob) -> Result<Vec<u8>, TeeError> {
-        if !blob.policy.allows(TeeFamily::SoftwareMpc, &self.measurement) {
+        if !blob
+            .policy
+            .allows(TeeFamily::SoftwareMpc, &self.measurement)
+        {
             return Err(TeeError::new(
                 TeeErrorKind::UnsealFailed,
                 "policy mismatch: measurement or family does not match",
@@ -143,6 +162,11 @@ impl TeeBackend for SoftwareMpcBackend {
         let key_material = blake3::hash(self.measurement.as_bytes());
         let key_bytes = key_material.as_bytes();
 
+        // `key_bytes[i % 32]`: same invariant as in `seal` above.
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "key_bytes is [u8; 32]; i % 32 is always 0..31"
+        )]
         let plaintext: Vec<u8> = blob
             .ciphertext
             .iter()
@@ -162,8 +186,18 @@ impl TeeBackend for SoftwareMpcBackend {
 }
 
 /// Initializes the software-only MPC backend.
+///
+/// # Errors
+///
+/// This function is currently infallible (key generation is always
+/// successful). The `Result` return type is kept for API consistency
+/// with the other backend `init()` functions and for future use.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "Result kept for API consistency with other backend init() functions"
+)]
 pub fn init() -> crate::Result<DynBackend> {
-    let backend = SoftwareMpcBackend::new()?;
+    let backend = SoftwareMpcBackend::new();
     tracing::info!("software MPC backend initialized (Tier 3 — no hardware root of trust)");
     Ok(Box::new(backend))
 }
@@ -174,13 +208,13 @@ mod tests {
 
     #[test]
     fn software_backend_family_is_software_mpc() {
-        let backend = SoftwareMpcBackend::new().expect("init should succeed");
+        let backend = SoftwareMpcBackend::new();
         assert_eq!(backend.family(), TeeFamily::SoftwareMpc);
     }
 
     #[test]
     fn attest_verify_round_trip() {
-        let backend = SoftwareMpcBackend::new().expect("init");
+        let backend = SoftwareMpcBackend::new();
         let nonce = Nonce([42u8; 32]);
         let quote = backend.attest(&nonce, None).expect("attest");
         assert_eq!(quote.family, TeeFamily::SoftwareMpc);
@@ -193,7 +227,7 @@ mod tests {
 
     #[test]
     fn seal_unseal_round_trip() {
-        let backend = SoftwareMpcBackend::new().expect("init");
+        let backend = SoftwareMpcBackend::new();
         let plaintext = b"mesh bridge secret data";
         let policy = SealPolicy::new(TeeFamily::SoftwareMpc, backend.measurement);
 
@@ -204,7 +238,7 @@ mod tests {
 
     #[test]
     fn unseal_rejects_wrong_measurement() {
-        let backend = SoftwareMpcBackend::new().expect("init");
+        let backend = SoftwareMpcBackend::new();
         let plaintext = b"secret";
 
         let wrong_measurement = Measurement([0xFFu8; 48]);
@@ -217,7 +251,7 @@ mod tests {
 
     #[test]
     fn verify_rejects_nonce_mismatch() {
-        let backend = SoftwareMpcBackend::new().expect("init");
+        let backend = SoftwareMpcBackend::new();
         let nonce = Nonce([1u8; 32]);
         let wrong_nonce = Nonce([2u8; 32]);
 

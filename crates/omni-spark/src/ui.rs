@@ -1,7 +1,7 @@
 //! System tray and status interface.
 //!
 //! OMNI Spark runs as a system tray application:
-//! - **Linux**: tray icon via `libappindicator` / StatusNotifierItem.
+//! - **Linux**: tray icon via `libappindicator` / `StatusNotifierItem`.
 //! - **Windows**: notification area icon.
 //! - **macOS**: menu bar extra.
 //!
@@ -41,9 +41,19 @@ pub enum TrayAction {
 ///
 /// This function blocks until the user quits. It periodically polls
 /// `stats_rx` for updated mesh statistics and redraws the tray menu.
-pub async fn run_tray(
-    _platform: &DetectedPlatform,
-) -> crate::Result<()> {
+///
+/// # Errors
+///
+/// Returns [`crate::BridgeError::BackendInit`] if the tray icon cannot
+/// be created (e.g., no display server available on Linux).
+//
+// `unused_async`: intentionally async; the tray event loop will use
+// `.await` in OIP-025 Phase 5.
+#[allow(
+    clippy::unused_async,
+    reason = "tray event loop will use .await in OIP-025 Phase 5"
+)]
+pub async fn run_tray(_platform: &DetectedPlatform) -> crate::Result<()> {
     // TODO(oip-025-phase-5): Tray UI implementation.
     //
     // Library candidates:

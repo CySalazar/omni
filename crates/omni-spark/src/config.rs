@@ -48,10 +48,18 @@ pub struct BridgeConfig {
     pub schedule: Option<String>,
 }
 
-fn default_bandwidth_cap() -> u32 { 0 }
-fn default_cpu_percent() -> u8 { 50 }
-fn default_cvm_memory() -> u32 { 512 }
-fn default_update_channel() -> String { "stable".into() }
+fn default_bandwidth_cap() -> u32 {
+    0
+}
+fn default_cpu_percent() -> u8 {
+    50
+}
+fn default_cvm_memory() -> u32 {
+    512
+}
+fn default_update_channel() -> String {
+    "stable".into()
+}
 
 impl Default for BridgeConfig {
     fn default() -> Self {
@@ -83,6 +91,12 @@ pub fn config_file() -> PathBuf {
 
 /// Loads the configuration from disk, or returns defaults if the
 /// file does not exist.
+///
+/// # Errors
+///
+/// Returns [`crate::BridgeError::Config`] if the configuration file
+/// exists but cannot be read (e.g., permission denied) or contains
+/// invalid TOML.
 pub fn load() -> crate::Result<BridgeConfig> {
     let path = config_file();
     if !path.exists() {
@@ -97,6 +111,12 @@ pub fn load() -> crate::Result<BridgeConfig> {
 }
 
 /// Saves the configuration to disk.
+///
+/// # Errors
+///
+/// Returns [`crate::BridgeError::Config`] if the configuration
+/// directory cannot be created, the file cannot be written, or
+/// serialization fails.
 pub fn save(config: &BridgeConfig) -> crate::Result<()> {
     let dir = config_dir();
     std::fs::create_dir_all(&dir)
@@ -111,16 +131,26 @@ pub fn save(config: &BridgeConfig) -> crate::Result<()> {
     Ok(())
 }
 
+// `disallowed_methods`: `std::env::var` is used here only to resolve the
+// platform-appropriate base config directory. This is a bootstrap-time,
+// read-only operation isolated in a private function. A full config crate
+// (figment/config) will be added in OIP-025 Phase 5 when the config
+// schema is finalized.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "env::var used only for XDG_CONFIG_HOME / HOME path resolution; auditable bootstrap-time read"
+)]
 fn dirs_path() -> PathBuf {
     // Platform-appropriate base directory.
     #[cfg(target_os = "linux")]
     {
-        std::env::var("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
+        std::env::var("XDG_CONFIG_HOME").map_or_else(
+            |_| {
                 let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
                 PathBuf::from(home).join(".config")
-            })
+            },
+            PathBuf::from,
+        )
     }
 
     #[cfg(target_os = "macos")]
@@ -131,9 +161,10 @@ fn dirs_path() -> PathBuf {
 
     #[cfg(target_os = "windows")]
     {
-        std::env::var("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("C:\\Users\\Default\\AppData\\Roaming"))
+        std::env::var("APPDATA").map_or_else(
+            |_| PathBuf::from("C:\\Users\\Default\\AppData\\Roaming"),
+            PathBuf::from,
+        )
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -142,6 +173,12 @@ fn dirs_path() -> PathBuf {
     }
 }
 
+// `unnecessary_wraps`: Result is intentional API surface; real TOML
+// parsing (OIP-025 Phase 5) will return parse errors on malformed input.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "Result is intentional API surface; TOML parse errors will propagate once parsing is implemented"
+)]
 fn toml_parse(contents: &str) -> crate::Result<BridgeConfig> {
     // Minimal TOML parsing. In production, use the `toml` crate.
     // For now, return defaults (the config format is not yet finalized).
@@ -152,8 +189,8 @@ fn toml_parse(contents: &str) -> crate::Result<BridgeConfig> {
 
 fn toml_serialize(config: &BridgeConfig) -> crate::Result<String> {
     // Minimal TOML serialization placeholder.
-    Ok(serde_json::to_string_pretty(config)
-        .map_err(|e| crate::BridgeError::Config(format!("serialize: {e}")))?)
+    serde_json::to_string_pretty(config)
+        .map_err(|e| crate::BridgeError::Config(format!("serialize: {e}")))
 }
 
 #[cfg(test)]

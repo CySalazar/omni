@@ -35,6 +35,12 @@ pub const APP_MEASUREMENT_PCR: u32 = 14;
 /// 3. Verify TPM version is 2.0.
 /// 4. Extend `APP_MEASUREMENT_PCR` with the bridge binary's hash.
 /// 5. Return a `TeeBackend` that produces TPM quotes.
+///
+/// # Errors
+///
+/// Returns [`crate::BridgeError::BackendInit`] if the TPM context
+/// cannot be opened (e.g., device missing, permission denied), the
+/// AIK cannot be created, or PCR extension fails.
 #[cfg(feature = "tpm2")]
 pub fn init() -> crate::Result<DynBackend> {
     // TODO(oip-025-phase-2): TPM 2.0 integration via tss-esapi.

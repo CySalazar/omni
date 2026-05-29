@@ -6,11 +6,11 @@
 
 pub mod cvm;
 pub mod secure_enclave;
-pub mod tpm2;
 pub mod software_mpc;
+pub mod tpm2;
 
-use crate::platform::DetectedPlatform;
 use crate::BridgeError;
+use crate::platform::DetectedPlatform;
 use omni_tee::traits::TeeBackend;
 
 /// A boxed, type-erased TEE backend suitable for mesh operations.
@@ -28,27 +28,19 @@ pub fn provision(platform: &DetectedPlatform) -> crate::Result<DynBackend> {
 
     match &platform.backend {
         #[cfg(feature = "cvm")]
-        BackendKind::CvmSevSnp | BackendKind::CvmTdx => {
-            cvm::init(platform)
-        }
+        BackendKind::CvmSevSnp | BackendKind::CvmTdx => cvm::init(platform),
 
         #[cfg(all(target_os = "macos", feature = "apple-se"))]
-        BackendKind::AppleSecureEnclave => {
-            secure_enclave::init()
-        }
+        BackendKind::AppleSecureEnclave => secure_enclave::init(),
 
         #[cfg(feature = "tpm2")]
-        BackendKind::Tpm2 => {
-            tpm2::init()
-        }
+        BackendKind::Tpm2 => tpm2::init(),
 
-        BackendKind::SoftwareMpc => {
-            software_mpc::init()
-        }
+        BackendKind::SoftwareMpc => software_mpc::init(),
 
         #[allow(unreachable_patterns)]
-        other => Err(BridgeError::BackendInit(
-            format!("backend {other} not available in this build (missing feature flag)"),
-        )),
+        other => Err(BridgeError::BackendInit(format!(
+            "backend {other} not available in this build (missing feature flag)"
+        ))),
     }
 }

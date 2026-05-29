@@ -11,34 +11,51 @@ use std::path::Path;
 /// (Intel TDX), plus KVM availability for launching the CVM.
 #[cfg(feature = "cvm")]
 pub(super) fn probe_cvm() -> Option<DetectedPlatform> {
-    let kvm_available = Path::new("/dev/kvm").exists();
-    if !kvm_available {
+    if !kvm_available() {
         tracing::debug!("/dev/kvm not found — CVM mode unavailable");
         return None;
     }
 
+    probe_sev_snp().or_else(probe_tdx)
+}
+
+/// Returns `true` if `/dev/kvm` exists (KVM is available).
+#[cfg(feature = "cvm")]
+fn kvm_available() -> bool {
+    Path::new("/dev/kvm").exists()
+}
+
+/// Returns a [`DetectedPlatform`] for AMD SEV-SNP if the guest device is present.
+#[cfg(feature = "cvm")]
+fn probe_sev_snp() -> Option<DetectedPlatform> {
     if Path::new("/dev/sev-guest").exists() || Path::new("/dev/sev").exists() {
         tracing::info!("AMD SEV-SNP device detected with KVM support");
-        return Some(DetectedPlatform {
+        Some(DetectedPlatform {
             max_tier: TrustTier::FullTee,
             backend: BackendKind::CvmSevSnp,
             cvm_available: true,
             platform_description: "Linux x86_64 — AMD SEV-SNP + KVM".into(),
-        });
+        })
+    } else {
+        None
     }
+}
 
+/// Returns a [`DetectedPlatform`] for Intel TDX if the guest device is present.
+#[cfg(feature = "cvm")]
+fn probe_tdx() -> Option<DetectedPlatform> {
     if Path::new("/dev/tdx-guest").exists() || Path::new("/dev/tdx_guest").exists() {
         tracing::info!("Intel TDX device detected with KVM support");
-        return Some(DetectedPlatform {
+        Some(DetectedPlatform {
             max_tier: TrustTier::FullTee,
             backend: BackendKind::CvmTdx,
             cvm_available: true,
             platform_description: "Linux x86_64 — Intel TDX + KVM".into(),
-        });
+        })
+    } else {
+        tracing::debug!("no TEE guest device found — CVM mode unavailable");
+        None
     }
-
-    tracing::debug!("no TEE guest device found — CVM mode unavailable");
-    None
 }
 
 /// Probes for TPM 2.0 on Linux.

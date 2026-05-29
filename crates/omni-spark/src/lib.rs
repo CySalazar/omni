@@ -42,13 +42,17 @@
 
 #![doc(html_root_url = "https://docs.omni-os.org/omni-spark")]
 #![warn(missing_docs)]
+// This `cfg_attr(test, allow(...))` is explicitly whitelisted by ADR-0003.
+// Test code calls `.expect()` and `.unwrap()` for concise failure messages;
+// these panics are acceptable inside `#[test]` functions.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic,))]
 
-pub mod platform;
 pub mod backend;
-pub mod mesh_client;
-pub mod hardening;
-pub mod ui;
 pub mod config;
+pub mod hardening;
+pub mod mesh_client;
+pub mod platform;
+pub mod ui;
 pub mod update;
 
 /// Application-wide result type.
@@ -92,11 +96,54 @@ pub enum BridgeError {
 /// This is the main entry point called from `main.rs`. It:
 /// 1. Detects the host platform and available security primitives.
 /// 2. Provisions the highest-tier backend.
-/// 3. Connects to the mesh.
-/// 4. Launches the system tray UI.
+/// 3. Applies application hardening.
+/// 4. Connects to the mesh (placeholder — OIP-025 Phase 1).
+/// 5. Launches the system tray UI (placeholder — OIP-025 Phase 5).
 ///
 /// Returns only on shutdown (user quit or fatal error).
+///
+/// # Errors
+///
+/// Returns [`BridgeError::PlatformDetection`] if platform probing fails,
+/// [`BridgeError::BackendInit`] if the selected backend cannot be
+/// initialized, or any other [`BridgeError`] variant from sub-systems.
+//
+// `unused_async`: the signature is intentionally `async` so that callers
+// (including `main.rs`'s `rt.block_on(...)`) have a stable API surface;
+// awaited calls will be added in OIP-025 Phase 1 & 5.
+#[allow(
+    clippy::unused_async,
+    reason = "awaited calls added in OIP-025 Phase 1 & 5"
+)]
 pub async fn run() -> Result<()> {
+    run_detect_and_provision()?;
+
+    // Phase 4: Connect to the mesh
+    // TODO(oip-025-phase-1): mesh_client::connect(&backend).await?;
+
+    // Phase 5: Launch UI
+    // TODO(oip-025-phase-5): ui::run_tray(&detected).await?;
+
+    Ok(())
+}
+
+/// Executes Phase 1–3 of startup (detect, provision, harden).
+///
+/// Extracted to reduce the cognitive complexity of [`run`].
+///
+/// # Errors
+///
+/// Propagates any [`BridgeError`] from the detection, provisioning, or
+/// hardening steps.
+//
+// `cognitive_complexity`: the tracing::info! macro expands into branching
+// code that inflates Clippy's score beyond what the source complexity
+// warrants. The function body itself has no nesting.
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "tracing::info! macro expansion inflates score; source logic has no nesting"
+)]
+fn run_detect_and_provision() -> Result<()> {
     // Phase 1: Detect platform capabilities
     let detected = platform::detect()?;
     tracing::info!(
@@ -113,12 +160,6 @@ pub async fn run() -> Result<()> {
     // Phase 3: Apply application hardening
     hardening::apply()?;
     tracing::info!("application hardening applied");
-
-    // Phase 4: Connect to the mesh
-    // TODO(oip-025-phase-1): mesh_client::connect(&backend).await?;
-
-    // Phase 5: Launch UI
-    // TODO(oip-025-phase-5): ui::run_tray(&detected).await?;
 
     Ok(())
 }
