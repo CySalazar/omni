@@ -142,6 +142,20 @@ jobs:
         with:
           targets: x86_64-unknown-none
       - uses: Swatinem/rust-cache@v2
+      # The kernel embeds the shell initramfs via `include_bytes!`
+      # ("embedded_initramfs.bin") under `#[cfg(target_os = "none")]`. The blob
+      # is a generated, git-ignored artifact, so a fresh checkout must build it
+      # before the cross-target compile. Built with the crypto force-soft cfgs
+      # (LLVM SIMD-legalisation workaround) but WITHOUT `-D warnings`, since it
+      # is a prerequisite artifact build, not a lint gate.
+      - name: Build shell initramfs (embedded_initramfs.bin)
+        env:
+          RUSTFLAGS: >-
+            --cfg poly1305_force_soft
+            --cfg chacha20_force_soft
+            --cfg curve25519_dalek_backend="serial"
+            --cfg sha2_backend="soft"
+        run: bash scripts/build-shell-initramfs.sh
       - name: cargo build (bare-metal)
         run: |
           cargo build -p omni-kernel --features bare-metal \
@@ -168,6 +182,17 @@ jobs:
         with:
           targets: x86_64-unknown-none
       - uses: Swatinem/rust-cache@v2
+      # See bare-metal-build: the kernel-runner ELF links omni-kernel, which
+      # embeds the shell initramfs via `include_bytes!`. Generate the git-ignored
+      # blob before the cross-target compile.
+      - name: Build shell initramfs (embedded_initramfs.bin)
+        env:
+          RUSTFLAGS: >-
+            --cfg poly1305_force_soft
+            --cfg chacha20_force_soft
+            --cfg curve25519_dalek_backend="serial"
+            --cfg sha2_backend="soft"
+        run: bash scripts/build-shell-initramfs.sh
       - name: cargo build kernel-runner (release)
         run: |
           cargo build --manifest-path kernel-runner/Cargo.toml \
