@@ -320,7 +320,7 @@ zeroize            = { version = "1.8", default-features = false, features = ["d
 # `hex` provides safe encoding for raw-byte identifiers (we deliberately
 # do NOT impl `Display` for raw bytes; call sites must pass through
 # `to_hex` to surface an ID).
-uuid               = { version = "1.11", default-features = false, features = ["v4", "serde"] }
+uuid               = { version = "1.23", default-features = false, features = ["v4", "serde"] }
 hex                = { version = "0.4", default-features = false, features = ["alloc"] }
 
 # --- Networking (mesh protocol) ---

@@ -89,7 +89,7 @@ thiserror = { workspace = true }
 # `Uuid` via `Uuid::from_bytes`, so the `v4` feature buys us nothing
 # beyond an unused dep. Verify-only bare-metal builds (kernel) get the
 # `Uuid` type without any rng coupling.
-uuid      = { version = "1.11", default-features = false, features = ["serde"], optional = true }
+uuid      = { version = "1.23", default-features = false, features = ["serde"], optional = true }
 # Platform CSPRNG bridge. On Linux this is `getrandom(2)`. The
 # `x86_64-unknown-none` target has no platform CSPRNG, which is why
 # this dep is folded into the `id-generation` feature: the kernel
